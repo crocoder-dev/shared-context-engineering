@@ -5,6 +5,7 @@ use crate::services::db::{DbSpec, EncryptedTursoDb};
 use crate::services::token_storage::{get_auth_db, TokenStorageError};
 
 const TELEMETRY_CREDENTIAL_ROW_ID: i64 = 1;
+const WORKOS_SESSION_ROW_ID: i64 = 1;
 const REDACTED: &str = "<redacted>";
 
 #[derive(Clone, Eq, PartialEq)]
@@ -87,8 +88,9 @@ async fn load_with<M: DbSpec>(
     let rows: Vec<Option<TelemetryCredential>> = db
         .query_map(
             "SELECT token, accessor, expires_at_unix_seconds \
-             FROM telemetry_credentials WHERE id = ?1",
-            (TELEMETRY_CREDENTIAL_ROW_ID,),
+             FROM telemetry_credentials WHERE id = ?1 \
+             AND EXISTS (SELECT 1 FROM auth_credentials WHERE id = ?2)",
+            (TELEMETRY_CREDENTIAL_ROW_ID, WORKOS_SESSION_ROW_ID),
             |row| {
                 let token: String = row.get(0)?;
                 let accessor: String = row.get(1)?;
@@ -205,7 +207,19 @@ mod tests {
         db.execute("DELETE FROM auth_credentials", ())
             .await
             .expect("workos row should be cleared");
+        seed_workos_session(&db).await;
         (guard, db)
+    }
+
+    async fn seed_workos_session(db: &TestDb) {
+        db.execute(
+            "INSERT OR REPLACE INTO auth_credentials \
+             (id, access_token, token_type, expires_in, refresh_token, scope, stored_at_unix_seconds) \
+             VALUES (1, 'workos-access', 'Bearer', 3600, 'workos-refresh', NULL, 1)",
+            (),
+        )
+        .await
+        .expect("workos row should insert");
     }
 
     fn credential(token: &str, expires_at: u64) -> TelemetryCredential {
@@ -278,17 +292,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn telemetry_credential_is_rejected_without_owning_workos_session() {
+        let (_guard, db) = open_db().await;
+        save_with(&db, &credential("tok-orphan", FAR_FUTURE))
+            .await
+            .expect("save should succeed");
+        db.execute("DELETE FROM auth_credentials", ())
+            .await
+            .expect("workos row should be cleared");
+
+        assert_eq!(
+            load_with(&db, now()).await.expect("load should succeed"),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn telemetry_credential_storage_leaves_workos_credentials_untouched() {
         let (_guard, db) = open_db().await;
-        db.execute(
-            "INSERT INTO auth_credentials \
-             (id, access_token, token_type, expires_in, refresh_token, scope, stored_at_unix_seconds) \
-             VALUES (1, 'workos-access', 'Bearer', 3600, 'workos-refresh', NULL, 1)",
-            (),
-        )
-        .await
-        .expect("workos row should insert");
-
         save_with(&db, &credential("tok-b", FAR_FUTURE))
             .await
             .expect("save should succeed");

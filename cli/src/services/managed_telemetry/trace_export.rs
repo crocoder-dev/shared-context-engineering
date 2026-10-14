@@ -174,13 +174,23 @@ impl ManagedTraceTelemetry {
     }
 
     pub async fn shutdown(self) {
-        let provider = self.provider;
-        let log_provider = self.log_provider;
-        let task = tokio::task::spawn_blocking(move || {
-            let _ = provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT);
-            let _ = log_provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT);
+        let deadline = tokio::time::Instant::now() + SHUTDOWN_TIMEOUT;
+        let Self {
+            provider,
+            log_provider,
+            dispatch,
+        } = self;
+        drop(dispatch);
+        let traces =
+            tokio::task::spawn_blocking(move || provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT));
+        let logs = tokio::task::spawn_blocking(move || {
+            log_provider.shutdown_with_timeout(SHUTDOWN_TIMEOUT)
         });
-        let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT + Duration::from_secs(1), task).await;
+        let _ = tokio::time::timeout_at(deadline, async {
+            let _ = traces.await;
+            let _ = logs.await;
+        })
+        .await;
     }
 
     fn command_span(&self) -> Span {
@@ -226,19 +236,19 @@ pub fn record_command_name(name: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
     use super::*;
     use crate::services::managed_telemetry::{ManagedTelemetryMode, MANAGED_OTLP_DEFAULTS};
 
-    struct CapturedRequest {
-        head: String,
-        body: Vec<u8>,
+    pub(crate) struct CapturedRequest {
+        pub(crate) head: String,
+        pub(crate) body: Vec<u8>,
     }
 
-    async fn capture_requests(
+    pub(crate) async fn capture_requests(
         listener: TcpListener,
         status_line: &'static str,
         expected: usize,
@@ -298,7 +308,24 @@ mod tests {
         }
     }
 
-    fn loopback_telemetry(address: std::net::SocketAddr, token: &str) -> ManagedTraceTelemetry {
+    pub(crate) fn loopback_telemetry(
+        address: std::net::SocketAddr,
+        token: &str,
+    ) -> ManagedTraceTelemetry {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(REQUEST_TIMEOUT)
+            .tls_certs_only(Vec::new())
+            .build()
+            .expect("test http client");
+        loopback_telemetry_with_client(address, token, client)
+    }
+
+    fn loopback_telemetry_with_client(
+        address: std::net::SocketAddr,
+        token: &str,
+        client: reqwest::Client,
+    ) -> ManagedTraceTelemetry {
         let traces_endpoint: &'static str =
             Box::leak(format!("http://{address}/v1/traces").into_boxed_str());
         let logs_endpoint: &'static str =
@@ -321,12 +348,6 @@ mod tests {
         let ManagedTelemetryMode::Managed { bearer, .. } = mode else {
             panic!("expected managed mode");
         };
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(REQUEST_TIMEOUT)
-            .tls_certs_only(Vec::new())
-            .build()
-            .expect("test http client");
         ManagedTraceTelemetry::with_client(
             &bearer,
             endpoints,
@@ -590,5 +611,51 @@ mod tests {
         assert!(body.contains("second"));
         assert!(body.contains("success"));
         assert!(body.contains("failure"));
+    }
+
+    #[test]
+    fn stalled_exporter_shutdown_cannot_extend_process_lifetime() {
+        let (elapsed, _) = crate::app::tests::run_fault_child(
+            "services::managed_telemetry::trace_export::tests::isolated_stalled_exporter_shutdown",
+        );
+        let bound = SHUTDOWN_TIMEOUT + Duration::from_secs(2);
+        assert!(elapsed < bound, "child exited after {elapsed:?}");
+    }
+
+    #[test]
+    fn isolated_stalled_exporter_shutdown() {
+        if !crate::app::tests::is_fault_child() {
+            return;
+        }
+        let runtime = crate::app::build_runtime().expect("runtime");
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let address = listener.local_addr().expect("addr");
+            tokio::spawn(async move {
+                let mut held = Vec::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    held.push(stream);
+                }
+            });
+            let unbounded_client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client");
+            let telemetry =
+                loopback_telemetry_with_client(address, "bao-token-value", unbounded_client);
+            let result = telemetry
+                .with_default_subscriber(&mut || async {
+                    record_command_name("config");
+                    tracing::error!(target: "sce", event_id = "sce.test.event", event_message = "failed");
+                    Err(CliError::runtime(anyhow::anyhow!("boom")))
+                })
+                .await;
+            assert!(result.is_err());
+            let started = std::time::Instant::now();
+            telemetry.shutdown().await;
+            assert!(started.elapsed() < SHUTDOWN_TIMEOUT + Duration::from_millis(500));
+        });
+        crate::app::finish_runtime(runtime);
     }
 }

@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::services;
 use services::app_support::{self, RunOutcome};
@@ -10,6 +11,8 @@ use services::observability::traits::{
     Logger as LoggerTrait, NoopTelemetry, Telemetry as TelemetryTrait,
 };
 
+const MIN_WORKER_THREADS: usize = 2;
+const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const REPEATED_COMMAND_DISPATCH_ERROR: &str =
     "Command lifecycle telemetry attempted to execute command dispatch more than once";
 
@@ -27,9 +30,6 @@ struct AppRuntime {
     startup_diagnostic: Option<String>,
 }
 
-/// Lightweight borrowed view of the CLI runtime dependencies.
-///
-/// `AppContext` does **not** own its dependencies; it borrows them from `AppRuntime`.
 pub struct AppContext<
     'a,
     L: LoggerTrait = services::observability::Logger,
@@ -113,8 +113,6 @@ where
         HasTelemetry::telemetry(self)
     }
 
-    /// Returns a context for a command-scoped repository root while preserving
-    /// the runtime logger, telemetry, and capability dependencies.
     pub(crate) fn with_repo_root(&self, repo_root: impl Into<PathBuf>) -> Self {
         Self {
             logger: self.logger,
@@ -208,6 +206,45 @@ impl AppRuntime {
     }
 }
 
+pub fn run_process<I>(args: I) -> ExitCode
+where
+    I: IntoIterator<Item = String>,
+{
+    let runtime = match build_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return app_support::render_run_outcome(
+                RunOutcome::<services::observability::Logger> {
+                    result: Err(CliError::runtime(anyhow::Error::msg(format!(
+                        "Failed to start async runtime: {error}"
+                    )))),
+                    logger: None,
+                    startup_diagnostic: None,
+                },
+                &mut io::stdout(),
+                &mut io::stderr(),
+            );
+        }
+    };
+    let exit_code = runtime.block_on(run(args));
+    finish_runtime(runtime);
+    exit_code
+}
+
+pub(crate) fn build_runtime() -> io::Result<tokio::runtime::Runtime> {
+    let worker_threads = std::thread::available_parallelism().map_or(MIN_WORKER_THREADS, |count| {
+        count.get().max(MIN_WORKER_THREADS)
+    });
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(worker_threads)
+        .enable_all()
+        .build()
+}
+
+pub(crate) fn finish_runtime(runtime: tokio::runtime::Runtime) {
+    runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+}
+
 pub async fn run<I>(args: I) -> ExitCode
 where
     I: IntoIterator<Item = String>,
@@ -237,56 +274,29 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    let (outcome, telemetry) = try_run_with_dependency_check(args, dependency_check, stderr).await;
-    let exit_code = app_support::render_run_outcome(outcome, stdout, stderr);
-    if let Some(telemetry) = telemetry {
-        telemetry.shutdown().await;
-    }
-    exit_code
-}
-
-async fn try_run_with_dependency_check<I, F, StderrW>(
-    args: I,
-    dependency_check: F,
-    stderr: &mut StderrW,
-) -> (
-    RunOutcome<services::observability::Logger>,
-    Option<RuntimeTelemetry>,
-)
-where
-    I: IntoIterator<Item = String>,
-    F: FnOnce() -> anyhow::Result<()>,
-    StderrW: Write,
-{
     let args = args.into_iter().collect::<Vec<_>>();
     let managed_allowed = !is_hook_invocation(&args);
-    let result = perform_dependency_check(dependency_check)
+    let startup = perform_dependency_check(dependency_check)
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime);
-
-    match result {
-        Ok(mut runtime) => {
-            runtime.telemetry = RuntimeTelemetry::resolve(managed_allowed).await;
-            let startup_diagnostic = runtime.startup_diagnostic.clone();
-            let result = run_command_lifecycle(args, &runtime, stderr).await;
-            (
-                RunOutcome {
-                    logger: Some(runtime.logger),
-                    startup_diagnostic,
-                    result,
+    let mut runtime = match startup {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return app_support::render_run_outcome(
+                RunOutcome::<services::observability::Logger> {
+                    result: Err(error),
+                    logger: None,
+                    startup_diagnostic: None,
                 },
-                Some(runtime.telemetry),
-            )
+                stdout,
+                stderr,
+            );
         }
-        Err(error) => (
-            RunOutcome {
-                result: Err(error),
-                logger: None,
-                startup_diagnostic: None,
-            },
-            None,
-        ),
-    }
+    };
+    runtime.telemetry = RuntimeTelemetry::resolve(managed_allowed).await;
+    let rendered = run_command_lifecycle(args, &runtime, stdout, stderr).await;
+    runtime.telemetry.shutdown().await;
+    app_support::exit_code_for(&rendered)
 }
 
 fn is_hook_invocation(args: &[String]) -> bool {
@@ -344,37 +354,50 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
     })
 }
 
-async fn run_command_lifecycle<I, StderrW>(
+async fn run_command_lifecycle<I, StdoutW, StderrW>(
     args: I,
     runtime: &AppRuntime,
+    stdout: &mut StdoutW,
     stderr: &mut StderrW,
 ) -> Result<String, CliError>
 where
     I: IntoIterator<Item = String>,
+    StdoutW: Write,
     StderrW: Write,
 {
     let context = runtime.context();
-    run_command_lifecycle_with_context(args, &runtime.registry, &context, stderr).await
+    run_command_lifecycle_with_context(
+        args,
+        &runtime.registry,
+        &context,
+        runtime.startup_diagnostic.as_deref(),
+        stdout,
+        stderr,
+    )
+    .await
 }
 
-async fn run_command_lifecycle_with_context<I, L, T, StderrW>(
+async fn run_command_lifecycle_with_context<I, L, T, StdoutW, StderrW>(
     args: I,
     registry: &services::command_registry::CommandRegistry,
     context: &AppContext<'_, L, T>,
+    startup_diagnostic: Option<&str>,
+    stdout: &mut StdoutW,
     stderr: &mut StderrW,
 ) -> Result<String, CliError>
 where
     I: IntoIterator<Item = String>,
     L: LoggerTrait,
     T: TelemetryTrait,
+    StdoutW: Write,
     StderrW: Write,
 {
     let mut args = Some(args.into_iter().collect::<Vec<_>>());
-    let mut stderr = Some(stderr);
+    let mut streams = Some((stdout, stderr));
     context
         .telemetry()
         .with_default_subscriber(&mut || {
-            let command_inputs = args.take().zip(stderr.take());
+            let command_inputs = args.take().zip(streams.take());
             async move {
                 context.logger().info(
                     "sce.app.start",
@@ -382,17 +405,41 @@ where
                     &[("component", services::observability::NAME)],
                     None,
                 );
-                let Some((command_args, stderr)) = command_inputs else {
-                    return Err(CliError::runtime(anyhow::Error::msg(
-                        REPEATED_COMMAND_DISPATCH_ERROR,
-                    )));
+                let Some((command_args, (stdout, stderr))) = command_inputs else {
+                    return Err(repeated_dispatch_error());
                 };
-                let command = parse_command_phase(command_args, registry, context)?;
-                services::managed_telemetry::trace_export::record_command_name(&command.name());
-                app_support::execute_command_phase(&command, context, stderr).await
+                let result = dispatch_command(command_args, registry, context, stderr).await;
+                app_support::render_command_result(
+                    result,
+                    Some(context.logger()),
+                    startup_diagnostic,
+                    stdout,
+                    stderr,
+                )
+                .map(|()| String::new())
             }
         })
         .await
+}
+
+fn repeated_dispatch_error() -> CliError {
+    CliError::runtime(anyhow::Error::msg(REPEATED_COMMAND_DISPATCH_ERROR))
+}
+
+async fn dispatch_command<L, T, StderrW>(
+    args: Vec<String>,
+    registry: &services::command_registry::CommandRegistry,
+    context: &AppContext<'_, L, T>,
+    stderr: &mut StderrW,
+) -> Result<String, CliError>
+where
+    L: LoggerTrait,
+    T: TelemetryTrait,
+    StderrW: Write,
+{
+    let command = parse_command_phase(args, registry, context)?;
+    services::managed_telemetry::trace_export::record_command_name(&command.name());
+    app_support::execute_command_phase(&command, context, stderr).await
 }
 
 fn parse_command_phase<I>(
@@ -419,9 +466,10 @@ where
 mod doctor_reconciliation_cli_tests;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::future::{poll_fn, Future};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use super::*;
 
@@ -454,7 +502,14 @@ mod tests {
         }
         fn warn(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
         fn error(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
-        fn log_cli_error(&self, _: &CliError, _: Option<&str>) {}
+        fn log_cli_error(&self, error: &CliError, _: Option<&str>) {
+            let mut scope = self.0.lock().unwrap();
+            assert!(
+                scope.active,
+                "final error logging must occur inside a telemetry poll"
+            );
+            scope.events.push(format!("final_error:{}", error.code()));
+        }
     }
 
     struct RecordingTelemetry {
@@ -593,10 +648,13 @@ mod tests {
             let fs = services::capabilities::StdFsOps;
             let git = services::capabilities::ProcessGitOps;
             let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
+            let mut stdout = Vec::new();
             let result = Box::pin(run_command_lifecycle_with_context(
                 args.into_iter().map(String::from),
                 &services::command_registry::CommandRegistry::default(),
                 &context,
+                None,
+                &mut stdout,
                 &mut Vec::new(),
             ))
             .await;
@@ -607,7 +665,11 @@ mod tests {
                     assert_eq!(error.to_string(), REPEATED_COMMAND_DISPATCH_ERROR);
                 }
             } else {
-                assert_eq!(result.unwrap(), services::help::help_text());
+                result.unwrap();
+                assert_eq!(
+                    stdout,
+                    format!("{}\n", services::help::help_text()).as_bytes()
+                );
             }
             let scope = scope.lock().unwrap();
             assert!(!scope.active);
@@ -619,6 +681,302 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(events, expected_events);
         }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed"))
+        }
+    }
+
+    async fn run_recorded_lifecycle<StdoutW: Write, StderrW: Write>(
+        args: &[&str],
+        stdout: &mut StdoutW,
+        stderr: &mut StderrW,
+    ) -> (Result<String, CliError>, Vec<String>) {
+        let scope = Arc::new(Mutex::new(RecordingScope::default()));
+        let logger = RecordingLogger(scope.clone());
+        let telemetry = RecordingTelemetry {
+            scope: scope.clone(),
+            repeat: false,
+        };
+        let fs = services::capabilities::StdFsOps;
+        let git = services::capabilities::ProcessGitOps;
+        let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
+        let result = Box::pin(run_command_lifecycle_with_context(
+            args.iter().map(|arg| (*arg).to_string()),
+            &services::command_registry::CommandRegistry::default(),
+            &context,
+            None,
+            stdout,
+            stderr,
+        ))
+        .await;
+        let events = scope
+            .lock()
+            .unwrap()
+            .events
+            .iter()
+            .filter(|event| event.starts_with("final_error:"))
+            .cloned()
+            .collect();
+        (result, events)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn final_command_outcome_and_error_log_are_produced_inside_telemetry_scope() {
+        let missing_config = [
+            "sce",
+            "config",
+            "validate",
+            "--config",
+            "/nonexistent-sce-outcome-config.json",
+        ];
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let (result, events) =
+            run_recorded_lifecycle(&["sce", "help"], &mut stdout, &mut stderr).await;
+        assert!(result.is_ok());
+        assert!(events.is_empty());
+        assert_eq!(app_support::exit_code_for(&result), ExitCode::SUCCESS);
+        assert_eq!(
+            stdout,
+            format!("{}\n", services::help::help_text()).as_bytes()
+        );
+        assert!(stderr.is_empty());
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let (result, events) = run_recorded_lifecycle(
+            &["sce", "--invalid-outcome-option"],
+            &mut stdout,
+            &mut stderr,
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(error.class(), services::error::FailureClass::Parse);
+        assert_eq!(events, [format!("final_error:{}", error.code())]);
+        assert!(stdout.is_empty());
+        assert!(!stderr.is_empty());
+
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let (result, events) =
+            run_recorded_lifecycle(&missing_config, &mut stdout, &mut stderr).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.class(), services::error::FailureClass::Runtime);
+        assert_eq!(events, [format!("final_error:{}", error.code())]);
+        assert_eq!(
+            app_support::exit_code_for(&Err::<(), _>(error)),
+            ExitCode::from(4)
+        );
+        assert!(stdout.is_empty());
+        assert!(!stderr.is_empty());
+
+        let mut stderr = Vec::new();
+        let (result, events) =
+            run_recorded_lifecycle(&["sce", "help"], &mut FailingWriter, &mut stderr).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.class(), services::error::FailureClass::Runtime);
+        assert_eq!(events, [format!("final_error:{}", error.code())]);
+        assert!(
+            String::from_utf8_lossy(&stderr).contains("Failed to write command output to stdout")
+        );
+
+        let mut stdout = Vec::new();
+        let (result, events) =
+            run_recorded_lifecycle(&missing_config, &mut stdout, &mut FailingWriter).await;
+        let error = result.unwrap_err();
+        assert_eq!(error.class(), services::error::FailureClass::Runtime);
+        assert_eq!(events, [format!("final_error:{}", error.code())]);
+        assert_eq!(
+            app_support::exit_code_for(&Err::<(), _>(error)),
+            ExitCode::from(4)
+        );
+        assert!(stdout.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn managed_export_marks_failed_output_and_exports_final_error_log() {
+        use services::managed_telemetry::trace_export::tests::{
+            capture_requests, loopback_telemetry,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 2));
+        let telemetry = loopback_telemetry(address, "bao-token-value");
+        let logger = services::observability::Logger::without_log_file();
+        let fs = services::capabilities::StdFsOps;
+        let git = services::capabilities::ProcessGitOps;
+        let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
+        let mut stderr = Vec::new();
+
+        let result = Box::pin(run_command_lifecycle_with_context(
+            ["sce", "help"].map(String::from),
+            &services::command_registry::CommandRegistry::default(),
+            &context,
+            None,
+            &mut FailingWriter,
+            &mut stderr,
+        ))
+        .await;
+        let error = result.unwrap_err();
+        assert_eq!(error.class(), services::error::FailureClass::Runtime);
+        telemetry.shutdown().await;
+
+        let requests = receiver.await.unwrap();
+        let body_for = |path: &str| {
+            requests
+                .iter()
+                .find(|request| request.head.to_ascii_lowercase().starts_with(path))
+                .map(|request| String::from_utf8_lossy(&request.body).to_string())
+                .unwrap_or_default()
+        };
+        let trace = body_for("post /v1/traces ");
+        let log = body_for("post /v1/logs ");
+        assert!(trace.contains("failure"), "trace outcome must be failure");
+        assert!(!trace.contains("success"));
+        assert!(
+            log.contains(&format!("sce.error.{}", error.code())),
+            "{:?} {log:?}",
+            requests
+                .iter()
+                .map(|r| r.head.lines().next().unwrap_or_default().to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(!log.contains("bao-token-value"));
+    }
+
+    const FAULT_CHILD_ENV: &str = "SCE_TELEMETRY_FAULT_CHILD";
+    const CHILD_KILL_AFTER: Duration = Duration::from_secs(30);
+    const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+    pub(crate) fn run_fault_child(test_name: &str) -> (Duration, std::process::Output) {
+        let started = std::time::Instant::now();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
+            .env(FAULT_CHILD_ENV, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() > CHILD_KILL_AFTER {
+                let _ = child.kill();
+                panic!("{test_name} child process did not exit within {CHILD_KILL_AFTER:?}");
+            }
+            std::thread::sleep(CHILD_POLL_INTERVAL);
+        }
+        let elapsed = started.elapsed();
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (elapsed, output)
+    }
+
+    pub(crate) fn is_fault_child() -> bool {
+        std::env::var_os(FAULT_CHILD_ENV).is_some()
+    }
+
+    async fn stalled_keychain_lookup() -> Result<
+        Option<services::telemetry_credential_storage::TelemetryCredential>,
+        services::token_storage::TokenStorageError,
+    > {
+        let _ = tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_hours(1))).await;
+        Ok(None)
+    }
+
+    async fn stalled_blocking_database_lookup() -> Result<
+        Option<services::telemetry_credential_storage::TelemetryCredential>,
+        services::token_storage::TokenStorageError,
+    > {
+        tokio::task::yield_now().await;
+        std::thread::sleep(Duration::from_hours(1));
+        Ok(None)
+    }
+
+    #[test]
+    fn stalled_startup_credential_lookup_cannot_extend_process_lifetime() {
+        let (elapsed, _) =
+            run_fault_child("app::tests::isolated_stalled_startup_credential_lookup");
+        let bound = services::managed_telemetry::CREDENTIAL_LOOKUP_DEADLINE * 2
+            + RUNTIME_SHUTDOWN_GRACE
+            + Duration::from_secs(3);
+        assert!(elapsed < bound, "child exited after {elapsed:?}");
+    }
+
+    #[test]
+    fn isolated_stalled_startup_credential_lookup() {
+        if !is_fault_child() {
+            return;
+        }
+        let runtime = build_runtime().unwrap();
+        runtime.block_on(async {
+            let keychain = RuntimeTelemetry::resolve_with(stalled_keychain_lookup()).await;
+            assert!(matches!(keychain, RuntimeTelemetry::Noop(_)));
+            let database = RuntimeTelemetry::resolve_with(stalled_blocking_database_lookup()).await;
+            assert!(matches!(database, RuntimeTelemetry::Noop(_)));
+        });
+        finish_runtime(runtime);
+    }
+
+    #[test]
+    fn stalled_telemetry_headers_lookup_fails_closed_within_deadline() {
+        let (elapsed, _) = run_fault_child("app::tests::isolated_stalled_telemetry_headers_lookup");
+        let bound = services::managed_telemetry::CREDENTIAL_LOOKUP_DEADLINE
+            + RUNTIME_SHUTDOWN_GRACE
+            + Duration::from_secs(3);
+        assert!(elapsed < bound, "child exited after {elapsed:?}");
+    }
+
+    #[test]
+    fn isolated_stalled_telemetry_headers_lookup() {
+        if !is_fault_child() {
+            return;
+        }
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+        std::fs::create_dir_all(repo.path().join(".claude")).unwrap();
+        std::fs::write(
+            repo.path().join(".claude").join("settings.json"),
+            services::setup::config_merge::CLAUDE_SCE_HOOK_MARKER,
+        )
+        .unwrap();
+        let runtime = build_runtime().unwrap();
+        let result = runtime.block_on(services::auth_command::telemetry_headers_with(
+            Some(repo.path().to_path_buf()),
+            true,
+            stalled_keychain_lookup(),
+        ));
+        finish_runtime(runtime);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = app_support::render_run_outcome(
+            RunOutcome::<services::observability::traits::NoopLogger> {
+                result,
+                logger: None,
+                startup_diagnostic: None,
+            },
+            &mut stdout,
+            &mut stderr,
+        );
+        assert_eq!(code, ExitCode::from(4));
+        assert!(stdout.is_empty());
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert!(stderr.contains("Telemetry credential is unavailable."));
+        assert!(!stderr.contains("Bearer"));
     }
 
     #[test]

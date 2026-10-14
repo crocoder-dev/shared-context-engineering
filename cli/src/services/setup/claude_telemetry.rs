@@ -22,8 +22,24 @@ const CONFIGURED_LINE: &str =
     "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
 const AUTH_PENDING_LINE: &str =
     "Claude telemetry: authentication pending; run 'sce auth login' to start exporting.";
-const SKIPPED_CONFLICT_LINE: &str =
-    "Claude telemetry: skipped; existing Claude settings already define telemetry configuration.";
+const SKIPPED_HELPER_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.";
+const SKIPPED_DISABLED_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings explicitly disable telemetry or tracing.";
+const SKIPPED_PRIVACY_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings explicitly opt out of repository attributes.";
+const SKIPPED_ENDPOINT_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings define a different OTLP endpoint.";
+const SKIPPED_HEADERS_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings define OTLP headers.";
+const SKIPPED_PROTOCOL_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings define a different OTLP protocol.";
+const SKIPPED_EXPORTER_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings define a different telemetry exporter.";
+const SKIPPED_HELPER_SETTING_LINE: &str =
+    "Claude telemetry: skipped; existing Claude settings define a different headers helper refresh interval.";
+const SKIPPED_MANAGED_LINE: &str =
+    "Claude telemetry: skipped; managed Claude settings own the telemetry configuration.";
 const SKIPPED_INVALID_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings could not be parsed and were left unchanged.";
 
@@ -84,8 +100,24 @@ pub(crate) fn format_claude_telemetry_report(
             format!("{CONFIGURED_LINE}\n{AUTH_PENDING_LINE}")
         }
         ClaudeTelemetryInstallOutcome::Configured => CONFIGURED_LINE.to_string(),
-        ClaudeTelemetryInstallOutcome::SkippedConflict(_) => SKIPPED_CONFLICT_LINE.to_string(),
+        ClaudeTelemetryInstallOutcome::SkippedConflict(reason) => {
+            skipped_conflict_line(*reason).to_string()
+        }
         ClaudeTelemetryInstallOutcome::SkippedInvalid => SKIPPED_INVALID_LINE.to_string(),
+    }
+}
+
+fn skipped_conflict_line(reason: ClaudeTelemetrySkipReason) -> &'static str {
+    match reason {
+        ClaudeTelemetrySkipReason::UserHelperPresent => SKIPPED_HELPER_LINE,
+        ClaudeTelemetrySkipReason::TelemetryDisabled => SKIPPED_DISABLED_LINE,
+        ClaudeTelemetrySkipReason::PrivacySettingConflict => SKIPPED_PRIVACY_LINE,
+        ClaudeTelemetrySkipReason::ConflictingEndpoint => SKIPPED_ENDPOINT_LINE,
+        ClaudeTelemetrySkipReason::ConflictingHeaders => SKIPPED_HEADERS_LINE,
+        ClaudeTelemetrySkipReason::ConflictingProtocol => SKIPPED_PROTOCOL_LINE,
+        ClaudeTelemetrySkipReason::ConflictingExporter => SKIPPED_EXPORTER_LINE,
+        ClaudeTelemetrySkipReason::ConflictingHelperSetting => SKIPPED_HELPER_SETTING_LINE,
+        ClaudeTelemetrySkipReason::ManagedSettingsConflict => SKIPPED_MANAGED_LINE,
     }
 }
 
@@ -257,6 +289,29 @@ mod tests {
             ClaudeTelemetryInstallOutcome::SkippedConflict(_)
         ));
         assert!(!settings.exists());
+    }
+
+    #[test]
+    fn claude_telemetry_install_keeps_explicit_opt_out_and_reports_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let original =
+            serde_json::to_vec(&json!({"env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "0"}})).unwrap();
+        fs::write(&settings, &original).unwrap();
+
+        let outcome =
+            install_claude_telemetry(&settings, &dir.path().join("managed.json")).unwrap();
+
+        assert_eq!(
+            outcome,
+            ClaudeTelemetryInstallOutcome::SkippedConflict(
+                ClaudeTelemetrySkipReason::TelemetryDisabled
+            )
+        );
+        assert_eq!(fs::read(&settings).unwrap(), original);
+        let report = format_claude_telemetry_report(&outcome, false);
+        assert!(report.contains("explicitly disable telemetry"));
+        assert!(!report.contains("configured"));
     }
 
     #[test]

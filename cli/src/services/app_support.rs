@@ -28,21 +28,51 @@ where
     StdoutW: Write,
     StderrW: Write,
 {
-    match outcome.result {
+    let rendered = render_command_result(
+        outcome.result,
+        outcome.logger.as_ref(),
+        outcome.startup_diagnostic.as_deref(),
+        stdout,
+        stderr,
+    );
+    exit_code_for(&rendered)
+}
+
+pub(crate) fn render_command_result<L, StdoutW, StderrW>(
+    result: Result<String, CliError>,
+    logger: Option<&L>,
+    startup_diagnostic: Option<&str>,
+    stdout: &mut StdoutW,
+    stderr: &mut StderrW,
+) -> Result<(), CliError>
+where
+    L: LoggerTrait,
+    StdoutW: Write,
+    StderrW: Write,
+{
+    let error = match result {
         Ok(payload) => {
-            if let Some(diagnostic) = outcome.startup_diagnostic {
-                write_startup_diagnostic(stderr, &diagnostic);
+            if let Some(diagnostic) = startup_diagnostic {
+                write_startup_diagnostic(stderr, diagnostic);
             }
-            let logger = outcome.logger.as_ref();
-            write_stdout_payload(stdout, &payload).map_or_else(
-                |error| exit_with_error(stderr, logger, &error),
-                |()| ExitCode::SUCCESS,
-            )
+            match write_stdout_payload(stdout, &payload) {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            }
         }
-        Err(error) => {
-            let logger = outcome.logger.as_ref();
-            exit_with_error(stderr, logger, &error)
-        }
+        Err(error) => error,
+    };
+    if let Some(log) = logger {
+        log.log_cli_error(&error, None);
+    }
+    write_error_diagnostic(stderr, &error);
+    Err(error)
+}
+
+pub(crate) fn exit_code_for<T>(result: &Result<T, CliError>) -> ExitCode {
+    match result {
+        Ok(_) => ExitCode::SUCCESS,
+        Err(error) => ExitCode::from(error.class().exit_code()),
     }
 }
 
@@ -137,27 +167,17 @@ where
     })
 }
 
-fn exit_with_error<L, W>(stderr: &mut W, logger: Option<&L>, error: &CliError) -> ExitCode
-where
-    L: LoggerTrait,
-    W: Write,
-{
-    if let Some(log) = logger {
-        log.log_cli_error(error, None);
-    }
-    write_error_diagnostic(stderr, error);
-    ExitCode::from(error.class().exit_code())
-}
-
 fn write_stdout_payload<W: Write>(writer: &mut W, payload: &str) -> Result<(), CliError> {
     if payload.is_empty() {
         return Ok(());
     }
-    writeln!(writer, "{payload}").map_err(|error| {
-        CliError::runtime(anyhow::Error::msg(format!(
-            "Failed to write command output to stdout: {error}"
-        )))
-    })
+    writeln!(writer, "{payload}")
+        .and_then(|()| writer.flush())
+        .map_err(|error| {
+            CliError::runtime(anyhow::Error::msg(format!(
+                "Failed to write command output to stdout: {error}"
+            )))
+        })
 }
 
 fn write_error_diagnostic<W: Write>(writer: &mut W, error: &CliError) {
@@ -186,8 +206,7 @@ fn write_error_diagnostic_with_color_policy<W: Write>(
             error: user_error, ..
         } => {
             let message = services::security::redact_sensitive_text(user_error.message());
-            writeln!(writer, "{message}")
-                .expect("writing user error diagnostic to writer should not fail");
+            let _ = writeln!(writer, "{message}");
             return;
         }
     };
@@ -195,17 +214,15 @@ fn write_error_diagnostic_with_color_policy<W: Write>(
         &services::security::redact_sensitive_text(&rendered),
         color_enabled,
     );
-    writeln!(
+    let _ = writeln!(
         writer,
         "{} [{}]: {}",
         services::style::heading_with_color_policy("Error", color_enabled),
         services::style::error_code_with_color_policy(error.code(), color_enabled),
         styled_message
-    )
-    .expect("writing error diagnostic to writer should not fail");
+    );
 }
 
 fn write_startup_diagnostic<W: Write>(writer: &mut W, diagnostic: &str) {
-    writeln!(writer, "{}", services::style::error_code(diagnostic))
-        .expect("writing startup diagnostic to writer should not fail");
+    let _ = writeln!(writer, "{}", services::style::error_code(diagnostic));
 }
