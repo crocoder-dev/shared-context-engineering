@@ -2,6 +2,7 @@ use std::fmt;
 use std::future::Future;
 use std::time::Duration;
 
+pub(crate) mod claude_helper;
 pub mod log_export;
 pub mod trace_export;
 
@@ -12,6 +13,7 @@ use trace_export::ManagedTraceTelemetry;
 use crate::services::telemetry_credential_storage::{
     load_telemetry_credential, TelemetryCredential,
 };
+use crate::services::token_storage::TokenStorageError;
 
 pub const MANAGED_OTLP_ENDPOINT: &str = "https://otel.crocoderlab.dev";
 pub const MANAGED_OTLP_PROTOCOL: &str = "http/protobuf";
@@ -91,17 +93,36 @@ pub(crate) fn select_mode(
     }
 }
 
-pub async fn resolve_managed_telemetry_mode() -> ManagedTelemetryMode {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs());
-    match load_telemetry_credential().await {
-        Ok(credential) => select_mode(credential, now),
-        Err(_) => ManagedTelemetryMode::Noop,
-    }
+pub const CREDENTIAL_LOOKUP_DEADLINE: Duration = Duration::from_secs(2);
+
+pub(crate) async fn run_with_deadline<T, Fut>(deadline: Duration, work: Fut) -> Option<T>
+where
+    Fut: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    let runtime = tokio::runtime::Handle::try_current().ok()?;
+    let task = runtime.spawn(work);
+    let abort = task.abort_handle();
+    let joined = tokio::time::timeout(deadline, task).await;
+    abort.abort();
+    joined.ok()?.ok()
 }
 
-const CREDENTIAL_RESOLVE_TIMEOUT: Duration = Duration::from_secs(2);
+pub(crate) async fn load_credential_within_deadline<Fut>(lookup: Fut) -> Option<TelemetryCredential>
+where
+    Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
+{
+    run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, lookup)
+        .await
+        .and_then(Result::ok)
+        .flatten()
+}
+
+fn now_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
 
 pub enum RuntimeTelemetry {
     Noop(NoopTelemetry),
@@ -113,13 +134,22 @@ impl RuntimeTelemetry {
         if !managed_allowed {
             return Self::Noop(NoopTelemetry);
         }
-        let mode =
-            tokio::time::timeout(CREDENTIAL_RESOLVE_TIMEOUT, resolve_managed_telemetry_mode())
-                .await
-                .unwrap_or(ManagedTelemetryMode::Noop);
-        match mode {
+        Self::resolve_with(load_telemetry_credential()).await
+    }
+
+    pub(crate) async fn resolve_with<Fut>(lookup: Fut) -> Self
+    where
+        Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>>
+            + Send
+            + 'static,
+    {
+        let credential = load_credential_within_deadline(lookup).await;
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return Self::Noop(NoopTelemetry);
+        };
+        match select_mode(credential, now_unix_seconds()) {
             ManagedTelemetryMode::Managed { bearer, endpoints } => {
-                ManagedTraceTelemetry::new(&bearer, endpoints, tokio::runtime::Handle::current())
+                ManagedTraceTelemetry::new(&bearer, endpoints, runtime)
                     .map_or(Self::Noop(NoopTelemetry), Self::Managed)
             }
             ManagedTelemetryMode::Noop => Self::Noop(NoopTelemetry),

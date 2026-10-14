@@ -27,7 +27,7 @@ const ALLOWED_FIELD_KEYS: &[&str] = &[
 ];
 
 pub fn is_exportable_event(metadata: &tracing::Metadata<'_>) -> bool {
-    metadata.is_event() && metadata.target() == LOG_EVENT_TARGET
+    !metadata.is_span() && metadata.target() == LOG_EVENT_TARGET
 }
 
 fn sanitize_value(value: &str) -> Option<String> {
@@ -148,6 +148,21 @@ mod tests {
             .map(|(key, _)| key.as_str())
             .collect::<Vec<_>>();
         assert_eq!(keys, ["command", "component", "error_code", "error_class"]);
+    }
+
+    #[test]
+    fn enabled_hint_for_sce_events_passes_export_filter() {
+        use tracing_subscriber::filter::filter_fn;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let layer = tracing_subscriber::layer::Identity::new().with_filter(filter_fn(
+            is_exportable_event as fn(&tracing::Metadata<'_>) -> bool,
+        ));
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::Registry::default().with(layer));
+        tracing::dispatcher::with_default(&dispatch, || {
+            assert!(tracing::enabled!(target: "sce", Level::ERROR));
+            assert!(!tracing::enabled!(target: "other", Level::ERROR));
+        });
     }
 
     #[test]

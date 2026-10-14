@@ -9,7 +9,6 @@ mod services;
 
 use std::process::ExitCode;
 
-#[tokio::main(flavor = "multi_thread")]
-async fn main() -> ExitCode {
-    app::run(std::env::args()).await
+fn main() -> ExitCode {
+    app::run_process(std::env::args())
 }

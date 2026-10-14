@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
@@ -5,7 +7,11 @@ use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
-use crate::services::telemetry_credential_storage::load_telemetry_credential;
+use crate::services::managed_telemetry::load_credential_within_deadline;
+use crate::services::telemetry_credential_storage::{
+    load_telemetry_credential, TelemetryCredential,
+};
+use crate::services::token_storage::TokenStorageError;
 use crate::services::{config, setup};
 
 pub struct SetupCommand {
@@ -118,19 +124,22 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
 }
 
 async fn claude_telemetry_report() -> String {
-    let authentication_pending = !matches!(load_telemetry_credential().await, Ok(Some(_)));
     render_claude_telemetry_section(
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
-        authentication_pending,
+        load_telemetry_credential(),
     )
+    .await
 }
 
-fn render_claude_telemetry_section(
+async fn render_claude_telemetry_section<Fut>(
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
-    authentication_pending: bool,
-) -> String {
+    credential_lookup: Fut,
+) -> String
+where
+    Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
+{
     use setup::claude_telemetry::{
         format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
     };
@@ -140,6 +149,10 @@ fn render_claude_telemetry_section(
             .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
+    let authentication_pending = installed == ClaudeTelemetryInstallOutcome::Configured
+        && load_credential_within_deadline(credential_lookup)
+            .await
+            .is_none();
 
     format_claude_telemetry_report(&installed, authentication_pending)
 }
@@ -252,12 +265,58 @@ mod tests {
 
     fn run_claude_telemetry_stage(dispatch: Option<&SetupDispatch>, root: &Path) -> Option<String> {
         dispatch_targets_claude(dispatch).then(|| {
-            render_claude_telemetry_section(
+            block_on_current_thread(render_claude_telemetry_section(
                 Some(&root.join("settings.json")),
                 &root.join("managed.json"),
-                true,
-            )
+                std::future::ready(Ok(None)),
+            ))
         })
+    }
+
+    fn block_on_current_thread<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    #[tokio::test]
+    async fn setup_claude_telemetry_skips_credential_lookup_when_install_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        fs::write(&settings, r#"{"otelHeadersHelper":"my-helper"}"#).unwrap();
+        let looked_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = looked_up.clone();
+
+        let report = render_claude_telemetry_section(
+            Some(&settings),
+            &dir.path().join("managed.json"),
+            async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(None)
+            },
+        )
+        .await;
+
+        assert!(report.contains("skipped"));
+        assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn setup_claude_telemetry_reports_pending_when_credential_lookup_stalls() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = std::time::Instant::now();
+
+        let report = render_claude_telemetry_section(
+            Some(&dir.path().join("settings.json")),
+            &dir.path().join("managed.json"),
+            std::future::pending(),
+        )
+        .await;
+
+        assert!(report.contains("authentication pending"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     fn assert_installed(root: &Path) {

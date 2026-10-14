@@ -73,6 +73,19 @@ impl Logger {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn without_log_file() -> Self {
+        Self {
+            config: ObservabilityConfig {
+                level: LogLevel::Error,
+                format: LogFormat::Text,
+                log_to_file: false,
+            },
+            log_dir: None,
+            log_file_retention_limit: 0,
+        }
+    }
+
     pub fn info(
         &self,
         event_id: &str,

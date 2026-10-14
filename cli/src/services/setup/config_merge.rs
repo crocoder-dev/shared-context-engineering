@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::services::managed_telemetry::{MANAGED_OTLP_ENDPOINT, MANAGED_OTLP_PROTOCOL};
 
-const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
+pub(crate) const CLAUDE_SCE_HOOK_MARKER: &str = "run-sce-or-show-install-guidance.sh";
 const LEGACY_CLAUDE_AGENT_TRACE_PLUGIN: &str = ".claude/plugins/sce-agent-trace.ts";
 
 const OPENCODE_SCE_PLUGIN_PREFIX: &str = "./plugins/sce-";
@@ -226,14 +226,28 @@ const CLAUDE_OTEL_EXPORTER_KEYS: [&str; 3] = [
     "OTEL_METRICS_EXPORTER",
     "OTEL_LOGS_EXPORTER",
 ];
+const CLAUDE_TELEMETRY_SWITCH_KEYS: [&str; 3] = [
+    "CLAUDE_CODE_ENABLE_TELEMETRY",
+    "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+    CLAUDE_ENHANCED_TELEMETRY_BETA_ALIAS,
+];
+const CLAUDE_ENHANCED_TELEMETRY_BETA_ALIAS: &str = "ENABLE_ENHANCED_TELEMETRY_BETA";
+const CLAUDE_TELEMETRY_PRIVACY_KEYS: [&str; 1] = ["OTEL_METRICS_INCLUDE_REPOSITORY"];
+const CLAUDE_TELEMETRY_HELPER_SETTING_KEYS: [&str; 1] =
+    ["CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"];
+const CLAUDE_TELEMETRY_ENABLED_VALUE: &str = "1";
+const CLAUDE_OTEL_EXPORTER_DISABLED_VALUE: &str = "none";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ClaudeTelemetrySkipReason {
     UserHelperPresent,
+    TelemetryDisabled,
+    PrivacySettingConflict,
     ConflictingEndpoint,
     ConflictingHeaders,
     ConflictingProtocol,
     ConflictingExporter,
+    ConflictingHelperSetting,
     ManagedSettingsConflict,
 }
 
@@ -246,7 +260,14 @@ pub(crate) enum ClaudeTelemetryMergeOutcome {
 
 fn claude_telemetry_env_entries() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("CLAUDE_CODE_ENABLE_TELEMETRY", "1"),
+        (
+            "CLAUDE_CODE_ENABLE_TELEMETRY",
+            CLAUDE_TELEMETRY_ENABLED_VALUE,
+        ),
+        (
+            "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+            CLAUDE_TELEMETRY_ENABLED_VALUE,
+        ),
         ("OTEL_TRACES_EXPORTER", "otlp"),
         ("OTEL_METRICS_EXPORTER", "otlp"),
         ("OTEL_LOGS_EXPORTER", "otlp"),
@@ -260,6 +281,16 @@ fn claude_telemetry_env_entries() -> Vec<(&'static str, &'static str)> {
     ]
 }
 
+fn expected_claude_telemetry_value(key: &str) -> Option<&'static str> {
+    if key == CLAUDE_ENHANCED_TELEMETRY_BETA_ALIAS {
+        return Some(CLAUDE_TELEMETRY_ENABLED_VALUE);
+    }
+    claude_telemetry_env_entries()
+        .into_iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, expected)| expected)
+}
+
 fn claude_telemetry_conflict(settings: &Value) -> Option<ClaudeTelemetrySkipReason> {
     if let Some(helper) = settings.get(CLAUDE_OTEL_HEADERS_HELPER_KEY) {
         if helper.as_str() != Some(CLAUDE_OTEL_HEADERS_HELPER_COMMAND) {
@@ -268,26 +299,32 @@ fn claude_telemetry_conflict(settings: &Value) -> Option<ClaudeTelemetrySkipReas
     }
 
     let env = settings.get("env").and_then(Value::as_object)?;
-    let differs = |keys: &[&str]| {
+    let differing = |keys: &[&str]| {
         keys.iter().any(|key| {
-            env.get(*key).is_some_and(|value| {
-                let ours = claude_telemetry_env_entries()
-                    .into_iter()
-                    .find(|(candidate, _)| candidate == key)
-                    .map(|(_, expected)| expected);
-                value.as_str() != ours
-            })
+            env.get(*key)
+                .is_some_and(|value| value.as_str() != expected_claude_telemetry_value(key))
         })
     };
+    let exporter_disabled = CLAUDE_OTEL_EXPORTER_KEYS.iter().any(|key| {
+        env.get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.trim() == CLAUDE_OTEL_EXPORTER_DISABLED_VALUE)
+    });
 
-    if differs(&CLAUDE_OTEL_ENDPOINT_KEYS) {
+    if differing(&CLAUDE_TELEMETRY_SWITCH_KEYS) || exporter_disabled {
+        Some(ClaudeTelemetrySkipReason::TelemetryDisabled)
+    } else if differing(&CLAUDE_TELEMETRY_PRIVACY_KEYS) {
+        Some(ClaudeTelemetrySkipReason::PrivacySettingConflict)
+    } else if differing(&CLAUDE_OTEL_ENDPOINT_KEYS) {
         Some(ClaudeTelemetrySkipReason::ConflictingEndpoint)
-    } else if differs(&CLAUDE_OTEL_HEADERS_KEYS) {
+    } else if differing(&CLAUDE_OTEL_HEADERS_KEYS) {
         Some(ClaudeTelemetrySkipReason::ConflictingHeaders)
-    } else if differs(&CLAUDE_OTEL_PROTOCOL_KEYS) {
+    } else if differing(&CLAUDE_OTEL_PROTOCOL_KEYS) {
         Some(ClaudeTelemetrySkipReason::ConflictingProtocol)
-    } else if differs(&CLAUDE_OTEL_EXPORTER_KEYS) {
+    } else if differing(&CLAUDE_OTEL_EXPORTER_KEYS) {
         Some(ClaudeTelemetrySkipReason::ConflictingExporter)
+    } else if differing(&CLAUDE_TELEMETRY_HELPER_SETTING_KEYS) {
+        Some(ClaudeTelemetrySkipReason::ConflictingHelperSetting)
     } else {
         None
     }
@@ -473,6 +510,79 @@ mod tests {
                 merge_telemetry(Some(existing), None),
                 ClaudeTelemetryMergeOutcome::Skipped(reason),
                 "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_merge_enables_native_tracing_beta() {
+        let merged = installed_value(merge_telemetry(None, None));
+
+        assert_eq!(merged["env"]["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"], "1");
+        assert_eq!(merged["env"]["OTEL_TRACES_EXPORTER"], "otlp");
+
+        let without_beta = json!({
+            "otelHeadersHelper": "sce auth telemetry-headers",
+            "env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_TRACES_EXPORTER": "otlp"}
+        });
+        let upgraded = installed_value(merge_telemetry(Some(without_beta), None));
+        assert_eq!(upgraded["env"]["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"], "1");
+    }
+
+    #[test]
+    fn telemetry_merge_preserves_explicit_opt_out_and_privacy_settings() {
+        let cases = [
+            (
+                "CLAUDE_CODE_ENABLE_TELEMETRY",
+                "0",
+                ClaudeTelemetrySkipReason::TelemetryDisabled,
+            ),
+            (
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+                "0",
+                ClaudeTelemetrySkipReason::TelemetryDisabled,
+            ),
+            (
+                "ENABLE_ENHANCED_TELEMETRY_BETA",
+                "false",
+                ClaudeTelemetrySkipReason::TelemetryDisabled,
+            ),
+            (
+                "OTEL_TRACES_EXPORTER",
+                "none",
+                ClaudeTelemetrySkipReason::TelemetryDisabled,
+            ),
+            (
+                "OTEL_LOGS_EXPORTER",
+                "none",
+                ClaudeTelemetrySkipReason::TelemetryDisabled,
+            ),
+            (
+                "OTEL_METRICS_INCLUDE_REPOSITORY",
+                "false",
+                ClaudeTelemetrySkipReason::PrivacySettingConflict,
+            ),
+            (
+                "CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS",
+                "60000",
+                ClaudeTelemetrySkipReason::ConflictingHelperSetting,
+            ),
+        ];
+
+        for (key, value, reason) in cases {
+            let user = json!({"env": {key: value}});
+            assert_eq!(
+                merge_telemetry(Some(user), None),
+                ClaudeTelemetryMergeOutcome::Skipped(reason),
+                "{key}"
+            );
+            let managed = json!({"env": {key: value}});
+            assert_eq!(
+                merge_telemetry(Some(json!({})), Some(managed)),
+                ClaudeTelemetryMergeOutcome::Skipped(
+                    ClaudeTelemetrySkipReason::ManagedSettingsConflict
+                ),
+                "managed {key}"
             );
         }
     }

@@ -2,6 +2,7 @@ pub mod command;
 
 use std::future::Future;
 use std::io::Write;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
@@ -12,6 +13,10 @@ use crate::services::agent_trace_sync::control_plane::{
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::error::{CliError, UserError};
+use crate::services::managed_telemetry::claude_helper::{
+    endpoints_are_pinned, repository_opted_in, CLAUDE_PROJECT_DIR_ENV,
+};
+use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{label, prompt_label, prompt_value, value};
 use crate::services::telemetry_credential_storage;
@@ -98,7 +103,45 @@ where
 }
 
 async fn run_telemetry_headers() -> Result<String, CliError> {
-    render_telemetry_headers(telemetry_credential_storage::load_telemetry_credential().await)
+    let project_dir = std::env::var_os(CLAUDE_PROJECT_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let endpoints_pinned = endpoints_are_pinned(|key| std::env::var(key).ok());
+    telemetry_headers_with(
+        project_dir,
+        endpoints_pinned,
+        telemetry_credential_storage::load_telemetry_credential(),
+    )
+    .await
+}
+
+pub(crate) async fn telemetry_headers_with<Fut>(
+    project_dir: Option<PathBuf>,
+    endpoints_pinned: bool,
+    lookup: Fut,
+) -> Result<String, CliError>
+where
+    Fut: Future<
+            Output = Result<
+                Option<telemetry_credential_storage::TelemetryCredential>,
+                TokenStorageError,
+            >,
+        > + Send
+        + 'static,
+{
+    let Some(project_dir) = project_dir.filter(|_| endpoints_pinned) else {
+        return Err(telemetry_headers_unavailable());
+    };
+    let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
+        if !repository_opted_in(&project_dir) {
+            return None;
+        }
+        lookup.await.ok().flatten()
+    })
+    .await
+    .flatten();
+    render_telemetry_headers(Ok(credential))
 }
 
 pub(crate) fn render_telemetry_headers(
@@ -257,6 +300,27 @@ where
     device_login(format).await
 }
 
+async fn save_new_session_tokens(token: &auth::TokenResponse) -> Result<StoredTokens, CliError> {
+    replace_session_with(
+        telemetry_credential_storage::delete_telemetry_credential(),
+        || token_storage::save_tokens(token),
+    )
+    .await
+}
+
+async fn replace_session_with<D, S, SF>(
+    invalidate_telemetry: D,
+    save_session: S,
+) -> Result<StoredTokens, CliError>
+where
+    D: Future<Output = Result<bool, TokenStorageError>>,
+    S: FnOnce() -> SF,
+    SF: Future<Output = Result<StoredTokens, TokenStorageError>>,
+{
+    invalidate_telemetry.await.map_err(auth_storage_error)?;
+    save_session().await.map_err(auth_storage_error)
+}
+
 async fn provision_telemetry_credential(
     client: &AuthenticatedControlPlaneClient,
 ) -> TelemetryProvisioningResult {
@@ -287,9 +351,7 @@ async fn run_text_login(
     .await
     .map_err(map_login_error)?;
 
-    let stored_tokens = token_storage::save_tokens(&token)
-        .await
-        .map_err(auth_storage_error)?;
+    let stored_tokens = save_new_session_tokens(&token).await?;
 
     let telemetry = provision_telemetry_credential(control_plane).await;
     render_login_result_with_telemetry(
@@ -323,9 +385,7 @@ async fn run_login_json(
     .await
     .map_err(map_login_error)?;
 
-    let stored_tokens = token_storage::save_tokens(&token)
-        .await
-        .map_err(auth_storage_error)?;
+    let stored_tokens = save_new_session_tokens(&token).await?;
 
     let telemetry = provision_telemetry_credential(control_plane).await;
     render_login_result_with_telemetry(
@@ -620,6 +680,64 @@ mod tests {
         let second = render_telemetry_headers(Ok(Some(telemetry_credential("tok-two"))))
             .expect("replacement should render");
         assert_eq!(second, r#"{"Authorization":"Bearer tok-two"}"#);
+    }
+
+    #[tokio::test]
+    async fn new_session_invalidates_previous_telemetry_credential_before_saving() {
+        let order = std::sync::Mutex::new(Vec::new());
+        let saved = replace_session_with(
+            async {
+                order.lock().unwrap().push("invalidate");
+                Ok(true)
+            },
+            || async {
+                order.lock().unwrap().push("save");
+                Ok(stored_tokens())
+            },
+        )
+        .await
+        .expect("replacement should succeed");
+        assert_eq!(saved, stored_tokens());
+        assert_eq!(*order.lock().unwrap(), ["invalidate", "save"]);
+
+        let save_called = std::sync::atomic::AtomicBool::new(false);
+        let failed = replace_session_with(async { Err(storage_failure()) }, || async {
+            save_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(stored_tokens())
+        })
+        .await;
+        assert!(failed.is_err());
+        assert!(!save_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn telemetry_headers_reject_unpinned_endpoint_and_unattributed_repository() {
+        let unrelated = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(unrelated.path().join(".git")).unwrap();
+        let credential = || async { Ok(Some(telemetry_credential("tok-scoped"))) };
+
+        for (project_dir, pinned) in [
+            (Some(unrelated.path().to_path_buf()), true),
+            (Some(unrelated.path().to_path_buf()), false),
+            (None, true),
+        ] {
+            let error = telemetry_headers_with(project_dir, pinned, credential())
+                .await
+                .expect_err("helper must fail closed");
+            assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE);
+        }
+
+        std::fs::create_dir_all(unrelated.path().join(".claude")).unwrap();
+        std::fs::write(
+            unrelated.path().join(".claude").join("settings.json"),
+            crate::services::setup::config_merge::CLAUDE_SCE_HOOK_MARKER,
+        )
+        .unwrap();
+        let headers =
+            telemetry_headers_with(Some(unrelated.path().to_path_buf()), true, credential())
+                .await
+                .expect("opted-in repository should render");
+        assert_eq!(headers, r#"{"Authorization":"Bearer tok-scoped"}"#);
     }
 
     #[test]
