@@ -443,4 +443,132 @@ mod tests {
         telemetry.shutdown().await;
         assert!(started.elapsed() < Duration::from_secs(6));
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ambient_otlp_environment_cannot_redirect_or_inject_headers() {
+        let alternate = TcpListener::bind("127.0.0.1:0").await.expect("bind alt");
+        let alternate_address = alternate.local_addr().expect("alt addr");
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        std::env::set_var(
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            format!("http://{alternate_address}"),
+        );
+        std::env::set_var(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            format!("http://{alternate_address}/v1/traces"),
+        );
+        std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "x-ambient-leak=1");
+        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
+        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 2));
+        let telemetry = loopback_telemetry(address, "bao-token-value");
+
+        let result = telemetry
+            .with_default_subscriber(&mut || async {
+                record_command_name("config");
+                tracing::info!(target: "sce", event_id = "sce.test.event", event_message = "Starting command");
+                Ok("payload".to_string())
+            })
+            .await;
+        assert_eq!(result.expect("command result"), "payload");
+        telemetry.shutdown().await;
+        for name in [
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_HEADERS",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+        ] {
+            std::env::remove_var(name);
+        }
+
+        let requests = receiver.await.expect("receiver join");
+        assert_eq!(requests.len(), 2);
+        for request in &requests {
+            let head = request.head.to_ascii_lowercase();
+            assert!(head.contains("authorization: bearer bao-token-value"));
+            assert!(!head.contains("x-ambient-leak"));
+            assert!(head.contains("application/x-protobuf"));
+        }
+        let unexpected = tokio::time::timeout(Duration::from_millis(300), alternate.accept()).await;
+        assert!(unexpected.is_err(), "alternate receiver was contacted");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_collector_does_not_block_command_and_shutdown_is_bounded() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let holder = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let telemetry = loopback_telemetry(address, "bao-token-value");
+
+        let command_started = std::time::Instant::now();
+        let result = telemetry
+            .with_default_subscriber(&mut || async { Ok("ok".to_string()) })
+            .await;
+        assert_eq!(result.expect("result"), "ok");
+        assert!(command_started.elapsed() < Duration::from_secs(1));
+        let started = std::time::Instant::now();
+        telemetry.shutdown().await;
+        assert!(started.elapsed() < Duration::from_secs(6));
+        holder.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_commands_keep_results_and_export_isolated() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 1));
+        let telemetry = std::sync::Arc::new(loopback_telemetry(address, "bao-token-value"));
+
+        let first = {
+            let telemetry = telemetry.clone();
+            tokio::spawn(async move {
+                telemetry
+                    .with_default_subscriber(&mut || async {
+                        record_command_name("first");
+                        tokio::task::yield_now().await;
+                        Ok("one".to_string())
+                    })
+                    .await
+            })
+        };
+        let second = {
+            let telemetry = telemetry.clone();
+            tokio::spawn(async move {
+                telemetry
+                    .with_default_subscriber(&mut || async {
+                        record_command_name("second");
+                        tokio::task::yield_now().await;
+                        Err(CliError::runtime(anyhow::anyhow!("boom")))
+                    })
+                    .await
+            })
+        };
+        assert_eq!(first.await.expect("first join").expect("first"), "one");
+        assert!(second.await.expect("second join").is_err());
+        std::sync::Arc::try_unwrap(telemetry)
+            .expect("sole owner")
+            .shutdown()
+            .await;
+
+        let requests = receiver.await.expect("receiver join");
+        let trace = requests
+            .iter()
+            .find(|request| {
+                request
+                    .head
+                    .to_ascii_lowercase()
+                    .starts_with("post /v1/traces ")
+            })
+            .expect("trace request");
+        let body = String::from_utf8_lossy(&trace.body).to_string();
+        assert!(body.contains("first"));
+        assert!(body.contains("second"));
+        assert!(body.contains("success"));
+        assert!(body.contains("failure"));
+    }
 }

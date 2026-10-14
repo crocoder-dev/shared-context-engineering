@@ -712,4 +712,20 @@ mod tests {
             b"An unexpected error occurred. Check the log files for more details.\n"
         );
     }
+
+    #[test]
+    fn hook_invocations_never_resolve_managed_telemetry() {
+        let hook = ["sce", "hooks", "pre-commit"].map(String::from);
+        let flagged_hook = ["sce", "--verbose", "hooks", "pre-commit"].map(String::from);
+        let other = ["sce", "config", "show"].map(String::from);
+        assert!(is_hook_invocation(&hook));
+        assert!(is_hook_invocation(&flagged_hook));
+        assert!(!is_hook_invocation(&other));
+    }
+
+    #[tokio::test]
+    async fn disallowed_managed_telemetry_resolves_to_noop_without_credential_lookup() {
+        let telemetry = RuntimeTelemetry::resolve(false).await;
+        assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
+    }
 }
