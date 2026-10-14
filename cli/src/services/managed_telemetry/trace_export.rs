@@ -86,12 +86,21 @@ impl ManagedTraceTelemetry {
         endpoints: ManagedOtlpEndpoints,
         runtime: tokio::runtime::Handle,
     ) -> anyhow::Result<Self> {
-        let mut authorization = HeaderValue::from_str(&bearer.authorization_header_value())?;
-        authorization.set_sensitive(true);
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)
             .build()?;
+        Self::with_client(bearer, endpoints, runtime, client)
+    }
+
+    fn with_client(
+        bearer: &ManagedBearerToken,
+        endpoints: ManagedOtlpEndpoints,
+        runtime: tokio::runtime::Handle,
+        client: reqwest::Client,
+    ) -> anyhow::Result<Self> {
+        let mut authorization = HeaderValue::from_str(&bearer.authorization_header_value())?;
+        authorization.set_sensitive(true);
         let http_client = PinnedBearerClient {
             client: client.clone(),
             runtime: runtime.clone(),
@@ -312,8 +321,19 @@ mod tests {
         let ManagedTelemetryMode::Managed { bearer, .. } = mode else {
             panic!("expected managed mode");
         };
-        ManagedTraceTelemetry::new(&bearer, endpoints, tokio::runtime::Handle::current())
-            .expect("telemetry")
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(REQUEST_TIMEOUT)
+            .tls_certs_only(Vec::new())
+            .build()
+            .expect("test http client");
+        ManagedTraceTelemetry::with_client(
+            &bearer,
+            endpoints,
+            tokio::runtime::Handle::current(),
+            client,
+        )
+        .expect("telemetry")
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

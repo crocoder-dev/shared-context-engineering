@@ -1,6 +1,6 @@
 # Telemetry credential
 
-The CLI holds one telemetry-only OpenBao credential, issued by the Control Plane and cached in the encrypted auth DB. This is foundation only: there is no user-facing provisioning command, exporter, refresh loop, or doctor check.
+The CLI holds one telemetry-only OpenBao credential, issued by the Control Plane and cached in the encrypted auth DB. `sce auth login` provisions it best-effort, and managed OTLP trace and log export reads it at startup as the bearer source. There is no user-facing provisioning command, refresh loop, or doctor check.
 
 ## Components
 
@@ -26,7 +26,7 @@ flowchart LR
 
 ## Runtime use
 
-- `managed_telemetry::RuntimeTelemetry::resolve` reads the stored credential at CLI startup (never issuing one); a valid unexpired `token` is used only as the bearer for OTLP trace export. See [cli-observability-contract.md](cli-observability-contract.md).
+- `managed_telemetry::RuntimeTelemetry::resolve` reads the stored credential at CLI startup (never issuing one); a valid unexpired `token` is used only as the `Authorization: Bearer` credential for managed OTLP trace and log export; the `accessor` is never transmitted. Absent, expired, malformed, or unavailable rows select `NoopTelemetry`. See [cli-observability-contract.md](cli-observability-contract.md).
 
 ## Security boundaries
 

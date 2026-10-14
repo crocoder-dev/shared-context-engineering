@@ -10,19 +10,19 @@ The CLI will hardcode one canonical OTLP/HTTP protobuf default set for the colle
 
 How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
 
-- [ ] AC1: Managed OTLP defaults are hardcoded in the CLI as `endpoint=https://otel.crocoderlab.dev`, `protocol=http/protobuf`, `traces_endpoint=https://otel.crocoderlab.dev/v1/traces`, `metrics_endpoint=https://otel.crocoderlab.dev/v1/metrics`, and `logs_endpoint=https://otel.crocoderlab.dev/v1/logs`; `.sce/config.json` may omit the optional `otel` block or any optional field without changing those defaults, traces and logs consume their signal-specific endpoints, and no metrics exporter is created by this plan.
+- [x] AC1: Managed OTLP defaults are hardcoded in the CLI as `endpoint=https://otel.crocoderlab.dev`, `protocol=http/protobuf`, `traces_endpoint=https://otel.crocoderlab.dev/v1/traces`, `metrics_endpoint=https://otel.crocoderlab.dev/v1/metrics`, and `logs_endpoint=https://otel.crocoderlab.dev/v1/logs`; `.sce/config.json` may omit the optional `otel` block or any optional field without changing those defaults, traces and logs consume their signal-specific endpoints, and no metrics exporter is created by this plan.
   - Validate: Config-schema, resolver, and Rust tests assert optional-block/optional-field behavior and the exact code defaults; `sce config validate` accepts the repository config with the block absent; `sce config show --format json` reports code-default provenance when unset; source inspection confirms the metrics endpoint is reserved only.
-- [ ] AC2: A normal `sce` invocation automatically selects managed telemetry when `telemetry_credential_storage::load_telemetry_credential` returns a valid unexpired credential, uses its OpenBao `token` as an `Authorization: Bearer <token>` credential for OTLP requests, never transmits the stored `accessor`, and falls back to `NoopTelemetry` without minting or refreshing credentials when the row is absent, expired, malformed, or unavailable.
+- [x] AC2: A normal `sce` invocation automatically selects managed telemetry when `telemetry_credential_storage::load_telemetry_credential` returns a valid unexpired credential, uses its OpenBao `token` as an `Authorization: Bearer <token>` credential for OTLP requests, never transmits the stored `accessor`, and falls back to `NoopTelemetry` without minting or refreshing credentials when the row is absent, expired, malformed, or unavailable.
   - Validate: Credential-mode and storage tests cover valid, absent, expired, malformed, and storage-error cases; a controlled OTLP receiver asserts the bearer header and absence of the accessor; an issuance-call fixture proves exporter startup performs no credential issuance request.
-- [ ] AC3: Managed command spans are exported as OTLP/HTTP protobuf to `/v1/traces` with stable SCE service identity and allowlisted command/outcome/error attributes, while command stdout, stderr, exit status, and existing local log-file behavior remain unchanged.
+- [x] AC3: Managed command spans are exported as OTLP/HTTP protobuf to `/v1/traces` with stable SCE service identity and allowlisted command/outcome/error attributes, while command stdout, stderr, exit status, and existing local log-file behavior remain unchanged.
   - Validate: A loopback receiver integration test decodes captured trace payloads and asserts endpoint, resource identity, span names, attributes, and output parity against telemetry-disabled execution.
-- [ ] AC4: Existing structured SCE logger records are exported as OTLP/HTTP protobuf logs to `/v1/logs`, retaining stable event identity, severity, message, and approved structured fields without exporting bearer credentials, accessors, raw command arguments, repository paths, hook payloads, or unrestricted error/source text; local file/stderr logging remains unchanged.
+- [x] AC4: Existing structured SCE logger records are exported as OTLP/HTTP protobuf logs to `/v1/logs`, retaining stable event identity, severity, message, and approved structured fields without exporting bearer credentials, accessors, raw command arguments, repository paths, hook payloads, or unrestricted error/source text; local file/stderr logging remains unchanged.
   - Validate: A loopback receiver integration test decodes captured log payloads, asserts the expected event/severity/field mapping, and injects secret-bearing values to prove they are rejected or redacted before export.
-- [ ] AC5: Managed exporter lifecycle is async-safe and fail-open: subscriber scope follows every command-future poll on Tokio worker migration, exporter work does not block protected CLI operations, shutdown/flush is bounded and occurs after command output and required persistence complete, and exporter/network failures never alter command results or hook permission decisions.
+- [x] AC5: Managed exporter lifecycle is async-safe and fail-open: subscriber scope follows every command-future poll on Tokio worker migration, exporter work does not block protected CLI operations, shutdown/flush is bounded and occurs after command output and required persistence complete, and exporter/network failures never alter command results or hook permission decisions.
   - Validate: Focused lifecycle tests cover multi-poll/thread migration, concurrent commands, stalled/refused/redirecting receivers, bounded shutdown, lock isolation, and hook output/exit/decision parity.
-- [ ] AC6: Managed mode cannot exfiltrate the bearer token to an endpoint selected by repository config, inherited `OTEL_EXPORTER_OTLP_*` endpoint/header/protocol/certificate settings, or HTTP redirects; the managed collector remains the canonical `otel.crocoderlab.dev` destination and only the pinned OTLP/HTTP protobuf signal paths are accepted.
+- [x] AC6: Managed mode cannot exfiltrate the bearer token to an endpoint selected by repository config, inherited `OTEL_EXPORTER_OTLP_*` endpoint/header/protocol/certificate settings, or HTTP redirects; the managed collector remains the canonical `otel.crocoderlab.dev` destination and only the pinned OTLP/HTTP protobuf signal paths are accepted.
   - Validate: Security integration tests exercise non-canonical `otel` config values, malicious repository config, inherited endpoint/header/protocol overrides, redirect responses, and alternate receivers; invalid/non-canonical config is rejected or ignored before export and all tests assert zero credential-bearing requests outside the canonical collector path.
-- [ ] AC7: Current-state documentation records the managed OTEL runtime, encrypted-auth-DB credential boundary, canonical code/config defaults, traces/logs scope, reserved metrics endpoint, lifecycle/failure behavior, and operator-visible configuration semantics without claiming that OTEL is configurable or active when no valid credential exists.
+- [x] AC7: Current-state documentation records the managed OTEL runtime, encrypted-auth-DB credential boundary, canonical code/config defaults, traces/logs scope, reserved metrics endpoint, lifecycle/failure behavior, and operator-visible configuration semantics without claiming that OTEL is configurable or active when no valid credential exists.
   - Validate: Inspect the synchronized observability, auth/telemetry-credential, auth DB, config-schema/config-precedence, architecture, overview, glossary, and context-map documents against the implemented runtime and run the repository context/file checks in the full validation suite.
 
 ### Full validation
@@ -129,14 +129,51 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — test-only additions; no runtime behavior change.
   - Context synchronization: synced
 
-- [ ] T05: `Record the managed OTEL current-state and config contract` (status:todo)
+- [x] T05: `Record the managed OTEL current-state and config contract` (status:done)
   - Task ID: T05
   - Scope: In — synchronize the observability, telemetry credential, auth DB, config schema/precedence, execution, architecture, overview, glossary, and context-map documents plus the optional repo-local config declaration with the implemented managed runtime, hardcoded defaults, signal scope, credential boundary, lifecycle guarantees, and metrics deferral. Out — rewriting historical plan records or presenting future metrics as implemented.
   - Dependencies: T04
   - Done when: Durable current-state context and the optional repo-local config contract consistently distinguish code-owned managed traces/logs defaults from the reserved metrics endpoint, name the encrypted auth DB bearer source, and match the final code and tests.
   - Verify: Context-owner inspection plus the focused repository context/file checks required by `/validate`.
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `context/sce/telemetry-credential.md`, `context/sce/auth-db.md`, `context/sce/cli-observability-contract.md`, `context/cli/execution-glossary.md`, `context/architecture.md`, `context/overview.md`, `context/glossary.md`, `context/context-map.md`, `context/plans/managed-otel-export.md`
+  - Result: Current-state context now records the managed OTLP trace and log runtime, the encrypted-auth-DB bearer-token boundary (accessor never sent), code-owned canonical defaults with the optional `otel` config block, fail-open bounded lifecycle, hook `NoopTelemetry` behavior, and the reserved metrics endpoint. `config-precedence-contract.md` already carried the optional `otel` block contract from T01 and was verified unchanged; `.sce/config.json` intentionally keeps the optional `otel` block absent.
+  - Verify results: Context-owner inspection against `managed_telemetry` code and plan T01-T04 records passed; touched files keep their prior size (pre-existing `architecture.md` length unchanged in scope); no stale "foundation only"/trace-only/`NoopTelemetry`-only statements remain in the edited files.
+  - Context impact: important — documentation-only synchronization of the managed OTEL current state.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The plan implements automatic managed export for traces and logs, hardcodes the defaults in the CLI, keeps the `.sce/config.json` OTEL block optional, uses the encrypted auth DB's OpenBao bearer token, pins the collector, and reserves metrics for a later implementation.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-14
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed; cli-tests, clippy, fmt green)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed, 142 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml observability` -> exit 0 (20 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry` -> exit 0 (37 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth` -> exit 0 (16 passed)
+- Inspection of loopback integration evidence and context docs -> bearer, redirect, ambient-override, stalled/refused, and parity tests present and passing; docs match runtime
+
+### Success-criteria verification
+
+- [x] AC1: Managed defaults and optional `otel` block -> config/managed-default tests and flake check pass; `.sce/config.json` has no `otel` block; metrics endpoint reserved only
+- [x] AC2: Credential-backed selection, bearer-only auth, no issuance -> telemetry/auth tests pass
+- [x] AC3: Trace export to `/v1/traces` with output parity -> loopback trace tests pass under flake check
+- [x] AC4: Log export mapping and redaction -> loopback log tests pass
+- [x] AC5: Async-safe, fail-open, bounded lifecycle -> stalled/unreachable/concurrent tests pass
+- [x] AC6: Endpoint pinning, ambient override and redirect refusal -> security tests pass
+- [x] AC7: Current-state documentation -> context docs inspected against runtime; context checks pass
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Production client TLS root-store behavior on hosts lacking system CA certificates is unverified (sandbox tests now use an explicit empty root store).
