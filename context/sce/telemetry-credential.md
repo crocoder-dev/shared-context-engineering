@@ -28,6 +28,12 @@ flowchart LR
 
 - `managed_telemetry::RuntimeTelemetry::resolve` reads the stored credential at CLI startup (never issuing one); a valid unexpired `token` is used only as the `Authorization: Bearer` credential for managed OTLP trace and log export; the `accessor` is never transmitted. Absent, expired, malformed, or unavailable rows select `NoopTelemetry`. See [cli-observability-contract.md](cli-observability-contract.md).
 
+## Hidden header helper
+
+- `sce auth telemetry-headers` is a hidden (`hide = true`) subcommand intended for Claude Code's `otelHeadersHelper`. It loads the stored credential on every call and prints exactly one JSON object, `{"Authorization":"Bearer <token>"}`, so a replaced credential is picked up on the next call.
+- A missing, expired, malformed, or unavailable credential exits nonzero with the fixed stderr diagnostic `Telemetry credential is unavailable.` and empty stdout. The helper performs no issuance or network call, needs no Git repository, and never initializes managed exporter telemetry.
+- It is omitted from `sce --help`, `sce auth --help`, and shell completions, and is not a security boundary.
+
 ## Security boundaries
 
 - Identity and workspace enforcement belong to the backend; the CLI does not read `user.id` / `workspace.id` from `/me` and does not bind or compare identity on lookup.

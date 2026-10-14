@@ -398,6 +398,9 @@ fn convert_auth_subcommand(
         cli_schema::AuthSubcommand::Whoami { format } => {
             services::auth_command::AuthSubcommand::Whoami { format }
         }
+        cli_schema::AuthSubcommand::TelemetryHeaders => {
+            services::auth_command::AuthSubcommand::TelemetryHeaders
+        }
     };
 
     Ok(RuntimeCommand::Auth(
@@ -835,6 +838,22 @@ mod tests {
         assert!(command.text.contains("whoami"));
         assert!(command.text.contains("logout"));
         assert!(!command.text.contains("renew"));
+    }
+
+    #[test]
+    fn telemetry_headers_parses_and_is_hidden_from_help() {
+        let command = parse(&["sce", "auth", "telemetry-headers"]);
+
+        let RuntimeCommand::Auth(command) = command else {
+            panic!("expected auth command");
+        };
+        assert_eq!(
+            command.request.subcommand,
+            services::auth_command::AuthSubcommand::TelemetryHeaders
+        );
+
+        assert!(!cli_schema::auth_help_text().contains("telemetry-headers"));
+        assert!(!services::help::help_text().contains("telemetry-headers"));
     }
 
     #[test]

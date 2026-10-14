@@ -24,6 +24,7 @@ pub type AuthFormat = OutputFormat;
 const TELEMETRY_PROVISIONING_WARNING: &str =
     "Telemetry credential provisioning was unavailable. Retry with `sce auth login`.";
 const TELEMETRY_PROVISIONING_SUCCESS: &str = "Telemetry credential provisioned.";
+const TELEMETRY_HEADERS_UNAVAILABLE: &str = "Telemetry credential is unavailable.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TelemetryProvisioningResult {
@@ -52,6 +53,7 @@ pub enum AuthSubcommand {
     Login { format: AuthFormat },
     Logout { format: AuthFormat },
     Whoami { format: AuthFormat },
+    TelemetryHeaders,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,16 +62,26 @@ pub struct AuthRequest {
 }
 
 pub async fn run_auth_subcommand(request: AuthRequest) -> Result<String, CliError> {
-    run_auth_subcommand_with(request, run_login, run_logout, run_whoami).await
+    run_auth_subcommand_with(
+        request,
+        run_login,
+        run_logout,
+        run_whoami,
+        run_telemetry_headers,
+    )
+    .await
 }
 
-async fn run_auth_subcommand_with<L, O, S, LF, OF, SF>(
+async fn run_auth_subcommand_with<L, O, S, H, LF, OF, SF, HF>(
     request: AuthRequest,
     login: L,
     logout: O,
     whoami: S,
+    telemetry_headers: H,
 ) -> Result<String, CliError>
 where
+    H: FnOnce() -> HF,
+    HF: Future<Output = Result<String, CliError>>,
     L: FnOnce(AuthFormat) -> LF,
     LF: Future<Output = Result<String, CliError>>,
     O: FnOnce(AuthFormat) -> OF,
@@ -81,7 +93,30 @@ where
         AuthSubcommand::Login { format } => login(format).await,
         AuthSubcommand::Logout { format } => logout(format).await,
         AuthSubcommand::Whoami { format } => whoami(format).await,
+        AuthSubcommand::TelemetryHeaders => telemetry_headers().await,
     }
+}
+
+async fn run_telemetry_headers() -> Result<String, CliError> {
+    render_telemetry_headers(telemetry_credential_storage::load_telemetry_credential().await)
+}
+
+fn render_telemetry_headers(
+    loaded: Result<Option<telemetry_credential_storage::TelemetryCredential>, TokenStorageError>,
+) -> Result<String, CliError> {
+    let credential = match loaded {
+        Ok(Some(credential)) => credential,
+        Ok(None) | Err(_) => return Err(telemetry_headers_unavailable()),
+    };
+
+    serde_json::to_string(&json!({
+        "Authorization": format!("Bearer {}", credential.token),
+    }))
+    .map_err(|_| telemetry_headers_unavailable())
+}
+
+fn telemetry_headers_unavailable() -> CliError {
+    CliError::runtime(anyhow!(TELEMETRY_HEADERS_UNAVAILABLE))
 }
 
 pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
@@ -566,6 +601,39 @@ mod tests {
 
     fn storage_failure() -> TokenStorageError {
         TokenStorageError::Database("failed".to_string())
+    }
+
+    fn telemetry_credential(token: &str) -> telemetry_credential_storage::TelemetryCredential {
+        telemetry_credential_storage::TelemetryCredential {
+            token: token.to_string(),
+            accessor: "fixture-accessor".to_string(),
+            expires_at_unix_seconds: 4_000_000_000,
+        }
+    }
+
+    #[test]
+    fn telemetry_headers_render_only_authorization_bearer_and_follow_replacement() {
+        let first = render_telemetry_headers(Ok(Some(telemetry_credential("tok-one"))))
+            .expect("valid credential should render");
+        assert_eq!(first, r#"{"Authorization":"Bearer tok-one"}"#);
+        assert!(!first.contains("fixture-accessor"));
+
+        let second = render_telemetry_headers(Ok(Some(telemetry_credential("tok-two"))))
+            .expect("replacement should render");
+        assert_eq!(second, r#"{"Authorization":"Bearer tok-two"}"#);
+    }
+
+    #[test]
+    fn telemetry_headers_failures_use_fixed_secret_free_diagnostic() {
+        let missing = render_telemetry_headers(Ok(None)).expect_err("missing should fail");
+        let storage =
+            render_telemetry_headers(Err(TokenStorageError::Database("tok-secret".to_string())))
+                .expect_err("storage failure should fail");
+
+        for error in [missing, storage] {
+            assert_eq!(error.class(), crate::services::error::FailureClass::Runtime);
+            assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE);
+        }
     }
 
     fn device_auth_result() -> DeviceAuthFlowResult {

@@ -290,10 +290,17 @@ where
 }
 
 fn is_hook_invocation(args: &[String]) -> bool {
-    args.iter()
+    let mut words = args
+        .iter()
         .skip(1)
-        .find(|arg| !arg.starts_with('-'))
-        .is_some_and(|arg| arg == services::hooks::NAME)
+        .map(String::as_str)
+        .filter(|arg| !arg.starts_with('-'));
+    match (words.next(), words.next()) {
+        (Some(first), _) if first == services::hooks::NAME => true,
+        (Some("policy"), Some("bash")) => true,
+        (Some(first), Some("telemetry-headers")) if first == services::auth_command::NAME => true,
+        _ => false,
+    }
 }
 
 fn perform_dependency_check<F: FnOnce() -> anyhow::Result<()>>(
@@ -718,6 +725,12 @@ mod tests {
         let hook = ["sce", "hooks", "pre-commit"].map(String::from);
         let flagged_hook = ["sce", "--verbose", "hooks", "pre-commit"].map(String::from);
         let other = ["sce", "config", "show"].map(String::from);
+        let policy = ["sce", "policy", "bash"].map(String::from);
+        let headers = ["sce", "auth", "telemetry-headers"].map(String::from);
+        let auth_login = ["sce", "auth", "login"].map(String::from);
+        assert!(is_hook_invocation(&policy));
+        assert!(is_hook_invocation(&headers));
+        assert!(!is_hook_invocation(&auth_login));
         assert!(is_hook_invocation(&hook));
         assert!(is_hook_invocation(&flagged_hook));
         assert!(!is_hook_invocation(&other));

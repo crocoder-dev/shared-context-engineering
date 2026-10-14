@@ -39,7 +39,6 @@ pub async fn save_telemetry_credential(
     save_with(get_auth_db().await?, credential).await
 }
 
-#[allow(dead_code)]
 pub async fn load_telemetry_credential() -> Result<Option<TelemetryCredential>, TokenStorageError> {
     load_with(get_auth_db().await?, current_unix_timestamp_seconds()?).await
 }
