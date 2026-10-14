@@ -43,7 +43,7 @@ Current migration baseline:
 - `expires_at_unix_seconds INTEGER NOT NULL`, `stored_at_unix_seconds INTEGER NOT NULL`
 - `created_at` / `updated_at` with the same defaults as `auth_credentials`, plus the `telemetry_credentials_set_updated_at` trigger
 
-Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `save_telemetry_credential` is a single-statement `INSERT OR REPLACE` of the fixed row (last complete writer wins), `load_telemetry_credential` returns the row only when token and accessor are non-empty, the expiry is non-negative, and it is in the future (it never mints or refreshes), and `delete_telemetry_credential` removes the row. `TelemetryCredential` has a redacted `Debug`, and storage errors use fixed messages without secret values. Saving or deleting never touches `auth_credentials`. The shared `AuthDb` singleton comes from `token_storage::get_auth_db`.
+Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `save_telemetry_credential` is a single-statement `INSERT OR REPLACE` of the fixed row (last complete writer wins), `load_telemetry_credential` returns the row only when token and accessor are non-empty, the expiry is non-negative, and it is in the future (it never mints or refreshes), and `delete_telemetry_credential` removes the row. `TelemetryCredential` has a redacted `Debug`, and storage errors use fixed messages without secret values. Saving or deleting never touches `auth_credentials`. The shared `AuthDb` singleton comes from `token_storage::get_auth_db`. `sce auth logout` deletes both the `auth_credentials` row and the telemetry row; see [telemetry-credential.md](telemetry-credential.md) for lifecycle and security boundaries.
 
 ## Lifecycle integration
 

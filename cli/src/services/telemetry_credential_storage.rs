@@ -1,7 +1,7 @@
 use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::services::db::{DatabaseKind, DbSpec, EncryptedTursoDb};
+use crate::services::db::{DbSpec, EncryptedTursoDb};
 use crate::services::token_storage::{get_auth_db, TokenStorageError};
 
 const TELEMETRY_CREDENTIAL_ROW_ID: i64 = 1;
@@ -44,7 +44,6 @@ pub async fn load_telemetry_credential() -> Result<Option<TelemetryCredential>, 
     load_with(get_auth_db().await?, current_unix_timestamp_seconds()?).await
 }
 
-#[allow(dead_code)]
 pub async fn delete_telemetry_credential() -> Result<bool, TokenStorageError> {
     delete_with(get_auth_db().await?).await
 }
@@ -149,6 +148,7 @@ mod tests {
 
     use super::*;
     use crate::generated_migrations;
+    use crate::services::db::DatabaseKind;
 
     static TEST_DB_PATH: LazyLock<StdMutex<Option<PathBuf>>> =
         LazyLock::new(|| StdMutex::new(None));

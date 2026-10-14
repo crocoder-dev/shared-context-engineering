@@ -8,15 +8,15 @@ This extends the existing `AuthenticatedControlPlaneClient` and the encrypted `A
 
 ## Acceptance criteria
 
-- [ ] AC1: The client posts to `/auth/telemetry/credential` with the WorkOS bearer and no body, validates `{ token, accessor, expiresAt }`, and maps 401/403/503/500/malformed/transport failures to sanitized errors; neither errors nor `Debug` output contain token, accessor, Authorization header, or raw body.
+- [x] AC1: The client posts to `/auth/telemetry/credential` with the WorkOS bearer and no body, validates `{ token, accessor, expiresAt }`, and maps 401/403/503/500/malformed/transport failures to sanitized errors; neither errors nor `Debug` output contain token, accessor, Authorization header, or raw body.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_client`
-- [ ] AC2: A telemetry credential persists in a dedicated encrypted `auth.db` table and survives reopening the database; expired or corrupt records are not returned, and lookup never mints.
+- [x] AC2: A telemetry credential persists in a dedicated encrypted `auth.db` table and survives reopening the database; expired or corrupt records are not returned, and lookup never mints.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_storage`
-- [ ] AC3: Concurrent saves leave exactly one complete, valid record.
+- [x] AC3: Concurrent saves leave exactly one complete, valid record.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_concurrent`
-- [ ] AC4: `sce auth logout` deletes the telemetry credential; WorkOS credentials are unaffected by telemetry save/delete.
+- [x] AC4: `sce auth logout` deletes the telemetry credential; WorkOS credentials are unaffected by telemetry save/delete.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_logout` and `... auth_command`
-- [ ] AC5: Context documents the schema, lifecycle, and security boundaries, including that local deletion does not revoke the OpenBao token and that identity enforcement is the backend's.
+- [x] AC5: Context documents the schema, lifecycle, and security boundaries, including that local deletion does not revoke the OpenBao token and that identity enforcement is the backend's.
   - Validate: inspect `context/sce/auth-db.md` and `context/sce/telemetry-credential.md`.
 
 ### Full validation
@@ -84,14 +84,51 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: minor — new client method; documented in T03.
   - Context synchronization: synced
 
-- [ ] T03: `Delete telemetry credential on logout and document lifecycle` (status:todo)
+- [x] T03: `Delete telemetry credential on logout and document lifecycle` (status:done)
   - Task ID: T03
   - Scope: In — `run_logout` also deletes the telemetry credential (existing output contract preserved), logout test, `context/sce/auth-db.md` update, new `context/sce/telemetry-credential.md`, context-map link. Out — new CLI output fields.
   - Dependencies: T01
   - Done when: logout removes both records and a failure in either surfaces a storage error; docs state schema, lifecycle, backend-owned identity, and that local deletion does not revoke the OpenBao token.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_logout`; `... auth_command`.
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/src/services/auth_command/mod.rs`, `cli/src/services/telemetry_credential_storage.rs`
+  - Result: `run_logout` now delegates to `run_logout_with`, which attempts both the WorkOS token delete and the telemetry credential delete, surfaces the first storage error, and reports `credentials_removed` when either record was deleted (output contract unchanged). Removed `allow(dead_code)` from `delete_telemetry_credential`. Docs are handled by context synchronization.
+  - Verify outcome: `telemetry_credential_logout` passed (3 tests); `auth_command` filter matched the same 3 tests and passed. `nix flake check` not run.
+  - Context impact: minor — logout behavior; `context/sce/auth-db.md`, new `context/sce/telemetry-credential.md`, context-map link.
+  - Context synchronization: synced
 
 ## Open questions
 
 - None. Identity binding was removed at the user's direction; the backend is the authority on user and workspace.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-14
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_client` -> exit 0 (3 passed)
+- `... telemetry_credential_storage` -> exit 0 (6 passed)
+- `... telemetry_credential_concurrent` -> exit 0 (1 passed)
+- `... telemetry_credential_logout` -> exit 0 (3 passed)
+- `... auth_command` -> exit 0 (3 passed)
+- `... telemetry_credential` -> exit 0 (12 passed)
+- `... auth` -> exit 0 (10 passed)
+- `nix flake check` -> exit 0 (clippy, fmt, cli-tests all passed)
+
+### Success-criteria verification
+
+- [x] AC1: client request shape, error mapping, and redaction -> `telemetry_credential_client` 3 passed
+- [x] AC2: encrypted persistence, expiry/corrupt handling -> `telemetry_credential_storage` 6 passed
+- [x] AC3: concurrent saves leave one record -> `telemetry_credential_concurrent` 1 passed
+- [x] AC4: logout deletes telemetry credential, WorkOS unaffected -> `telemetry_credential_logout` 3 and `auth_command` 3 passed
+- [x] AC5: context documents schema, lifecycle, boundaries -> inspected `context/sce/auth-db.md` (table, migration 003, logout) and `context/sce/telemetry-credential.md` (backend-owned identity, non-revocation); linked in `context/context-map.md`
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The save-on-issue path against the real auth DB is not covered by a dedicated test (noted in T02).

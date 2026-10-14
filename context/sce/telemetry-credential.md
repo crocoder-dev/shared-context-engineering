@@ -1,0 +1,33 @@
+# Telemetry credential
+
+The CLI holds one telemetry-only OpenBao credential, issued by the Control Plane and cached in the encrypted auth DB. This is foundation only: there is no user-facing provisioning command, exporter, refresh loop, or doctor check.
+
+## Components
+
+- Client: `AuthenticatedControlPlaneClient::issue_telemetry_credential` in `cli/src/services/agent_trace_sync/control_plane.rs` posts to `/auth/telemetry/credential` with the WorkOS bearer and no body, and validates `{ token, accessor, expiresAt }` (non-empty token and accessor, future RFC3339 `expiresAt`).
+- Save-on-issue: `issue_and_save_telemetry_credential` persists only after successful issuance, so any failure leaves previously stored state intact.
+- Storage: `cli/src/services/telemetry_credential_storage.rs` (`save_telemetry_credential`, `load_telemetry_credential`, `delete_telemetry_credential`) over the shared `AuthDb`; schema in [auth-db.md](auth-db.md).
+
+## Lifecycle
+
+```mermaid
+flowchart LR
+    Issue[issue_telemetry_credential] --> Save[save: INSERT OR REPLACE row 1]
+    Save --> Load[load: unexpired valid row only]
+    Load -->|expired or corrupt| None[None, never mints]
+    Logout[sce auth logout] --> Delete[delete row]
+```
+
+- Lookup never mints or refreshes; an expired, empty-field, or negative-expiry row is returned as `None`.
+- Concurrent saves are single-statement atomic replacements of one fixed row; the last complete writer wins.
+- `sce auth logout` deletes the WorkOS credential and the telemetry credential, attempting both even when one fails and surfacing the first storage error. `credentials_removed` is true when either record was deleted; output fields are otherwise unchanged.
+- Telemetry save/delete never touches the WorkOS `auth_credentials` row.
+
+## Security boundaries
+
+- Identity and workspace enforcement belong to the backend; the CLI does not read `user.id` / `workspace.id` from `/me` and does not bind or compare identity on lookup.
+- Local deletion does not revoke the OpenBao token; server-side revocation is out of scope and the token remains valid until it expires.
+- Token and accessor never appear in errors, logs, or `Debug` output; `TelemetryCredential` and the issuance response redact them, and client and storage errors use fixed messages.
+- Encryption reuses the auth DB key handling described in [auth-db.md](auth-db.md).
+
+See also: [auth-db.md](auth-db.md), [../context-map.md](../context-map.md)

@@ -14,7 +14,8 @@ use crate::services::config;
 use crate::services::error::{CliError, UserError};
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{label, prompt_label, prompt_value, success, value};
-use crate::services::token_storage::{self, StoredTokens};
+use crate::services::telemetry_credential_storage;
+use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
 pub const NAME: &str = "auth";
 
@@ -84,10 +85,29 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
 }
 
 pub async fn run_logout(format: AuthFormat) -> Result<String, CliError> {
-    let deleted = token_storage::delete_tokens()
-        .await
-        .map_err(auth_storage_error)?;
-    render_logout_result(deleted, format).map_err(unexpected_auth_command_error)
+    run_logout_with(
+        format,
+        token_storage::delete_tokens(),
+        telemetry_credential_storage::delete_telemetry_credential(),
+    )
+    .await
+}
+
+async fn run_logout_with<W, T>(
+    format: AuthFormat,
+    delete_workos: W,
+    delete_telemetry: T,
+) -> Result<String, CliError>
+where
+    W: Future<Output = Result<bool, TokenStorageError>>,
+    T: Future<Output = Result<bool, TokenStorageError>>,
+{
+    let workos_result = delete_workos.await;
+    let telemetry_result = delete_telemetry.await;
+    let workos_deleted = workos_result.map_err(auth_storage_error)?;
+    let telemetry_deleted = telemetry_result.map_err(auth_storage_error)?;
+    render_logout_result(workos_deleted || telemetry_deleted, format)
+        .map_err(unexpected_auth_command_error)
 }
 
 pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
@@ -443,10 +463,57 @@ fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
     )
 }
 
-fn auth_storage_error(error: crate::services::token_storage::TokenStorageError) -> CliError {
+fn auth_storage_error(error: TokenStorageError) -> CliError {
     CliError::user_with_source(UserError::AuthStorageUnavailable, error)
 }
 
 fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
     CliError::user_with_source(UserError::UnexpectedFailure, error)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use super::*;
+
+    fn storage_failure() -> TokenStorageError {
+        TokenStorageError::Database("failed".to_string())
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_logout_reports_removal_when_only_telemetry_deleted() {
+        let output = run_logout_with(AuthFormat::Json, async { Ok(false) }, async { Ok(true) })
+            .await
+            .expect("logout should succeed");
+        assert!(output.contains("\"credentials_removed\": true"));
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_logout_attempts_both_deletions_on_telemetry_failure() {
+        let workos_called = AtomicBool::new(false);
+        let result = run_logout_with(
+            AuthFormat::Json,
+            async {
+                workos_called.store(true, Ordering::SeqCst);
+                Ok(true)
+            },
+            async { Err(storage_failure()) },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(workos_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_logout_deletes_telemetry_on_workos_failure() {
+        let telemetry_called = AtomicBool::new(false);
+        let result = run_logout_with(AuthFormat::Json, async { Err(storage_failure()) }, async {
+            telemetry_called.store(true, Ordering::SeqCst);
+            Ok(true)
+        })
+        .await;
+        assert!(result.is_err());
+        assert!(telemetry_called.load(Ordering::SeqCst));
+    }
 }
