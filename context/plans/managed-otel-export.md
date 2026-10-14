@@ -90,13 +90,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: important — config schema gains optional `otel` block and `config show` gains `otel.*` fields; managed defaults module added.
   - Context synchronization: synced
 
-- [ ] T02: `Implement managed OTLP trace export and command lifecycle spans` (status:todo)
+- [x] T02: `Implement managed OTLP trace export and command lifecycle spans` (status:done)
   - Task ID: T02
   - Scope: In — add the pinned OpenTelemetry trace/provider/exporter runtime, OTLP/HTTP protobuf `/v1/traces` transport, bearer authentication, stable SCE resource identity, allowlisted command spans, private future-aware subscriber dispatch, bounded batch/shutdown lifecycle, and app-runtime wiring after T01. Out — OTLP logs, metrics, public configuration, raw logger-event export, and production collector verification.
   - Dependencies: T01
   - Done when: Credential-backed non-hook command execution emits only approved trace data to the canonical traces endpoint, no-op execution remains behaviorally identical without a credential, and exporter activity is bounded and isolated from command/persistence critical paths.
   - Verify: Focused trace lifecycle/endpoint tests, controlled loopback OTLP trace receiver tests, and `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry`.
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/Cargo.toml`, `cli/Cargo.lock`, `cli/src/app.rs`, `cli/src/services/managed_telemetry.rs`, `cli/src/services/managed_telemetry/trace_export.rs`, `context/plans/managed-otel-export.md`
+  - Result: Added pinned OpenTelemetry 0.33.1 OTLP/HTTP protobuf trace export. `ManagedTraceTelemetry` wraps each command future with a future-aware dispatch and an allowlisted `sce.command` span (command name, outcome, error code; logger events filtered out). A pinned HTTP client sends only the stored token as bearer to the canonical traces endpoint with redirects disabled and bounded timeouts. `RuntimeTelemetry` is resolved after startup (skipped for hook invocations), and bounded shutdown runs after command output is rendered.
+  - Verify results: `telemetry` filter tests passed (30, including loopback receiver bearer/allowlist, redirect, and unreachable-collector tests); `app::` tests passed (11); clippy `--all-targets -D warnings` clean; `cargo fmt` applied.
+  - Context impact: important — managed trace export runtime, new OpenTelemetry dependencies, lifecycle ordering in app runtime.
+  - Context synchronization: synced
 
 - [ ] T03: `Implement managed OTLP log export from the existing logger boundary` (status:todo)
   - Task ID: T03

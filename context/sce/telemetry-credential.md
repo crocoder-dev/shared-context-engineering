@@ -24,6 +24,10 @@ flowchart LR
 - `sce auth logout` deletes the WorkOS credential and the telemetry credential, attempting both even when one fails and surfacing the first storage error. `credentials_removed` is true when either record was deleted; output fields are otherwise unchanged.
 - Telemetry save/delete never touches the WorkOS `auth_credentials` row.
 
+## Runtime use
+
+- `managed_telemetry::RuntimeTelemetry::resolve` reads the stored credential at CLI startup (never issuing one); a valid unexpired `token` is used only as the bearer for OTLP trace export. See [cli-observability-contract.md](cli-observability-contract.md).
+
 ## Security boundaries
 
 - Identity and workspace enforcement belong to the backend; the CLI does not read `user.id` / `workspace.id` from `/me` and does not bind or compare identity on lookup.
