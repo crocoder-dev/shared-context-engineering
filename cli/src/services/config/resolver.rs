@@ -12,6 +12,8 @@ use crate::services::default_paths::{
     observability_log_dir, resolve_sce_default_locations, RepoPaths,
 };
 
+use crate::services::managed_telemetry::MANAGED_OTLP_DEFAULTS;
+
 use super::policy::{build_validation_warnings, resolve_bash_policy_config, BashPolicyConfig};
 use super::schema;
 use super::types::{
@@ -65,6 +67,45 @@ impl AuthConfigKeySpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct ResolvedOtelConfig {
+    pub(super) endpoint: ResolvedValue<String>,
+    pub(super) protocol: ResolvedValue<String>,
+    pub(super) traces_endpoint: ResolvedValue<String>,
+    pub(super) metrics_endpoint: ResolvedValue<String>,
+    pub(super) logs_endpoint: ResolvedValue<String>,
+}
+
+fn resolve_otel_value(
+    file_value: Option<schema::FileConfigValue<String>>,
+    code_default: &str,
+) -> ResolvedValue<String> {
+    match file_value {
+        Some(value) => ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        },
+        None => ResolvedValue {
+            value: code_default.to_string(),
+            source: ValueSource::Default,
+        },
+    }
+}
+
+fn resolve_otel_config(file_config: schema::OtelFileConfig) -> ResolvedOtelConfig {
+    let defaults = MANAGED_OTLP_DEFAULTS;
+    ResolvedOtelConfig {
+        endpoint: resolve_otel_value(file_config.endpoint, defaults.endpoint),
+        protocol: resolve_otel_value(file_config.protocol, defaults.protocol),
+        traces_endpoint: resolve_otel_value(file_config.traces_endpoint, defaults.traces_endpoint),
+        metrics_endpoint: resolve_otel_value(
+            file_config.metrics_endpoint,
+            defaults.metrics_endpoint,
+        ),
+        logs_endpoint: resolve_otel_value(file_config.logs_endpoint, defaults.logs_endpoint),
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RuntimeConfig {
     pub(super) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(super) log_level: ResolvedValue<LogLevel>,
@@ -78,6 +119,7 @@ pub(super) struct RuntimeConfig {
     pub(super) agent_trace_repository_id: ResolvedOptionalValue<String>,
     pub(super) agent_trace_repository_remote: ResolvedValue<String>,
     pub(super) agent_trace_auto_sync: ResolvedValue<bool>,
+    pub(super) otel: ResolvedOtelConfig,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     pub(super) database_retry: ResolvedOptionalValue<DatabaseRetryConfig>,
     pub(super) validation_errors: Vec<String>,
@@ -359,6 +401,7 @@ where
         agent_trace_repository_id: None,
         agent_trace_repository_remote: None,
         agent_trace_auto_sync: None,
+        otel: schema::OtelFileConfig::default(),
         bash_policy_presets: None,
         bash_policy_custom: None,
         database_retry: None,
@@ -408,6 +451,7 @@ where
         if let Some(agent_trace_auto_sync) = layer.agent_trace_auto_sync {
             file_config.agent_trace_auto_sync = Some(agent_trace_auto_sync);
         }
+        merge_otel_layer(&mut file_config.otel, layer.otel);
         if let Some(bash_policy_presets) = layer.bash_policy_presets {
             file_config.bash_policy_presets = Some(bash_policy_presets);
         }
@@ -584,11 +628,30 @@ where
         agent_trace_repository_id: resolved_agent_trace_repository_id,
         agent_trace_repository_remote: resolved_agent_trace_repository_remote,
         agent_trace_auto_sync: resolved_agent_trace_auto_sync,
+        otel: resolve_otel_config(file_config.otel),
         bash_policies: resolved_bash_policies,
         database_retry: resolved_database_retry,
         validation_errors,
         validation_warnings,
     })
+}
+
+fn merge_otel_layer(target: &mut schema::OtelFileConfig, layer: schema::OtelFileConfig) {
+    if layer.endpoint.is_some() {
+        target.endpoint = layer.endpoint;
+    }
+    if layer.protocol.is_some() {
+        target.protocol = layer.protocol;
+    }
+    if layer.traces_endpoint.is_some() {
+        target.traces_endpoint = layer.traces_endpoint;
+    }
+    if layer.metrics_endpoint.is_some() {
+        target.metrics_endpoint = layer.metrics_endpoint;
+    }
+    if layer.logs_endpoint.is_some() {
+        target.logs_endpoint = layer.logs_endpoint;
+    }
 }
 
 fn resolve_optional_auth_config_value<FEnv>(
@@ -896,6 +959,46 @@ mod tests {
         assert_eq!(
             disabled.log_to_file.source,
             ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+    }
+
+    #[test]
+    fn otel_resolves_to_code_defaults_when_block_absent() {
+        let runtime = resolve_runtime_with_config(None).unwrap();
+
+        assert_eq!(runtime.otel.endpoint.value, "https://otel.crocoderlab.dev");
+        assert_eq!(runtime.otel.protocol.value, "http/protobuf");
+        assert_eq!(
+            runtime.otel.traces_endpoint.value,
+            "https://otel.crocoderlab.dev/v1/traces"
+        );
+        assert_eq!(
+            runtime.otel.metrics_endpoint.value,
+            "https://otel.crocoderlab.dev/v1/metrics"
+        );
+        assert_eq!(
+            runtime.otel.logs_endpoint.value,
+            "https://otel.crocoderlab.dev/v1/logs"
+        );
+        assert_eq!(runtime.otel.endpoint.source, ValueSource::Default);
+        assert_eq!(runtime.otel.logs_endpoint.source, ValueSource::Default);
+    }
+
+    #[test]
+    fn otel_partial_block_keeps_code_defaults_for_omitted_fields() {
+        let runtime = resolve_runtime_with_config(Some(
+            r#"{"otel":{"logs_endpoint":"https://otel.crocoderlab.dev/v1/logs"}}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            runtime.otel.logs_endpoint.source,
+            ValueSource::ConfigFile(ConfigPathSource::Flag)
+        );
+        assert_eq!(runtime.otel.traces_endpoint.source, ValueSource::Default);
+        assert_eq!(
+            runtime.otel.traces_endpoint.value,
+            "https://otel.crocoderlab.dev/v1/traces"
         );
     }
 

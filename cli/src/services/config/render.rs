@@ -8,7 +8,7 @@ use super::resolver::{
     WORKOS_CLIENT_ID_KEY,
 };
 use super::types::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
-use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ValueSource};
+use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ResolvedValue, ValueSource};
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
@@ -49,6 +49,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     &runtime.agent_trace_auto_sync.value.to_string(),
                     runtime.agent_trace_auto_sync.source,
                 ),
+                format_otel_text(runtime),
                 format_bash_policies_text(&runtime.bash_policies),
                 format_database_retry_text(&runtime.database_retry),
                 format_validation_warnings_text(&warnings),
@@ -94,6 +95,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                                 runtime.agent_trace_auto_sync.source,
                             ),
                         },
+                        "otel": format_otel_json(runtime),
                         "policies": {
                             "bash": format_bash_policies_json(&runtime.bash_policies),
                             "database_retry": format_database_retry_json(&runtime.database_retry),
@@ -105,6 +107,38 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
             serde_json::to_string_pretty(&payload).expect("config show payload should serialize")
         }
     }
+}
+
+fn otel_fields(runtime: &RuntimeConfig) -> [(&'static str, &ResolvedValue<String>); 5] {
+    let otel = &runtime.otel;
+    [
+        ("endpoint", &otel.endpoint),
+        ("protocol", &otel.protocol),
+        ("traces_endpoint", &otel.traces_endpoint),
+        ("metrics_endpoint", &otel.metrics_endpoint),
+        ("logs_endpoint", &otel.logs_endpoint),
+    ]
+}
+
+fn format_otel_text(runtime: &RuntimeConfig) -> String {
+    otel_fields(runtime)
+        .iter()
+        .map(|(key, field)| {
+            format_resolved_value_text(&format!("otel.{key}"), &field.value, field.source)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_otel_json(runtime: &RuntimeConfig) -> Value {
+    let mut fields = serde_json::Map::new();
+    for (key, field) in otel_fields(runtime) {
+        fields.insert(
+            key.to_string(),
+            format_resolved_value_json(field.value.as_str(), field.source),
+        );
+    }
+    Value::Object(fields)
 }
 
 pub(super) fn format_validate_output(

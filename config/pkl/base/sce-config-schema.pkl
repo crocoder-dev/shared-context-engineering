@@ -161,6 +161,43 @@ local sceConfigSchema = new JsonSchema {
         }
       }
     }
+    ["otel"] = new JsonSchema {
+      type = "object"
+      description = "Optional managed OpenTelemetry declaration. Omitting the block or any field keeps the code-owned managed defaults; managed export never lets this block redirect authenticated requests."
+      additionalProperties = false
+      properties {
+        ["endpoint"] = new JsonSchema {
+          type = "string"
+          description = "Managed OTLP collector base URL."
+          minLength = 1
+          default = "https://otel.crocoderlab.dev"
+        }
+        ["protocol"] = new JsonSchema {
+          type = "string"
+          description = "OTLP transport protocol."
+          enum = new { "http/protobuf" }
+          default = "http/protobuf"
+        }
+        ["traces_endpoint"] = new JsonSchema {
+          type = "string"
+          description = "OTLP traces endpoint."
+          minLength = 1
+          default = "https://otel.crocoderlab.dev/v1/traces"
+        }
+        ["metrics_endpoint"] = new JsonSchema {
+          type = "string"
+          description = "Reserved OTLP metrics endpoint for the later metrics pipeline."
+          minLength = 1
+          default = "https://otel.crocoderlab.dev/v1/metrics"
+        }
+        ["logs_endpoint"] = new JsonSchema {
+          type = "string"
+          description = "OTLP logs endpoint."
+          minLength = 1
+          default = "https://otel.crocoderlab.dev/v1/logs"
+        }
+      }
+    }
     ["policies"] = new JsonSchema {
       type = "object"
       description = "Policy configuration for SCE runtime and bash-tool enforcement."

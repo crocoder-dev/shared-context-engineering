@@ -41,12 +41,13 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
     super::resolver::CONTROL_PLANE_BASE_URL_KEY.config_key,
     "agent_trace",
+    "otel",
     "policies",
     "integrations",
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, log_to_file, workos_client_id, control_plane_base_url, agent_trace, policies, integrations, log_dir, log_file_retention_limit";
+    "$schema, log_level, log_format, log_to_file, workos_client_id, control_plane_base_url, agent_trace, otel, policies, integrations, log_dir, log_file_retention_limit";
 
 const PER_DB_RETRY_KEYS: &[&str] = &["connection_open", "query"];
 const PER_DB_RETRY_KEYS_DESCRIPTION: &str = "connection_open, query";
@@ -89,6 +90,7 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) workos_client_id: Option<String>,
     pub(crate) control_plane_base_url: Option<String>,
     pub(crate) agent_trace: Option<ParsedAgentTraceConfigDocument>,
+    pub(crate) otel: Option<ParsedOtelConfigDocument>,
     pub(crate) policies: Option<ParsedPoliciesConfigDocument>,
     pub(crate) integrations: Option<ParsedIntegrationsConfigDocument>,
 }
@@ -98,6 +100,15 @@ pub(crate) struct ParsedAgentTraceConfigDocument {
     pub(crate) repository_id: Option<String>,
     pub(crate) repository_remote: Option<String>,
     pub(crate) auto_sync: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedOtelConfigDocument {
+    pub(crate) endpoint: Option<String>,
+    pub(crate) protocol: Option<String>,
+    pub(crate) traces_endpoint: Option<String>,
+    pub(crate) metrics_endpoint: Option<String>,
+    pub(crate) logs_endpoint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -174,6 +185,15 @@ pub(crate) struct FileConfigValue<T> {
     pub(crate) source: ConfigPathSource,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct OtelFileConfig {
+    pub(crate) endpoint: Option<FileConfigValue<String>>,
+    pub(crate) protocol: Option<FileConfigValue<String>>,
+    pub(crate) traces_endpoint: Option<FileConfigValue<String>>,
+    pub(crate) metrics_endpoint: Option<FileConfigValue<String>>,
+    pub(crate) logs_endpoint: Option<FileConfigValue<String>>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FileConfig {
     pub(crate) log_level: Option<FileConfigValue<LogLevel>>,
@@ -187,6 +207,7 @@ pub(crate) struct FileConfig {
     pub(crate) agent_trace_repository_id: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_remote: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_auto_sync: Option<FileConfigValue<bool>>,
+    pub(crate) otel: OtelFileConfig,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
     pub(crate) database_retry: Option<FileConfigValue<DatabaseRetryConfig>>,
@@ -337,6 +358,7 @@ pub(crate) fn parse_file_config(
         .map(|value| FileConfigValue { value, source });
     let (agent_trace_repository_id, agent_trace_repository_remote, agent_trace_auto_sync) =
         map_agent_trace_config(typed.agent_trace.as_ref(), object, path, source)?;
+    let otel = map_otel_config(typed.otel.as_ref(), object, path, source)?;
     let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
         map_policies_config(typed.policies.as_ref(), object, path, source)?;
     let integrations = map_integrations_config(typed.integrations.as_ref(), object, path, source)?;
@@ -353,6 +375,7 @@ pub(crate) fn parse_file_config(
         agent_trace_repository_id,
         agent_trace_repository_remote,
         agent_trace_auto_sync,
+        otel,
         bash_policy_presets,
         bash_policy_custom,
         database_retry,
@@ -752,6 +775,53 @@ fn map_agent_trace_config(
     Ok((repository_id, repository_remote, auto_sync))
 }
 
+fn map_otel_config(
+    typed: Option<&ParsedOtelConfigDocument>,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<OtelFileConfig> {
+    let Some(otel_value) = object.get("otel") else {
+        return Ok(OtelFileConfig::default());
+    };
+
+    let otel_object = otel_value.as_object().with_context(|| {
+        format!(
+            "Config key 'otel' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(
+        otel_object,
+        path,
+        Some("otel"),
+        &[
+            "endpoint",
+            "protocol",
+            "traces_endpoint",
+            "metrics_endpoint",
+            "logs_endpoint",
+        ],
+        "endpoint, protocol, traces_endpoint, metrics_endpoint, logs_endpoint",
+    )?;
+
+    let field = |select: fn(&ParsedOtelConfigDocument) -> Option<&String>| {
+        typed.and_then(select).map(|value| FileConfigValue {
+            value: value.clone(),
+            source,
+        })
+    };
+
+    Ok(OtelFileConfig {
+        endpoint: field(|doc| doc.endpoint.as_ref()),
+        protocol: field(|doc| doc.protocol.as_ref()),
+        traces_endpoint: field(|doc| doc.traces_endpoint.as_ref()),
+        metrics_endpoint: field(|doc| doc.metrics_endpoint.as_ref()),
+        logs_endpoint: field(|doc| doc.logs_endpoint.as_ref()),
+    })
+}
+
 fn map_integrations_config(
     typed: Option<&ParsedIntegrationsConfigDocument>,
     object: &serde_json::Map<String, Value>,
@@ -885,6 +955,25 @@ mod agent_trace_config_tests {
             .to_string();
 
         assert!(error.contains("failed schema validation"), "{error}");
+    }
+
+    #[test]
+    fn omitted_otel_block_parses_as_unset() {
+        let config = parse("{}").unwrap();
+        assert_eq!(config.otel, super::OtelFileConfig::default());
+    }
+
+    #[test]
+    fn parses_optional_otel_fields_independently() {
+        let config = parse(r#"{"otel":{"protocol":"http/protobuf"}}"#).unwrap();
+        assert_eq!(config.otel.protocol.unwrap().value, "http/protobuf");
+        assert!(config.otel.endpoint.is_none());
+        assert!(config.otel.logs_endpoint.is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_otel_key() {
+        assert!(parse(r#"{"otel":{"headers":"x"}}"#).is_err());
     }
 
     #[test]
