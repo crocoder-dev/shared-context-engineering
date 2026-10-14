@@ -260,6 +260,9 @@ pub enum AuthSubcommand {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+
+    #[command(hide = true, about = "Print telemetry authorization headers")]
+    TelemetryHeaders,
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
