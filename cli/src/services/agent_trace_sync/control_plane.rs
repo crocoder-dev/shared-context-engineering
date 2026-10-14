@@ -416,7 +416,6 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         body.into_credential(current_unix_seconds())
     }
 
-    #[allow(dead_code, reason = "provisioning command surface is out of scope")]
     pub async fn issue_and_save_telemetry_credential(
         &self,
     ) -> Result<TelemetryCredential, ControlPlaneError> {
@@ -1123,6 +1122,37 @@ mod tests {
         let rendered = format!("{credential:?}");
         assert!(!rendered.contains(TELEMETRY_SECRET_TOKEN));
         assert!(!rendered.contains(TELEMETRY_SECRET_ACCESSOR));
+    }
+
+    #[tokio::test]
+    async fn telemetry_credential_issue_and_save_replaces_cached_credential() {
+        let (base_url, _) =
+            start_capture_server("200 OK", &telemetry_success_payload("2999-01-01T00:00:00Z"));
+        let client = AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            base_url,
+            "http://127.0.0.1:1",
+            "client",
+            FixedStore,
+        );
+        let saved = Arc::new(Mutex::new(None));
+        let saved_credential = Arc::clone(&saved);
+
+        let result = client
+            .issue_and_save_with(|credential| async move {
+                *saved_credential.lock().expect("saved credential lock") = Some(credential);
+                Ok(())
+            })
+            .await
+            .expect("issuance and save should succeed");
+
+        assert_eq!(
+            saved.lock().expect("saved credential lock").as_ref(),
+            Some(&result)
+        );
     }
 
     #[tokio::test]

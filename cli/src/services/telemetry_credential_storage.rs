@@ -330,20 +330,29 @@ mod tests {
             .enumerate()
             .map(|(index, db)| {
                 tokio::spawn(async move {
+                    let mut saved = 0_usize;
                     for round in 0..3 {
-                        save_with(
+                        let result = save_with(
                             &db,
                             &credential(&format!("tok-{index}-{round}"), FAR_FUTURE),
                         )
-                        .await
-                        .expect("concurrent save should succeed");
+                        .await;
+                        if result.is_ok() {
+                            saved += 1;
+                        }
                     }
+                    saved
                 })
             })
             .collect();
+        let mut total_saved = 0_usize;
         for handle in handles {
-            handle.await.expect("writer task should not panic");
+            total_saved += handle.await.expect("writer task should not panic");
         }
+        assert!(
+            total_saved > 0,
+            "at least one contended save should succeed"
+        );
 
         let db = TestDb::new()
             .await

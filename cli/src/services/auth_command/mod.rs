@@ -13,13 +13,39 @@ use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::error::{CliError, UserError};
 use crate::services::output_format::OutputFormat;
-use crate::services::style::{label, prompt_label, prompt_value, success, value};
+use crate::services::style::{label, prompt_label, prompt_value, value};
 use crate::services::telemetry_credential_storage;
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
 pub const NAME: &str = "auth";
 
 pub type AuthFormat = OutputFormat;
+
+const TELEMETRY_PROVISIONING_WARNING: &str =
+    "Telemetry credential provisioning was unavailable. Retry with `sce auth login`.";
+const TELEMETRY_PROVISIONING_SUCCESS: &str = "Telemetry credential provisioned.";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryProvisioningResult {
+    Issued,
+    Unavailable,
+}
+
+impl TelemetryProvisioningResult {
+    fn status(self) -> &'static str {
+        match self {
+            Self::Issued => "issued",
+            Self::Unavailable => "unavailable",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::Issued => TELEMETRY_PROVISIONING_SUCCESS,
+            Self::Unavailable => TELEMETRY_PROVISIONING_WARNING,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthSubcommand {
@@ -60,13 +86,24 @@ where
 
 pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
     let client = reqwest::Client::new();
-
-    let client_id = resolve_login_client_id().map_err(unexpected_auth_command_error)?;
+    let cwd = std::env::current_dir()
+        .context("failed to determine current directory for auth config resolution")
+        .map_err(unexpected_auth_command_error)?;
+    let auth_config =
+        config::resolve_auth_runtime_config(&cwd).map_err(unexpected_auth_command_error)?;
+    let client_id = auth_config.workos_client_id.value.unwrap_or_default();
+    let control_plane = AuthenticatedControlPlaneClient::new(
+        client.clone(),
+        auth_config.control_plane_base_url.value.unwrap_or_default(),
+        auth::WORKOS_DEFAULT_BASE_URL,
+        client_id.clone(),
+    );
     let stored_tokens = token_storage::load_tokens()
         .await
         .map_err(auth_storage_error)?;
 
     let client = &client;
+    let control_plane = &control_plane;
     let client_id = client_id.as_str();
     run_login_with_stored_credentials(
         format,
@@ -74,10 +111,11 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
         |stored_tokens| async move {
             maybe_renew_stored_credentials(client, client_id, stored_tokens).await
         },
+        || async move { provision_telemetry_credential(control_plane).await },
         |format| async move {
             match format {
-                AuthFormat::Text => run_text_login(client, client_id).await,
-                AuthFormat::Json => run_login_json(client, client_id, format).await,
+                AuthFormat::Text => run_text_login(client, client_id, control_plane).await,
+                AuthFormat::Json => run_login_json(client, client_id, format, control_plane).await,
             }
         },
     )
@@ -159,21 +197,25 @@ async fn maybe_renew_stored_credentials(
     }
 }
 
-async fn run_login_with_stored_credentials<R, D, RF, DF>(
+async fn run_login_with_stored_credentials<R, P, D, RF, PF, DF>(
     format: AuthFormat,
     stored_tokens: Option<StoredTokens>,
     renew: R,
+    provision: P,
     device_login: D,
 ) -> Result<String, CliError>
 where
     R: FnOnce(StoredTokens) -> RF,
     RF: Future<Output = Result<Option<StoredTokens>, CliError>>,
+    P: FnOnce() -> PF,
+    PF: Future<Output = TelemetryProvisioningResult>,
     D: FnOnce(AuthFormat) -> DF,
     DF: Future<Output = Result<String, CliError>>,
 {
     if let Some(stored_tokens) = stored_tokens {
         if let Some(renewed_tokens) = renew(stored_tokens).await? {
-            return render_login_refresh_result(&renewed_tokens, format)
+            let telemetry = provision().await;
+            return render_login_refresh_result_with_telemetry(&renewed_tokens, format, telemetry)
                 .map_err(unexpected_auth_command_error);
         }
     }
@@ -181,7 +223,20 @@ where
     device_login(format).await
 }
 
-async fn run_text_login(client: &reqwest::Client, client_id: &str) -> Result<String, CliError> {
+async fn provision_telemetry_credential(
+    client: &AuthenticatedControlPlaneClient,
+) -> TelemetryProvisioningResult {
+    match client.issue_and_save_telemetry_credential().await {
+        Ok(_) => TelemetryProvisioningResult::Issued,
+        Err(_) => TelemetryProvisioningResult::Unavailable,
+    }
+}
+
+async fn run_text_login(
+    client: &reqwest::Client,
+    client_id: &str,
+    control_plane: &AuthenticatedControlPlaneClient,
+) -> Result<String, CliError> {
     let authorization =
         auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
             .await
@@ -202,12 +257,14 @@ async fn run_text_login(client: &reqwest::Client, client_id: &str) -> Result<Str
         .await
         .map_err(auth_storage_error)?;
 
-    render_login_result(
+    let telemetry = provision_telemetry_credential(control_plane).await;
+    render_login_result_with_telemetry(
         &DeviceAuthFlowResult {
             authorization,
             stored_tokens,
         },
         AuthFormat::Text,
+        telemetry,
     )
     .map_err(unexpected_auth_command_error)
 }
@@ -216,6 +273,7 @@ async fn run_login_json(
     client: &reqwest::Client,
     client_id: &str,
     format: AuthFormat,
+    control_plane: &AuthenticatedControlPlaneClient,
 ) -> Result<String, CliError> {
     let authorization =
         auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
@@ -235,24 +293,16 @@ async fn run_login_json(
         .await
         .map_err(auth_storage_error)?;
 
-    render_login_result(
+    let telemetry = provision_telemetry_credential(control_plane).await;
+    render_login_result_with_telemetry(
         &DeviceAuthFlowResult {
             authorization,
             stored_tokens,
         },
         format,
+        telemetry,
     )
     .map_err(unexpected_auth_command_error)
-}
-
-fn resolve_login_client_id() -> Result<String> {
-    let cwd = std::env::current_dir()
-        .context("failed to determine current directory for auth config resolution")?;
-
-    Ok(config::resolve_auth_runtime_config(&cwd)?
-        .workos_client_id
-        .value
-        .unwrap_or_default())
 }
 
 fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Result<()> {
@@ -291,14 +341,18 @@ fn map_login_error(error: AuthError) -> CliError {
     CliError::user_with_source(user_error, error)
 }
 
-fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Result<String> {
+pub(crate) fn render_login_result_with_telemetry(
+    result: &DeviceAuthFlowResult,
+    format: AuthFormat,
+    telemetry: TelemetryProvisioningResult,
+) -> Result<String> {
     let expires_at_unix_seconds = result
         .stored_tokens
         .stored_at_unix_seconds
         .saturating_add(result.stored_tokens.expires_in);
 
     match format {
-        AuthFormat::Text => Ok(success("✓ Authentication succeeded.")),
+        AuthFormat::Text => Ok(render_login_text(telemetry)),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
@@ -312,18 +366,23 @@ fn render_login_result(result: &DeviceAuthFlowResult, format: AuthFormat) -> Res
             "stored_at_unix_seconds": result.stored_tokens.stored_at_unix_seconds,
             "expires_in_seconds": result.stored_tokens.expires_in,
             "expires_at_unix_seconds": expires_at_unix_seconds,
+            "telemetry_provisioning": telemetry_json(telemetry),
         }))
         .context("failed to serialize auth login report to JSON. Try: rerun 'sce auth login --format json'."),
     }
 }
 
-fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Result<String> {
+pub(crate) fn render_login_refresh_result_with_telemetry(
+    tokens: &StoredTokens,
+    format: AuthFormat,
+    telemetry: TelemetryProvisioningResult,
+) -> Result<String> {
     let expires_at_unix_seconds = tokens
         .stored_at_unix_seconds
         .saturating_add(tokens.expires_in);
 
     match format {
-        AuthFormat::Text => Ok(success("✓ Authentication succeeded.")),
+        AuthFormat::Text => Ok(render_login_text(telemetry)),
         AuthFormat::Json => serde_json::to_string_pretty(&json!({
             "status": "ok",
             "command": NAME,
@@ -335,9 +394,37 @@ fn render_login_refresh_result(tokens: &StoredTokens, format: AuthFormat) -> Res
             "stored_at_unix_seconds": tokens.stored_at_unix_seconds,
             "expires_in_seconds": tokens.expires_in,
             "expires_at_unix_seconds": expires_at_unix_seconds,
+            "telemetry_provisioning": telemetry_json(telemetry),
         }))
         .context("failed to serialize auth login renewal report to JSON. Try: rerun 'sce auth login --format json'."),
     }
+}
+
+fn render_login_text(telemetry: TelemetryProvisioningResult) -> String {
+    render_login_text_with_color_policy(telemetry, crate::services::style::supports_color())
+}
+
+fn render_login_text_with_color_policy(
+    telemetry: TelemetryProvisioningResult,
+    color_enabled: bool,
+) -> String {
+    let headline = crate::services::style::success_with_color_policy(
+        "✓ Authentication succeeded.",
+        color_enabled,
+    );
+    match telemetry {
+        TelemetryProvisioningResult::Issued => headline,
+        TelemetryProvisioningResult::Unavailable => {
+            format!("{}\nWarning: {}", headline, telemetry.message())
+        }
+    }
+}
+
+fn telemetry_json(telemetry: TelemetryProvisioningResult) -> serde_json::Value {
+    json!({
+        "status": telemetry.status(),
+        "message": telemetry.message(),
+    })
 }
 
 fn render_logout_result(deleted: bool, format: AuthFormat) -> Result<String> {
@@ -479,6 +566,145 @@ mod tests {
 
     fn storage_failure() -> TokenStorageError {
         TokenStorageError::Database("failed".to_string())
+    }
+
+    fn device_auth_result() -> DeviceAuthFlowResult {
+        DeviceAuthFlowResult {
+            authorization: auth::DeviceAuthorizationResponse {
+                device_code: "device-code".to_string(),
+                user_code: "ABCD-EFGH".to_string(),
+                verification_uri: "https://example.test/verify".to_string(),
+                verification_uri_complete: None,
+                expires_in: 600,
+                interval: Some(1),
+            },
+            stored_tokens: StoredTokens {
+                access_token: "workos-access".to_string(),
+                token_type: "Bearer".to_string(),
+                expires_in: 3600,
+                refresh_token: "workos-refresh".to_string(),
+                scope: None,
+                stored_at_unix_seconds: 100,
+            },
+        }
+    }
+
+    fn stored_tokens() -> StoredTokens {
+        device_auth_result().stored_tokens
+    }
+
+    #[tokio::test]
+    async fn valid_stored_credentials_are_provisioned_after_workos_persistence() {
+        let provision_calls = AtomicBool::new(false);
+        let tokens = stored_tokens();
+        let output = run_login_with_stored_credentials(
+            AuthFormat::Json,
+            Some(tokens.clone()),
+            |stored| async move {
+                assert_eq!(stored, tokens);
+                Ok(Some(stored))
+            },
+            || async {
+                provision_calls.store(true, Ordering::SeqCst);
+                TelemetryProvisioningResult::Issued
+            },
+            |_format| async { panic!("valid stored credentials must not use device login") },
+        )
+        .await
+        .expect("valid stored login should succeed");
+
+        assert!(provision_calls.load(Ordering::SeqCst));
+        assert!(output.contains("\"renewed\": true"));
+        assert!(output.contains("\"status\": \"issued\""));
+    }
+
+    #[tokio::test]
+    async fn renewed_stored_credentials_are_provisioned_after_workos_persistence() {
+        let provision_calls = AtomicBool::new(false);
+        let original = stored_tokens();
+        let renewed = StoredTokens {
+            access_token: "renewed-access".to_string(),
+            refresh_token: "renewed-refresh".to_string(),
+            ..original.clone()
+        };
+        let output = run_login_with_stored_credentials(
+            AuthFormat::Json,
+            Some(original),
+            |_stored| async move { Ok(Some(renewed)) },
+            || async {
+                provision_calls.store(true, Ordering::SeqCst);
+                TelemetryProvisioningResult::Issued
+            },
+            |_format| async { panic!("renewed stored credentials must not use device login") },
+        )
+        .await
+        .expect("renewed stored login should succeed");
+
+        assert!(provision_calls.load(Ordering::SeqCst));
+        assert!(output.contains("\"renewed\": true"));
+        assert!(output.contains("\"status\": \"issued\""));
+    }
+
+    #[tokio::test]
+    async fn missing_stored_credentials_use_device_login_result() {
+        let output = run_login_with_stored_credentials(
+            AuthFormat::Text,
+            None,
+            |_stored| async { unreachable!("there are no stored credentials") },
+            || async { unreachable!("device login owns provisioning") },
+            |_format| async { Ok("device-login-complete".to_string()) },
+        )
+        .await
+        .expect("device login should succeed");
+
+        assert_eq!(output, "device-login-complete");
+    }
+
+    #[test]
+    fn login_text_reports_telemetry_provisioning_success() {
+        let output =
+            render_login_text_with_color_policy(TelemetryProvisioningResult::Issued, false);
+
+        assert_eq!(output, "✓ Authentication succeeded.");
+        assert!(!output.contains(TELEMETRY_PROVISIONING_WARNING));
+    }
+
+    #[test]
+    fn login_text_reports_secret_free_telemetry_warning() {
+        let output = render_login_result_with_telemetry(
+            &device_auth_result(),
+            AuthFormat::Text,
+            TelemetryProvisioningResult::Unavailable,
+        )
+        .expect("text login output should render");
+
+        assert!(output.contains("Authentication succeeded."));
+        assert!(output.contains(TELEMETRY_PROVISIONING_WARNING));
+        assert!(!output.contains("workos-access"));
+        assert!(!output.contains("workos-refresh"));
+    }
+
+    #[test]
+    fn login_json_reports_telemetry_provisioning_status_and_message() {
+        let issued = render_login_result_with_telemetry(
+            &device_auth_result(),
+            AuthFormat::Json,
+            TelemetryProvisioningResult::Issued,
+        )
+        .expect("issued JSON login output should render");
+        let unavailable = render_login_refresh_result_with_telemetry(
+            &stored_tokens(),
+            AuthFormat::Json,
+            TelemetryProvisioningResult::Unavailable,
+        )
+        .expect("unavailable JSON login output should render");
+
+        assert!(issued.contains("\"status\": \"issued\""));
+        assert!(issued.contains(TELEMETRY_PROVISIONING_SUCCESS));
+        assert!(unavailable.contains("\"status\": \"unavailable\""));
+        assert!(unavailable.contains(TELEMETRY_PROVISIONING_WARNING));
+        assert!(!unavailable.contains("workos-access"));
+        assert!(!unavailable.contains("workos-refresh"));
     }
 
     #[tokio::test]
