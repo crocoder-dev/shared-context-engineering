@@ -116,13 +116,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: important — managed runtime now exports logs; observability contract must record logs scope and allowlist.
   - Context synchronization: synced
 
-- [ ] T04: `Prove managed exporter security, failure isolation, and hook parity` (status:todo)
+- [x] T04: `Prove managed exporter security, failure isolation, and hook parity` (status:done)
   - Task ID: T04
   - Scope: In — add the end-to-end controlled receiver and security regressions for bearer headers, endpoint pinning, ignored ambient overrides, redirect refusal, absent/expired credentials, stalled/refused receivers, bounded shutdown, concurrent execution, lock isolation, and hook output/exit/permission parity. Out — production collector access, metrics, credential provisioning changes, and a separate standalone telemetry mode.
   - Dependencies: T03
   - Done when: All managed exporter failure and exfiltration cases are covered by deterministic local tests, and every failure mode preserves existing CLI and hook behavior.
   - Verify: Named integration-test filters for managed export, endpoint security, shutdown, and hook parity; no test contacts a non-loopback collector.
-  - Context synchronization: pending
+  - Completed: 2026-10-14
+  - Files changed: `cli/src/app.rs`, `cli/src/services/managed_telemetry/trace_export.rs`, `context/plans/managed-otel-export.md`
+  - Result: Added loopback-only regressions: ambient `OTEL_EXPORTER_OTLP_*` endpoint/header/protocol overrides cannot redirect export or inject headers (alternate receiver never contacted, bearer-only on pinned paths); stalled receiver leaves command latency unaffected and shutdown bounded; concurrent commands keep isolated results and spans; hook invocations (including with leading flags) never resolve managed telemetry and disallowed resolution yields `Noop`. Existing tests already cover bearer/no-accessor, redirect refusal, refused receiver, and absent/expired/blank credentials.
+  - Verify results: `telemetry` filter tests passed (37); `app::` tests passed (13); clippy `--all-targets -D warnings` clean; `cargo fmt` applied. No test contacts a non-loopback collector.
+  - Context impact: minor — test-only additions; no runtime behavior change.
+  - Context synchronization: synced
 
 - [ ] T05: `Record the managed OTEL current-state and config contract` (status:todo)
   - Task ID: T05
