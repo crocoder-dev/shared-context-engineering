@@ -138,6 +138,17 @@ projection, and repository DB write. They verify the final Agent Trace JSON
 contains mutation-derived model/session provenance while direct evidence tables
 remain separate.
 
+## Commit patch ID helper
+
+`cli/src/services/hooks/commit_patch_id.rs` provides `compute_commit_patch_id(repository_root, commit_oid) -> Result<Option<String>>`, the canonical version-1 commit fingerprint for `agent_traces.commit_patch_id` ([agent-trace-db.md](agent-trace-db.md)). Post-commit does not call it yet; until it is wired, persisted rows carry `NULL`.
+
+- Input must be a 40-hex (SHA-1) or 64-hex (SHA-256) lowercase commit OID. `git rev-list --parents -n 1 <oid> --` decides the parent count; multi-parent merges return `Ok(None)` (no first-parent identity). An empty commit yields empty `patch-id` output and returns `Ok(None)`.
+- The fingerprint is the first column of `git patch-id --stable` over the full commit patch, independent of commit message, SHA, and parent. It is patch-equivalence evidence, not unique commit identity, and never derives from SCE's AI-attribution intersection patch.
+- Exact pinned invocation (no shell; `GIT_EXTERNAL_DIFF` and `GIT_DIFF_OPTS` removed from the environment):
+  - `git -c core.quotePath=true -c diff.noprefix=false -c diff.mnemonicPrefix=false -c diff.relative=false -c diff.context=3 -c diff.interHunkContext=0 -c diff.indentHeuristic=true -c diff.algorithm=myers -c diff.renames=false -c diff.suppressBlankEmpty=false -c diff.submodule=short -c diff.ignoreSubmodules=none -c color.ui=never -c color.diff=never -c log.showRoot=true -c log.showSignature=false show --format= --patch --binary --no-ext-diff --no-textconv --no-renames --no-color --diff-algorithm=myers --unified=3 --inter-hunk-context=0 --indent-heuristic --src-prefix=a/ --dst-prefix=b/ --no-relative -O/dev/null --root --no-show-signature --submodule=short --ignore-submodules=none <oid> --`
+  - stdout streamed into `git -c patchid.stable=true -c patchid.verbatim=false patch-id --stable`
+- Process safety: every subprocess is a `tokio::process::Command` with `kill_on_drop(true)` under one 10 s overall deadline; streamed patch input is capped at 64 MiB and `patch-id` output at 4 KiB; stderr is drained; both exit statuses are checked; output must be exactly one `<patch-id> <commit-id>` line of lowercase hex matching the OID length. Timeouts, limit breaches, non-zero exits, and malformed output return errors carrying only stage/status/limit text (no diff content or Git stderr), and dropping the future kills both children.
+
 ## Explicit non-goals in the current baseline
 
 - No checkpoint handoff file
