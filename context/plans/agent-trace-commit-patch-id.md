@@ -10,17 +10,17 @@ This extends existing `post-commit` → `RepositoryAgentTraceDb` → `AgentTrace
 
 How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
 
-- [ ] AC1: For a normal non-merge commit, the captured fingerprint equals the first column of `git patch-id --stable` applied to the commit's entire canonical binary-capable Git patch (the documented pinned invocation); changing only the commit message, or replaying an equivalent patch onto another parent, does not change the fingerprint; user Git diff configuration (prefixes, path quoting, diff algorithm, context, color, external diff/textconv) does not change it.
+- [x] AC1: For a normal non-merge commit, the captured fingerprint equals the first column of `git patch-id --stable` applied to the commit's entire canonical binary-capable Git patch (the documented pinned invocation); changing only the commit message, or replaying an equivalent patch onto another parent, does not change the fingerprint; user Git diff configuration (prefixes, path quoting, diff algorithm, context, color, external diff/textconv) does not change it.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` using temporary Git repositories covering commit-message amend, equivalent cherry-pick/rebase, root commit, and user diff-configuration variations (guard with `-- --list` that the filter matches at least one test).
-- [ ] AC2: Empty commits and multi-parent merge commits yield a `None` fingerprint; binary-only and rename-only commits produce deterministic fingerprints. A failed, malformed-output, oversized, or timed-out Git subprocess returns an error (surfaced as a sanitized warning) without panicking, leaking a child process, or blocking indefinitely, and the original Agent Trace row is still persisted with `commit_patch_id IS NULL`.
+- [x] AC2: Empty commits and multi-parent merge commits yield a `None` fingerprint; binary-only and rename-only commits produce deterministic fingerprints. A failed, malformed-output, oversized, or timed-out Git subprocess returns an error (surfaced as a sanitized warning) without panicking, leaking a child process, or blocking indefinitely, and the original Agent Trace row is still persisted with `commit_patch_id IS NULL`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` with binary, rename, empty, merge, error, malformed-output, size-limit, and timeout cases; assert `None` for empty/merge and an error/diagnostic for actual failures.
-- [ ] AC3: An existing repository Agent Trace database at migration `006_mutation_trace_health_invariant` upgrades through `sce setup` to `007_commit_patch_id`, retaining existing trace rows, IDs, URLs, and `trace_json`; old rows have `commit_patch_id IS NULL`. Repeated setup is idempotent. Hook runtime never runs migrations and reports `Run 'sce setup'.` guidance for a pre-007 schema; `sce doctor` reports the schema as not ready until setup runs.
+- [x] AC3: An existing repository Agent Trace database at migration `006_mutation_trace_health_invariant` upgrades through `sce setup` to `007_commit_patch_id`, retaining existing trace rows, IDs, URLs, and `trace_json`; old rows have `commit_patch_id IS NULL`. Repeated setup is idempotent. Hook runtime never runs migrations and reports `Run 'sce setup'.` guidance for a pre-007 schema; `sce doctor` reports the schema as not ready until setup runs.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` against a pre-007 database fixture, inspecting `PRAGMA table_info(agent_traces)`, the `__sce_migrations` ledger, unchanged rows, and hook/doctor readiness results.
-- [ ] AC4: Successful post-commit Agent Trace insertion persists the exact captured `commit_id` and its nullable `commit_patch_id` in the same SQL insert, without changing or reserializing the Agent Trace JSON for fingerprint purposes.
+- [x] AC4: Successful post-commit Agent Trace insertion persists the exact captured `commit_id` and its nullable `commit_patch_id` in the same SQL insert, without changing or reserializing the Agent Trace JSON for fingerprint purposes.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` asserting local database values for successful and unavailable fingerprints and byte-identical `trace_json` versus the pre-change serialization path.
-- [ ] AC5: `AgentTraceExportReader::read_agent_traces_after()` returns the stored optional patch ID unchanged; serialized export rows contain `commitPatchId` (string or `null`) and preserve existing fields, `traceJson` bytes, and `sourceRowId` ordering.
+- [x] AC5: `AgentTraceExportReader::read_agent_traces_after()` returns the stored optional patch ID unchanged; serialized export rows contain `commitPatchId` (string or `null`) and preserve existing fields, `traceJson` bytes, and `sourceRowId` ordering.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` asserting query mapping, JSON serialization, and `traceJson` byte preservation for rows with and without fingerprints.
-- [ ] AC6: `sce sync` and post-commit auto-sync send `commitPatchId` on the existing `agent_traces` batch payload, without introducing a fourth remotely uploaded stream, a new cursor, or changes to `/state`, retry, or conflict behavior. Previously acknowledged rows are not replayed because of this migration.
+- [x] AC6: `sce sync` and post-commit auto-sync send `commitPatchId` on the existing `agent_traces` batch payload, without introducing a fourth remotely uploaded stream, a new cursor, or changes to `/state`, retry, or conflict behavior. Previously acknowledged rows are not replayed because of this migration.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces` plus a captured local HTTP ingestion request assertion for `rows[*].commitPatchId`, cursor advancement, and no replay of rows at or below the server cursor.
 
 ### Full validation
@@ -109,14 +109,53 @@ How this plan is proven complete. Each criterion is observable and names the che
   - Deviation: the fingerprint is computed in the production wrapper and the `_with` seam receives the resolved `Option<&str>`; persistence is asserted through the seam's capturing insert closure (real-DB `Some`/`None` insert coverage already exists from T01).
   - Context synchronization: synced
 
-- [ ] T04: `Export commitPatchId through the existing agent_traces sync stream` (status:todo)
+- [x] T04: `Export commitPatchId through the existing agent_traces sync stream` (status:done)
   - Task ID: T04
   - Scope: In — `AgentTraceAgentTraceExportRow.commit_patch_id: Option<String>`, `SELECT_AGENT_TRACES_AFTER_SQL` and `agent_trace_export_row_from_turso`, JSON serialization, captured HTTP sync assertions in the `sync.rs` tests, and the `agent-trace-export-readers.md` / `agent-trace-sync-command.md` updates (release dependency, no backfill, upgrade/downgrade). Out — sync-engine rewrite, Control Plane migration/API code, historical backfill.
   - Dependencies: T01, T03
   - Done when: The stored value is emitted as `commitPatchId` in the existing `agent_traces` ingestion batch; strings and nulls round-trip; `traceJson` remains raw; the three-stream protocol and authoritative server cursors are unchanged and pre-acknowledged rows are not resent; deployment and backfill limitations are documented.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces`.
-  - Context synchronization: pending
+  - Completed: 2026-10-15
+  - Files changed: `cli/src/services/agent_trace_export/mod.rs`, `cli/src/services/sync/sync.rs`, `context/sce/agent-trace-export-readers.md`, `context/cli/agent-trace-sync-command.md`, `context/plans/agent-trace-commit-patch-id.md`
+  - Result: `AgentTraceAgentTraceExportRow` gained `commit_patch_id: Option<String>` (serialized as always-present `commitPatchId`, string or `null`); `SELECT_AGENT_TRACES_AFTER_SQL` selects `commit_patch_id` as column 7 and `agent_trace_export_row_from_turso` maps it. New test `read_agent_traces_after_exports_commit_patch_id_with_raw_trace_json` covers `Some`/`None` mapping, JSON `commitPatchId` string/explicit `null`, raw non-canonical `traceJson` bytes, and `sourceRowId` order. In `sync.rs` `contract_tests`, `start_control_plane` now delegates to `start_control_plane_with_agent_traces_cursor(i64)` and client construction moved into a `test_client` helper; new test `sync_sends_commit_patch_id_on_agent_traces_batch_without_replaying_acknowledged_rows` seeds three traces with server `agentTraces` cursor 1 and asserts the captured HTTP batch sends only rows 2–3 on the `agent_traces` stream with `commitPatchId` string and `null`, raw `traceJson`, and cursor advancement 1 → 3. Per user instruction, doc comments on the export-row DTOs, `AgentTraceExportReader`, and its `read_*_after` methods were removed; no new code comments were added. Context docs describe the export field, release dependency, no-backfill behavior, and upgrade/downgrade.
+  - Verify outcome: `... test commit_patch_id` passed (21 passed, 0 failed; 2 new + 19 from T01–T03, so the filter is non-empty); `... test sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces` passed (1 passed). Additional: `... test sync` passed (37 passed); `... clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` clean; `cargo fmt` applied.
+  - Context impact: localized — `context/sce/agent-trace-export-readers.md` (optional `commitPatchId` export field) and `context/cli/agent-trace-sync-command.md` (field on existing `agent_traces` stream, unchanged cursor protocol, Control Plane release dependency, no backfill, upgrade/downgrade) updated.
+  - Deviation: none.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The plan limits implementation to the SCE CLI and uses the previously agreed optional `commitPatchId` contract; the Control Plane rollout dependency, setup-required upgrade window, and lack of historical backfill are explicit constraints rather than unresolved design questions.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-15
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (606 passed, 0 failed)
+- `nix flake check` -> exit 0 (cli-clippy, cli-fmt, cli-tests: all checks passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id -- --list` -> exit 0 (filter matches 21 tests)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` -> exit 0 (21 passed, 0 failed, 585 filtered out)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces` -> exit 0 (1 passed)
+- `rg -n 'dbg!|todo!|unimplemented!|eprintln!\("DEBUG|XXX'` over changed CLI source files -> exit 1 (no debug leftovers); `git status --short` shows no untracked temporary files
+
+### Success-criteria verification
+
+- [x] AC1: Canonical `git patch-id --stable` fingerprint, stable across message amend, equivalent cherry-pick, and user diff configuration -> `commit_patch_id_matches_canonical_invocation_for_root_and_normal_commits`, `commit_patch_id_is_stable_across_message_amend_and_equivalent_cherry_pick`, `commit_patch_id_ignores_user_diff_configuration`, `commit_patch_id_supports_sha256_repositories` passed
+- [x] AC2: Empty/merge -> `None`; binary/rename deterministic; failures, malformed output, size limits, and timeouts return bounded errors, warn, and persist `NULL` -> `commit_patch_id_is_none_for_empty_and_merge_commits`, `commit_patch_id_is_deterministic_for_binary_and_rename_only_commits`, `commit_patch_id_reports_non_zero_git_exit`, `commit_patch_id_reports_malformed_patch_id_output`, `commit_patch_id_parser_rejects_malformed_output`, `commit_patch_id_enforces_patch_input_and_output_byte_limits`, `commit_patch_id_times_out_and_kills_both_git_processes`, `commit_patch_id_failure_logs_sanitized_warning_and_persists_null` passed
+- [x] AC3: Pre-007 database upgrades through setup to `007_commit_patch_id`, preserving rows; idempotent; hook runtime and doctor refuse pre-007 schema -> `commit_patch_id_setup_upgrades_pre_007_database_and_preserves_rows`, `commit_patch_id_hook_runtime_and_doctor_refuse_pre_007_database` passed
+- [x] AC4: Post-commit insert persists exact `commit_id` and nullable `commit_patch_id` without changing `trace_json` -> `commit_patch_id_is_attached_to_post_commit_insert_without_changing_trace_json`, `commit_patch_id_insert_persists_present_and_absent_values`, `commit_patch_id_does_not_mask_agent_trace_validation_or_persistence_failures` passed
+- [x] AC5: Export reader returns stored patch ID; `commitPatchId` serialized as string or `null`; `traceJson` bytes and `sourceRowId` order preserved -> `read_agent_traces_after_exports_commit_patch_id_with_raw_trace_json` passed
+- [x] AC6: Sync sends `commitPatchId` on existing `agent_traces` batch, three streams only, cursor advances, acknowledged rows not replayed -> `sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces` and `sync_sends_commit_patch_id_on_agent_traces_batch_without_replaying_acknowledged_rows` passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Release dependency: the Control Plane receiver must accept and persist optional `commitPatchId` before this SCE export ships; acknowledged rows are never re-sent and there is no historical backfill.
+- After upgrading, repository hook writes fail open until `sce setup` reruns to apply migration `007`; older CLI binaries may reject the newer migration ledger on downgrade.
+- Setup-path migration parity is covered through the private storage open functions rather than an end-to-end `sce setup` invocation (T01 deviation).
