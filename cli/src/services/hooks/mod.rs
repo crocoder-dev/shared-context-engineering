@@ -2,6 +2,8 @@ use anyhow::Context;
 
 mod claude_transforms;
 mod commit_hooks;
+#[cfg_attr(not(test), allow(dead_code))]
+mod commit_patch_id;
 mod conversation_trace;
 mod diff_trace;
 
