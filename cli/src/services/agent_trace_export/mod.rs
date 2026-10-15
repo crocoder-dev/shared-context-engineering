@@ -51,7 +51,6 @@ pub fn validate_js_safe_integer(value: i64) -> Result<()> {
     Ok(())
 }
 
-/// Owned, wire-compatible export row for the `messages` capture stream.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceMessageExportRow {
@@ -62,7 +61,6 @@ pub struct AgentTraceMessageExportRow {
     pub generated_at_unix_ms: i64,
 }
 
-/// Owned, wire-compatible export row for the `parts` capture stream.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTracePartExportRow {
@@ -75,7 +73,6 @@ pub struct AgentTracePartExportRow {
     pub generated_at_unix_ms: i64,
 }
 
-/// Owned, wire-compatible export row for the `diff_traces` capture stream.
 #[allow(
     dead_code,
     reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
@@ -93,7 +90,6 @@ pub struct AgentTraceDiffTraceExportRow {
     pub payload_type: String,
 }
 
-/// Owned, wire-compatible export row for the `agent_traces` capture stream.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceAgentTraceExportRow {
@@ -104,6 +100,7 @@ pub struct AgentTraceAgentTraceExportRow {
     pub trace_json: String,
     pub url: String,
     pub remote_url: Option<String>,
+    pub commit_patch_id: Option<String>,
 }
 
 const SELECT_MESSAGES_AFTER_SQL: &str =
@@ -132,16 +129,12 @@ ORDER BY id ASC
 LIMIT ?2";
 
 const SELECT_AGENT_TRACES_AFTER_SQL: &str =
-    "SELECT id, agent_trace_id, commit_id, commit_time_ms, trace_json, url, remote_url
+    "SELECT id, agent_trace_id, commit_id, commit_time_ms, trace_json, url, remote_url, commit_patch_id
 FROM agent_traces
 WHERE id > ?1
 ORDER BY id ASC
 LIMIT ?2";
 
-/// Read-only incremental export reader over one repository-scoped Agent Trace
-/// database. Holds no local cursor, performs no mutation, and makes no
-/// network calls; the caller supplies the last server-accepted `id` as
-/// `cursor` on every call.
 pub struct AgentTraceExportReader<'a> {
     db: &'a RepositoryAgentTraceDb,
 }
@@ -151,8 +144,6 @@ impl<'a> AgentTraceExportReader<'a> {
         Self { db }
     }
 
-    /// Read `messages` rows with `id > cursor`, ordered by `id ASC`, capped
-    /// at `limit`.
     pub async fn read_messages_after(
         &self,
         cursor: i64,
@@ -178,8 +169,6 @@ impl<'a> AgentTraceExportReader<'a> {
         Ok(rows)
     }
 
-    /// Read `parts` rows with `id > cursor`, ordered by `id ASC`, capped at
-    /// `limit`.
     pub async fn read_parts_after(
         &self,
         cursor: i64,
@@ -205,9 +194,6 @@ impl<'a> AgentTraceExportReader<'a> {
         Ok(rows)
     }
 
-    /// Read `diff_traces` rows with `id > cursor`, ordered by `id ASC`,
-    /// capped at `limit`. `patch` and `payload_type` are returned raw and
-    /// unmodified: no patch parsing or normalization is performed.
     #[allow(
         dead_code,
         reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
@@ -237,9 +223,6 @@ impl<'a> AgentTraceExportReader<'a> {
         Ok(rows)
     }
 
-    /// Read `agent_traces` rows with `id > cursor`, ordered by `id ASC`,
-    /// capped at `limit`. `trace_json` is returned as the exact raw string
-    /// from `SQLite`: no parse/reserialize is performed.
     pub async fn read_agent_traces_after(
         &self,
         cursor: i64,
@@ -337,6 +320,9 @@ fn agent_trace_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceAgent
         remote_url: row
             .get(6)
             .context("failed to read agent_traces.remote_url")?,
+        commit_patch_id: row
+            .get(7)
+            .context("failed to read agent_traces.commit_patch_id")?,
     })
 }
 
@@ -353,4 +339,61 @@ fn message_role_from_column(value: &str) -> Result<MessageRole> {
 /// parameter requires.
 fn limit_as_i64(limit: usize) -> i64 {
     i64::try_from(limit).expect("validated limit should fit in i64")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentTraceExportReader;
+    use crate::services::agent_trace_db::transaction_tests::open;
+    use crate::services::agent_trace_db::AgentTraceInsert;
+
+    const RAW_TRACE_JSON: &str = "{\"b\": 1,\n  \"a\":2 }";
+    const PATCH_ID: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[tokio::test]
+    async fn read_agent_traces_after_exports_commit_patch_id_with_raw_trace_json() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open(&dir.path().join("agent-trace.db")).await;
+        for (commit_id, commit_patch_id) in [("with", Some(PATCH_ID)), ("without", None)] {
+            db.insert_agent_trace(AgentTraceInsert {
+                commit_id,
+                commit_time_ms: 1,
+                trace_json: RAW_TRACE_JSON,
+                agent_trace_id: commit_id,
+                url: "https://example.test/trace",
+                remote_url: "https://example.test/repo.git",
+                commit_patch_id,
+            })
+            .await
+            .expect("insert agent trace");
+        }
+
+        let rows = AgentTraceExportReader::new(&db)
+            .read_agent_traces_after(0, 100)
+            .await
+            .expect("read agent traces");
+
+        let ids: Vec<i64> = rows.iter().map(|row| row.source_row_id).collect();
+        assert_eq!(ids, [1, 2]);
+        assert_eq!(rows[0].commit_patch_id.as_deref(), Some(PATCH_ID));
+        assert_eq!(rows[1].commit_patch_id, None);
+        assert!(rows.iter().all(|row| row.trace_json == RAW_TRACE_JSON));
+
+        let serialized: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| serde_json::to_value(row).expect("serialize row"))
+            .collect();
+        assert_eq!(serialized[0]["commitPatchId"], PATCH_ID);
+        assert!(serialized[1]
+            .as_object()
+            .expect("row object")
+            .get("commitPatchId")
+            .is_some_and(serde_json::Value::is_null));
+        assert!(serialized
+            .iter()
+            .all(|row| row["traceJson"] == RAW_TRACE_JSON
+                && row["commitId"].is_string()
+                && row["sourceRowId"].is_i64()
+                && row["remoteUrl"] == "https://example.test/repo.git"));
+    }
 }

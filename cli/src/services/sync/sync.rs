@@ -1345,6 +1345,12 @@ mod contract_tests {
     type CapturedRequests = Arc<Mutex<Vec<(String, Value)>>>;
 
     fn start_control_plane() -> (String, CapturedRequests) {
+        start_control_plane_with_agent_traces_cursor(0)
+    }
+
+    fn start_control_plane_with_agent_traces_cursor(
+        agent_traces_cursor: i64,
+    ) -> (String, CapturedRequests) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind control plane");
         let base_url = format!("http://{}", listener.local_addr().expect("server addr"));
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -1387,7 +1393,7 @@ mod contract_tests {
                         "messages": 0,
                         "parts": 0,
                         "diffTraces": DIFF_TRACES_CURSOR,
-                        "agentTraces": 0,
+                        "agentTraces": agent_traces_cursor,
                     }})
                 } else {
                     let rows = body["rows"].as_array().cloned().unwrap_or_default();
@@ -1410,6 +1416,19 @@ mod contract_tests {
             }
         });
         (base_url, requests)
+    }
+
+    fn test_client(base_url: String) -> AuthenticatedControlPlaneClient<FixedCredentialStore> {
+        AuthenticatedControlPlaneClient::with_credential_store(
+            reqwest::Client::builder()
+                .tls_certs_only(Vec::new())
+                .build()
+                .expect("test http client"),
+            base_url,
+            "http://127.0.0.1:1",
+            "client",
+            FixedCredentialStore,
+        )
     }
 
     #[tokio::test]
@@ -1443,16 +1462,7 @@ mod contract_tests {
         .expect("insert diff trace");
 
         let (base_url, requests) = start_control_plane();
-        let client = AuthenticatedControlPlaneClient::with_credential_store(
-            reqwest::Client::builder()
-                .tls_certs_only(Vec::new())
-                .build()
-                .expect("test http client"),
-            base_url,
-            "http://127.0.0.1:1",
-            "client",
-            FixedCredentialStore,
-        );
+        let client = test_client(base_url);
         let reader = AgentTraceExportReader::new(&db);
         let mut reporter = NoopProgressReporter;
 
@@ -1479,5 +1489,74 @@ mod contract_tests {
             DIFF_TRACES_CURSOR
         );
         assert_eq!(report.streams.diff_traces.final_cursor, DIFF_TRACES_CURSOR);
+    }
+
+    #[tokio::test]
+    async fn sync_sends_commit_patch_id_on_agent_traces_batch_without_replaying_acknowledged_rows()
+    {
+        const PATCH_ID: &str = "0123456789abcdef0123456789abcdef01234567";
+        const RAW_TRACE_JSON: &str = "{\"b\": 1,\n  \"a\":2 }";
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open(&dir.path().join("agent-trace.db")).await;
+        for (commit_id, commit_patch_id) in [
+            ("acknowledged", Some(PATCH_ID)),
+            ("with", Some(PATCH_ID)),
+            ("without", None),
+        ] {
+            db.insert_agent_trace(AgentTraceInsert {
+                commit_id,
+                commit_time_ms: 1,
+                trace_json: RAW_TRACE_JSON,
+                agent_trace_id: commit_id,
+                url: "https://example.test/trace",
+                remote_url: "https://example.test/repo.git",
+                commit_patch_id,
+            })
+            .await
+            .expect("insert agent trace");
+        }
+
+        let (base_url, requests) = start_control_plane_with_agent_traces_cursor(1);
+        let client = test_client(base_url);
+        let reader = AgentTraceExportReader::new(&db);
+        let mut reporter = NoopProgressReporter;
+
+        let report = run_sync_async("repo", "source", &reader, &client, &mut reporter)
+            .await
+            .expect("sync converges");
+
+        let requests = requests.lock().expect("requests lock").clone();
+        let mut streams: Vec<&str> = requests
+            .iter()
+            .filter(|(path, _)| path.ends_with("/batch"))
+            .map(|(_, body)| body["stream"].as_str().expect("stream field"))
+            .collect();
+        streams.sort_unstable();
+        assert_eq!(streams, ["agent_traces"]);
+
+        let rows: Vec<Value> = requests
+            .iter()
+            .filter(|(path, body)| path.ends_with("/batch") && body["stream"] == "agent_traces")
+            .flat_map(|(_, body)| body["rows"].as_array().cloned().unwrap_or_default())
+            .collect();
+        let source_row_ids: Vec<i64> = rows
+            .iter()
+            .map(|row| row["sourceRowId"].as_i64().expect("sourceRowId"))
+            .collect();
+        assert_eq!(source_row_ids, [2, 3]);
+        assert_eq!(rows[0]["commitPatchId"], PATCH_ID);
+        assert!(rows[1]
+            .as_object()
+            .expect("row object")
+            .get("commitPatchId")
+            .is_some_and(Value::is_null));
+        assert!(rows
+            .iter()
+            .all(|row| row["traceJson"] == RAW_TRACE_JSON && row["commitId"].is_string()));
+
+        assert_eq!(report.streams.agent_traces.initial_cursor, 1);
+        assert_eq!(report.streams.agent_traces.final_cursor, 3);
+        assert_eq!(report.streams.agent_traces.uploaded, 2);
     }
 }

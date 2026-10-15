@@ -50,6 +50,8 @@ and validates, per returned row before returning:
 
 Each stream has an owned `serde::Serialize` export-row DTO (`AgentTraceMessageExportRow`, `AgentTracePartExportRow`, `AgentTraceDiffTraceExportRow`, `AgentTraceAgentTraceExportRow`) with `#[serde(rename_all = "camelCase")]` matching the shipped control-plane ingestion contract; `sourceRowId` is the local `id` unmodified. `post_commit_patch_intersections` is not exported by any reader method.
 
+`AgentTraceAgentTraceExportRow` carries `commit_patch_id: Option<String>`, read from the nullable `agent_traces.commit_patch_id` column (migration `007_commit_patch_id`, see [agent-trace-db.md](agent-trace-db.md)) and returned unchanged. It always serializes as `commitPatchId`: a lowercase hex Git patch ID string, or `null` when the post-commit fingerprint was unavailable (empty commit, merge commit, helper failure) or the row predates migration `007`. The field is never omitted, and adding it does not change `traceJson` bytes, the other existing fields, or `sourceRowId` ordering.
+
 ## Compatibility window
 
 The reader still exposes all four `read_*_after` methods, but `sce sync` consumes only three. `read_diff_traces_after` and `AgentTraceDiffTraceExportRow` are deferred-cleanup surfaces with no active caller: `diff_traces` is a local-only capture stream that is no longer uploaded. They keep their signature, validation, and serialization until the compatibility-removal phase described in [agent-trace-sync-command.md](../cli/agent-trace-sync-command.md#release-gate).

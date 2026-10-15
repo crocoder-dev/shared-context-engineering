@@ -53,6 +53,14 @@ flowchart TD
 
 Phase 3 only stops new `diff_traces` batch ingestion and persistence. `/state.cursors.diffTraces` remains required through the compatibility window because the Phase 2 client decodes it as mandatory; a Control Plane that dropped it would break every Phase 2 client. Removing that cursor and the retained surfaces belongs to the later compatibility-removal phase, which removes them from both sides together. The decision is recorded in [Retire diff_traces from remote sync through a staged compatibility gate](../decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md).
 
+### Commit patch ID field
+
+Each `agent_traces` batch row carries an optional `commitPatchId` (lowercase hex Git patch ID or `null`, always present) taken unchanged from the local `agent_traces.commit_patch_id` column; see [agent-trace-export-readers.md](../sce/agent-trace-export-readers.md) and [agent-trace-hooks-command-routing.md](../sce/agent-trace-hooks-command-routing.md) for how it is captured. It rides the existing `agent_traces` stream: there is no fourth remote stream, no new cursor, and no change to `/state`, batch validation, retry, or conflict reconciliation.
+
+- **Release dependency:** a Control Plane receiver that accepts and persists optional `commitPatchId` must be deployed before releasing an SCE version that exports it. The current server decoder may strip an unknown field while still acknowledging the row, and acknowledged rows are never re-sent.
+- **No backfill:** rows the server acknowledged before the upgrade are not replayed, because sync resumes from the authoritative server cursor. Rows captured before migration `007` export `commitPatchId: null`. Re-sending historical fingerprints would require an explicit later backfill or change stream, not cursor rewinding.
+- **Upgrade/downgrade:** the column arrives through migration `007_commit_patch_id`, which only `sce setup` applies; until it reruns, repository hooks fail open and capture nothing, and an older CLI binary may reject the newer migration ledger (see [agent-trace-db.md](../sce/agent-trace-db.md)).
+
 ## No-local-persistence invariants
 
 Sync creates no local sync state anywhere on disk:
