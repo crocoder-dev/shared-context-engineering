@@ -1426,6 +1426,7 @@ mod contract_tests {
             agent_trace_id: "trace",
             url: "https://example.test/trace",
             remote_url: "https://example.test/repo.git",
+            commit_patch_id: None,
         })
         .await
         .expect("insert agent trace");

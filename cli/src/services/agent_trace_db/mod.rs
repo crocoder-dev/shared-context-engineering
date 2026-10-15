@@ -36,7 +36,6 @@ FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
 
-/// Parameterized SQL for inserting a post-commit patch intersection result.
 pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
     "INSERT INTO post_commit_patch_intersections (
     commit_id,
@@ -48,12 +47,9 @@ pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
     intersection_patch
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
-/// Parameterized SQL for inserting a built agent trace payload.
 pub const INSERT_AGENT_TRACE_SQL: &str =
-    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6)";
+    "INSERT INTO agent_traces (commit_id, commit_time_ms, trace_json, agent_trace_id, url, remote_url, commit_patch_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
-/// Parameterized SQL for inserting a message row. Duplicate
-/// `(session_id, message_id)` writes are ignored.
 pub const INSERT_MESSAGE_SQL: &str =
     "INSERT INTO messages (session_id, message_id, role, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4)
@@ -212,7 +208,6 @@ impl RecentDiffTracePatches {
     }
 }
 
-/// Post-commit patch intersection result to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PostCommitPatchIntersectionInsert<'a> {
     pub commit_id: &'a str,
@@ -224,7 +219,6 @@ pub struct PostCommitPatchIntersectionInsert<'a> {
     pub intersection_patch: &'a str,
 }
 
-/// Built agent trace payload to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentTraceInsert<'a> {
     pub commit_id: &'a str,
@@ -233,9 +227,9 @@ pub struct AgentTraceInsert<'a> {
     pub agent_trace_id: &'a str,
     pub url: &'a str,
     pub remote_url: &'a str,
+    pub commit_patch_id: Option<&'a str>,
 }
 
-/// Message role constraint for the `messages` table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MessageRole {
@@ -342,6 +336,7 @@ async fn insert_agent_trace_with<M: DbSpec>(
             input.agent_trace_id,
             input.url,
             input.remote_url,
+            input.commit_patch_id,
         ),
     )
     .await

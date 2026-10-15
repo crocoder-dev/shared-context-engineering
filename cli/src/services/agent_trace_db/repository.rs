@@ -397,8 +397,6 @@ impl RepositoryAgentTraceDb {
         insert_post_commit_patch_intersection_with(self, input).await
     }
 
-    /// Insert a built Agent Trace payload into the repository-scoped
-    /// `agent_traces` table.
     pub async fn insert_agent_trace(&self, input: AgentTraceInsert<'_>) -> Result<u64> {
         insert_agent_trace_with(self, input).await
     }

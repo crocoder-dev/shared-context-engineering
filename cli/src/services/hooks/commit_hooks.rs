@@ -310,6 +310,7 @@ where
         agent_trace_id: &agent_trace.id,
         url: &constructed_url,
         remote_url,
+        commit_patch_id: None,
     };
     persist_agent_trace(insert_input).await?;
 
