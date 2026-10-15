@@ -20,6 +20,7 @@ use crate::services::patch::{
 };
 use crate::services::sync::auto_sync;
 
+use super::commit_patch_id::compute_commit_patch_id;
 use super::runtime::{
     commit_msg_policy_gate_passed, current_unix_time_ms, open_agent_trace_db_for_hook_runtime,
     post_rewrite_no_op_reason, pre_commit_no_op_reason, read_hook_stdin, resolve_runtime_state,
@@ -164,13 +165,15 @@ where
         &PostCommitIntersectionFlowResult,
         Option<AgentTraceVcsType>,
         &str,
+        Option<&L>,
     ) -> Result<AgentTrace>,
     C: FnOnce(&Path) -> Result<bool>,
     Launch: FnOnce(&Path) -> Result<()>,
     K: std::ops::AsyncFnOnce(&Path) -> Result<()>,
 {
     let result = run_intersection_flow(repository_root).await?;
-    let _agent_trace = run_agent_trace_flow(repository_root, &result, vcs_type, remote_url).await?;
+    let _agent_trace =
+        run_agent_trace_flow(repository_root, &result, vcs_type, remote_url, logger).await?;
 
     if let Err(error) = run_passive_checkpoint(repository_root).await {
         if let Some(log) = logger {
@@ -204,11 +207,17 @@ pub(crate) async fn run_post_commit_passive_checkpoint(repository_root: &Path) -
     db.passive_checkpoint().await
 }
 
-pub(crate) async fn run_post_commit_agent_trace_flow(
+pub(crate) const COMMIT_PATCH_ID_UNAVAILABLE_EVENT: &str =
+    "sce.agent_trace.commit_patch_id_unavailable";
+
+pub(crate) async fn run_post_commit_agent_trace_flow<
+    L: crate::services::observability::traits::Logger,
+>(
     repository_root: &Path,
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
+    logger: Option<&L>,
 ) -> Result<AgentTrace> {
     let mut db = open_agent_trace_db_for_hook_runtime(
         repository_root,
@@ -229,11 +238,19 @@ pub(crate) async fn run_post_commit_agent_trace_flow(
         )
         .await;
 
+    let commit_patch_id = resolve_post_commit_commit_patch_id(
+        repository_root,
+        &flow_result.post_commit_data.commit_oid,
+        logger,
+    )
+    .await;
+
     run_post_commit_agent_trace_flow_with(
         flow_result,
         vcs_type,
         remote_url,
         &mutation_ai_patch,
+        commit_patch_id.as_deref(),
         |trace_value| {
             validate_agent_trace_value(trace_value)
                 .map_err(|error| anyhow!(error.to_string()))
@@ -252,11 +269,37 @@ pub(crate) async fn run_post_commit_agent_trace_flow(
     .await
 }
 
+pub(crate) async fn resolve_post_commit_commit_patch_id<
+    L: crate::services::observability::traits::Logger,
+>(
+    repository_root: &Path,
+    commit_oid: &str,
+    logger: Option<&L>,
+) -> Option<String> {
+    match compute_commit_patch_id(repository_root, commit_oid).await {
+        Ok(commit_patch_id) => commit_patch_id,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    COMMIT_PATCH_ID_UNAVAILABLE_EVENT,
+                    &format!(
+                        "Commit patch ID unavailable; persisting Agent Trace without it: {error}"
+                    ),
+                    &[],
+                    None,
+                );
+            }
+            None
+        }
+    }
+}
+
 pub(crate) async fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
     mutation_ai_patch: &ParsedPatch,
+    commit_patch_id: Option<&str>,
     validate_agent_trace: V,
     persist_agent_trace: I,
 ) -> Result<AgentTrace>
@@ -310,7 +353,7 @@ where
         agent_trace_id: &agent_trace.id,
         url: &constructed_url,
         remote_url,
-        commit_patch_id: None,
+        commit_patch_id,
     };
     persist_agent_trace(insert_input).await?;
 
@@ -691,4 +734,286 @@ pub(crate) fn capture_head_patch_from_git(repository_root: &Path) -> Result<Stri
 
 pub(crate) fn post_commit_patch_error(detail: &str, context: &str) -> String {
     format!("Post-commit patch capture error: {detail} ({context}).")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::RefCell;
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    use anyhow::{anyhow, Result};
+
+    use crate::services::agent_trace::{validate_agent_trace_value, AgentTrace};
+    use crate::services::agent_trace_db::AgentTraceInsert;
+    use crate::services::error::CliError;
+    use crate::services::observability::traits::Logger;
+    use crate::services::patch::ParsedPatch;
+
+    use super::super::commit_patch_id::compute_commit_patch_id;
+    use super::{
+        capture_post_commit_patch_from_git, resolve_post_commit_commit_patch_id,
+        run_post_commit_agent_trace_flow_with, PostCommitIntersectionFlowResult,
+        COMMIT_PATCH_ID_UNAVAILABLE_EVENT,
+    };
+
+    const REMOTE_URL: &str = "https://example.invalid/repo.git";
+    const SECRET_FILE_CONTENT: &str = "commit-patch-id-secret-line";
+    const UNKNOWN_COMMIT_OID: &str = "1111111111111111111111111111111111111111";
+    const TRACE_ID_PLACEHOLDER: &str = "<agent-trace-id>";
+
+    #[derive(Default)]
+    struct RecordingLogger {
+        warnings: Mutex<Vec<(String, String)>>,
+    }
+
+    impl RecordingLogger {
+        fn warnings(&self) -> Vec<(String, String)> {
+            self.warnings.lock().unwrap().clone()
+        }
+    }
+
+    impl Logger for RecordingLogger {
+        fn info(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn debug(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn warn(&self, event_id: &str, message: &str, _: &[(&str, &str)], _: Option<&str>) {
+            self.warnings
+                .lock()
+                .unwrap()
+                .push((event_id.to_string(), message.to_string()));
+        }
+        fn error(&self, _: &str, _: &str, _: &[(&str, &str)], _: Option<&str>) {}
+        fn log_cli_error(&self, _: &CliError, _: Option<&str>) {}
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct CapturedInsert {
+        commit_id: String,
+        commit_time_ms: i64,
+        trace_json: String,
+        agent_trace_id: String,
+        remote_url: String,
+        commit_patch_id: Option<String>,
+    }
+
+    impl CapturedInsert {
+        fn from_insert(insert: &AgentTraceInsert<'_>) -> Self {
+            Self {
+                commit_id: insert.commit_id.to_string(),
+                commit_time_ms: insert.commit_time_ms,
+                trace_json: insert.trace_json.to_string(),
+                agent_trace_id: insert.agent_trace_id.to_string(),
+                remote_url: insert.remote_url.to_string(),
+                commit_patch_id: insert.commit_patch_id.map(str::to_string),
+            }
+        }
+    }
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("git command should run");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("git output is UTF-8")
+            .trim()
+            .to_string()
+    }
+
+    fn init_repository_with_commit(root: &Path) -> String {
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["config", "user.email", "patch-id@example.invalid"]);
+        git(root, &["config", "user.name", "Patch Id Test"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "one\n").expect("write a.txt");
+        git(root, &["add", "a.txt"]);
+        git(root, &["commit", "-q", "-m", "root"]);
+        std::fs::write(root.join("a.txt"), format!("one\n{SECRET_FILE_CONTENT}\n"))
+            .expect("write a.txt");
+        git(root, &["commit", "-q", "-am", "change"]);
+        git(root, &["rev-parse", "HEAD"])
+    }
+
+    fn flow_result(root: &Path) -> PostCommitIntersectionFlowResult {
+        PostCommitIntersectionFlowResult {
+            combined_recent_patch: empty_patch(),
+            post_commit_data: capture_post_commit_patch_from_git(root)
+                .expect("post-commit patch capture"),
+            tool_name: None,
+            tool_version: None,
+        }
+    }
+
+    fn empty_patch() -> ParsedPatch {
+        ParsedPatch { files: Vec::new() }
+    }
+
+    async fn run_flow_capturing(
+        flow_result: &PostCommitIntersectionFlowResult,
+        commit_patch_id: Option<&str>,
+    ) -> (AgentTrace, CapturedInsert) {
+        let captured = RefCell::new(None);
+        let agent_trace = run_post_commit_agent_trace_flow_with(
+            flow_result,
+            None,
+            REMOTE_URL,
+            &empty_patch(),
+            commit_patch_id,
+            |trace_value| {
+                validate_agent_trace_value(trace_value).map_err(|error| anyhow!(error.to_string()))
+            },
+            async |insert: AgentTraceInsert<'_>| -> Result<()> {
+                *captured.borrow_mut() = Some(CapturedInsert::from_insert(&insert));
+                Ok(())
+            },
+        )
+        .await
+        .expect("post-commit agent trace flow");
+        let insert = captured.into_inner().expect("agent trace insert captured");
+        (agent_trace, insert)
+    }
+
+    fn normalized_trace_json(insert: &CapturedInsert) -> String {
+        insert
+            .trace_json
+            .replace(&insert.agent_trace_id, TRACE_ID_PLACEHOLDER)
+    }
+
+    #[tokio::test]
+    async fn commit_patch_id_is_attached_to_post_commit_insert_without_changing_trace_json() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        let commit_oid = init_repository_with_commit(root);
+        let flow_result = flow_result(root);
+        assert_eq!(flow_result.post_commit_data.commit_oid, commit_oid);
+
+        let logger = RecordingLogger::default();
+        let commit_patch_id =
+            resolve_post_commit_commit_patch_id(root, &commit_oid, Some(&logger)).await;
+        let expected = compute_commit_patch_id(root, &commit_oid)
+            .await
+            .expect("canonical patch id")
+            .expect("non-empty commit");
+        assert_eq!(commit_patch_id.as_deref(), Some(expected.as_str()));
+        assert!(logger.warnings().is_empty());
+
+        let (with_trace, with_id) = run_flow_capturing(&flow_result, Some(&expected)).await;
+        let (without_trace, without_id) = run_flow_capturing(&flow_result, None).await;
+
+        assert_eq!(with_id.commit_id, commit_oid);
+        assert_eq!(with_id.commit_patch_id.as_deref(), Some(expected.as_str()));
+        assert_eq!(without_id.commit_id, commit_oid);
+        assert_eq!(without_id.commit_patch_id, None);
+        assert_eq!(with_id.commit_time_ms, without_id.commit_time_ms);
+        assert_eq!(with_id.remote_url, REMOTE_URL);
+
+        for (agent_trace, insert) in [(&with_trace, &with_id), (&without_trace, &without_id)] {
+            assert_eq!(insert.agent_trace_id, agent_trace.id);
+            assert_eq!(
+                insert.trace_json,
+                format!("{}\n", serde_json::to_string_pretty(agent_trace).unwrap())
+            );
+        }
+        assert!(!with_id.trace_json.contains(&expected));
+        assert_eq!(
+            normalized_trace_json(&with_id),
+            normalized_trace_json(&without_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn commit_patch_id_is_none_without_warning_for_empty_post_commit() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        init_repository_with_commit(root);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "empty"]);
+        let empty_oid = git(root, &["rev-parse", "HEAD"]);
+
+        let logger = RecordingLogger::default();
+        let commit_patch_id =
+            resolve_post_commit_commit_patch_id(root, &empty_oid, Some(&logger)).await;
+
+        assert_eq!(commit_patch_id, None);
+        assert!(logger.warnings().is_empty());
+    }
+
+    #[tokio::test]
+    async fn commit_patch_id_failure_logs_sanitized_warning_and_persists_null() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        init_repository_with_commit(root);
+        let flow_result = flow_result(root);
+
+        let logger = RecordingLogger::default();
+        let commit_patch_id =
+            resolve_post_commit_commit_patch_id(root, UNKNOWN_COMMIT_OID, Some(&logger)).await;
+        assert_eq!(commit_patch_id, None);
+
+        let warnings = logger.warnings();
+        assert_eq!(warnings.len(), 1);
+        let (event_id, message) = &warnings[0];
+        assert_eq!(event_id, COMMIT_PATCH_ID_UNAVAILABLE_EVENT);
+        assert!(
+            message.starts_with("Commit patch ID unavailable; persisting Agent Trace without it: ")
+        );
+        assert!(!message.contains(SECRET_FILE_CONTENT));
+
+        let (_, insert) = run_flow_capturing(&flow_result, commit_patch_id.as_deref()).await;
+        assert_eq!(insert.commit_id, flow_result.post_commit_data.commit_oid);
+        assert_eq!(insert.commit_patch_id, None);
+    }
+
+    #[tokio::test]
+    async fn commit_patch_id_does_not_mask_agent_trace_validation_or_persistence_failures() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        init_repository_with_commit(root);
+        let flow_result = flow_result(root);
+        let commit_patch_id = "a".repeat(40);
+
+        let persisted = RefCell::new(false);
+        let validation_error = run_post_commit_agent_trace_flow_with(
+            &flow_result,
+            None,
+            REMOTE_URL,
+            &empty_patch(),
+            Some(&commit_patch_id),
+            |_| Err(anyhow!("validation rejected")),
+            async |_insert: AgentTraceInsert<'_>| -> Result<()> {
+                *persisted.borrow_mut() = true;
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("validation failure must propagate");
+        assert_eq!(
+            validation_error.to_string(),
+            "Failed to validate built post-commit Agent Trace payload."
+        );
+        assert!(!*persisted.borrow());
+
+        let persistence_error = run_post_commit_agent_trace_flow_with(
+            &flow_result,
+            None,
+            REMOTE_URL,
+            &empty_patch(),
+            Some(&commit_patch_id),
+            |_| Ok(()),
+            async |_insert: AgentTraceInsert<'_>| -> Result<()> {
+                Err(anyhow!("persistence rejected"))
+            },
+        )
+        .await
+        .expect_err("persistence failure must propagate");
+        assert_eq!(persistence_error.to_string(), "persistence rejected");
+    }
 }

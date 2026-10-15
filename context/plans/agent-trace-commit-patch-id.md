@@ -95,13 +95,19 @@ How this plan is proven complete. Each criterion is observable and names the che
   - Deviation: beyond the plan's minimum pinned options, also pinned `log.showRoot`/`--root` (otherwise `log.showRoot=false` suppresses root-commit diffs), `-O/dev/null` instead of an empty `diff.orderFile` (empty value makes `git show` fail), `--no-show-signature`, `--submodule=short`, `--ignore-submodules=none`, `--inter-hunk-context=0`, and `diff.suppressBlankEmpty`.
   - Context synchronization: synced
 
-- [ ] T03: `Attach the fingerprint to post-commit Agent Trace insertion` (status:todo)
+- [x] T03: `Attach the fingerprint to post-commit Agent Trace insertion` (status:done)
   - Task ID: T03
   - Scope: In — `run_post_commit_agent_trace_flow` and its `run_post_commit_agent_trace_flow_with` test seam, fingerprint-to-insert wiring, best-effort sanitized warning, local storage tests, and the `agent-trace-hooks-command-routing.md` update documenting the exact pinned invocation. Out — changing Agent Trace JSON, changing intersection capture signatures, sync transport.
   - Dependencies: T01, T02
   - Done when: The already-captured `commit_oid` is fingerprinted asynchronously after the intersection flow and before the Agent Trace database insert; the stored row carries the nullable ID without any change to `trace_json`; fingerprint errors log a sanitized warning and persist `NULL`; Agent Trace build, validation, and persistence failures keep their existing behavior.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` (hook/storage cases).
-  - Context synchronization: pending
+  - Completed: 2026-10-15
+  - Files changed: `cli/src/services/hooks/commit_hooks.rs`, `cli/src/services/hooks/mod.rs`, `context/sce/agent-trace-hooks-command-routing.md`, `context/plans/agent-trace-commit-patch-id.md`
+  - Result: `run_post_commit_subcommand_with`'s agent-trace closure type now also receives the post-commit `Option<&L>` logger, threaded into `run_post_commit_agent_trace_flow`. After mutation-AI patch resolution and before the insert, it calls new `resolve_post_commit_commit_patch_id(repository_root, &post_commit_data.commit_oid, logger)`, which returns the `compute_commit_patch_id` value or, on error, logs `Logger::warn` event `sce.agent_trace.commit_patch_id_unavailable` (`COMMIT_PATCH_ID_UNAVAILABLE_EVENT`) with `Commit patch ID unavailable; persisting Agent Trace without it: <helper error>` and returns `None`. `run_post_commit_agent_trace_flow_with` gained a `commit_patch_id: Option<&str>` parameter forwarded into `AgentTraceInsert.commit_patch_id`; trace build/validation/serialization are unchanged. Removed the T02 `#[cfg_attr(not(test), allow(dead_code))]` on `mod commit_patch_id`. Four new `commit_patch_id` tests in a new `commit_hooks` test module (temporary Git repositories, capturing persist closure, recording logger) cover: fingerprint attached with exact `commit_id`, and `trace_json` equal to the standard pretty serialization, free of the ID, and identical (modulo the per-run trace UUID) between `Some` and `None`; empty commit → `None` without warning; unknown-OID helper failure → one sanitized warning (no diff content) and `NULL` insert; validation and persistence errors still propagate unchanged. `agent-trace-hooks-command-routing.md` documents the wiring, the exact pinned invocation, `None` cases, bounds, and failure policy.
+  - Verify outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_patch_id` passed (19 passed, 0 failed; 4 new + 15 from T01/T02, so the filter is non-empty). Additional: `... test hooks` passed (49 passed); `... clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` clean; `cargo fmt` applied.
+  - Context impact: localized — `context/sce/agent-trace-hooks-command-routing.md` updated (post-commit fingerprint wiring, canonical pinned invocation, failure/warning policy).
+  - Deviation: the fingerprint is computed in the production wrapper and the `_with` seam receives the resolved `Option<&str>`; persistence is asserted through the seam's capturing insert closure (real-DB `Some`/`None` insert coverage already exists from T01).
+  - Context synchronization: synced
 
 - [ ] T04: `Export commitPatchId through the existing agent_traces sync stream` (status:todo)
   - Task ID: T04
