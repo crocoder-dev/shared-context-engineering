@@ -373,7 +373,9 @@ mod tests {
     };
 
     const FAKE_GIT_DEADLINE: Duration = Duration::from_millis(500);
+    #[cfg(target_os = "linux")]
     const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+    #[cfg(target_os = "linux")]
     const CHILD_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
     const FAKE_COMMIT_OID: &str = "1111111111111111111111111111111111111111";
     const FAKE_PARENT_OID: &str = "2222222222222222222222222222222222222222";
@@ -696,7 +698,9 @@ mod tests {
     struct FakeGit {
         _dir: tempfile::TempDir,
         script: PathBuf,
+        #[cfg(target_os = "linux")]
         show_pid: PathBuf,
+        #[cfg(target_os = "linux")]
         patch_id_pid: PathBuf,
     }
 
@@ -719,7 +723,9 @@ mod tests {
         FakeGit {
             _dir: dir,
             script,
+            #[cfg(target_os = "linux")]
             show_pid,
+            #[cfg(target_os = "linux")]
             patch_id_pid,
         }
     }
@@ -735,6 +741,7 @@ mod tests {
         compute_commit_patch_id_with(&runner, Path::new("."), FAKE_COMMIT_OID).await
     }
 
+    #[cfg(target_os = "linux")]
     async fn assert_process_exited(pid_file: &Path) {
         let pid = std::fs::read_to_string(pid_file).expect("pid file");
         let stat = PathBuf::from(format!("/proc/{}/stat", pid.trim()));
