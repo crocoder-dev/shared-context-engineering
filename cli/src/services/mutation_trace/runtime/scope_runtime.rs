@@ -312,7 +312,7 @@ fn recovery_required(
 fn protected_worktree_failure(error: ProtectedWorktreeError) -> AbandonScopeError {
     match error {
         ProtectedWorktreeError::GitDirResolution(source)
-        | ProtectedWorktreeError::CheckoutIdentity(source) => AbandonScopeError::Other(source),
+        | ProtectedWorktreeError::WorktreeIdentity(source) => AbandonScopeError::Other(source),
         ProtectedWorktreeError::LockAcquisition(source) => {
             AbandonScopeError::LockAcquisition(anyhow::Error::new(source))
         }

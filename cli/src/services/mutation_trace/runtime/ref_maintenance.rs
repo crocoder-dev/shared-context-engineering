@@ -203,7 +203,7 @@ fn failure_kind(error: &ReconcileError) -> &'static str {
     match error {
         ReconcileError::GitDir(_) => "git_dir",
         ReconcileError::Lock(_) => "lock",
-        ReconcileError::CheckoutIdentity(_) => "checkout_identity",
+        ReconcileError::WorktreeIdentity(_) => "worktree_identity",
         ReconcileError::AgentTraceDbUnavailable(_) => "agent_trace_db_unavailable",
         ReconcileError::SnapshotService(_) => "snapshot_service",
         ReconcileError::PinInventory(_) => "pin_inventory",

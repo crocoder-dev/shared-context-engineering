@@ -34,6 +34,10 @@ validity, and appends one fix-result row (category `mutation_scope_health`):
 | `Failed` | `failed` | typed kind (for example `agent_trace_db_missing`, `agent_trace_db_incompatible_schema`, `agent_trace_db_missing_metadata`, `agent_trace_db_repository_mismatch`, `malformed_ref`, `missing_required_pins`, `object_inventory_failed`, `unrecoverable_cursor`, `prune_transaction_failed`, `prune_conflict`, `repin_transaction_failed`, `durable_roots_unavailable`, `delete_transaction_failed`) and message, plus any state warning |
 | `Skipped(Busy)` | `skipped` | another boundary or pass holds the worktree lock; retry |
 
+An `unrecoverable_cursor` failure changes nothing, and its message tells the
+operator to let one agent tool run in this checkout, which commits a present
+cursor, and then rerun `sce doctor --fix`.
+
 A busy pass leaves state unchanged and is not a failure. While a pass runs, a
 mutation boundary may wait up to the 10 s coordinator lock timeout.
 

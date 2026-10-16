@@ -27,7 +27,7 @@ pub enum ProtectedWorktreeError {
         operation: ExternalTaintOperation,
         source: anyhow::Error,
     },
-    CheckoutIdentity(anyhow::Error),
+    WorktreeIdentity(anyhow::Error),
     MarkerWorkerFailed(tokio::task::JoinError),
 }
 
@@ -46,7 +46,7 @@ impl std::fmt::Display for ProtectedWorktreeError {
             ),
             ProtectedWorktreeError::LockAcquisition(source) => write!(f, "{source}"),
             ProtectedWorktreeError::GitDirResolution(source)
-            | ProtectedWorktreeError::CheckoutIdentity(source) => write!(f, "{source}"),
+            | ProtectedWorktreeError::WorktreeIdentity(source) => write!(f, "{source}"),
         }
     }
 }
@@ -127,7 +127,7 @@ impl ProtectedWorktree {
 
         let worktree_id = resolve_worktree_id(repository_root)
             .await
-            .map_err(ProtectedWorktreeError::CheckoutIdentity)?;
+            .map_err(ProtectedWorktreeError::WorktreeIdentity)?;
 
         Ok(Self {
             marker,

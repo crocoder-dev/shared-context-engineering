@@ -90,7 +90,7 @@ Identity is Git-topology-derived (`resolve_worktree_id`): `main` for the primary
 worktree, `worktrees/<sanitized git-dir name>` for a linked worktree. Failure is
 an `Err`. The former checkout-identity service was removed (see
 [`checkout-identity.md`](checkout-identity.md)); there is no skip-on-missing-identity
-outcome. `ReconcileError::CheckoutIdentity` remains the error variant for a
+outcome. `ReconcileError::WorktreeIdentity` is the error variant for a
 worktree identity that cannot be resolved.
 
 The dedicated DB opener and the `ref-maintenance.json` state file are documented in
@@ -121,7 +121,7 @@ flowchart TD
 ```
 
 - **Local consistency** (`load_tree_roots(W)`) is per-worktree and checked before
-  any deletion, after the [missing-pin repair](#missing-pin-repair). If it still
+  any deletion, after the [missing-pin repair](mutation-trace-missing-history-recovery.md). If it still
   fails the pass deletes nothing and returns `MissingRequiredPins`. A missing pin
   in some *other* worktree never makes `W`'s pass fail.
 - **Deletion safety** (`load_all_tree_roots()`) is repository-wide: `delete(W, T)`
@@ -134,33 +134,12 @@ belonging to other worktrees; each worktree is repaired only by its own pass.
 
 ## Missing-pin repair
 
-The repository-scoped DB is keyed by repository identity, not by clone, and the
-primary worktree is always `main`. A re-clone of the same remote therefore
-inherits the old clone's `main` cursor and events while its pins and snapshot
-objects stayed in the deleted `.git`. Before the local-consistency check,
-`repair_missing_pins` handles `W`'s unpinned durable roots:
-
-1. Classify each unpinned root with `git cat-file --batch-check`
-   (`GitSnapshotService::absent_trees`). A non-tree object fails the pass with
-   `ObjectInventory`.
-2. If any root is absent from the object store and it is `W`'s own
-   `cursor_tree`, fail with `UnrecoverableCursor` and change nothing: the durable
-   history does not belong to this checkout (for example a foreign DB).
-3. Otherwise delete every `W` event whose `before_tree` or `after_tree` is absent,
-   with its `mutation_trace_event_active_scopes` rows, in one transaction guarded
-   by a CAS on `W`'s current revision (`MutationTraceStore::prune_mutation_events`).
-   A lost CAS is `PruneConflict`. Such events can never be replayed by
-   attribution, which already treats unreadable trees as a reconstruction
-   barrier. The verified maintenance connection is read-only and Turso shares
-   one database handle per path in a process, so the read-only connection is
-   dropped and a writable one is opened on the same verified path only when a
-   prune is needed.
-4. Re-pin every remaining unpinned root (all present) in one atomic
-   `git update-ref --no-deref --stdin` `create` transaction
-   (`GitSnapshotService::pin_trees`).
-
-Order makes the repair idempotent: a crash after the prune and before the re-pin
-leaves only present unpinned roots, which the next pass re-pins.
+Before the local-consistency check, `repair_missing_pins` prunes `W` events whose
+trees are absent from the object store and re-pins the surviving unpinned roots;
+an absent `W` cursor fails closed with `UnrecoverableCursor`. Detection is a
+heuristic: it finds missing history, not clone identity, and an existing tree is
+not evidence of an unchanged clone. Steps, the three cases, and invariants I1–I5
+live in [`mutation-trace-missing-history-recovery.md`](mutation-trace-missing-history-recovery.md).
 
 A DB `TreeId` is a *logical* durability requirement, not itself a Git
 reachability edge: it obliges reconciliation to keep at least one SCE ref
@@ -187,7 +166,7 @@ Every step runs under the lock and every fallible step maps to one dedicated
 | --- | --- |
 | `resolve_git_dir` | `GitDir` |
 | lock acquisition (`EXPLICIT_LOCK_TIMEOUT`) | `Lock(WorktreeLockError)`; surfaced as `Skipped(Busy)` by `reconcile_explicit` |
-| worktree identity resolution | `CheckoutIdentity` |
+| worktree identity resolution | `WorktreeIdentity` |
 | verified-existing DB open | `AgentTraceDbUnavailable` (downcastable `ExistingRepositoryDbError`) |
 | `GitSnapshotService::new` | `SnapshotService` |
 | `list_pins` → `PinInventoryError::Git` | `PinInventory` |

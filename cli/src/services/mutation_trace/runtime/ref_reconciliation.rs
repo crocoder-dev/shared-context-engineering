@@ -34,7 +34,7 @@ pub enum ReconciliationOutcome {
 pub enum ReconcileError {
     GitDir(anyhow::Error),
     Lock(WorktreeLockError),
-    CheckoutIdentity(anyhow::Error),
+    WorktreeIdentity(anyhow::Error),
     AgentTraceDbUnavailable(anyhow::Error),
     SnapshotService(anyhow::Error),
     PinInventory(anyhow::Error),
@@ -71,7 +71,8 @@ impl std::fmt::Display for ReconcileError {
                 f,
                 "The worktree's mutation cursor tree {} is absent from this repository's object \
                  store, so its durable history does not belong to this checkout; reconciliation \
-                 changed nothing",
+                 changed nothing. Let one agent tool run in this checkout so it records a present \
+                 cursor, then rerun `sce doctor --fix`.",
                 tree.0
             ),
             ReconcileError::PruneConflict => write!(
@@ -80,7 +81,7 @@ impl std::fmt::Display for ReconcileError {
                  pruned; reconciliation changed nothing. Rerun `sce doctor --fix`."
             ),
             ReconcileError::GitDir(source)
-            | ReconcileError::CheckoutIdentity(source)
+            | ReconcileError::WorktreeIdentity(source)
             | ReconcileError::SnapshotService(source)
             | ReconcileError::PinInventory(source)
             | ReconcileError::DurableRoots(source)
@@ -112,7 +113,7 @@ where
 {
     let worktree_id = resolve_worktree_id(repository_root)
         .await
-        .map_err(ReconcileError::CheckoutIdentity)?;
+        .map_err(ReconcileError::WorktreeIdentity)?;
 
     let MaintenanceDb { db, path } = open_db()
         .await

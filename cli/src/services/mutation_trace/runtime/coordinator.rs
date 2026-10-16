@@ -319,7 +319,7 @@ where
 fn protected_worktree_failure(error: ProtectedWorktreeError) -> CoordinateError {
     match error {
         ProtectedWorktreeError::GitDirResolution(source)
-        | ProtectedWorktreeError::CheckoutIdentity(source) => CoordinateError::Other(source),
+        | ProtectedWorktreeError::WorktreeIdentity(source) => CoordinateError::Other(source),
         ProtectedWorktreeError::LockAcquisition(source) => {
             CoordinateError::LockAcquisition(anyhow::Error::new(source))
         }
