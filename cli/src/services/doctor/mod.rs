@@ -11,8 +11,8 @@ use crate::services::lifecycle::{
     HealthProblemKind, HealthSeverity, LifecycleProvider, LifecycleProviderId,
 };
 use crate::services::mutation_trace::runtime::{
-    inspect_reconciliation_recommendation, run_explicit_reconciliation, ReconciliationFix,
-    ReconciliationRecommendation,
+    inspect_reconciliation_recommendation, run_explicit_reconciliation, ReconciliationCounts,
+    ReconciliationFix, ReconciliationRecommendation,
 };
 use crate::services::output_format::OutputFormat;
 use crate::services::setup;
@@ -214,20 +214,37 @@ async fn execute_doctor_with_lifecycle_providers(
     }
 }
 
+fn reconciliation_completed_text(counts: &ReconciliationCounts) -> String {
+    let mut text = format!(
+        "Snapshot ref reconciliation completed: deleted {}, retained {}, locally required {}.",
+        counts.deleted, counts.retained, counts.local_required
+    );
+    if counts.pruned_events > 0 {
+        text.push_str(&format!(
+            " Pruned {} mutation event(s) whose snapshot trees are absent from this repository.",
+            counts.pruned_events
+        ));
+    }
+    if counts.repinned > 0 {
+        text.push_str(&format!(
+            " Re-pinned {} snapshot tree(s) that were missing pins.",
+            counts.repinned
+        ));
+    }
+    text
+}
+
 fn reconciliation_fix_result(fix: &ReconciliationFix) -> DoctorFixResultRecord {
     let (outcome, detail) = match fix {
         ReconciliationFix::Completed(counts) => (
             FixResult::Fixed,
-            format!(
-                "Snapshot ref reconciliation completed: deleted {}, retained {}, locally required {}.",
-                counts.deleted, counts.retained, counts.local_required
-            ),
+            reconciliation_completed_text(counts),
         ),
         ReconciliationFix::CompletedStatePersistFailed { counts, warning } => (
             FixResult::Fixed,
             format!(
-                "Snapshot ref reconciliation completed: deleted {}, retained {}, locally required {}. Warning: {warning}",
-                counts.deleted, counts.retained, counts.local_required
+                "{} Warning: {warning}",
+                reconciliation_completed_text(counts)
             ),
         ),
         ReconciliationFix::Failed {
@@ -564,6 +581,8 @@ mod reconciliation_fix_tests {
         deleted: 3,
         retained: 2,
         local_required: 1,
+        repinned: 0,
+        pruned_events: 0,
     };
 
     fn not_applied() -> StateWarning {

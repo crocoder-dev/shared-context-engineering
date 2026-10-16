@@ -13,6 +13,8 @@ pub(crate) struct ReconciliationCounts {
     pub(crate) deleted: usize,
     pub(crate) retained: usize,
     pub(crate) local_required: usize,
+    pub(crate) repinned: usize,
+    pub(crate) pruned_events: usize,
 }
 
 const NOT_APPLIED_MESSAGE: &str = "Maintenance-state update was not applied.";
@@ -192,6 +194,8 @@ fn counts(report: ReconciliationReport) -> ReconciliationCounts {
         deleted: report.deleted,
         retained: report.retained,
         local_required: report.local_required,
+        repinned: report.repinned,
+        pruned_events: report.pruned_events,
     }
 }
 
@@ -221,6 +225,11 @@ fn failure_kind(error: &ReconcileError) -> &'static str {
         ReconcileError::MalformedPin { .. } => "malformed_ref",
         ReconcileError::DurableRoots(_) => "durable_roots_unavailable",
         ReconcileError::MissingRequiredPins { .. } => "missing_required_pins",
+        ReconcileError::ObjectInventory(_) => "object_inventory_failed",
+        ReconcileError::UnrecoverableCursor { .. } => "unrecoverable_cursor",
+        ReconcileError::PruneTransaction(_) => "prune_transaction_failed",
+        ReconcileError::PruneConflict => "prune_conflict",
+        ReconcileError::RepinTransaction(_) => "repin_transaction_failed",
         ReconcileError::DeleteTransaction(_) => "delete_transaction_failed",
     }
 }
@@ -305,6 +314,8 @@ mod tests {
             local_required: 1,
             retained: 2,
             deleted: 3,
+            repinned: 0,
+            pruned_events: 0,
         }
     }
 
@@ -375,6 +386,8 @@ mod tests {
             local_required: 1,
             retained: 2,
             deleted: 3,
+            repinned: 4,
+            pruned_events: 5,
         };
         assert_eq!(
             fix_from_outcome(ExplicitOutcome::Completed(report)),
@@ -382,6 +395,8 @@ mod tests {
                 deleted: 3,
                 retained: 2,
                 local_required: 1,
+                repinned: 4,
+                pruned_events: 5,
             })
         );
         assert_eq!(

@@ -1028,6 +1028,8 @@ fn reconciliation_counts_json(counts: &ReconciliationCounts) -> serde_json::Valu
         "deleted": counts.deleted,
         "retained": counts.retained,
         "local_required": counts.local_required,
+        "repinned": counts.repinned,
+        "pruned_events": counts.pruned_events,
     })
 }
 
@@ -1053,6 +1055,8 @@ mod reconciliation_render_tests {
         deleted: 3,
         retained: 2,
         local_required: 1,
+        repinned: 0,
+        pruned_events: 0,
     };
 
     fn recommendation(last_attempt_age_ms: Option<i64>) -> ReconciliationRecommendation {
@@ -1087,7 +1091,7 @@ mod reconciliation_render_tests {
 
     #[test]
     fn json_ref_reconciliation_fix_results_match_contract() {
-        let counts = json!({ "deleted": 3, "retained": 2, "local_required": 1 });
+        let counts = json!({ "deleted": 3, "retained": 2, "local_required": 1, "repinned": 0, "pruned_events": 0 });
         let cases = [
             (
                 "completed",
@@ -1153,7 +1157,7 @@ mod reconciliation_render_tests {
 
     #[test]
     fn json_completed_state_persist_failed_results_match_contract() {
-        let counts = json!({ "deleted": 3, "retained": 2, "local_required": 1 });
+        let counts = json!({ "deleted": 3, "retained": 2, "local_required": 1, "repinned": 0, "pruned_events": 0 });
         let cases = [
             (
                 "completed + not applied",

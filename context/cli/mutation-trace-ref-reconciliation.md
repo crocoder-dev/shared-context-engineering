@@ -109,8 +109,9 @@ flowchart TD
     inv["list_pins(W) — actual pins under refs/sce/mutation-cursor/&lt;W&gt;/"]
     local["load_tree_roots(W)\n(this worktree's cursor + event trees)"]
     repo["load_all_tree_roots()\n(every worktree's cursor + event trees)"]
-    inv --> lc
-    local --> lc{"local consistency:\ndurable_roots(W) ⊆ pinned_trees(W)?"}
+    inv --> rep["missing-pin repair (W only):\nprune events with absent trees,\nre-pin present trees"]
+    local --> rep
+    rep --> lc{"local consistency:\ndurable_roots(W) ⊆ pinned_trees(W)?"}
     lc -- "no" --> fail["ReconcileError::MissingRequiredPins\n— fail closed, delete nothing"]
     lc -- "yes" --> ds
     inv --> ds{"deletion safety:\npin.tree ∉ durable_roots(repository)?"}
@@ -120,16 +121,46 @@ flowchart TD
 ```
 
 - **Local consistency** (`load_tree_roots(W)`) is per-worktree and checked before
-  any deletion. If it fails the pass deletes nothing and returns
-  `MissingRequiredPins`. A missing pin in some *other* worktree never makes `W`'s
-  pass fail.
+  any deletion, after the [missing-pin repair](#missing-pin-repair). If it still
+  fails the pass deletes nothing and returns `MissingRequiredPins`. A missing pin
+  in some *other* worktree never makes `W`'s pass fail.
 - **Deletion safety** (`load_all_tree_roots()`) is repository-wide: `delete(W, T)`
   only if `T` is in **no** worktree's durable root set. A pin another worktree
   requires is retained.
 
 Claimed: these two invariants. **Not claimed:** that every repository-wide durable
 root is pinned. Reconciliation does not repair, recreate, or verify missing pins
-belonging to other worktrees.
+belonging to other worktrees; each worktree is repaired only by its own pass.
+
+## Missing-pin repair
+
+The repository-scoped DB is keyed by repository identity, not by clone, and the
+primary worktree is always `main`. A re-clone of the same remote therefore
+inherits the old clone's `main` cursor and events while its pins and snapshot
+objects stayed in the deleted `.git`. Before the local-consistency check,
+`repair_missing_pins` handles `W`'s unpinned durable roots:
+
+1. Classify each unpinned root with `git cat-file --batch-check`
+   (`GitSnapshotService::absent_trees`). A non-tree object fails the pass with
+   `ObjectInventory`.
+2. If any root is absent from the object store and it is `W`'s own
+   `cursor_tree`, fail with `UnrecoverableCursor` and change nothing: the durable
+   history does not belong to this checkout (for example a foreign DB).
+3. Otherwise delete every `W` event whose `before_tree` or `after_tree` is absent,
+   with its `mutation_trace_event_active_scopes` rows, in one transaction guarded
+   by a CAS on `W`'s current revision (`MutationTraceStore::prune_mutation_events`).
+   A lost CAS is `PruneConflict`. Such events can never be replayed by
+   attribution, which already treats unreadable trees as a reconstruction
+   barrier. The verified maintenance connection is read-only and Turso shares
+   one database handle per path in a process, so the read-only connection is
+   dropped and a writable one is opened on the same verified path only when a
+   prune is needed.
+4. Re-pin every remaining unpinned root (all present) in one atomic
+   `git update-ref --no-deref --stdin` `create` transaction
+   (`GitSnapshotService::pin_trees`).
+
+Order makes the repair idempotent: a crash after the prune and before the re-pin
+leaves only present unpinned roots, which the next pass re-pins.
 
 A DB `TreeId` is a *logical* durability requirement, not itself a Git
 reachability edge: it obliges reconciliation to keep at least one SCE ref
@@ -162,12 +193,17 @@ Every step runs under the lock and every fallible step maps to one dedicated
 | `list_pins` → `PinInventoryError::Git` | `PinInventory` |
 | `list_pins` → `PinInventoryError::MalformedRef` | `MalformedPin { ref_name, reason }`, delete nothing |
 | `load_tree_roots` / `load_all_tree_roots` | `DurableRoots` (durable-root queries belong to migration `004_mutation_trace_protocol`) |
-| a target-worktree root has no pin | `MissingRequiredPins { missing }`, delete nothing |
+| `cat-file --batch-check` of unpinned roots | `ObjectInventory`, change nothing |
+| `W`'s `cursor_tree` is absent from the object store | `UnrecoverableCursor { tree }`, change nothing |
+| writable open or prune transaction | `PruneTransaction`, prune nothing (atomic-or-nothing) |
+| prune CAS lost to a concurrent revision | `PruneConflict`, prune nothing |
+| re-pin transaction | `RepinTransaction`, pin nothing; events already pruned stay pruned |
+| a target-worktree root still has no pin after repair | `MissingRequiredPins { missing }`, delete nothing |
 | `delete_pins` transaction | `DeleteTransaction`, delete nothing (atomic-or-nothing) |
 
 `AgentTraceDbUnavailable` here is a **maintenance** error only: reconciliation
-never arms `ExternalTaintMarker`, calls `protocol::*`, or writes a
-`mutation_trace_*` row, and never becomes
+never arms `ExternalTaintMarker` or calls `protocol::*`, writes `mutation_trace_*`
+rows only through the CAS-guarded prune of unrecoverable events, and never becomes
 `CoordinateError::AgentTraceDbUnavailable` (contrast
 [`mutation-trace-external-taint.md`](mutation-trace-external-taint.md)).
 `delete_pins` is the only ref-deletion path; there is no `git gc`, object
@@ -178,9 +214,10 @@ removal, or independent deletion.
 `reconcile_with_held_lock` returns `Result<ReconciliationOutcome, ReconcileError>`
 where `ReconciliationOutcome` has the single variant `Reconciled(ReconciliationReport)`.
 
-`ReconciliationReport { local_required, retained, deleted }`:
-`local_required = load_tree_roots(W).len()`, `deleted` = stale pins removed,
-`retained = actual.len() − deleted`. `retained == local_required` is not an
+`ReconciliationReport { local_required, retained, deleted, repinned, pruned_events }`:
+`local_required = load_tree_roots(W).len()` after repair, `deleted` = stale pins
+removed, `retained = actual.len() − deleted` (pre-repair inventory),
+`repinned` = pins recreated by the repair, `pruned_events` = events pruned. `retained == local_required` is not an
 invariant; only `report.local_required ≤ report.retained` holds.
 
 `reconcile_explicit` returns the typed, never-merged `ExplicitOutcome`:

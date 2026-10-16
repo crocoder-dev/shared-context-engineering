@@ -26,6 +26,8 @@ use crate::services::repository_identity::resolve::resolve_repository_identity;
 
 const NOW: i64 = 1_000_000_000_000;
 const OTHER_REPOSITORY_ID: &str = "some-other-repository";
+const ABSENT_TREE: &str = "1111111111111111111111111111111111111111";
+const ABSENT_TREE_2: &str = "2222222222222222222222222222222222222222";
 
 mod coordination;
 mod cross_process;
@@ -185,6 +187,47 @@ async fn seed_durable_root_for(db_path: &Path, worktree: &str, tree: &str) {
     .expect("seed durable root");
 }
 
+async fn seed_event(db_path: &Path, revision: u64, before_tree: &str, after_tree: &str) {
+    let db = RepositoryAgentTraceDb::open_without_migrations_at(db_path)
+        .await
+        .expect("writer");
+    let revision_blob = revision.to_be_bytes();
+    db.execute(
+        "INSERT INTO mutation_trace_events
+            (worktree_id, revision, before_tree, after_tree, tainted, failure_kind,
+             attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id,
+             boundary_event_id)
+         VALUES ('main', ?1, ?2, ?3, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush',
+                 NULL, NULL)",
+        (revision_blob.as_slice(), before_tree, after_tree),
+    )
+    .await
+    .expect("seed event");
+    db.execute(
+        "INSERT INTO mutation_trace_event_active_scopes (worktree_id, revision, scope_id)
+         VALUES ('main', ?1, 'scope')",
+        (revision_blob.as_slice(),),
+    )
+    .await
+    .expect("seed event active scope");
+}
+
+async fn event_revisions(db_path: &Path) -> Vec<u64> {
+    let db = RepositoryAgentTraceDb::open_without_migrations_at(db_path)
+        .await
+        .expect("reader");
+    db.query_map(
+        "SELECT revision FROM mutation_trace_events WHERE worktree_id = 'main' ORDER BY revision",
+        (),
+        |row| {
+            let blob: Vec<u8> = row.get(0)?;
+            Ok(u64::from_be_bytes(blob.as_slice().try_into()?))
+        },
+    )
+    .await
+    .expect("event revisions")
+}
+
 fn unavailable_cause(error: &ReconcileError) -> &ExistingRepositoryDbError {
     let ReconcileError::AgentTraceDbUnavailable(source) = error else {
         panic!("expected AgentTraceDbUnavailable, got {error:?}");
@@ -227,6 +270,8 @@ async fn ref_reconciliation_verified_database_reconciles_orphan_pin_and_records_
             local_required: 0,
             retained: 0,
             deleted: 1,
+            repinned: 0,
+            pruned_events: 0,
         }
     );
     assert_eq!(
@@ -391,7 +436,7 @@ async fn ref_reconciliation_failure_streak_counts_but_lock_contention_never_does
     let mut phases = Vec::new();
     let outcome = reconcile_explicit_with(
         &fixture.root,
-        async || -> anyhow::Result<RepositoryAgentTraceDb> { unreachable!("db must not open") },
+        async || -> anyhow::Result<_> { unreachable!("db must not open") },
         || NOW,
         |_, _| unreachable!("state must not be written on contention"),
         |phase| phases.push(phase),
@@ -450,14 +495,10 @@ async fn ref_reconciliation_missing_database_and_failed_persistence_keep_both_er
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ref_reconciliation_missing_required_pin_and_failed_persistence_keep_both_errors() {
+async fn ref_reconciliation_unrecoverable_cursor_and_failed_persistence_keep_both_errors() {
     let fixture = Fixture::new("https://example.invalid/org/repo-a.git");
     fixture.create_db().await;
-    let snapshot = GitSnapshotService::new(&fixture.root)
-        .await
-        .expect("snapshot");
-    let unpinned = snapshot.capture_tree().await.expect("tree");
-    seed_durable_root(&fixture.db_path(), &unpinned.0).await;
+    seed_durable_root(&fixture.db_path(), ABSENT_TREE).await;
 
     let (outcome, phases) = fixture
         .run_with(failing_write(PersistPhase::WriteStaging))
@@ -470,10 +511,10 @@ async fn ref_reconciliation_missing_required_pin_and_failed_persistence_keep_bot
     else {
         panic!("expected failure, got {outcome:?}");
     };
-    let ReconcileError::MissingRequiredPins { missing } = &error else {
-        panic!("expected missing required pins, got {error:?}");
+    let ReconcileError::UnrecoverableCursor { tree } = &error else {
+        panic!("expected unrecoverable cursor, got {error:?}");
     };
-    assert_eq!(missing, &vec![unpinned]);
+    assert_eq!(tree.0, ABSENT_TREE);
     assert!(matches!(
         state_warning,
         Some(StatePersistWarning::WriteFailed(
@@ -881,6 +922,8 @@ async fn ref_reconciliation_retains_every_repository_wide_durable_root_and_never
             local_required: 1,
             retained: 2,
             deleted: 2,
+            repinned: 0,
+            pruned_events: 0,
         }
     );
     let mut remaining: Vec<String> = fixture

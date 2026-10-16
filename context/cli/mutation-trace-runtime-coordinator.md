@@ -112,8 +112,11 @@ see Testing boundary). Only harness/command wiring remains.
   `reconcile_explicit` (single `WorktreeLock` acquisition, verified-existing
   Agent Trace DB, state recorded under the same lock) is its only production
   entrypoint, called by `sce doctor --fix`. It deletes only pins whose tree is a
-  durable root of **no** worktree, fails closed if any local root lacks a pin,
-  and writes no `mutation_trace_*` row or taint marker. Only the namespace of the
+  durable root of **no** worktree, first repairs local roots that lack a pin
+  (prunes events whose snapshot trees are absent from the object store, re-pins
+  present trees, fails closed if the worktree's own cursor tree is absent), and
+  writes no taint marker. Its only `mutation_trace_*` writes are that
+  CAS-guarded prune. Only the namespace of the
   currently resolvable worktree is inventoried; refs owned by removed linked
   worktrees survive (deferred follow-up). Full contract in
   [`mutation-trace-ref-reconciliation.md`](mutation-trace-ref-reconciliation.md).

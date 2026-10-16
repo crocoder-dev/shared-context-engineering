@@ -1,8 +1,10 @@
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
 use anyhow::{anyhow, bail, Context, Result};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use uuid::Uuid;
 
@@ -100,6 +102,84 @@ impl GitSnapshotService {
         )
         .await?;
         Ok(())
+    }
+
+    pub async fn pin_trees(
+        &self,
+        lease: WorktreeLockLease,
+        worktree_id: &WorktreeId,
+        trees: &[TreeId],
+    ) -> Result<()> {
+        if trees.is_empty() {
+            return Ok(());
+        }
+
+        let mut stdin_payload = String::new();
+        for tree in trees {
+            stdin_payload.push_str("create ");
+            stdin_payload.push_str(&pin_ref_name(worktree_id, tree));
+            stdin_payload.push(' ');
+            stdin_payload.push_str(&tree.0);
+            stdin_payload.push('\n');
+        }
+
+        self.run_ref_mutation_inner(
+            lease,
+            vec![
+                "update-ref".to_string(),
+                "--no-deref".to_string(),
+                "--stdin".to_string(),
+            ],
+            Some(stdin_payload.into_bytes()),
+            || {},
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn absent_trees(&self, trees: &[TreeId]) -> Result<BTreeSet<TreeId>> {
+        if trees.is_empty() {
+            return Ok(BTreeSet::new());
+        }
+
+        let mut stdin_payload = String::new();
+        for tree in trees {
+            stdin_payload.push_str(&tree.0);
+            stdin_payload.push('\n');
+        }
+        let raw = self
+            .run_git_with_stdin(&["cat-file", "--batch-check"], stdin_payload.into_bytes())
+            .await?;
+
+        let lines: Vec<&str> = raw.lines().collect();
+        if lines.len() != trees.len() {
+            bail!(
+                "git cat-file --batch-check answered {} line(s) for {} tree(s)",
+                lines.len(),
+                trees.len()
+            );
+        }
+
+        let mut absent = BTreeSet::new();
+        for (tree, line) in trees.iter().zip(lines) {
+            let mut fields = line.split(' ');
+            let object_name = fields.next().unwrap_or_default();
+            let object_type = fields.next().unwrap_or_default();
+            if object_name != tree.0 {
+                bail!(
+                    "git cat-file --batch-check answered '{line}' for tree {}",
+                    tree.0
+                );
+            }
+            match object_type {
+                "missing" => {
+                    absent.insert(tree.clone());
+                }
+                "tree" => {}
+                other => bail!("object {} is a {other}, not a tree", tree.0),
+            }
+        }
+        Ok(absent)
     }
 
     pub async fn diff_trees(&self, before: &TreeId, after: &TreeId) -> Result<String> {
@@ -331,6 +411,48 @@ impl GitSnapshotService {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let detail = if stderr.is_empty() { stdout } else { stderr };
             return Err(anyhow!("git {args:?} failed: {detail}"));
+        }
+
+        String::from_utf8(output.stdout)
+            .with_context(|| format!("git {args:?} emitted invalid UTF-8"))
+    }
+
+    async fn run_git_with_stdin(&self, args: &[&str], stdin_payload: Vec<u8>) -> Result<String> {
+        let mut child = self
+            .cancellable_git_command(args, None)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "Failed to run git command {:?} in '{}'",
+                    args,
+                    self.repository_root.display()
+                )
+            })?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| anyhow!("git {args:?} stdin was not captured"))?;
+        let writer = tokio::spawn(async move {
+            stdin.write_all(&stdin_payload).await?;
+            stdin.shutdown().await
+        });
+
+        let output = child
+            .wait_with_output()
+            .await
+            .with_context(|| format!("Failed to wait for git command {args:?}"))?;
+        writer
+            .await
+            .map_err(|source| anyhow!("git {args:?} stdin writer failed: {source}"))?
+            .with_context(|| format!("Failed to write git command {args:?} stdin"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(anyhow!("git {args:?} failed: {stderr}"));
         }
 
         String::from_utf8(output.stdout)

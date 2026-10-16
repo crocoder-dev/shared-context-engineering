@@ -7,12 +7,15 @@ use super::super::super::ref_reconciliation::{ReconcileError, ReconcilePhase};
 use super::super::reconcile_explicit_with;
 use super::super::{ExplicitOutcome, SkipReason};
 use super::support::{await_signal, pinned_trees, spawn_parked_pass, write_file};
-use super::{pin_orphan, seed_durable_root, Fixture, NOW};
+use super::{
+    event_revisions, pin_orphan, seed_durable_root, seed_event, Fixture, ABSENT_TREE,
+    ABSENT_TREE_2, NOW,
+};
 
 const REMOTE: &str = "https://example.invalid/org/repo-a.git";
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ref_reconciliation_missing_local_pin_fails_closed_while_other_orphans_exist() {
+async fn ref_reconciliation_repins_missing_local_pin_whose_tree_exists_and_deletes_orphans() {
     let fixture = Fixture::new(REMOTE);
     fixture.create_db().await;
     write_file(&fixture.root, "orphan.txt", "orphan\n");
@@ -23,22 +26,77 @@ async fn ref_reconciliation_missing_local_pin_fails_closed_while_other_orphans_e
         .expect("snapshot");
     let unpinned = snapshot.capture_tree().await.expect("tree");
     seed_durable_root(&fixture.db_path(), &unpinned.0).await;
-    let refs_before = pinned_trees(&fixture.root, "main");
-    assert_eq!(refs_before, [orphan].into_iter().collect());
+    assert_eq!(
+        pinned_trees(&fixture.root, "main"),
+        [orphan].into_iter().collect()
+    );
+
+    let (outcome, _) = fixture.run().await;
+
+    let ExplicitOutcome::Completed(report) = outcome else {
+        panic!("expected completed pass, got {outcome:?}");
+    };
+    assert_eq!(report.repinned, 1);
+    assert_eq!(report.pruned_events, 0);
+    assert_eq!(report.deleted, 1);
+    assert_eq!(
+        pinned_trees(&fixture.root, "main"),
+        [unpinned.0].into_iter().collect()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ref_reconciliation_prunes_events_whose_trees_are_absent_and_repins_the_rest() {
+    let fixture = Fixture::new(REMOTE);
+    fixture.create_db().await;
+    let snapshot = super::super::super::git_snapshot::GitSnapshotService::new(&fixture.root)
+        .await
+        .expect("snapshot");
+    let first = snapshot.capture_tree().await.expect("tree");
+    write_file(&fixture.root, "later.txt", "later\n");
+    let second = snapshot.capture_tree().await.expect("tree");
+    seed_durable_root(&fixture.db_path(), &second.0).await;
+    seed_event(&fixture.db_path(), 1, ABSENT_TREE, ABSENT_TREE_2).await;
+    seed_event(&fixture.db_path(), 2, ABSENT_TREE_2, &first.0).await;
+    seed_event(&fixture.db_path(), 3, &first.0, &second.0).await;
+
+    let (outcome, _) = fixture.run().await;
+
+    let ExplicitOutcome::Completed(report) = outcome else {
+        panic!("expected completed pass, got {outcome:?}");
+    };
+    assert_eq!(report.pruned_events, 2);
+    assert_eq!(report.repinned, 2);
+    assert_eq!(report.deleted, 0);
+    assert_eq!(event_revisions(&fixture.db_path()).await, vec![3]);
+    assert_eq!(
+        pinned_trees(&fixture.root, "main"),
+        [first.0, second.0].into_iter().collect()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ref_reconciliation_absent_cursor_tree_fails_closed_without_pruning() {
+    let fixture = Fixture::new(REMOTE);
+    fixture.create_db().await;
+    write_file(&fixture.root, "orphan.txt", "orphan\n");
+    let orphan = pin_orphan(&fixture.root).await;
+    seed_durable_root(&fixture.db_path(), ABSENT_TREE).await;
+    seed_event(&fixture.db_path(), 1, ABSENT_TREE_2, ABSENT_TREE).await;
 
     let (outcome, _) = fixture.run().await;
 
     let ExplicitOutcome::Failed { error, .. } = outcome else {
         panic!("expected failure, got {outcome:?}");
     };
-    let ReconcileError::MissingRequiredPins { missing } = error else {
-        panic!("expected missing required pins, got {error:?}");
+    let ReconcileError::UnrecoverableCursor { tree } = error else {
+        panic!("expected unrecoverable cursor, got {error:?}");
     };
-    assert_eq!(missing, vec![unpinned]);
+    assert_eq!(tree.0, ABSENT_TREE);
+    assert_eq!(event_revisions(&fixture.db_path()).await, vec![1]);
     assert_eq!(
         pinned_trees(&fixture.root, "main"),
-        refs_before,
-        "the eligible orphan is not deleted when a required pin is missing"
+        [orphan].into_iter().collect()
     );
 }
 
