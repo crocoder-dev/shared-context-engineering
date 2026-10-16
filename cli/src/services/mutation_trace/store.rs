@@ -128,6 +128,13 @@ pub struct MutationEventPageRow {
     pub attribution_scope_id: Option<ScopeId>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationEventTrees {
+    pub revision: u64,
+    pub before_tree: TreeId,
+    pub after_tree: TreeId,
+}
+
 /// The discriminant of an [`Attribution`] value.
 pub fn attribution_kind(attribution: &Attribution) -> AttributionKind {
     match attribution {
@@ -256,6 +263,17 @@ const SELECT_TREE_ROOTS_BY_WORKTREE_SQL: &str =
      SELECT before_tree AS tree FROM mutation_trace_events    WHERE worktree_id = ?1
      UNION
      SELECT after_tree  AS tree FROM mutation_trace_events    WHERE worktree_id = ?1";
+const SELECT_MUTATION_EVENT_TREES_SQL: &str =
+    "SELECT revision, before_tree, after_tree FROM mutation_trace_events
+     WHERE worktree_id = ?1
+     ORDER BY revision";
+const TOUCH_WORKTREE_CAS_SQL: &str = "UPDATE mutation_trace_worktrees
+     SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE worktree_id = ?1 AND revision = ?2";
+const DELETE_MUTATION_EVENT_ACTIVE_SCOPES_SQL: &str =
+    "DELETE FROM mutation_trace_event_active_scopes WHERE worktree_id = ?1 AND revision = ?2";
+const DELETE_MUTATION_EVENT_SQL: &str =
+    "DELETE FROM mutation_trace_events WHERE worktree_id = ?1 AND revision = ?2";
 const SELECT_ALL_TREE_ROOTS_SQL: &str = "SELECT cursor_tree AS tree FROM mutation_trace_worktrees
      UNION
      SELECT before_tree AS tree FROM mutation_trace_events
@@ -816,6 +834,67 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().collect())
     }
 
+    pub async fn load_mutation_event_trees(
+        &self,
+        worktree: &WorktreeId,
+    ) -> Result<Vec<MutationEventTrees>> {
+        self.db
+            .query_map(
+                SELECT_MUTATION_EVENT_TREES_SQL,
+                (worktree.0.as_str(),),
+                mutation_event_trees_row_from_turso,
+            )
+            .await
+    }
+
+    pub async fn prune_mutation_events(
+        &mut self,
+        worktree: &WorktreeId,
+        expected_revision: u64,
+        revisions: &[u64],
+    ) -> Result<CasResult> {
+        let expected_revision_blob = encode_revision(expected_revision);
+        let guard = TransactionStatement::new(
+            TOUCH_WORKTREE_CAS_SQL,
+            (worktree.0.as_str(), expected_revision_blob.as_slice()),
+        )?;
+
+        let revision_blobs: Vec<[u8; 8]> = revisions
+            .iter()
+            .map(|revision| encode_revision(*revision))
+            .collect();
+        let mut statements = Vec::with_capacity(revision_blobs.len() * 2);
+        for revision_blob in &revision_blobs {
+            statements.push(TransactionStatement::new(
+                DELETE_MUTATION_EVENT_ACTIVE_SCOPES_SQL,
+                (worktree.0.as_str(), revision_blob.as_slice()),
+            )?);
+            statements.push(
+                TransactionStatement::new(
+                    DELETE_MUTATION_EVENT_SQL,
+                    (worktree.0.as_str(), revision_blob.as_slice()),
+                )?
+                .expect_rows_affected(1),
+            );
+        }
+
+        let applied = self
+            .db
+            .execute_transactional_cas_batch(
+                "prune unrecoverable mutation-trace events",
+                "rerun `sce doctor --fix`",
+                &guard,
+                &statements,
+            )
+            .await?;
+
+        Ok(if applied {
+            CasResult::Applied
+        } else {
+            CasResult::Conflict
+        })
+    }
+
     pub async fn load_all_tree_roots(&self) -> Result<BTreeSet<TreeId>> {
         let rows = self
             .db
@@ -915,7 +994,10 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().next())
     }
 
-    async fn load_worktree_state(&self, worktree: &WorktreeId) -> Result<Option<WorktreeState>> {
+    pub async fn load_worktree_state(
+        &self,
+        worktree: &WorktreeId,
+    ) -> Result<Option<WorktreeState>> {
         let rows = self
             .db
             .query_map(
@@ -1209,6 +1291,23 @@ fn scope_provenance_row_from_turso(row: &turso::Row) -> Result<ScopeProvenance> 
         scope_id: ScopeId(scope_id),
         session_id,
         model_id,
+    })
+}
+
+fn mutation_event_trees_row_from_turso(row: &turso::Row) -> Result<MutationEventTrees> {
+    let revision_blob: Vec<u8> = row
+        .get(0)
+        .context("failed to read mutation_trace_events.revision")?;
+    let before_tree: String = row
+        .get(1)
+        .context("failed to read mutation_trace_events.before_tree")?;
+    let after_tree: String = row
+        .get(2)
+        .context("failed to read mutation_trace_events.after_tree")?;
+    Ok(MutationEventTrees {
+        revision: decode_revision(&revision_blob)?,
+        before_tree: TreeId(before_tree),
+        after_tree: TreeId(after_tree),
     })
 }
 

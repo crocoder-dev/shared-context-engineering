@@ -169,7 +169,7 @@ async fn ref_reconciliation_busy_explicit_pass_leaves_invalid_state_byte_identic
 
     let outcome = reconcile_explicit_with(
         &fixture.root,
-        async || -> anyhow::Result<RepositoryAgentTraceDb> { unreachable!("db must not open") },
+        async || -> anyhow::Result<_> { unreachable!("db must not open") },
         || NOW,
         |_, _| unreachable!("state must not be written"),
         |_| {},

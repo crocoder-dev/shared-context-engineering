@@ -119,6 +119,8 @@ async fn assert_coordinate_blocked_until_pass_releases(phase: ReconcilePhase) {
             local_required: 1,
             retained: 1,
             deleted: 1,
+            repinned: 0,
+            pruned_events: 0,
         }
     );
     let coordinated = coordinated.expect("the coordinator completes once the pass releases");

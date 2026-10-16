@@ -9,11 +9,10 @@ use super::maintenance_state::{
     MaintenanceState, PersistFailure, StateRead, StoredReport,
 };
 use super::ref_reconciliation::{
-    reconcile_with_held_lock, ReconcileError, ReconcilePhase, ReconciliationOutcome,
+    reconcile_with_held_lock, MaintenanceDb, ReconcileError, ReconcilePhase, ReconciliationOutcome,
     ReconciliationReport,
 };
 use super::worktree_lock::{acquire_inner_async, WorktreeLockError};
-use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_storage::{
     resolve_existing_agent_trace_storage_for_maintenance, AgentTraceStorageContext,
 };
@@ -72,7 +71,7 @@ pub(super) async fn reconcile_explicit(repository_root: &Path) -> ExplicitOutcom
     .await
 }
 
-async fn open_authoritative_db(repository_root: &Path) -> Result<RepositoryAgentTraceDb> {
+async fn open_authoritative_db(repository_root: &Path) -> Result<MaintenanceDb> {
     let storage_config = config::resolve_agent_trace_storage_runtime_config(repository_root)
         .context("Failed to resolve Agent Trace repository storage config.")?;
     let context = AgentTraceStorageContext {
@@ -82,7 +81,10 @@ async fn open_authoritative_db(repository_root: &Path) -> Result<RepositoryAgent
     };
     resolve_existing_agent_trace_storage_for_maintenance(&context)
         .await
-        .map(|storage| storage.db)
+        .map(|storage| MaintenanceDb {
+            db: storage.db,
+            path: storage.db_path,
+        })
 }
 
 async fn reconcile_explicit_with<P, C, W, H>(
@@ -94,7 +96,7 @@ async fn reconcile_explicit_with<P, C, W, H>(
     lock_timeout: Duration,
 ) -> ExplicitOutcome
 where
-    P: std::ops::AsyncFnOnce() -> Result<RepositoryAgentTraceDb>,
+    P: std::ops::AsyncFnOnce() -> Result<MaintenanceDb>,
     C: Fn() -> i64,
     W: Fn(&Path, &MaintenanceState) -> std::result::Result<(), PersistFailure>,
     H: FnMut(ReconcilePhase),
@@ -208,6 +210,11 @@ fn failure_kind(error: &ReconcileError) -> &'static str {
         ReconcileError::MalformedPin { .. } => "malformed_pin",
         ReconcileError::DurableRoots(_) => "durable_roots",
         ReconcileError::MissingRequiredPins { .. } => "missing_required_pins",
+        ReconcileError::ObjectInventory(_) => "object_inventory",
+        ReconcileError::UnrecoverableCursor { .. } => "unrecoverable_cursor",
+        ReconcileError::PruneTransaction(_) => "prune_transaction",
+        ReconcileError::PruneConflict => "prune_conflict",
+        ReconcileError::RepinTransaction(_) => "repin_transaction",
         ReconcileError::DeleteTransaction(_) => "delete_transaction",
     }
 }
@@ -216,7 +223,7 @@ fn failure_kind(error: &ReconcileError) -> &'static str {
 async fn open_authoritative_db_at_state_root(
     repository_root: &Path,
     state_root: &Path,
-) -> Result<RepositoryAgentTraceDb> {
+) -> Result<MaintenanceDb> {
     let context = AgentTraceStorageContext {
         repository_root,
         explicit_repository_id: None,
@@ -227,5 +234,8 @@ async fn open_authoritative_db_at_state_root(
         state_root,
     )
     .await
-    .map(|storage| storage.db)
+    .map(|storage| MaintenanceDb {
+        db: storage.db,
+        path: storage.db_path,
+    })
 }

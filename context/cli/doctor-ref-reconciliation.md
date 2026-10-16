@@ -29,9 +29,9 @@ validity, and appends one fix-result row (category `mutation_scope_health`):
 
 | Pass result | Outcome | Detail |
 | --- | --- | --- |
-| `Completed` | `fixed` | deleted / retained / locally required counts |
+| `Completed` | `fixed` | deleted / retained / locally required counts, plus pruned-event and re-pinned counts when non-zero (JSON `counts` always carries `repinned` and `pruned_events`) |
 | `CompletedStatePersistFailed` | `fixed` | counts plus a diagnostics-not-recorded warning |
-| `Failed` | `failed` | typed kind (for example `agent_trace_db_missing`, `agent_trace_db_incompatible_schema`, `agent_trace_db_missing_metadata`, `agent_trace_db_repository_mismatch`, `malformed_ref`, `missing_required_pins`, `durable_roots_unavailable`, `delete_transaction_failed`) and message, plus any state warning |
+| `Failed` | `failed` | typed kind (for example `agent_trace_db_missing`, `agent_trace_db_incompatible_schema`, `agent_trace_db_missing_metadata`, `agent_trace_db_repository_mismatch`, `malformed_ref`, `missing_required_pins`, `object_inventory_failed`, `unrecoverable_cursor`, `prune_transaction_failed`, `prune_conflict`, `repin_transaction_failed`, `durable_roots_unavailable`, `delete_transaction_failed`) and message, plus any state warning |
 | `Skipped(Busy)` | `skipped` | another boundary or pass holds the worktree lock; retry |
 
 A busy pass leaves state unchanged and is not a failure. While a pass runs, a

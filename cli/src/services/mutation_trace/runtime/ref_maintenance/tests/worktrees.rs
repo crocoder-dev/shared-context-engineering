@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::super::super::git_snapshot::{resolve_worktree_id, GitSnapshotService};
+use super::super::super::git_snapshot::resolve_worktree_id;
 use super::super::super::maintenance_state::write_state_atomically;
-use super::super::super::ref_reconciliation::{ReconcileError, ReconciliationReport};
+use super::super::super::ref_reconciliation::ReconciliationReport;
 use super::super::{open_authoritative_db_at_state_root, reconcile_explicit_with, ExplicitOutcome};
 use super::support::{
     coordinate_flush, hook_ok, pinned_trees, sce_refs, start_payload, write_file, writer,
@@ -134,6 +134,8 @@ async fn ref_reconciliation_historical_roots_of_a_real_coordinator_sequence_stay
             local_required: 4,
             retained: 4,
             deleted: 1,
+            repinned: 0,
+            pruned_events: 0,
         }
     );
     assert_eq!(
@@ -173,6 +175,8 @@ async fn ref_reconciliation_pin_of_one_real_worktree_is_retained_while_another_n
             local_required: 0,
             retained: 1,
             deleted: 1,
+            repinned: 0,
+            pruned_events: 0,
         }
     );
     assert_eq!(
@@ -184,7 +188,8 @@ async fn ref_reconciliation_pin_of_one_real_worktree_is_retained_while_another_n
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ref_reconciliation_missing_pin_in_another_real_worktree_neither_fails_nor_is_repaired() {
+async fn ref_reconciliation_missing_pin_in_another_real_worktree_is_repaired_only_by_its_own_pass()
+{
     let linked = Linked::new().await;
     let fixture = &linked.fixture;
     let db_path = fixture.db_path();
@@ -224,6 +229,8 @@ async fn ref_reconciliation_missing_pin_in_another_real_worktree_neither_fails_n
             local_required: 0,
             retained: 1,
             deleted: 1,
+            repinned: 0,
+            pruned_events: 0,
         }
     );
     assert!(!linked.main_pins().contains(&orphan));
@@ -239,25 +246,15 @@ async fn ref_reconciliation_missing_pin_in_another_real_worktree_neither_fails_n
     assert_eq!(refs_of_linked_before, refs_of_linked_after);
     assert_eq!(
         linked.linked_pins(),
-        [later].into_iter().collect(),
+        [later.clone()].into_iter().collect(),
         "reconciling main never recreates the other worktree's missing pin"
     );
 
-    let degraded = linked.run(&linked.root).await;
-    let ExplicitOutcome::Failed { error, .. } = degraded else {
-        panic!("the degraded worktree fails closed in its own pass, got {degraded:?}");
+    let repaired = linked.run(&linked.root).await;
+    let ExplicitOutcome::Completed(report) = repaired else {
+        panic!("the degraded worktree is repaired in its own pass, got {repaired:?}");
     };
-    let ReconcileError::MissingRequiredPins { missing } = error else {
-        panic!("expected missing required pins, got {error:?}");
-    };
-    assert_eq!(missing.len(), 1);
-    assert_eq!(missing[0].0, shared);
-    assert!(GitSnapshotService::new(&linked.root)
-        .await
-        .expect("snapshot")
-        .list_pins(&WorktreeId(linked.id.clone()))
-        .await
-        .expect("pins")
-        .iter()
-        .all(|pin| pin.tree.0 != shared));
+    assert_eq!(report.repinned, 1);
+    assert_eq!(report.pruned_events, 0);
+    assert_eq!(linked.linked_pins(), [shared, later].into_iter().collect());
 }
