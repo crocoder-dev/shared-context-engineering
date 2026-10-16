@@ -82,8 +82,7 @@ authoritative control-plane cursors.
 The final text report contains only a completion heading after the progress
 display. It says `Agent Trace already synced.` when the three remote streams
 (`messages`, `parts`, `agent_traces`) uploaded zero rows; otherwise it says
-`Agent Trace sync complete.`. The `diffTraces` compatibility entry does not
-affect the heading. During text mode, three progress rows are created
+`Agent Trace sync complete.`. During text mode, three progress rows are created
 immediately in the fixed order `messages`, `parts`, `agent_traces`; there is no
 `diff_traces` row. Each row uses a 15-column
 stream-label field, starts at `0 rows uploaded`, and has its own steady spinner.
@@ -101,18 +100,14 @@ sink, emits no progress on stderr, and emits this JSON-only stdout shape:
   "streams": {
     "messages": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},
     "parts": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},
-    "diffTraces": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},
     "agentTraces": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0}
   }
 }
 ```
 
-`streams.diffTraces` is a temporary compatibility no-op entry, retained so the
-JSON shape does not change during the compatibility window. It always reports
-`uploaded: 0` and `batches: 0`, with `initialCursor == finalCursor ==
-state.cursors.diffTraces` from the `/state` response. It is built from that
-server cursor alone, even when local `diff_traces` rows exist beyond it, and it
-does not mean the stream is synchronized.
+`streams` contains exactly the three remote streams. There is no
+`streams.diffTraces` entry: `diff_traces` is a local-only capture stream and the
+control plane `/state` response carries no `diffTraces` cursor.
 
 Authentication refresh, conflict reconciliation, ambiguous batch recovery,
 terminal protocol failures, ownership rejection, and sanitized control-plane

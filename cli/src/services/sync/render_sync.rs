@@ -40,7 +40,6 @@ fn render_json(report: &AgentTraceSyncReport) -> Result<String> {
         "streams": {
             "messages": stream_json(&report.streams.messages),
             "parts": stream_json(&report.streams.parts),
-            "diffTraces": stream_json(&report.streams.diff_traces),
             "agentTraces": stream_json(&report.streams.agent_traces),
         },
     });
@@ -65,8 +64,6 @@ mod tests {
     use crate::services::output_format::OutputFormat;
     use crate::services::sync::sync::{AgentTraceSyncReport, StreamSyncReport, StreamSyncReports};
 
-    const DIFF_TRACES_CURSOR: i64 = 42;
-
     fn stream(uploaded: usize) -> StreamSyncReport {
         StreamSyncReport {
             uploaded,
@@ -77,19 +74,13 @@ mod tests {
     }
 
     #[test]
-    fn json_report_keeps_zero_upload_diff_traces_stream() {
+    fn json_report_lists_only_the_three_synchronized_streams() {
         let report = AgentTraceSyncReport {
             repository_id: "repo".to_string(),
             source_instance_id: "source".to_string(),
             streams: StreamSyncReports {
                 messages: stream(3),
                 parts: stream(0),
-                diff_traces: StreamSyncReport {
-                    uploaded: 0,
-                    initial_cursor: DIFF_TRACES_CURSOR,
-                    final_cursor: DIFF_TRACES_CURSOR,
-                    batches: 0,
-                },
                 agent_traces: stream(0),
             },
         };
@@ -98,12 +89,11 @@ mod tests {
         let rendered: Value = serde_json::from_str(&rendered).expect("valid json");
 
         assert_eq!(
-            rendered["streams"]["diffTraces"],
+            rendered["streams"],
             json!({
-                "uploaded": 0,
-                "initialCursor": DIFF_TRACES_CURSOR,
-                "finalCursor": DIFF_TRACES_CURSOR,
-                "batches": 0,
+                "messages": {"uploaded": 3, "initialCursor": 0, "finalCursor": 3, "batches": 1},
+                "parts": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},
+                "agentTraces": {"uploaded": 0, "initialCursor": 0, "finalCursor": 0, "batches": 0},
             })
         );
     }

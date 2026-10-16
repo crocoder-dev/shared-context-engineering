@@ -1,25 +1,14 @@
-//! Synchronization of a repository's local Agent Trace capture database with
-//! the control-plane Agent Trace ingestion API.
-
 pub mod control_plane;
 
 use std::fmt;
 
 use crate::services::agent_trace_export::{
-    AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
-    AgentTracePartExportRow,
+    AgentTraceAgentTraceExportRow, AgentTraceMessageExportRow, AgentTracePartExportRow,
 };
 use control_plane::ControlPlaneError;
 
-/// Bound on consecutive `409`/ambiguous-batch-failure reconciliation attempts
-/// for one stream, matching the order of magnitude of existing retry
-/// constants (`TOKEN_REFRESH_RETRY_POLICY` in `auth.rs`, 3 attempts). Exhausting it
-/// fails the stream rather than looping unboundedly.
 pub const RECONCILIATION_MAX_ATTEMPTS: u32 = 5;
 
-/// Exposes the `source_row_id` each of the four PR #198 export row types
-/// carries, so the sync engine can validate and advance cursors generically
-/// without a per-stream copy of the same logic.
 pub trait AgentTraceExportRow {
     fn source_row_id(&self) -> i64;
 }
@@ -36,38 +25,17 @@ impl AgentTraceExportRow for AgentTracePartExportRow {
     }
 }
 
-impl AgentTraceExportRow for AgentTraceDiffTraceExportRow {
-    fn source_row_id(&self) -> i64 {
-        self.source_row_id
-    }
-}
-
 impl AgentTraceExportRow for AgentTraceAgentTraceExportRow {
     fn source_row_id(&self) -> i64 {
         self.source_row_id
     }
 }
 
-/// Result of one batch-ingest attempt, as classified by the caller-supplied
-/// ingest closure. `Conflict` and `Ambiguous` carry no data: reconciliation
-/// always re-derives truth from a fresh `/state` call rather than trusting
-/// anything about the failed attempt itself. `Terminal` is different: the
-/// attempt is known to have failed in a way that cannot be resolved by
-/// `/state`, so the stream stops without invoking its refresh closure.
 #[derive(Debug)]
 pub enum BatchAttemptOutcome {
-    /// The batch was accepted. `accepted` and `cursor` are the server
-    /// response's own fields, validated by the engine before the stream
-    /// cursor advances.
     Accepted { accepted: usize, cursor: i64 },
-    /// The server rejected the batch with a cursor conflict (`409`).
     Conflict,
-    /// The batch outcome could not be determined (`5xx`, a transport
-    /// failure, or an invalid response).
     Ambiguous,
-    /// The batch failed with a terminal control-plane error. The typed
-    /// error is already safe to surface as a stream error and is never
-    /// reconciled.
     Terminal(ControlPlaneError),
 }
 

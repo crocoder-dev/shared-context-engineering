@@ -73,23 +73,6 @@ pub struct AgentTracePartExportRow {
     pub generated_at_unix_ms: i64,
 }
 
-#[allow(
-    dead_code,
-    reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
-)]
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentTraceDiffTraceExportRow {
-    pub source_row_id: i64,
-    pub session_id: String,
-    pub time_ms: i64,
-    pub patch: String,
-    pub model_id: Option<String>,
-    pub tool_name: Option<String>,
-    pub tool_version: Option<String>,
-    pub payload_type: String,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTraceAgentTraceExportRow {
@@ -113,17 +96,6 @@ LIMIT ?2";
 const SELECT_PARTS_AFTER_SQL: &str =
     "SELECT id, session_id, message_id, type, text, generated_at_unix_ms
 FROM parts
-WHERE id > ?1
-ORDER BY id ASC
-LIMIT ?2";
-
-#[allow(
-    dead_code,
-    reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
-)]
-const SELECT_DIFF_TRACES_AFTER_SQL: &str =
-    "SELECT id, session_id, time_ms, patch, model_id, tool_name, tool_version, payload_type
-FROM diff_traces
 WHERE id > ?1
 ORDER BY id ASC
 LIMIT ?2";
@@ -194,35 +166,6 @@ impl<'a> AgentTraceExportReader<'a> {
         Ok(rows)
     }
 
-    #[allow(
-        dead_code,
-        reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
-    )]
-    pub async fn read_diff_traces_after(
-        &self,
-        cursor: i64,
-        limit: usize,
-    ) -> Result<Vec<AgentTraceDiffTraceExportRow>> {
-        validate_cursor(cursor)?;
-        validate_limit(limit)?;
-
-        let rows = self
-            .db
-            .query_map(
-                SELECT_DIFF_TRACES_AFTER_SQL,
-                (cursor, limit_as_i64(limit)),
-                diff_trace_export_row_from_turso,
-            )
-            .await?;
-
-        for row in &rows {
-            validate_js_safe_integer(row.source_row_id)?;
-            validate_js_safe_integer(row.time_ms)?;
-        }
-
-        Ok(rows)
-    }
-
     pub async fn read_agent_traces_after(
         &self,
         cursor: i64,
@@ -275,29 +218,6 @@ fn part_export_row_from_turso(row: &turso::Row) -> Result<AgentTracePartExportRo
         generated_at_unix_ms: row
             .get(5)
             .context("failed to read parts.generated_at_unix_ms")?,
-    })
-}
-
-#[allow(
-    dead_code,
-    reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
-)]
-fn diff_trace_export_row_from_turso(row: &turso::Row) -> Result<AgentTraceDiffTraceExportRow> {
-    Ok(AgentTraceDiffTraceExportRow {
-        source_row_id: row.get(0).context("failed to read diff_traces.id")?,
-        session_id: row
-            .get(1)
-            .context("failed to read diff_traces.session_id")?,
-        time_ms: row.get(2).context("failed to read diff_traces.time_ms")?,
-        patch: row.get(3).context("failed to read diff_traces.patch")?,
-        model_id: row.get(4).context("failed to read diff_traces.model_id")?,
-        tool_name: row.get(5).context("failed to read diff_traces.tool_name")?,
-        tool_version: row
-            .get(6)
-            .context("failed to read diff_traces.tool_version")?,
-        payload_type: row
-            .get(7)
-            .context("failed to read diff_traces.payload_type")?,
     })
 }
 

@@ -38,11 +38,9 @@ pub struct AgentTraceSyncReport {
 pub struct StreamSyncReports {
     pub messages: StreamSyncReport,
     pub parts: StreamSyncReport,
-    pub diff_traces: StreamSyncReport,
     pub agent_traces: StreamSyncReport,
 }
 
-/// One stream's converged sync outcome.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamSyncReport {
     pub uploaded: usize,
@@ -242,13 +240,6 @@ where
     let progress = Rc::new(RefCell::new(progress));
     let terminated = Cell::new(false);
 
-    let diff_traces = StreamSyncReport {
-        uploaded: 0,
-        initial_cursor: state.cursors.diff_traces,
-        final_cursor: state.cursors.diff_traces,
-        batches: 0,
-    };
-
     let (messages, parts, agent_traces) = join_three_to_completion(
         sync_one_stream(
             client,
@@ -295,7 +286,6 @@ where
         streams: StreamSyncReports {
             messages,
             parts,
-            diff_traces,
             agent_traces,
         },
     })
@@ -529,7 +519,6 @@ fn cursor_for_stream(cursors: &AgentTraceCursors, stream: IngestionStream) -> i6
     match stream {
         IngestionStream::Messages => cursors.messages,
         IngestionStream::Parts => cursors.parts,
-        IngestionStream::DiffTraces => cursors.diff_traces,
         IngestionStream::AgentTraces => cursors.agent_traces,
     }
 }
@@ -1024,7 +1013,6 @@ mod tests {
                     json!({"cursors": {
                         "messages": cursor("messages"),
                         "parts": cursor("parts"),
-                        "diffTraces": 0,
                         "agentTraces": cursor("agent_traces"),
                     }})
                 };
@@ -1318,8 +1306,6 @@ mod contract_tests {
     use crate::services::sync::progress::NoopProgressReporter;
     use crate::services::token_storage::StoredTokens;
 
-    const DIFF_TRACES_CURSOR: i64 = 7;
-
     struct FixedCredentialStore;
 
     impl CredentialStore for FixedCredentialStore {
@@ -1392,7 +1378,6 @@ mod contract_tests {
                     json!({"cursors": {
                         "messages": 0,
                         "parts": 0,
-                        "diffTraces": DIFF_TRACES_CURSOR,
                         "agentTraces": agent_traces_cursor,
                     }})
                 } else {
@@ -1432,7 +1417,7 @@ mod contract_tests {
     }
 
     #[tokio::test]
-    async fn sync_uploads_only_three_streams_and_reports_zero_upload_diff_traces() {
+    async fn sync_uploads_only_three_streams_and_skips_local_diff_traces() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut db = open(&dir.path().join("agent-trace.db")).await;
         db.insert_conversation_text_event(message("m1"), part("m1"))
@@ -1482,13 +1467,6 @@ mod contract_tests {
         assert_eq!(report.streams.messages.uploaded, 1);
         assert_eq!(report.streams.parts.uploaded, 1);
         assert_eq!(report.streams.agent_traces.uploaded, 1);
-        assert_eq!(report.streams.diff_traces.uploaded, 0);
-        assert_eq!(report.streams.diff_traces.batches, 0);
-        assert_eq!(
-            report.streams.diff_traces.initial_cursor,
-            DIFF_TRACES_CURSOR
-        );
-        assert_eq!(report.streams.diff_traces.final_cursor, DIFF_TRACES_CURSOR);
     }
 
     #[tokio::test]

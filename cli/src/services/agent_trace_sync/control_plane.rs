@@ -8,8 +8,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
 use crate::services::agent_trace_export::{
-    self, AgentTraceAgentTraceExportRow, AgentTraceDiffTraceExportRow, AgentTraceMessageExportRow,
-    AgentTracePartExportRow,
+    self, AgentTraceAgentTraceExportRow, AgentTraceMessageExportRow, AgentTracePartExportRow,
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
 use crate::services::resilience::{run_with_retry, RetryPolicy};
@@ -21,7 +20,6 @@ use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 pub enum IngestionStream {
     Messages,
     Parts,
-    DiffTraces,
     AgentTraces,
 }
 
@@ -37,7 +35,6 @@ pub struct AgentTraceIngestionStateRequest {
 pub struct AgentTraceCursors {
     pub messages: i64,
     pub parts: i64,
-    pub diff_traces: i64,
     pub agent_traces: i64,
 }
 
@@ -46,7 +43,6 @@ impl AgentTraceCursors {
         for (name, value) in [
             ("messages", self.messages),
             ("parts", self.parts),
-            ("diffTraces", self.diff_traces),
             ("agentTraces", self.agent_traces),
         ] {
             agent_trace_export::validate_js_safe_integer(value).map_err(|error| {
@@ -469,17 +465,6 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         self.post_batch(request).await
     }
 
-    #[allow(
-        dead_code,
-        reason = "diff_traces compatibility surface retained per context/decisions/2026-10-01-retire-diff-traces-remote-sync-compatibility-gate.md"
-    )]
-    pub async fn ingest_diff_traces(
-        &self,
-        request: &AgentTraceIngestionBatchRequest<AgentTraceDiffTraceExportRow>,
-    ) -> Result<AgentTraceIngestionBatchResponse, ControlPlaneError> {
-        self.post_batch(request).await
-    }
-
     pub async fn ingest_agent_traces(
         &self,
         request: &AgentTraceIngestionBatchRequest<AgentTraceAgentTraceExportRow>,
@@ -751,7 +736,7 @@ mod tests {
     use tokio::sync::{Notify, Semaphore};
 
     use super::{
-        AgentTraceIngestionStateRequest, AgentTraceIngestionStateResponse,
+        AgentTraceCursors, AgentTraceIngestionStateRequest, AgentTraceIngestionStateResponse,
         AuthenticatedControlPlaneClient, ControlPlaneError, CredentialStore,
     };
     use crate::services::auth::TokenResponse;
@@ -1562,37 +1547,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn state_response_decodes_required_diff_traces_cursor() {
-        let state =
-            request_state(r#"{"cursors":{"messages":1,"parts":2,"diffTraces":7,"agentTraces":4}}"#)
-                .await
-                .expect("valid state");
-
-        assert_eq!(state.cursors.diff_traces, 7);
-    }
-
-    #[tokio::test]
-    async fn state_response_rejects_missing_diff_traces_cursor() {
-        let error = request_state(r#"{"cursors":{"messages":1,"parts":2,"agentTraces":4}}"#)
+    async fn state_response_decodes_three_stream_cursors() {
+        let state = request_state(r#"{"cursors":{"messages":1,"parts":2,"agentTraces":4}}"#)
             .await
-            .expect_err("missing diffTraces");
+            .expect("valid state");
 
-        assert!(
-            matches!(&error, ControlPlaneError::InvalidResponse(_)),
-            "{error:?}"
+        assert_eq!(
+            state.cursors,
+            AgentTraceCursors {
+                messages: 1,
+                parts: 2,
+                agent_traces: 4,
+            }
         );
     }
 
     #[tokio::test]
-    async fn state_response_rejects_out_of_range_diff_traces_cursor() {
-        let error = request_state(
-            r#"{"cursors":{"messages":1,"parts":2,"diffTraces":-1,"agentTraces":4}}"#,
-        )
-        .await
-        .expect_err("negative diffTraces");
+    async fn state_response_rejects_out_of_range_cursor() {
+        let error = request_state(r#"{"cursors":{"messages":1,"parts":-1,"agentTraces":4}}"#)
+            .await
+            .expect_err("negative parts cursor");
 
         assert!(
-            matches!(&error, ControlPlaneError::InvalidResponse(reason) if reason.contains("cursors.diffTraces")),
+            matches!(&error, ControlPlaneError::InvalidResponse(reason) if reason.contains("cursors.parts")),
             "{error:?}"
         );
     }
