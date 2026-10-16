@@ -1,16 +1,20 @@
 use std::fmt::Write;
 
 use crate::{cli_schema, services};
-use services::style::{banner_with_gradient, command_name, heading};
+use services::style::{banner_link, banner_with_gradient, command_name, heading};
 
 const SCE_BANNER_LINES: &[&str] = &[
-    r"  ______     ______  ________  ",
-    r".' ____ \  .' ___  ||_   __  | ",
-    r"| (___ \_|/ .'   \_|  | |_ \_| ",
-    r" _.____`. | |         |  _| _  ",
-    r"| \____) |\ `.___.'\ _| |__/ | ",
-    r" \______.' `.____ .'|________| ",
+    "███████╗ ██████╗███████╗",
+    "██╔════╝██╔════╝██╔════╝",
+    "███████╗██║     █████╗",
+    "╚════██║██║     ██╔══╝",
+    "███████║╚██████╗███████╗",
+    "╚══════╝ ╚═════╝╚══════╝",
 ];
+const SCE_BANNER_VISIT_PREFIX: &str = "Visit ";
+const SCE_BANNER_VISIT_LINK_TEXT: &str = "sce.crocoder.dev";
+const SCE_BANNER_VISIT_LINK_URL: &str = "https://sce.crocoder.dev";
+const SCE_BANNER_VISIT_SUFFIX: &str = " to learn more.";
 
 const HELP_COMMAND_NAME: &str = "help";
 const HELP_COMMAND_PURPOSE: &str = "Show help for the current CLI surface";
@@ -130,10 +134,18 @@ fn push_section(out: &mut String, section: &str) {
     out.push_str(section);
 }
 
+fn sce_banner() -> String {
+    format!(
+        "{}\n{SCE_BANNER_VISIT_PREFIX}{}{SCE_BANNER_VISIT_SUFFIX}",
+        banner_with_gradient(SCE_BANNER_LINES),
+        banner_link(SCE_BANNER_VISIT_LINK_TEXT, SCE_BANNER_VISIT_LINK_URL)
+    )
+}
+
 pub fn help_text() -> String {
     let mut output = String::new();
 
-    push_section(&mut output, &banner_with_gradient(SCE_BANNER_LINES));
+    push_section(&mut output, &sce_banner());
     push_blank_line(&mut output);
     push_blank_line(&mut output);
 
