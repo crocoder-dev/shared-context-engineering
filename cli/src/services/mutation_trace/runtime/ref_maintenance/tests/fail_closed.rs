@@ -89,6 +89,10 @@ async fn ref_reconciliation_absent_cursor_tree_fails_closed_without_pruning() {
     let ExplicitOutcome::Failed { error, .. } = outcome else {
         panic!("expected failure, got {outcome:?}");
     };
+    assert!(error
+        .to_string()
+        .contains("Let one agent tool run in this checkout"));
+    assert!(error.to_string().contains("rerun `sce doctor --fix`"));
     let ReconcileError::UnrecoverableCursor { tree } = error else {
         panic!("expected unrecoverable cursor, got {error:?}");
     };

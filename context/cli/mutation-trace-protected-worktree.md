@@ -95,12 +95,12 @@ map it onto its own error surface without losing which safety step failed:
 | `LockAcquisition(WorktreeLockError)` | lock acquire/timeout | untouched |
 | `ExternalTaintMarker { operation: Inspect \| Persist, source }` | fence inspect/arm | left as it was |
 | `MarkerWorkerFailed(JoinError)` | arming blocking worker panicked or was cancelled by the runtime while holding the lock | unknown; never auto-cleared |
-| `CheckoutIdentity(anyhow::Error)` | Git-derived worktree identity resolution, after the fence is armed | **armed** |
+| `WorktreeIdentity(anyhow::Error)` | Git-derived worktree identity resolution, after the fence is armed | **armed** |
 
 `ExternalTaintOperation` lives here, beside the fence step that produces it, and
 is re-exported by `coordinator.rs` so `CoordinateError::ExternalTaintMarker`
 keeps naming it; `AbandonScopeError::ExternalTaintMarker` carries the same type.
-`coordinate()` maps `GitDirResolution` and `CheckoutIdentity`
+`coordinate()` maps `GitDirResolution` and `WorktreeIdentity`
 onto `CoordinateError::Other`, `LockAcquisition` onto
 `CoordinateError::LockAcquisition`, and the fence variant onto
 `CoordinateError::ExternalTaintMarker` with the same `operation` — the exact

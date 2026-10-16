@@ -203,7 +203,7 @@ fn failure_kind(error: &ReconcileError) -> &'static str {
     match error {
         ReconcileError::GitDir(_) => "git_dir_unavailable",
         ReconcileError::Lock(_) => "lock_unavailable",
-        ReconcileError::CheckoutIdentity(_) => "worktree_identity_unavailable",
+        ReconcileError::WorktreeIdentity(_) => "worktree_identity_unavailable",
         ReconcileError::AgentTraceDbUnavailable(source) => {
             match source.downcast_ref::<ExistingRepositoryDbError>() {
                 Some(ExistingRepositoryDbError::Missing { .. }) => "agent_trace_db_missing",

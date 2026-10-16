@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -220,16 +221,18 @@ fn reconciliation_completed_text(counts: &ReconciliationCounts) -> String {
         counts.deleted, counts.retained, counts.local_required
     );
     if counts.pruned_events > 0 {
-        text.push_str(&format!(
+        let _ = write!(
+            text,
             " Pruned {} mutation event(s) whose snapshot trees are absent from this repository.",
             counts.pruned_events
-        ));
+        );
     }
     if counts.repinned > 0 {
-        text.push_str(&format!(
+        let _ = write!(
+            text,
             " Re-pinned {} snapshot tree(s) that were missing pins.",
             counts.repinned
-        ));
+        );
     }
     text
 }
