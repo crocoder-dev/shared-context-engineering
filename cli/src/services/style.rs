@@ -257,6 +257,18 @@ fn is_help_placeholder(token: &str) -> bool {
         .any(|ch| ch.is_ascii_uppercase() || matches!(ch, '<' | '>' | '[' | ']'))
 }
 
+#[must_use]
+pub fn banner_link(text: &str, url: &str) -> String {
+    banner_link_with_color_policy(text, url, supports_color())
+}
+
+#[must_use]
+pub(crate) fn banner_link_with_color_policy(text: &str, url: &str, color_enabled: bool) -> String {
+    style_if(text, color_enabled, |s| {
+        format!("\x1b]8;;{url}\x1b\\{}\x1b]8;;\x1b\\", s.cyan().underline())
+    })
+}
+
 /// Gradient color endpoints for the ASCII art banner.
 /// Right side: cyan (0, 255, 255), Left side: magenta (255, 0, 255).
 const GRADIENT_COLOR_RIGHT: (u8, u8, u8) = (0, 255, 255);
@@ -357,6 +369,24 @@ mod tests {
         let styled = error_code_with_color_policy("SCE-ERR-RUNTIME", true);
         assert_ne!(styled, "SCE-ERR-RUNTIME");
         assert!(styled.contains("SCE-ERR-RUNTIME"));
+    }
+
+    #[test]
+    fn banner_link_wraps_cyan_underlined_text_in_hyperlink_when_color_enabled() {
+        let styled =
+            banner_link_with_color_policy("sce.crocoder.dev", "https://sce.crocoder.dev", true);
+        assert_eq!(
+            styled,
+            "\x1b]8;;https://sce.crocoder.dev\x1b\\\x1b[4m\x1b[36msce.crocoder.dev\x1b[39m\x1b[0m\x1b]8;;\x1b\\"
+        );
+    }
+
+    #[test]
+    fn banner_link_is_plain_when_color_disabled() {
+        assert_eq!(
+            banner_link_with_color_policy("sce.crocoder.dev", "https://sce.crocoder.dev", false),
+            "sce.crocoder.dev"
+        );
     }
 
     #[test]

@@ -85,7 +85,7 @@ Non-interactive target setup never prompts. A missing config receives explicit `
 `sce`, `sce help`, and `sce --help` now render a top-level help surface that starts with an ASCII art "SCE" banner followed by a slim command list:
 
 - the banner uses a per-column right-to-left color gradient (cyan on the right, magenta on the left) when stdout color is enabled, and renders as plain ASCII when color is disabled (non-TTY or `NO_COLOR`)
-- the banner is rendered by `command_surface::help_text()` calling `style::banner_with_gradient(SCE_BANNER_LINES)` before the heading
+- the banner is the box-drawing "SCE" art from `SCE_BANNER_LINES`, rendered by `command_surface::help_text()` via `sce_banner()`, which applies `style::banner_with_gradient` and adds a `Visit sce.crocoder.dev to learn more.` line where `sce.crocoder.dev` is cyan, underlined, and an OSC 8 hyperlink to `https://sce.crocoder.dev` (`style::banner_link`); all of these render as plain text when color is disabled
 - the visible real-command rows are sourced from `cli_schema::TOP_LEVEL_COMMANDS`, so top-level purpose text and help visibility are defined once for both help rendering and known-command classification
 - the visible command list is `help`, `auth`, `config`, `setup`, `doctor`, `sync`, `version`, and `completion`
 - top-level help omits implemented/placeholder labels

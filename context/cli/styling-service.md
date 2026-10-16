@@ -45,6 +45,7 @@ The CLI styling service in `cli/src/services/style.rs` provides deterministic te
 
 - `banner_with_gradient(lines: &[&str]) -> String` - Applies a per-column right-to-left color gradient (cyan on the right, magenta on the left) to ASCII art banner lines when color is enabled; returns plain ASCII when color is disabled; spaces in the banner are left unstyled to avoid trailing-space ANSI artifacts
 - `banner_with_gradient_with_color_policy(lines: &[&str], color_enabled: bool) -> String` - Internal variant accepting an explicit color policy flag for testability
+- `banner_link(text: &str, url: &str) -> String` - Cyan, underlined text wrapped in an OSC 8 terminal hyperlink to `url`; plain text without the hyperlink when color is disabled
 
 ### Policy
 
