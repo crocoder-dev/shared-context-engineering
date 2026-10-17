@@ -29,7 +29,7 @@ flowchart LR
 
 ## Runtime use
 
-- `managed_telemetry::RuntimeTelemetry::resolve` reads the stored credential at CLI startup (never issuing one); a valid unexpired `token` is used only as the `Authorization: Bearer` credential for managed OTLP trace and log export; the `accessor` is never transmitted. Absent, expired, malformed, or unavailable rows select `NoopTelemetry`. See [cli-observability-contract.md](cli-observability-contract.md).
+- `managed_telemetry::RuntimeTelemetry::resolve` reads the stored credential at CLI startup (never issuing one); a valid unexpired `token` is used only as the `Authorization: Bearer` credential for managed OTLP trace and log export; the `accessor` is never transmitted. Absent, expired, malformed, or unavailable rows select `NoopTelemetry`. Claude-invoked SCE hooks are admitted to this lookup and export one `sce.hook` span. Every other hook and this hidden header helper skip the lookup and stay Noop. See [cli-observability-contract.md](cli-observability-contract.md).
 
 ## Hidden header helper
 
