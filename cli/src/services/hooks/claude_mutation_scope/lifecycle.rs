@@ -47,6 +47,7 @@ pub(crate) async fn run_claude_mutation_scope_subcommand<
     logger: Option<&L>,
 ) -> Result<String> {
     let stdin_payload = hooks::read_hook_stdin()?;
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
     run_claude_mutation_scope_from_payload(&stdin_payload, logger).await
 }
 
@@ -502,5 +503,107 @@ pub(crate) async fn repair_blocked<L: crate::services::observability::traits::Lo
         Ok(RepairOutcome::NoOp)
     } else {
         Ok(RepairOutcome::Repaired)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use tokio::net::TcpListener;
+
+    use super::*;
+    use crate::services::error::CliError;
+    use crate::services::managed_telemetry::trace_export::tests::loopback_hook_telemetry;
+    use crate::services::managed_telemetry::trace_export::{
+        record_claude_hook_payload, SHUTDOWN_TIMEOUT,
+    };
+    use crate::services::observability::traits::{NoopLogger, NoopTelemetry, Telemetry};
+
+    const HOOK_SEQUENCE: [&str; 4] = [
+        include_str!("fixtures/probe01-write-success.pre_tool_use.json"),
+        include_str!("fixtures/probe01-write-success.post_tool_use.json"),
+        include_str!("fixtures/probe02-bash-success.pre_tool_use.json"),
+        include_str!("fixtures/probe14-run-in-background-true.pre_tool_use.json"),
+    ];
+    const FAILING_SEAM_CALL: usize = 3;
+    const SHUTDOWN_MARGIN: Duration = Duration::from_secs(1);
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct HookRun {
+        outputs: Vec<Option<String>>,
+        seam_payloads: Vec<String>,
+        state: state::AdapterState,
+    }
+
+    async fn run_hook_sequence<T: Telemetry>(telemetry: &T) -> HookRun {
+        let git_dir = tempfile::tempdir().expect("temp dir");
+        let seam_payloads = Mutex::new(Vec::new());
+        let resolve = async |_: &str| Ok::<_, anyhow::Error>(git_dir.path().to_path_buf());
+        let model_state = async |_: &Path, _: &str, _: &str| Ok::<_, anyhow::Error>(None);
+        let seam = async |_: &Path, payload: &str, _: Option<&NoopLogger>| {
+            let mut payloads = seam_payloads.lock().expect("seam payloads");
+            payloads.push(payload.to_string());
+            if payloads.len() == FAILING_SEAM_CALL {
+                anyhow::bail!("seam failure");
+            }
+            Ok(String::new())
+        };
+        let mut outputs = Vec::new();
+        for payload in HOOK_SEQUENCE {
+            let output = telemetry
+                .with_default_subscriber(&mut || async {
+                    record_claude_hook_payload(payload);
+                    run_claude_mutation_scope_from_payload_with_resolver::<NoopLogger>(
+                        payload,
+                        None,
+                        &resolve,
+                        &model_state,
+                        &seam,
+                    )
+                    .await
+                    .map_err(CliError::runtime)
+                })
+                .await;
+            outputs.push(output.ok());
+        }
+        HookRun {
+            outputs,
+            seam_payloads: seam_payloads.into_inner().expect("seam payloads"),
+            state: state::read_state(git_dir.path()).await.expect("state"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn failing_managed_telemetry_cannot_change_claude_hook_behavior() {
+        let baseline = run_hook_sequence(&NoopTelemetry).await;
+        assert!(baseline
+            .outputs
+            .iter()
+            .flatten()
+            .any(|output| output.contains("\"permissionDecision\":\"deny\"")));
+
+        let refused = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let refused_address = refused.local_addr().expect("addr");
+        drop(refused);
+        let stalled = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let stalled_address = stalled.local_addr().expect("addr");
+        let holder = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = stalled.accept().await {
+                held.push(stream);
+            }
+        });
+
+        for address in [refused_address, stalled_address] {
+            let telemetry = loopback_hook_telemetry(address, "bao-token-value");
+            let observed = run_hook_sequence(&telemetry).await;
+            let started = Instant::now();
+            telemetry.shutdown().await;
+            assert!(started.elapsed() < SHUTDOWN_TIMEOUT + SHUTDOWN_MARGIN);
+            assert_eq!(observed, baseline);
+        }
+        holder.abort();
     }
 }
