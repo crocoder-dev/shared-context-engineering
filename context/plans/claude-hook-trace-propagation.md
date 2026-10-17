@@ -73,13 +73,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Probe and record Claude Code hook trace-context propagation` (status:todo)
+- [x] T01: `Probe and record Claude Code hook trace-context propagation` (status:done)
   - Task ID: T01
   - Scope: In — read Claude Code's current hooks and monitoring/OTEL documentation and any inspectable implementation; run a temporary scratchpad probe registered for `PreToolUse` and `PostToolUse` in a real Claude Code session with native telemetry enabled, triggering a real tool call; capture only `session_id`, `hook_event_name`, `tool_use_id`, `TRACEPARENT`/`TRACESTATE` presence, traceparent validity, trace ID, parent span ID, and presence-only Claude caller env markers; compare captured IDs against Claude Code's exported spans to decide whether the context corresponds to an active tool span; write `context/sce/claude-hook-trace-propagation.md` with evidence, Claude Code version, and verdict. Out — any Rust change; inferring hook behavior from Bash subprocess propagation; committing the probe.
   - Dependencies: none
   - Done when: The context file records a verdict of `parent_context_available` or `parent_context_unavailable` backed by captured evidence for both events, names the Claude-caller signal (or its absence), the probe is removed, and the user-level Claude settings are restored.
   - Verify: Inspect the context file; `git status` shows only the new context file; grep the file for prompt/tool-input/token content (none).
-  - Context synchronization: pending
+  - Completed: 2026-10-17
+  - Files changed: `context/sce/claude-hook-trace-propagation.md` (new)
+  - Result: Verdict `parent_context_available`, qualified. Headless Claude Code 2.1.301 runs with telemetry and the tracing beta on gave every `PreToolUse`/`PostToolUse` hook a valid `TRACEPARENT` with no `TRACESTATE`. Its trace ID matched the exported trace, and its parent span ID was the `claude_code.interaction` root span, never `claude_code.tool` or `claude_code.hook` (detailed beta tracing included). Hooks run outside the tool span; correlate with the tool by `tool_use_id`. Without the tracing beta, or with only `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1`, no `TRACEPARENT` is present. Claude-caller signal for shared subcommands: `CLAUDECODE` and `CLAUDE_PROJECT_DIR` both present (presence only); `CLAUDE_PROJECT_DIR` is absent from the Bash tool environment. Interactive TUI hooks not probed; deferred to T05. The probe ran only in the scratchpad through `claude -p --settings`. It never edited user-level `~/.claude/settings.json` and was deleted afterward.
+  - Deviation: the plan assumed parenting to Claude's active tool span; the evidence shows only the interaction span is available, so T03 parents `sce.hook` as a sibling of `claude_code.tool` under `claude_code.interaction`.
+  - Verify outcomes: context file inspected (verdict, evidence for both events, caller signal, version, docs) — passed; `git status --porcelain -uall` shows only `?? context/sce/claude-hook-trace-propagation.md` — passed; grep of the file for `bearer|token=|sk-ant|hvs.|password|tool_input"|user_prompt"` and the probe file content returned no matches — passed; `git ls-files` contains no T01 probe code — passed.
+  - Context impact: new current-state context file under `context/sce/` (probe evidence and verdict); needs a `context/context-map.md` entry; no code behavior change.
+  - Context synchronization: synced
 
 - [ ] T02: `Export a dedicated sce.hook span for Claude hook invocations` (status:todo)
   - Task ID: T02
