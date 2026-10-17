@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use crate::services::hooks;
+use crate::services::managed_telemetry::trace_export::{in_child_span, ManagedChildSpan};
 use crate::services::mutation_trace::runtime::resolve_git_dir;
 
 use super::events::BASH_TOOL_NAME;
@@ -94,7 +95,21 @@ pub(super) async fn run_claude_mutation_scope_from_payload_with_resolver<
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
     let event = parse_claude_hook_event(stdin_payload)?;
-    dispatch_claude_hook_event(event, logger, resolve_git_dir, model_state_resolver, seam).await
+    let traced_seam = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
+        in_child_span(
+            ManagedChildSpan::MutationScope,
+            seam(repository_root, payload, logger),
+        )
+        .await
+    };
+    dispatch_claude_hook_event(
+        event,
+        logger,
+        resolve_git_dir,
+        model_state_resolver,
+        &traced_seam,
+    )
+    .await
 }
 
 pub(super) async fn dispatch_claude_hook_event<
@@ -508,16 +523,26 @@ pub(crate) async fn repair_blocked<L: crate::services::observability::traits::Lo
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use tokio::net::TcpListener;
 
     use super::*;
+    use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
     use crate::services::error::CliError;
-    use crate::services::managed_telemetry::trace_export::tests::loopback_hook_telemetry;
+    use crate::services::hooks::mutation_scope::{
+        drive_mutation_scope, parse_mutation_scope_payload,
+    };
+    use crate::services::managed_telemetry::trace_export::tests::{
+        capture_requests_until, loopback_hook_telemetry, trace_spans, DecodedSpan,
+    };
     use crate::services::managed_telemetry::trace_export::{
         record_claude_hook_payload, SHUTDOWN_TIMEOUT,
+    };
+    use crate::services::mutation_trace::runtime::{
+        abandon_scope, advise_after_completed_boundary, coordinate,
     };
     use crate::services::observability::traits::{NoopLogger, NoopTelemetry, Telemetry};
 
@@ -528,6 +553,9 @@ mod tests {
         include_str!("fixtures/probe14-run-in-background-true.pre_tool_use.json"),
     ];
     const FAILING_SEAM_CALL: usize = 3;
+    const WRITE_PRE_TOOL_USE: &str =
+        include_str!("fixtures/probe01-write-success.pre_tool_use.json");
+    const TEST_REPOSITORY_ID: &str = "claude-hook-span-repository";
     const SHUTDOWN_MARGIN: Duration = Duration::from_secs(1);
 
     #[derive(Debug, Eq, PartialEq)]
@@ -605,5 +633,144 @@ mod tests {
             assert_eq!(observed, baseline);
         }
         holder.abort();
+    }
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?} failed");
+    }
+
+    fn init_repo(root: &Path) {
+        std::fs::create_dir_all(root).expect("repo dir");
+        git(root, &["init", "-q"]);
+        git(root, &["config", "user.email", "t@example.invalid"]);
+        git(root, &["config", "user.name", "T"]);
+        git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("tracked.txt"), "tracked\n").expect("write file");
+        git(root, &["add", "tracked.txt"]);
+        git(root, &["commit", "-q", "-m", "initial"]);
+    }
+
+    async fn export_claude_hook_spans(payload: &str) -> (Option<String>, Vec<DecodedSpan>) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("repo");
+        init_repo(&root);
+        let git_dir = root.join(".git");
+        let db_path = dir.path().join("agent-trace.db");
+        RepositoryAgentTraceDb::new_at(&db_path)
+            .await
+            .expect("create db")
+            .verify_or_initialize_repository_metadata(TEST_REPOSITORY_ID)
+            .await
+            .expect("initialize metadata");
+        let resolve = async |_: &str| Ok::<_, anyhow::Error>(git_dir.clone());
+        let model_state = async |_: &Path, _: &str, _: &str| Ok::<_, anyhow::Error>(None);
+        let seam = async |_: &Path, payload: &str, _: Option<&NoopLogger>| {
+            drive_mutation_scope(
+                &root,
+                parse_mutation_scope_payload(payload)?,
+                None::<&NoopLogger>,
+                &mut Vec::new(),
+                async |root: &Path, boundary| {
+                    coordinate(root, boundary, async || {
+                        RepositoryAgentTraceDb::open_without_migrations_at(&db_path).await
+                    })
+                    .await
+                },
+                async |root: &Path, scope| {
+                    abandon_scope(root, scope, async || {
+                        RepositoryAgentTraceDb::open_without_migrations_at(&db_path).await
+                    })
+                    .await
+                },
+                advise_after_completed_boundary,
+            )
+            .await
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn(capture_requests_until(listener, stopped));
+        let telemetry = loopback_hook_telemetry(address, "bao-token-value");
+        let output = telemetry
+            .with_default_subscriber(&mut || async {
+                record_claude_hook_payload(payload);
+                run_claude_mutation_scope_from_payload_with_resolver::<NoopLogger>(
+                    payload,
+                    None,
+                    &resolve,
+                    &model_state,
+                    &seam,
+                )
+                .await
+                .map_err(CliError::runtime)
+            })
+            .await;
+        telemetry.shutdown().await;
+        stop.send(()).expect("stop receiver");
+        let spans = trace_spans(&receiver.await.expect("receiver join"));
+        (output.ok(), spans)
+    }
+
+    fn span_named<'a>(spans: &'a [DecodedSpan], name: &str) -> &'a DecodedSpan {
+        spans
+            .iter()
+            .find(|span| span.name == name)
+            .unwrap_or_else(|| panic!("missing {name}: {spans:?}"))
+    }
+
+    fn sorted_names(spans: &[DecodedSpan]) -> Vec<&str> {
+        let mut names = spans
+            .iter()
+            .map(|span| span.name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tracked_claude_hook_exports_mutation_snapshot_and_persistence_children() {
+        let (output, spans) = export_claude_hook_spans(WRITE_PRE_TOOL_USE).await;
+
+        assert_eq!(output.as_deref(), Some(""));
+        assert_eq!(
+            sorted_names(&spans),
+            [
+                "sce.git_snapshot",
+                "sce.hook",
+                "sce.mutation_scope",
+                "sce.persistence"
+            ]
+        );
+        let hook = span_named(&spans, "sce.hook");
+        let mutation_scope = span_named(&spans, "sce.mutation_scope");
+        let git_snapshot = span_named(&spans, "sce.git_snapshot");
+        let persistence = span_named(&spans, "sce.persistence");
+        assert!(hook.parent_span_id.is_empty());
+        assert_eq!(mutation_scope.parent_span_id, hook.span_id);
+        assert_eq!(git_snapshot.parent_span_id, mutation_scope.span_id);
+        assert_eq!(persistence.parent_span_id, mutation_scope.span_id);
+        let success = vec![("sce.outcome".to_string(), "success".to_string())];
+        for child in [mutation_scope, git_snapshot, persistence] {
+            assert_eq!(child.trace_id, hook.trace_id, "{}", child.name);
+            assert_eq!(child.sce_attributes(), success, "{}", child.name);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_only_claude_hook_exports_no_operation_children() {
+        let payload =
+            WRITE_PRE_TOOL_USE.replace("\"tool_name\":\"Write\"", "\"tool_name\":\"Read\"");
+        assert_ne!(payload, WRITE_PRE_TOOL_USE);
+
+        let (output, spans) = export_claude_hook_spans(&payload).await;
+
+        assert_eq!(output.as_deref(), Some(""));
+        assert_eq!(sorted_names(&spans), ["sce.hook"]);
     }
 }
