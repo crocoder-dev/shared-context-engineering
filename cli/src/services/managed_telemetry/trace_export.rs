@@ -27,7 +27,19 @@ const SERVICE_NAME: &str = "sce";
 const TRACER_NAME: &str = "sce.cli";
 pub const COMMAND_SPAN_TARGET: &str = "sce.managed.trace";
 const COMMAND_SPAN_NAME: &str = "sce.command";
+const HOOK_SPAN_NAME: &str = "sce.hook";
 pub const COMMAND_NAME_FIELD: &str = "sce.command.name";
+const AGENT_CLAUDE: &str = "claude";
+const HOOK_EVENT_FIELD: &str = "sce.hook.event";
+const HOOK_TOOL_FIELD: &str = "sce.hook.tool";
+const CLAUDE_SESSION_ID_FIELD: &str = "sce.claude.session_id";
+const CLAUDE_TOOL_USE_ID_FIELD: &str = "sce.claude.tool_use_id";
+const CLAUDE_PAYLOAD_FIELDS: [(&str, &str); 4] = [
+    ("hook_event_name", HOOK_EVENT_FIELD),
+    ("tool_name", HOOK_TOOL_FIELD),
+    ("session_id", CLAUDE_SESSION_ID_FIELD),
+    ("tool_use_id", CLAUDE_TOOL_USE_ID_FIELD),
+];
 const OUTCOME_FIELD: &str = "sce.outcome";
 const ERROR_CLASS_FIELD: &str = "sce.error.class";
 const OUTCOME_SUCCESS: &str = "success";
@@ -73,11 +85,18 @@ fn is_command_span(metadata: &tracing::Metadata<'_>) -> bool {
     metadata.is_span() && metadata.target() == COMMAND_SPAN_TARGET
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedSpanKind {
+    Command,
+    ClaudeHook,
+}
+
 #[derive(Debug)]
 pub struct ManagedTraceTelemetry {
     provider: SdkTracerProvider,
     log_provider: SdkLoggerProvider,
     dispatch: Dispatch,
+    span_kind: ManagedSpanKind,
 }
 
 impl ManagedTraceTelemetry {
@@ -85,12 +104,13 @@ impl ManagedTraceTelemetry {
         bearer: &ManagedBearerToken,
         endpoints: ManagedOtlpEndpoints,
         runtime: tokio::runtime::Handle,
+        span_kind: ManagedSpanKind,
     ) -> anyhow::Result<Self> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)
             .build()?;
-        Self::with_client(bearer, endpoints, runtime, client)
+        Self::with_client(bearer, endpoints, runtime, client, span_kind)
     }
 
     fn with_client(
@@ -98,6 +118,7 @@ impl ManagedTraceTelemetry {
         endpoints: ManagedOtlpEndpoints,
         runtime: tokio::runtime::Handle,
         client: reqwest::Client,
+        span_kind: ManagedSpanKind,
     ) -> anyhow::Result<Self> {
         let mut authorization = HeaderValue::from_str(&bearer.authorization_header_value())?;
         authorization.set_sensitive(true);
@@ -170,6 +191,7 @@ impl ManagedTraceTelemetry {
             provider,
             log_provider,
             dispatch,
+            span_kind,
         })
     }
 
@@ -179,6 +201,7 @@ impl ManagedTraceTelemetry {
             provider,
             log_provider,
             dispatch,
+            ..
         } = self;
         drop(dispatch);
         let traces =
@@ -193,15 +216,26 @@ impl ManagedTraceTelemetry {
         .await;
     }
 
-    fn command_span(&self) -> Span {
-        tracing::dispatcher::with_default(&self.dispatch, || {
-            tracing::info_span!(
+    fn root_span(&self) -> Span {
+        tracing::dispatcher::with_default(&self.dispatch, || match self.span_kind {
+            ManagedSpanKind::Command => tracing::info_span!(
                 target: COMMAND_SPAN_TARGET,
                 COMMAND_SPAN_NAME,
                 sce.command.name = field::Empty,
                 sce.outcome = field::Empty,
                 sce.error.class = field::Empty,
-            )
+            ),
+            ManagedSpanKind::ClaudeHook => tracing::info_span!(
+                target: COMMAND_SPAN_TARGET,
+                HOOK_SPAN_NAME,
+                sce.agent = AGENT_CLAUDE,
+                sce.hook.event = field::Empty,
+                sce.hook.tool = field::Empty,
+                sce.claude.session_id = field::Empty,
+                sce.claude.tool_use_id = field::Empty,
+                sce.outcome = field::Empty,
+                sce.error.class = field::Empty,
+            ),
         })
     }
 }
@@ -212,7 +246,7 @@ impl Telemetry for ManagedTraceTelemetry {
         F: FnMut() -> Fut,
         Fut: Future<Output = Result<String, CliError>>,
     {
-        let span = self.command_span();
+        let span = self.root_span();
         let result = action()
             .instrument(span.clone())
             .with_subscriber(self.dispatch.clone())
@@ -233,6 +267,25 @@ impl Telemetry for ManagedTraceTelemetry {
 
 pub fn record_command_name(name: &str) {
     Span::current().record(COMMAND_NAME_FIELD, name);
+}
+
+pub fn record_claude_hook_payload(stdin_payload: &str) {
+    let span = Span::current();
+    if span.is_disabled() {
+        return;
+    }
+    let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(stdin_payload) else {
+        return;
+    };
+    for (payload_key, span_field) in CLAUDE_PAYLOAD_FIELDS {
+        if let Some(value) = payload
+            .get(payload_key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            span.record(span_field, value);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -308,9 +361,143 @@ pub(crate) mod tests {
         }
     }
 
+    #[derive(Debug, Default)]
+    pub(crate) struct DecodedSpan {
+        pub(crate) name: String,
+        pub(crate) trace_id: Vec<u8>,
+        pub(crate) span_id: Vec<u8>,
+        pub(crate) parent_span_id: Vec<u8>,
+        pub(crate) attributes: Vec<(String, String)>,
+        pub(crate) resource_attributes: Vec<(String, String)>,
+    }
+
+    impl DecodedSpan {
+        pub(crate) fn sce_attributes(&self) -> Vec<(String, String)> {
+            let mut attributes = self
+                .attributes
+                .iter()
+                .filter(|(key, _)| key.starts_with("sce."))
+                .cloned()
+                .collect::<Vec<_>>();
+            attributes.sort();
+            attributes
+        }
+    }
+
+    fn read_varint(bytes: &[u8], position: &mut usize) -> u64 {
+        let mut value = 0_u64;
+        let mut shift = 0;
+        loop {
+            let byte = bytes[*position];
+            *position += 1;
+            value |= u64::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+            shift += 7;
+        }
+    }
+
+    fn length_delimited_fields(bytes: &[u8]) -> Vec<(u64, &[u8])> {
+        let mut fields = Vec::new();
+        let mut position = 0;
+        while position < bytes.len() {
+            let key = read_varint(bytes, &mut position);
+            match key & 0x7 {
+                0 => {
+                    read_varint(bytes, &mut position);
+                }
+                1 => position += 8,
+                2 => {
+                    let length = usize::try_from(read_varint(bytes, &mut position)).unwrap();
+                    fields.push((key >> 3, &bytes[position..position + length]));
+                    position += length;
+                }
+                5 => position += 4,
+                wire => panic!("unsupported protobuf wire type {wire}"),
+            }
+        }
+        fields
+    }
+
+    fn fields_numbered(bytes: &[u8], number: u64) -> impl Iterator<Item = &[u8]> {
+        length_delimited_fields(bytes)
+            .into_iter()
+            .filter(move |(field, _)| *field == number)
+            .map(|(_, value)| value)
+    }
+
+    fn decode_string_attribute(bytes: &[u8]) -> Option<(String, String)> {
+        let key = fields_numbered(bytes, 1).next()?;
+        let value = fields_numbered(bytes, 2).next()?;
+        let string = fields_numbered(value, 1).next()?;
+        Some((
+            String::from_utf8_lossy(key).to_string(),
+            String::from_utf8_lossy(string).to_string(),
+        ))
+    }
+
+    pub(crate) fn decode_spans(body: &[u8]) -> Vec<DecodedSpan> {
+        let mut spans = Vec::new();
+        for resource_spans in fields_numbered(body, 1) {
+            let resource_attributes = fields_numbered(resource_spans, 1)
+                .flat_map(|resource| fields_numbered(resource, 1))
+                .filter_map(decode_string_attribute)
+                .collect::<Vec<_>>();
+            for scope_spans in fields_numbered(resource_spans, 2) {
+                for span in fields_numbered(scope_spans, 2) {
+                    let mut decoded = DecodedSpan {
+                        resource_attributes: resource_attributes.clone(),
+                        ..DecodedSpan::default()
+                    };
+                    for (field, value) in length_delimited_fields(span) {
+                        match field {
+                            1 => decoded.trace_id = value.to_vec(),
+                            2 => decoded.span_id = value.to_vec(),
+                            4 => decoded.parent_span_id = value.to_vec(),
+                            5 => decoded.name = String::from_utf8_lossy(value).to_string(),
+                            9 => decoded.attributes.extend(decode_string_attribute(value)),
+                            _ => {}
+                        }
+                    }
+                    spans.push(decoded);
+                }
+            }
+        }
+        spans
+    }
+
+    pub(crate) fn trace_spans(requests: &[CapturedRequest]) -> Vec<DecodedSpan> {
+        requests
+            .iter()
+            .filter(|request| {
+                request
+                    .head
+                    .to_ascii_lowercase()
+                    .starts_with("post /v1/traces ")
+            })
+            .flat_map(|request| decode_spans(&request.body))
+            .collect()
+    }
+
     pub(crate) fn loopback_telemetry(
         address: std::net::SocketAddr,
         token: &str,
+    ) -> ManagedTraceTelemetry {
+        loopback_telemetry_of_kind(address, token, ManagedSpanKind::Command)
+    }
+
+    pub(crate) fn loopback_hook_telemetry(
+        address: std::net::SocketAddr,
+        token: &str,
+    ) -> ManagedTraceTelemetry {
+        loopback_telemetry_of_kind(address, token, ManagedSpanKind::ClaudeHook)
+    }
+
+    fn loopback_telemetry_of_kind(
+        address: std::net::SocketAddr,
+        token: &str,
+        span_kind: ManagedSpanKind,
     ) -> ManagedTraceTelemetry {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -318,13 +505,14 @@ pub(crate) mod tests {
             .tls_certs_only(Vec::new())
             .build()
             .expect("test http client");
-        loopback_telemetry_with_client(address, token, client)
+        loopback_telemetry_with_client(address, token, client, span_kind)
     }
 
     fn loopback_telemetry_with_client(
         address: std::net::SocketAddr,
         token: &str,
         client: reqwest::Client,
+        span_kind: ManagedSpanKind,
     ) -> ManagedTraceTelemetry {
         let traces_endpoint: &'static str =
             Box::leak(format!("http://{address}/v1/traces").into_boxed_str());
@@ -357,6 +545,7 @@ pub(crate) mod tests {
             endpoints,
             tokio::runtime::Handle::current(),
             client,
+            span_kind,
         )
         .expect("telemetry")
     }
@@ -444,6 +633,61 @@ pub(crate) mod tests {
         }
         assert!(!body.contains("local-accessor-secret"));
         assert!(!body.contains("bao-token-value"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_hook_export_posts_one_hook_span_with_correlation_ids_only() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 1));
+        let telemetry = loopback_hook_telemetry(address, "bao-token-value");
+        let payload = r#"{"session_id":"session-7d07","transcript_path":"/home/u/private-repo/transcript.jsonl","cwd":"/home/u/private-repo","prompt":"PROMPT_TEXT_VALUE","hook_event_name":"PostToolUse","tool_name":"Write","tool_input":{"file_path":"/home/u/private-repo/src/secret.rs","content":"FILE_CONTENT_VALUE Bearer leak-value"},"tool_response":{"success":true,"output":"TOOL_RESPONSE_VALUE"},"tool_use_id":"toolu_01KN1s"}"#;
+
+        let result = telemetry
+            .with_default_subscriber(&mut || async {
+                record_command_name("hooks");
+                record_claude_hook_payload(payload);
+                tokio::task::yield_now().await;
+                Ok(String::new())
+            })
+            .await;
+        assert_eq!(result.expect("hook result"), "");
+        telemetry.shutdown().await;
+
+        let requests = receiver.await.expect("receiver join");
+        let spans = trace_spans(&requests);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let span = &spans[0];
+        assert_eq!(span.name, "sce.hook");
+        assert!(span.parent_span_id.is_empty());
+        assert!(span
+            .resource_attributes
+            .contains(&("service.name".to_string(), "sce".to_string())));
+        let expected = [
+            ("sce.agent", "claude"),
+            ("sce.claude.session_id", "session-7d07"),
+            ("sce.claude.tool_use_id", "toolu_01KN1s"),
+            ("sce.hook.event", "PostToolUse"),
+            ("sce.hook.tool", "Write"),
+            ("sce.outcome", "success"),
+        ]
+        .map(|(key, value)| (key.to_string(), value.to_string()));
+        assert_eq!(span.sce_attributes(), expected);
+        for request in &requests {
+            let body = String::from_utf8_lossy(&request.body).to_string();
+            for leaked in [
+                "private-repo",
+                "PROMPT_TEXT_VALUE",
+                "FILE_CONTENT_VALUE",
+                "TOOL_RESPONSE_VALUE",
+                "leak-value",
+                "bao-token-value",
+                "local-accessor-secret",
+                "sce.command",
+            ] {
+                assert!(!body.contains(leaked), "leaked {leaked}");
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -647,7 +891,12 @@ pub(crate) mod tests {
                 .build()
                 .expect("test http client");
             let telemetry =
-                loopback_telemetry_with_client(address, "bao-token-value", unbounded_client);
+                loopback_telemetry_with_client(
+                    address,
+                    "bao-token-value",
+                    unbounded_client,
+                    ManagedSpanKind::Command,
+                );
             let result = telemetry
                 .with_default_subscriber(&mut || async {
                     record_command_name("config");

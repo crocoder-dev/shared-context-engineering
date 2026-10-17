@@ -8,7 +8,7 @@ pub mod trace_export;
 
 use crate::services::error::CliError;
 use crate::services::observability::traits::{NoopTelemetry, Telemetry};
-use trace_export::ManagedTraceTelemetry;
+use trace_export::{ManagedSpanKind, ManagedTraceTelemetry};
 
 use crate::services::telemetry_credential_storage::{
     load_telemetry_credential, TelemetryCredential,
@@ -130,14 +130,14 @@ pub enum RuntimeTelemetry {
 }
 
 impl RuntimeTelemetry {
-    pub async fn resolve(managed_allowed: bool) -> Self {
-        if !managed_allowed {
+    pub async fn resolve(span_kind: Option<ManagedSpanKind>) -> Self {
+        let Some(span_kind) = span_kind else {
             return Self::Noop(NoopTelemetry);
-        }
-        Self::resolve_with(load_telemetry_credential()).await
+        };
+        Self::resolve_with(load_telemetry_credential(), span_kind).await
     }
 
-    pub(crate) async fn resolve_with<Fut>(lookup: Fut) -> Self
+    pub(crate) async fn resolve_with<Fut>(lookup: Fut, span_kind: ManagedSpanKind) -> Self
     where
         Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>>
             + Send
@@ -149,7 +149,7 @@ impl RuntimeTelemetry {
         };
         match select_mode(credential, now_unix_seconds()) {
             ManagedTelemetryMode::Managed { bearer, endpoints } => {
-                ManagedTraceTelemetry::new(&bearer, endpoints, runtime)
+                ManagedTraceTelemetry::new(&bearer, endpoints, runtime, span_kind)
                     .map_or(Self::Noop(NoopTelemetry), Self::Managed)
             }
             ManagedTelemetryMode::Noop => Self::Noop(NoopTelemetry),
@@ -238,6 +238,22 @@ mod tests {
             }
             ManagedTelemetryMode::Noop => panic!("expected managed mode"),
         }
+    }
+
+    #[tokio::test]
+    async fn claude_hook_credential_failure_or_expiry_resolves_noop() {
+        let failed = RuntimeTelemetry::resolve_with(
+            async { Err(TokenStorageError::Database("locked".to_string())) },
+            ManagedSpanKind::ClaudeHook,
+        )
+        .await;
+        assert!(matches!(failed, RuntimeTelemetry::Noop(_)));
+        let expired = RuntimeTelemetry::resolve_with(
+            async { Ok(Some(credential("bao-token", 1))) },
+            ManagedSpanKind::ClaudeHook,
+        )
+        .await;
+        assert!(matches!(expired, RuntimeTelemetry::Noop(_)));
     }
 
     #[test]
