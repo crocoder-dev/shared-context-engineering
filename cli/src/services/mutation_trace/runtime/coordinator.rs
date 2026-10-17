@@ -5,6 +5,7 @@ use anyhow::Result;
 use uuid::Uuid;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::managed_telemetry::trace_export::{in_child_span, ManagedChildSpan};
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{
     CasResult, DurableTransition, MutationTraceStore, ScopeProvenance,
@@ -353,8 +354,8 @@ async fn coordinate_boundary_inner<C, AfterLoad, AfterRecovery>(
     worktree_id: &WorktreeId,
     boundary: &RuntimeBoundary,
     inherited_external_taint: bool,
-    mut after_load: AfterLoad,
-    mut after_recovery: AfterRecovery,
+    after_load: AfterLoad,
+    after_recovery: AfterRecovery,
 ) -> Result<CoordinateOutcome, CoordinateError>
 where
     C: SnapshotCapture,
@@ -363,11 +364,44 @@ where
 {
     let mut store = MutationTraceStore::new(db);
 
-    let observed_tree = match capture_and_pin(capture, pin_lease, worktree_id).await {
+    let observed_tree = match in_child_span(
+        ManagedChildSpan::GitSnapshot,
+        capture_and_pin(capture, pin_lease, worktree_id),
+    )
+    .await
+    {
         Ok(tree) => tree,
         Err(source) => return Err(handle_snapshot_failure(&mut store, worktree_id, source).await),
     };
 
+    in_child_span(
+        ManagedChildSpan::Persistence,
+        persist_boundary(
+            &mut store,
+            worktree_id,
+            boundary,
+            observed_tree,
+            inherited_external_taint,
+            after_load,
+            after_recovery,
+        ),
+    )
+    .await
+}
+
+async fn persist_boundary<AfterLoad, AfterRecovery>(
+    store: &mut MutationTraceStore<'_>,
+    worktree_id: &WorktreeId,
+    boundary: &RuntimeBoundary,
+    observed_tree: TreeId,
+    inherited_external_taint: bool,
+    mut after_load: AfterLoad,
+    mut after_recovery: AfterRecovery,
+) -> Result<CoordinateOutcome, CoordinateError>
+where
+    AfterLoad: FnMut(u32),
+    AfterRecovery: FnMut(u32) -> Result<()>,
+{
     store
         .initialize_worktree(worktree_id, &observed_tree)
         .await
@@ -383,7 +417,7 @@ where
         None => None,
     };
 
-    register_start_provenance(&store, boundary, registered_scope.as_ref()).await?;
+    register_start_provenance(store, boundary, registered_scope.as_ref()).await?;
 
     let type_boundary = into_protocol_boundary(boundary, worktree_id);
     let scope_ref = types::boundary_scope(&type_boundary);
