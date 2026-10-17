@@ -100,9 +100,89 @@ The Claude Code 2.1.301 bundle contains a shared subprocess-environment builder.
 - Claude Code monitoring docs, `https://code.claude.com/docs/en/monitoring-usage` (Traces (beta), TRACEPARENT propagation, span hierarchy, hook spans). The docs describe Bash/PowerShell subprocesses as inheriting the active tool execution span's context. They describe hook executions as children of `claude_code.interaction`. They say nothing about hook-process `TRACEPARENT`; the probe shows hook processes receive the interaction context.
 - Claude Code hooks docs, `https://code.claude.com/docs/en/hooks` (hook environment: `CLAUDE_PROJECT_DIR`; `OTEL_*` removed from subprocesses; `prompt_id` matches the `prompt.id` event attribute). These docs do not mention `TRACEPARENT`.
 
+## Live verification
+
+Recorded by T05 on 2026-10-17. The run used an `sce` debug build of commit `eae7be8f` (T02–T04), built with `nix develop -c ./scripts/run-cli-cargo.sh build`. It used the existing stored telemetry credential: `sce auth telemetry-headers` exited 0 with non-empty output, and the output was not inspected. Both exporters sent to the canonical collector `https://otel.crocoderlab.dev`: SCE through its pinned endpoint, and Claude Code through the user-level `OTEL_EXPORTER_OTLP_ENDPOINT` with `otelHeadersHelper = sce auth telemetry-headers`. Delivery was judged only from Dash0, never from a collector response. The Dash0 evidence is a user-exported root-span listing for the last 30 minutes. It held 30 root spans, all with `parentSpanId` empty, ending at 12:32:23Z. A trace detail view was not provided.
+
+### `sce doctor`
+
+`sce doctor --format json` ran at 2026-10-17T12:31:35Z, exited 0, and took 0.76s. Dash0 shows one root `sce.command` span: trace `1cc8e0b1eda96df1f757fab2e3798efd`, span `3f1d92756bd5860a`, `sce.command.name=doctor`, `sce.outcome=success`, resource `service.name=sce`, `service.version=0.4.0-pre-alpha-v11`. It is an independent root, so the standalone command path is unchanged.
+
+Other branch-build invocations in the same window, all also visible in Dash0:
+
+- `sce --version` at 12:31:21Z, as `sce.command`.
+- `sce auth --help` and the rejected `sce auth status` at 12:31:40Z, as two `sce.command` spans with `sce.command.name=auth`.
+
+The later `sce auth telemetry-headers` calls produced no span, consistent with the helper staying Noop.
+
+### Claude Code session with SCE hooks
+
+Headless Claude Code `2.1.301` ran `claude -p --model haiku --allowedTools Write,Read` in this repository. The run used the repository's project hooks, user-level telemetry settings (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`), and the branch build first on `PATH`. The inherited parent-session `TRACEPARENT`, `CLAUDECODE`, and session variables were unset. The session made a real `Write` of a gitignored `context/tmp/` file, then a `Read` of it, and the file was deleted afterward. Session `96272753-8c39-4ec3-824d-238f5202e016`, `num_turns=3`.
+
+A scratchpad-only probe hook, registered beside the SCE hooks through `--settings`, recorded the context every tool hook received. All four hooks resolved `sce` to the branch build.
+
+| Hook | `tool_use_id` | `TRACEPARENT` trace ID | parent span ID |
+| --- | --- | --- | --- |
+| PreToolUse Write | `toolu_01ANo9Y6mnA876HcX4fnD7bn` | `dcd919ecc4f5d400df5b642a1a229783` | `3eec7153327c6839` |
+| PostToolUse Write | `toolu_01ANo9Y6mnA876HcX4fnD7bn` | `dcd919ecc4f5d400df5b642a1a229783` | `3eec7153327c6839` |
+| PreToolUse Read | `toolu_017JhhwrJk5d16ykAncy5mUy` | `dcd919ecc4f5d400df5b642a1a229783` | `3eec7153327c6839` |
+| PostToolUse Read | `toolu_017JhhwrJk5d16ykAncy5mUy` | `dcd919ecc4f5d400df5b642a1a229783` | `3eec7153327c6839` |
+
+Observed in Dash0, all from the same Dash0 ingestion token:
+
+| Span | Service | Trace ID | Span ID | Parent | Attributes |
+| --- | --- | --- | --- | --- | --- |
+| `sce.hook` (12:32:14Z) | `sce` | `7dd41303f9bec7b68bb667b2fb39aa70` | `a9bc49c8d4a8c7ea` | none | `sce.agent=claude`, `sce.hook.event=SessionStart`, `sce.claude.session_id=96272753-…`, `sce.outcome=success` |
+| `claude_code.interaction` (12:32:16Z) | `claude-code` | `dcd919ecc4f5d400df5b642a1a229783` | `3eec7153327c6839` | none | `session.id=96272753-…` |
+| `sce.hook` (12:32:23Z) | `sce` | `d56f02bb11aeac1b1a2c0922d5245d05` | `7dcd68d04d9501b8` | none | `sce.agent=claude`, `sce.hook.event=SessionEnd`, `sce.claude.session_id=96272753-…`, `sce.outcome=success` |
+
+Neither `sce.hook` span carried `sce.hook.tool`, `sce.claude.tool_use_id`, paths, or payload content. Both are correctly independent roots:
+
+- `SessionStart` (`claude-model-state`) runs before the interaction span exists.
+- `SessionEnd` (`claude-mutation-scope`) starts at 12:32:23.502Z, after the interaction ended at 12:32:23.257Z.
+
+Neither process had a parent context to join.
+
+### Observed hierarchy
+
+Confirmed in Dash0:
+
+- `sce doctor` → one root `sce.command`.
+- Claude session-boundary hooks → independent root `sce.hook` spans.
+- The Claude interaction root `claude_code.interaction` (`dcd919ec…/3eec7153327c6839`) is exactly the trace and span named by every tool hook's `TRACEPARENT`.
+
+Expected but not verified in Dash0 for trace `dcd919ecc4f5d400df5b642a1a229783`:
+
+```text
+claude_code.interaction (3eec7153327c6839)
+├── claude_code.tool (Write / Read)
+└── sce.hook  ×N: PreToolUse/PostToolUse hooks (TRACEPARENT captured); UserPromptSubmit/Stop hooks not probed
+    └── sce.mutation_scope (claude-mutation-scope hooks)
+        ├── sce.git_snapshot (Write PreToolUse)
+        └── sce.persistence
+```
+
+The root-span listing cannot show non-root spans: even Claude Code's own `claude_code.tool` and in-trace `claude_code.llm_request` children for this session are absent from it. So the parented `sce.hook` spans and their children could not be confirmed or ruled out. The listing does contain every root span in the 12:31–12:33 window, and it has no unparented `sce.hook` for `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, or `Stop`. So these hook spans either joined the interaction trace, as the local loopback tests prove they do, or were not delivered. Confirming the parent relationship in Dash0 requires opening trace `dcd919ecc4f5d400df5b642a1a229783` in the trace view. Distributed tracing between Claude Code and SCE is therefore implemented and locally tested, but not yet verified live. The Dash0 dataset name was not reported: SCE and Claude Code resources share one ingestion token, but which named dataset that token writes to was not checked.
+
+## Opt-in live smoke procedure
+
+This is manual, uses real credentials, Claude Code, and Dash0, and is never part of CI.
+
+1. Confirm a stored credential without printing it: `out=$(sce auth telemetry-headers 2>/dev/null); [ -n "$out" ] && echo present`.
+2. Build the branch: `nix develop -c ./scripts/run-cli-cargo.sh build --manifest-path cli/Cargo.toml`.
+3. Run `cli/target/debug/sce doctor`, and note the UTC time.
+4. Optionally, add a scratchpad-only probe hook through `--settings` that records only `hook_event_name`, `tool_use_id`, and the trace ID and parent span ID parsed from `TRACEPARENT`. This captures the expected Claude trace ID.
+5. From the repository root, with Claude tracing enabled (`CLAUDE_CODE_ENABLE_TELEMETRY=1`, `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`), run `env -u TRACEPARENT -u TRACESTATE -u CLAUDECODE PATH="$PWD/cli/target/debug:$PATH" claude -p --allowedTools Write,Read "<write then read a file under context/tmp/>"`. Then delete the file.
+6. In Dash0, find the `sce.command` span with `sce.command.name=doctor` at the noted time. Open the Claude trace by its trace ID, not a root-span list, and confirm:
+   - each tool hook's `sce.hook` has `claude_code.interaction` as its parent and a `sce.claude.tool_use_id` that matches a `claude_code.tool` span;
+   - the `Write` `PreToolUse` `claude-mutation-scope` hook carries `sce.mutation_scope` → `sce.git_snapshot` and `sce.persistence`;
+   - `SessionStart`/`SessionEnd` `sce.hook` spans are independent roots.
+7. Record the trace IDs and the observed hierarchy. Record anything that was not observed as unverified, and never record a collector 2xx as delivery.
+
 ## Not verified
 
-- Interactive TUI sessions were not probed for hook `TRACEPARENT`. Claude Code documents that only `-p`/Agent SDK sessions read an inbound `TRACEPARENT`. The outbound subprocess builder is shared, and the interactive Bash tool environment of the same version carries a valid `TRACEPARENT` (observed during this task). Whether interactive hooks receive the same interaction-span context is expected but unconfirmed. T05 live verification must check it.
+- The parent-child relationship in Dash0 between `claude_code.interaction` and the tool-hook `sce.hook` spans, and the delivery of `sce.mutation_scope`, `sce.git_snapshot`, and `sce.persistence` spans. See [Live verification](#live-verification).
+- Interactive TUI sessions were not probed for hook `TRACEPARENT`. T05 also used headless `claude -p`. Claude Code documents that only `-p`/Agent SDK sessions read an inbound `TRACEPARENT`. The outbound subprocess builder is shared, and the interactive Bash tool environment of the same version carries a valid `TRACEPARENT`. Whether interactive hooks receive the same interaction-span context is expected but unconfirmed.
 - Subagent (`Agent` tool) hooks, `PostToolUseFailure`, `PermissionDenied`, and other hook events were not probed.
 - Behavior behind a custom `ANTHROPIC_BASE_URL` proxy without `CLAUDE_CODE_PROPAGATE_TRACEPARENT` was not probed. Per the docs the subprocess `TRACEPARENT` follows the same switch as the API `traceparent` header.
 
@@ -110,7 +190,7 @@ The Claude Code 2.1.301 bundle contains a shared subprocess-environment builder.
 
 - T02: admit the Claude-only subcommands from argv. Admit shared subcommands only when `CLAUDECODE` and `CLAUDE_PROJECT_DIR` are both present.
 - T03: the parent-context branch applies. Extract `TRACEPARENT` (and `TRACESTATE` when present) with `TraceContextPropagator` and parent `sce.hook` on it. The resulting span is a child of `claude_code.interaction` and shares its trace ID. Missing or invalid context, which is the default when Claude tracing is off, yields an independent SCE root.
-- T05 and context sync must describe the hierarchy as `claude_code.interaction → sce.hook` (sibling of `claude_code.tool`), with tool correlation by `tool_use_id`, not as a tool-span child.
+- Context describes the hierarchy as `claude_code.interaction → sce.hook` (a sibling of `claude_code.tool`), with tool correlation by `tool_use_id`, not as a tool-span child. Live status is recorded in [Live verification](#live-verification).
 
 ## Probe hygiene
 
