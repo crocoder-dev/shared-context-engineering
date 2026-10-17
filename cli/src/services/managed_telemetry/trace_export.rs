@@ -32,6 +32,15 @@ const TRACER_NAME: &str = "sce.cli";
 pub const COMMAND_SPAN_TARGET: &str = "sce.managed.trace";
 const COMMAND_SPAN_NAME: &str = "sce.command";
 const HOOK_SPAN_NAME: &str = "sce.hook";
+const MUTATION_SCOPE_SPAN_NAME: &str = "sce.mutation_scope";
+const GIT_SNAPSHOT_SPAN_NAME: &str = "sce.git_snapshot";
+const PERSISTENCE_SPAN_NAME: &str = "sce.persistence";
+const HOOK_EXPORTED_SPAN_NAMES: [&str; 4] = [
+    HOOK_SPAN_NAME,
+    MUTATION_SCOPE_SPAN_NAME,
+    GIT_SNAPSHOT_SPAN_NAME,
+    PERSISTENCE_SPAN_NAME,
+];
 pub const COMMAND_NAME_FIELD: &str = "sce.command.name";
 const AGENT_CLAUDE: &str = "claude";
 const HOOK_EVENT_FIELD: &str = "sce.hook.event";
@@ -90,13 +99,28 @@ impl HttpClient for PinnedBearerClient {
 }
 
 fn is_command_span(metadata: &tracing::Metadata<'_>) -> bool {
-    metadata.is_span() && metadata.target() == COMMAND_SPAN_TARGET
+    metadata.is_span()
+        && metadata.target() == COMMAND_SPAN_TARGET
+        && metadata.name() == COMMAND_SPAN_NAME
+}
+
+fn is_hook_span(metadata: &tracing::Metadata<'_>) -> bool {
+    metadata.is_span()
+        && metadata.target() == COMMAND_SPAN_TARGET
+        && HOOK_EXPORTED_SPAN_NAMES.contains(&metadata.name())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ManagedSpanKind {
     Command,
     ClaudeHook,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ManagedChildSpan {
+    MutationScope,
+    GitSnapshot,
+    Persistence,
 }
 
 #[derive(Debug)]
@@ -194,11 +218,13 @@ impl ManagedTraceTelemetry {
                     .build(),
             )
             .build();
+        let span_filter: fn(&tracing::Metadata<'_>) -> bool = match span_kind {
+            ManagedSpanKind::Command => is_command_span,
+            ManagedSpanKind::ClaudeHook => is_hook_span,
+        };
         let span_layer = tracing_opentelemetry::layer()
             .with_tracer(provider.tracer(TRACER_NAME))
-            .with_filter(filter_fn(
-                is_command_span as fn(&tracing::Metadata<'_>) -> bool,
-            ));
+            .with_filter(filter_fn(span_filter));
         let log_layer = LogBridgeLayer::new(log_provider.logger(TRACER_NAME)).with_filter(
             filter_fn(is_exportable_event as fn(&tracing::Metadata<'_>) -> bool),
         );
@@ -303,6 +329,41 @@ fn extract_parent_context(
     context.span().span_context().is_valid().then_some(context)
 }
 
+fn child_span(kind: ManagedChildSpan) -> Span {
+    match kind {
+        ManagedChildSpan::MutationScope => tracing::info_span!(
+            target: COMMAND_SPAN_TARGET,
+            MUTATION_SCOPE_SPAN_NAME,
+            sce.outcome = field::Empty,
+        ),
+        ManagedChildSpan::GitSnapshot => tracing::info_span!(
+            target: COMMAND_SPAN_TARGET,
+            GIT_SNAPSHOT_SPAN_NAME,
+            sce.outcome = field::Empty,
+        ),
+        ManagedChildSpan::Persistence => tracing::info_span!(
+            target: COMMAND_SPAN_TARGET,
+            PERSISTENCE_SPAN_NAME,
+            sce.outcome = field::Empty,
+        ),
+    }
+}
+
+pub async fn in_child_span<T, E>(
+    kind: ManagedChildSpan,
+    operation: impl Future<Output = Result<T, E>>,
+) -> Result<T, E> {
+    let span = child_span(kind);
+    let result = Box::pin(operation.instrument(span.clone())).await;
+    let outcome = if result.is_ok() {
+        OUTCOME_SUCCESS
+    } else {
+        OUTCOME_FAILURE
+    };
+    span.record(OUTCOME_FIELD, outcome);
+    result
+}
+
 pub fn record_command_name(name: &str) {
     Span::current().record(COMMAND_NAME_FIELD, name);
 }
@@ -356,6 +417,19 @@ pub(crate) mod tests {
             captured.push(request);
         }
         captured
+    }
+
+    pub(crate) async fn capture_requests_until(
+        listener: TcpListener,
+        mut stop: tokio::sync::oneshot::Receiver<()>,
+    ) -> Vec<CapturedRequest> {
+        let mut captured = Vec::new();
+        loop {
+            tokio::select! {
+                request = capture_one_request(&listener, "HTTP/1.1 200 OK") => captured.push(request),
+                _ = &mut stop => return captured,
+            }
+        }
     }
 
     async fn capture_one_request(
@@ -817,31 +891,27 @@ pub(crate) mod tests {
             for _ in 0..8 {
                 tokio::task::yield_now().await;
             }
-            let child = tracing::info_span!(target: COMMAND_SPAN_TARGET, "sce.test.child");
-            async {
+            in_child_span(ManagedChildSpan::MutationScope, async {
                 tokio::task::yield_now().await;
                 tokio::spawn(
                     async {
                         tokio::task::yield_now().await;
-                        let grandchild =
-                            tracing::info_span!(target: COMMAND_SPAN_TARGET, "sce.test.grandchild");
-                        async {
+                        in_child_span(ManagedChildSpan::GitSnapshot, async {
                             for _ in 0..4 {
                                 tokio::task::yield_now().await;
                             }
-                        }
-                        .instrument(grandchild)
-                        .await;
+                            Ok::<(), ()>(())
+                        })
+                        .await
                     }
                     .in_current_span()
                     .with_current_subscriber(),
                 )
                 .await
-                .expect("spawned child join");
-                tokio::task::yield_now().await;
-            }
-            .instrument(child)
-            .await;
+                .expect("spawned child join")
+            })
+            .await
+            .expect("child span result");
         })
         .await;
         assert_eq!(spans.len(), 3, "{spans:?}");
@@ -852,14 +922,49 @@ pub(crate) mod tests {
                 .unwrap_or_else(|| panic!("missing {name}"))
         };
         let hook = by_name("sce.hook");
-        let child = by_name("sce.test.child");
-        let grandchild = by_name("sce.test.grandchild");
+        let child = by_name("sce.mutation_scope");
+        let grandchild = by_name("sce.git_snapshot");
         for span in [hook, child, grandchild] {
             assert_eq!(span.trace_id, UPSTREAM_TRACE_ID, "{}", span.name);
         }
         assert_eq!(hook.parent_span_id, UPSTREAM_SPAN_ID);
         assert_eq!(child.parent_span_id, hook.span_id);
         assert_eq!(grandchild.parent_span_id, child.span_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn command_export_keeps_single_command_span_when_child_operations_run() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn(capture_requests_until(listener, stopped));
+        let telemetry = loopback_telemetry(address, "bao-token-value");
+
+        let result = telemetry
+            .with_default_subscriber(&mut || async {
+                record_command_name("doctor");
+                for kind in [
+                    ManagedChildSpan::MutationScope,
+                    ManagedChildSpan::GitSnapshot,
+                    ManagedChildSpan::Persistence,
+                ] {
+                    in_child_span(kind, async { Ok::<(), ()>(()) })
+                        .await
+                        .expect("child operation");
+                }
+                Ok(String::new())
+            })
+            .await;
+        assert_eq!(result.expect("command result"), "");
+        telemetry.shutdown().await;
+        stop.send(()).expect("stop receiver");
+
+        let spans = trace_spans(&receiver.await.expect("receiver join"));
+        let names = spans
+            .iter()
+            .map(|span| span.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["sce.command"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -238,7 +238,7 @@ mutation-stack dependency is the reused
 `RuntimeBoundary` path or spawned `sce` subprocess. The production resolver
 uses the hooks-layer Agent Trace DB opener only for the exact
 `claude_model_state` read; the seam retains strict parsing, lazy DB acquisition,
-durable-completion classification, and empty-stdout semantics.
+durable-completion classification, and empty-stdout semantics. The adapter also wraps each seam call in the managed `sce.mutation_scope` trace span ([cli-observability-contract.md](../sce/cli-observability-contract.md)), which is disabled without a managed hook dispatch.
 
 ## Related context
 

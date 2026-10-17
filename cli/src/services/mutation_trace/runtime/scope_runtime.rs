@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::managed_telemetry::trace_export::{in_child_span, ManagedChildSpan};
 use crate::services::mutation_trace::protocol;
 use crate::services::mutation_trace::store::{CasResult, DurableTransition, MutationTraceStore};
 use crate::services::mutation_trace::types::{ProtocolState, ScopeId, ScopeStatus, WorktreeId};
@@ -147,7 +148,11 @@ where
         });
     }
 
-    let outcome = abandon_protected(protected.worktree_id(), scope, open_db, after_load).await?;
+    let outcome = in_child_span(
+        ManagedChildSpan::Persistence,
+        abandon_protected(protected.worktree_id(), scope, open_db, after_load),
+    )
+    .await?;
 
     if matches!(outcome, AbandonScopeOutcome::RecoveryRequired { .. }) {
         return Ok(outcome);
