@@ -1,6 +1,6 @@
 # Claude Code Hook Trace-Context Propagation
 
-Probe evidence and verdict for whether Claude Code passes W3C trace context to command hooks, recorded by T01 of `context/plans/claude-hook-trace-propagation.md`. This file is the durable source for the parent-context decision consumed by T02–T05. Shipped hook admission and the `sce.hook` span contract are described in [cli-observability-contract.md](cli-observability-contract.md); parenting `sce.hook` on `TRACEPARENT` is not shipped yet, so the span is currently an independent root.
+Probe evidence and verdict for whether Claude Code passes W3C trace context to command hooks, recorded by T01 of `context/plans/claude-hook-trace-propagation.md`. This file is the durable source for the parent-context decision consumed by T02–T05. Shipped hook admission and the `sce.hook` span contract are described in [cli-observability-contract.md](cli-observability-contract.md); parenting `sce.hook` on a valid `TRACEPARENT` (independent root otherwise) is shipped and described there.
 
 ## Verdict
 
