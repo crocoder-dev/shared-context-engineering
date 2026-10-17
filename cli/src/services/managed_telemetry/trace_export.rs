@@ -1,19 +1,23 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::Duration;
 
 use opentelemetry::logs::LoggerProvider as _;
-use opentelemetry::trace::TracerProvider as _;
-use opentelemetry::KeyValue;
+use opentelemetry::propagation::TextMapPropagator as _;
+use opentelemetry::trace::{TraceContextExt as _, TracerProvider as _};
+use opentelemetry::{Context, KeyValue};
 use opentelemetry_http::{Bytes, HttpClient, HttpError, Request, Response};
 use opentelemetry_otlp::{LogExporter, SpanExporter, WithExportConfig, WithHttpConfig};
 use opentelemetry_sdk::logs::{
     BatchConfigBuilder as LogBatchConfigBuilder, BatchLogProcessor, SdkLoggerProvider,
 };
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use tracing::instrument::WithSubscriber;
 use tracing::{field, Dispatch, Instrument, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::filter::filter_fn;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::{Layer, Registry};
@@ -40,6 +44,10 @@ const CLAUDE_PAYLOAD_FIELDS: [(&str, &str); 4] = [
     ("session_id", CLAUDE_SESSION_ID_FIELD),
     ("tool_use_id", CLAUDE_TOOL_USE_ID_FIELD),
 ];
+const TRACEPARENT_ENV: &str = "TRACEPARENT";
+const TRACESTATE_ENV: &str = "TRACESTATE";
+const TRACEPARENT_HEADER: &str = "traceparent";
+const TRACESTATE_HEADER: &str = "tracestate";
 const OUTCOME_FIELD: &str = "sce.outcome";
 const ERROR_CLASS_FIELD: &str = "sce.error.class";
 const OUTCOME_SUCCESS: &str = "success";
@@ -97,6 +105,7 @@ pub struct ManagedTraceTelemetry {
     log_provider: SdkLoggerProvider,
     dispatch: Dispatch,
     span_kind: ManagedSpanKind,
+    parent_context: Option<Context>,
 }
 
 impl ManagedTraceTelemetry {
@@ -110,7 +119,14 @@ impl ManagedTraceTelemetry {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)
             .build()?;
-        Self::with_client(bearer, endpoints, runtime, client, span_kind)
+        let mut telemetry = Self::with_client(bearer, endpoints, runtime, client, span_kind)?;
+        if span_kind == ManagedSpanKind::ClaudeHook {
+            telemetry.parent_context = extract_parent_context(
+                std::env::var(TRACEPARENT_ENV).ok(),
+                std::env::var(TRACESTATE_ENV).ok(),
+            );
+        }
+        Ok(telemetry)
     }
 
     fn with_client(
@@ -192,6 +208,7 @@ impl ManagedTraceTelemetry {
             log_provider,
             dispatch,
             span_kind,
+            parent_context: None,
         })
     }
 
@@ -217,6 +234,14 @@ impl ManagedTraceTelemetry {
     }
 
     fn root_span(&self) -> Span {
+        let span = self.unparented_root_span();
+        if let Some(parent_context) = &self.parent_context {
+            let _ = span.set_parent(parent_context.clone());
+        }
+        span
+    }
+
+    fn unparented_root_span(&self) -> Span {
         tracing::dispatcher::with_default(&self.dispatch, || match self.span_kind {
             ManagedSpanKind::Command => tracing::info_span!(
                 target: COMMAND_SPAN_TARGET,
@@ -263,6 +288,19 @@ impl Telemetry for ManagedTraceTelemetry {
         drop(span);
         result
     }
+}
+
+fn extract_parent_context(
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+) -> Option<Context> {
+    let traceparent = traceparent?;
+    let mut carrier = HashMap::from([(TRACEPARENT_HEADER.to_string(), traceparent)]);
+    if let Some(tracestate) = tracestate {
+        carrier.insert(TRACESTATE_HEADER.to_string(), tracestate);
+    }
+    let context = TraceContextPropagator::new().extract(&carrier);
+    context.span().span_context().is_valid().then_some(context)
 }
 
 pub fn record_command_name(name: &str) {
@@ -494,6 +532,48 @@ pub(crate) mod tests {
         loopback_telemetry_of_kind(address, token, ManagedSpanKind::ClaudeHook)
     }
 
+    fn loopback_hook_telemetry_with_traceparent(
+        address: std::net::SocketAddr,
+        traceparent: Option<&str>,
+    ) -> ManagedTraceTelemetry {
+        let mut telemetry = loopback_hook_telemetry(address, "bao-token-value");
+        telemetry.parent_context = extract_parent_context(
+            traceparent.map(str::to_string),
+            Some("vendor=opaque".to_string()),
+        );
+        telemetry
+    }
+
+    const UPSTREAM_TRACE_ID: [u8; 16] = [
+        0x4b, 0xf9, 0x2f, 0x35, 0x77, 0xb3, 0x4d, 0xa6, 0xa3, 0xce, 0x92, 0x9d, 0x0e, 0x0e, 0x47,
+        0x36,
+    ];
+    const UPSTREAM_SPAN_ID: [u8; 8] = [0x00, 0xf0, 0x67, 0xaa, 0x0b, 0xa9, 0x02, 0xb7];
+    const UPSTREAM_TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    async fn export_hook_spans(
+        traceparent: Option<&str>,
+        action: impl Future<Output = ()> + Send + 'static,
+    ) -> Vec<DecodedSpan> {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 1));
+        let telemetry = loopback_hook_telemetry_with_traceparent(address, traceparent);
+        let mut action = Some(action);
+        let result = telemetry
+            .with_default_subscriber(&mut || {
+                let action = action.take().expect("single invocation");
+                async move {
+                    action.await;
+                    Ok(String::new())
+                }
+            })
+            .await;
+        assert_eq!(result.expect("hook result"), "");
+        telemetry.shutdown().await;
+        trace_spans(&receiver.await.expect("receiver join"))
+    }
+
     fn loopback_telemetry_of_kind(
         address: std::net::SocketAddr,
         token: &str,
@@ -688,6 +768,98 @@ pub(crate) mod tests {
                 assert!(!body.contains(leaked), "leaked {leaked}");
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_hook_span_joins_valid_upstream_trace_with_fresh_span_id() {
+        let spans = export_hook_spans(Some(UPSTREAM_TRACEPARENT), async {
+            tokio::task::yield_now().await;
+        })
+        .await;
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let span = &spans[0];
+        assert_eq!(span.name, "sce.hook");
+        assert_eq!(span.trace_id, UPSTREAM_TRACE_ID);
+        assert_eq!(span.parent_span_id, UPSTREAM_SPAN_ID);
+        assert_eq!(span.span_id.len(), 8);
+        assert_ne!(span.span_id, UPSTREAM_SPAN_ID);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_hook_span_starts_independent_root_without_usable_traceparent() {
+        for traceparent in [
+            None,
+            Some(""),
+            Some("not-a-traceparent"),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7"),
+            Some("00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01"),
+            Some("ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"),
+            Some("00-00000000000000000000000000000000-00f067aa0ba902b7-01"),
+            Some("00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01"),
+        ] {
+            let spans = export_hook_spans(traceparent, async {}).await;
+            assert_eq!(spans.len(), 1, "{traceparent:?}: {spans:?}");
+            let span = &spans[0];
+            assert_eq!(span.name, "sce.hook");
+            assert!(span.parent_span_id.is_empty(), "{traceparent:?}");
+            assert_eq!(span.trace_id.len(), 16, "{traceparent:?}");
+            assert_ne!(span.trace_id, UPSTREAM_TRACE_ID, "{traceparent:?}");
+            assert!(
+                span.trace_id.iter().any(|byte| *byte != 0),
+                "{traceparent:?}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn claude_hook_child_spans_inherit_upstream_trace_across_polls_and_workers() {
+        let spans = export_hook_spans(Some(UPSTREAM_TRACEPARENT), async {
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            let child = tracing::info_span!(target: COMMAND_SPAN_TARGET, "sce.test.child");
+            async {
+                tokio::task::yield_now().await;
+                tokio::spawn(
+                    async {
+                        tokio::task::yield_now().await;
+                        let grandchild =
+                            tracing::info_span!(target: COMMAND_SPAN_TARGET, "sce.test.grandchild");
+                        async {
+                            for _ in 0..4 {
+                                tokio::task::yield_now().await;
+                            }
+                        }
+                        .instrument(grandchild)
+                        .await;
+                    }
+                    .in_current_span()
+                    .with_current_subscriber(),
+                )
+                .await
+                .expect("spawned child join");
+                tokio::task::yield_now().await;
+            }
+            .instrument(child)
+            .await;
+        })
+        .await;
+        assert_eq!(spans.len(), 3, "{spans:?}");
+        let by_name = |name: &str| {
+            spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        };
+        let hook = by_name("sce.hook");
+        let child = by_name("sce.test.child");
+        let grandchild = by_name("sce.test.grandchild");
+        for span in [hook, child, grandchild] {
+            assert_eq!(span.trace_id, UPSTREAM_TRACE_ID, "{}", span.name);
+        }
+        assert_eq!(hook.parent_span_id, UPSTREAM_SPAN_ID);
+        assert_eq!(child.parent_span_id, hook.span_id);
+        assert_eq!(grandchild.parent_span_id, child.span_id);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
