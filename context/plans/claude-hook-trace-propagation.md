@@ -118,13 +118,31 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: important change. `sce.hook` now joins Claude's trace when Claude Code's tracing beta supplies `TRACEPARENT`, otherwise it stays an independent root. This affects the span contract in `context/sce/cli-observability-contract.md` and the verdict/implementation notes in `context/sce/claude-hook-trace-propagation.md`; the glossary/architecture entries for `sce.hook` gain the parent-context rule.
   - Context synchronization: synced
 
-- [ ] T04: `Add mutation-scope, git-snapshot, and persistence child spans under sce.hook` (status:todo)
+- [x] T04: `Add mutation-scope, git-snapshot, and persistence child spans under sce.hook` (status:done)
   - Task ID: T04
   - Scope: In — spans on the managed-trace target at the existing execution sites: the Claude mutation-scope coordinate call (`sce.mutation_scope`), the mutation-trace Git snapshot/reconciliation call (`sce.git_snapshot`), and Agent Trace DB / mutation store persistence (`sce.persistence`), each with low-cardinality outcome attributes; extend the span filter so only these named spans export; loopback tests asserting the exact span set for an executing and a non-executing hook path. Out — spans inside pure protocol functions or arbitrary helpers; changes to ordering, locking, or failure semantics.
   - Dependencies: T03
   - Done when: AC5 holds, existing mutation-trace and Agent Trace tests pass unchanged, and no span is emitted for an operation that did not run.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry`.
-  - Context synchronization: pending
+  - Completed: 2026-10-17
+  - Files changed: `cli/src/services/managed_telemetry/trace_export.rs`, `cli/src/services/hooks/claude_mutation_scope/lifecycle.rs`, `cli/src/services/mutation_trace/runtime/coordinator.rs`, `cli/src/services/mutation_trace/runtime/scope_runtime.rs`
+  - Result: Added `ManagedChildSpan { MutationScope, GitSnapshot, Persistence }` and `in_child_span(kind, future)`. The helper wraps the future in a span named `sce.mutation_scope`, `sce.git_snapshot`, or `sce.persistence` on the `sce.managed.trace` target, boxes the instrumented future, and records `sce.outcome=success|failure` from the `Result`. The span filter is now selected per span kind: a `Command` dispatch exports only `sce.command`, so ordinary commands that reach the coordinator still export exactly one span; a `ClaudeHook` dispatch exports only `sce.hook` and the three child names. Span sites:
+    - `run_claude_mutation_scope_from_payload_with_resolver` wraps every seam (coordinate/abandon boundary) call in `sce.mutation_scope`.
+    - `coordinate_boundary_inner` wraps `capture_and_pin` in `sce.git_snapshot`.
+    - The post-snapshot store phase (initialize, register, provenance, CAS loop) moved unchanged into `persist_boundary`, which is wrapped in `sce.persistence`.
+    - `abandon_scope_inner` wraps `abandon_protected` in `sce.persistence`.
+
+    Spans are disabled without a managed hook dispatch. Ordering, locking, and errors are unchanged. Tests added:
+    - A real temporary git repo and Agent Trace DB, with a real `coordinate` seam, run a Claude `Write` PreToolUse. It exports exactly `sce.hook` → `sce.mutation_scope` → {`sce.git_snapshot`, `sce.persistence`} in one trace, all with `success`.
+    - A read-only `Read` PreToolUse exports only `sce.hook`.
+    - A `Command` dispatch that runs all three child operations exports only `sce.command`.
+
+    The T03 multi-poll test now uses the real child span names. New test helper `capture_requests_until` collects requests until shutdown, so batch timing cannot change the captured set.
+  - Assumptions: `sce.persistence` covers the mutation-store phase of coordinate and abandon only. Taint persistence after a snapshot failure, and conversation/diff-trace Agent Trace DB writes, are not wrapped. `sce.git_snapshot` and `sce.persistence` are grandchildren of `sce.hook` through `sce.mutation_scope`. Child spans carry only `sce.outcome`.
+  - Deviation: The first `nix flake check` failed `cli-clippy` with `large_futures` at 15 call sites, because the instrumented chain exceeded the 16 KiB future limit. Fixed in scope by `Box::pin`-ing the instrumented future inside `in_child_span`.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope`: 7 passed, 0 failed (passed); `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry`: 26 passed, 0 failed (passed); additionally `nix flake check` after the fix: all checks passed (cli-tests incl. existing mutation-trace and Agent Trace suites, cli-clippy, cli-fmt).
+  - Context impact: important change. The `sce.hook` span contract gains three operation child spans, plus the rule that spans are exported per span kind (`sce.command` alone for commands; `sce.hook` plus children for Claude hooks). This affects `context/sce/cli-observability-contract.md`, `context/sce/claude-hook-trace-propagation.md`, `context/cli/claude-mutation-scope-integration.md` (span boundaries over the adapter seam and coordinator), and the `context/glossary.md` `sce.hook` entry.
+  - Context synchronization: synced
 
 - [ ] T05: `Record live Dash0 verification and sync hook-telemetry context` (status:todo)
   - Task ID: T05
