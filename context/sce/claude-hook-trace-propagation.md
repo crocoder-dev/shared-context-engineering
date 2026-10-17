@@ -102,7 +102,7 @@ The Claude Code 2.1.301 bundle contains a shared subprocess-environment builder.
 
 ## Live verification
 
-Recorded by T05 on 2026-10-17. The run used an `sce` debug build of commit `eae7be8f` (T02–T04), built with `nix develop -c ./scripts/run-cli-cargo.sh build`. It used the existing stored telemetry credential: `sce auth telemetry-headers` exited 0 with non-empty output, and the output was not inspected. Both exporters sent to the canonical collector `https://otel.crocoderlab.dev`: SCE through its pinned endpoint, and Claude Code through the user-level `OTEL_EXPORTER_OTLP_ENDPOINT` with `otelHeadersHelper = sce auth telemetry-headers`. Delivery was judged only from Dash0, never from a collector response. The Dash0 evidence is a user-exported root-span listing for the last 30 minutes. It held 30 root spans, all with `parentSpanId` empty, ending at 12:32:23Z. A trace detail view was not provided.
+Recorded by T05 on 2026-10-17. The run used an `sce` debug build of commit `eae7be8f` (T02–T04), built with `nix develop -c ./scripts/run-cli-cargo.sh build`. It used the existing stored telemetry credential: `sce auth telemetry-headers` exited 0 with non-empty output, and the output was not inspected. Both exporters sent to the canonical collector `https://otel.crocoderlab.dev`: SCE through its pinned endpoint, and Claude Code through the user-level `OTEL_EXPORTER_OTLP_ENDPOINT` with `otelHeadersHelper = sce auth telemetry-headers`. Delivery was judged only from Dash0, never from a collector response. The initial Dash0 evidence was a user-exported root-span listing for the last 30 minutes. It held 30 root spans, all with `parentSpanId` empty, ending at 12:32:23Z. A trace detail view was not available at that point. A subsequent user-provided Dash0 waterfall screenshot on 2026-10-17 independently confirms the cross-service parent-child hierarchy; see [Follow-up Dash0 waterfall evidence](#follow-up-dash0-waterfall-evidence).
 
 ### `sce doctor`
 
@@ -151,7 +151,7 @@ Confirmed in Dash0:
 - Claude session-boundary hooks → independent root `sce.hook` spans.
 - The Claude interaction root `claude_code.interaction` (`dcd919ec…/3eec7153327c6839`) is exactly the trace and span named by every tool hook's `TRACEPARENT`.
 
-Expected but not verified in Dash0 for trace `dcd919ecc4f5d400df5b642a1a229783`:
+Initially expected but not verified from the root-span listing for trace `dcd919ecc4f5d400df5b642a1a229783`:
 
 ```text
 claude_code.interaction (3eec7153327c6839)
@@ -162,7 +162,17 @@ claude_code.interaction (3eec7153327c6839)
         └── sce.persistence
 ```
 
-The root-span listing cannot show non-root spans: even Claude Code's own `claude_code.tool` and in-trace `claude_code.llm_request` children for this session are absent from it. So the parented `sce.hook` spans and their children could not be confirmed or ruled out. The listing does contain every root span in the 12:31–12:33 window, and it has no unparented `sce.hook` for `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, or `Stop`. So these hook spans either joined the interaction trace, as the local loopback tests prove they do, or were not delivered. Confirming the parent relationship in Dash0 requires opening trace `dcd919ecc4f5d400df5b642a1a229783` in the trace view. Distributed tracing between Claude Code and SCE is therefore implemented and locally tested, but not yet verified live. The Dash0 dataset name was not reported: SCE and Claude Code resources share one ingestion token, but which named dataset that token writes to was not checked.
+The initial root-span listing could not show non-root spans, including Claude Code's own tool and LLM request children. The subsequent waterfall screenshot establishes that parented SCE tool-hook spans and their children do reach Dash0, but the screenshot does not display its trace ID or dataset name; therefore it cannot by itself prove that it is the specific `dcd919ecc4f5d400df5b642a1a229783` trace above. The Dash0 dataset name remains unverified.
+
+## Follow-up Dash0 waterfall evidence
+
+A user-provided Dash0 trace-detail screenshot on 2026-10-17 shows a **single** `claude_code.interaction` trace containing spans from both `claude-code` and `sce`. The UI explicitly renders:
+
+- Multiple `sce.hook` spans directly parented to `claude_code.interaction`, alongside `claude_code.llm_request` and `claude_code.tool` spans. This confirms live cross-service W3C parent propagation to SCE hooks (siblings of tool spans, not children of tool spans).
+- Two `sce.hook → sce.mutation_scope` branches, each containing sibling `sce.git_snapshot` and `sce.persistence` children. This confirms live delivery of all three SCE operation span types and their expected parent hierarchy.
+- A `claude_code.interaction` duration of 6,988 ms. The two instrumented mutation hooks shown take 154 ms and 110 ms; the first has a 120 ms mutation scope, 63 ms Git snapshot and 33 ms persistence; the second has a 100 ms mutation scope, 57 ms Git snapshot and 19 ms persistence.
+
+**Verification verdict:** Live parent-child propagation and SCE operation-span export are **verified visually in Dash0**, closing the hierarchy/delivery gap left by the earlier root-only listing. The screenshot does **not** show the trace ID, workspace/dataset, per-span `tool_use_id` attribute values, or the exact time of the trace. Do not claim that the screenshot proves the prior headless session's trace ID `dcd919ecc4f5d400df5b642a1a229783`, or that it proves hook-to-tool ID equality. This observation does not measure exporter overhead or p95 hook latency.
 
 ## Opt-in live smoke procedure
 
@@ -181,7 +191,7 @@ This is manual, uses real credentials, Claude Code, and Dash0, and is never part
 
 ## Not verified
 
-- The parent-child relationship in Dash0 between `claude_code.interaction` and the tool-hook `sce.hook` spans, and the delivery of `sce.mutation_scope`, `sce.git_snapshot`, and `sce.persistence` spans. See [Live verification](#live-verification).
+- The exact trace ID, dataset name, and `tool_use_id` equality between each `sce.hook` and its matching `claude_code.tool` were not exposed in the follow-up waterfall screenshot. The parent-child hierarchy and child-span delivery **are** visually verified; see [Follow-up Dash0 waterfall evidence](#follow-up-dash0-waterfall-evidence).
 - Interactive TUI sessions were not probed for hook `TRACEPARENT`. T05 also used headless `claude -p`. Claude Code documents that only `-p`/Agent SDK sessions read an inbound `TRACEPARENT`. The outbound subprocess builder is shared, and the interactive Bash tool environment of the same version carries a valid `TRACEPARENT`. Whether interactive hooks receive the same interaction-span context is expected but unconfirmed.
 - Subagent (`Agent` tool) hooks, `PostToolUseFailure`, `PermissionDenied`, and other hook events were not probed.
 - Behavior behind a custom `ANTHROPIC_BASE_URL` proxy without `CLAUDE_CODE_PROPAGATE_TRACEPARENT` was not probed. Per the docs the subprocess `TRACEPARENT` follows the same switch as the API `traceparent` header.
