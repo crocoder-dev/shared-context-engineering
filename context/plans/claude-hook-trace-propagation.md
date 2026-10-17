@@ -101,13 +101,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: important change. Hook telemetry admission reverses the recorded "hooks are always Noop" contract (`context/sce/cli-observability-contract.md`, `context/sce/telemetry-credential.md`, AC4 of `claude-native-otel-instrumentation` context), and the new `sce.hook` span contract and correlation-ID privacy rule affect `context/architecture.md` and `context/glossary.md`.
   - Context synchronization: synced
 
-- [ ] T03: `Parent the sce.hook span on Claude-provided W3C trace context` (status:todo)
+- [x] T03: `Parent the sce.hook span on Claude-provided W3C trace context` (status:done)
   - Task ID: T03
   - Scope: In — only when T01 recorded `parent_context_available`: extract the context Claude provides using `opentelemetry_sdk::propagation::TraceContextPropagator` before the `sce.hook` span is created, attach it with `OpenTelemetrySpanExt::set_parent`, keep it scoped to the instrumented hook future, and add loopback tests for valid, invalid, all-zero, and missing traceparent plus a multi-poll async child-span test. When T01 recorded `parent_context_unavailable`: make no code change, and record in the context file that the parent-child goal is blocked, why, and the smallest future bridge (correlating Claude OTLP export records with `sce.hook` via `session_id`/`tool_use_id`). Out — reconstructing trace IDs from Claude identifiers; global propagator registration beyond the hook boundary; non-Claude callers.
   - Dependencies: T02
   - Done when: AC3 holds for the branch T01 selected.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml trace_export`, or inspection of the context file for the unavailable branch.
-  - Context synchronization: pending
+  - Completed: 2026-10-17
+  - Files changed: `cli/src/services/managed_telemetry/trace_export.rs`
+  - Result: `parent_context_available` branch implemented. `ManagedTraceTelemetry` gained a `parent_context: Option<opentelemetry::Context>` field. Only for `ManagedSpanKind::ClaudeHook`, `ManagedTraceTelemetry::new` fills it from process env `TRACEPARENT`/`TRACESTATE`. The pure `extract_parent_context` helper does this by running `opentelemetry_sdk::propagation::TraceContextPropagator::extract` over a `HashMap` carrier, and it keeps the context only when the remote span context is valid. `root_span` calls `OpenTelemetrySpanExt::set_parent` on the `sce.hook` span and ignores its result (fail-open). The span is entered only through `.instrument(...)` on the hook future, so no global propagator is registered and the parent never leaks outside the hook boundary. `sce.command` and non-Claude paths never read the env. Tests added (loopback receiver plus the existing OTLP decoder):
+    - A valid traceparent gives `sce.hook` the upstream trace ID, its parent span ID is the upstream span ID, and its own span ID is new.
+    - A table of missing, empty, malformed, truncated, uppercase, version `ff`, all-zero trace ID, and all-zero span ID values each yields one independent root `sce.hook` with a new non-zero trace ID and no parent.
+    - On a 4-worker runtime, a child span created after 8 polls and a grandchild inside a `tokio::spawn`ed task (`in_current_span` + `with_current_subscriber`) share the upstream trace ID with a correct parent chain.
+  - Deviation: per T01, the upstream parent is `claude_code.interaction`, so `sce.hook` is a sibling of `claude_code.tool`, not its child.
+  - Verify outcomes: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml trace_export`: 13 passed, 0 failed (passed); additionally `nix flake check`: all checks passed (cli-tests, cli-clippy, cli-fmt).
+  - Context impact: important change. `sce.hook` now joins Claude's trace when Claude Code's tracing beta supplies `TRACEPARENT`, otherwise it stays an independent root. This affects the span contract in `context/sce/cli-observability-contract.md` and the verdict/implementation notes in `context/sce/claude-hook-trace-propagation.md`; the glossary/architecture entries for `sce.hook` gain the parent-context rule.
+  - Context synchronization: synced
 
 - [ ] T04: `Add mutation-scope, git-snapshot, and persistence child spans under sce.hook` (status:todo)
   - Task ID: T04
