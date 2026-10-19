@@ -809,7 +809,11 @@ mod tests {
         assert_eq!(*user_error, UserError::LoginAuthStorageUnavailable(failure));
         assert_eq!(user_error.key(), "auth.storage_unavailable");
         assert_eq!(error.class().exit_code(), 4);
-        let message = error.to_string();
+        let message = error
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(!message.contains("Retry the original command"));
         let keychain_guidance = message.contains("encryption key");
         assert_eq!(
@@ -818,6 +822,7 @@ mod tests {
         );
         if keychain_guidance {
             assert!(message.contains("Running login again does not help until"));
+            assert!(!message.contains("Run `sce auth login` in an interactive terminal."));
         }
     }
 
