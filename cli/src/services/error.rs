@@ -57,6 +57,7 @@ pub enum UserError {
     NotGitRepository,
     NotGitRemote,
     AuthStorageUnavailable,
+    LoginAuthStorageUnavailable,
     UnexpectedFailure,
 }
 
@@ -67,6 +68,7 @@ impl UserError {
             | Self::NotGitRepository
             | Self::NotGitRemote
             | Self::AuthStorageUnavailable
+            | Self::LoginAuthStorageUnavailable
             | Self::UnexpectedFailure => FailureClass::Runtime,
         }
     }
@@ -76,7 +78,9 @@ impl UserError {
             Self::NotAuthenticated => "auth.not_authenticated",
             Self::NotGitRepository => "setup.not_git_repository",
             Self::NotGitRemote { .. } => "setup.not_git_remote",
-            Self::AuthStorageUnavailable => "auth.storage_unavailable",
+            Self::AuthStorageUnavailable | Self::LoginAuthStorageUnavailable => {
+                "auth.storage_unavailable"
+            }
             Self::UnexpectedFailure => "general.unexpected_failure",
         }
     }
@@ -92,12 +96,174 @@ impl UserError {
             Self::NotGitRemote => {
                 "The Git repository has no configured remote URL. Please run `git remote add <name> <url>`, then retry."
             }
-            Self::AuthStorageUnavailable => {
-                "Authentication storage is unavailable. Verify local credential storage is available, then retry the command."
-            }
+            Self::AuthStorageUnavailable => auth_storage_unavailable_message(
+                CURRENT_CREDENTIAL_STORE_PLATFORM,
+                AuthStorageOperation::Command,
+            ),
+            Self::LoginAuthStorageUnavailable => auth_storage_unavailable_message(
+                CURRENT_CREDENTIAL_STORE_PLATFORM,
+                AuthStorageOperation::Login,
+            ),
             Self::UnexpectedFailure => {
                 "An unexpected error occurred. Check the log files for more details."
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CredentialStorePlatform {
+    Macos,
+    Linux,
+    Windows,
+    Other,
+}
+
+impl CredentialStorePlatform {
+    pub(crate) const fn store_name(self) -> &'static str {
+        match self {
+            Self::Macos => "macOS Keychain",
+            Self::Linux => "the system keyring (Secret Service)",
+            Self::Windows => "Windows Credential Manager",
+            Self::Other => "the OS credential store",
+        }
+    }
+}
+
+pub(crate) const CURRENT_CREDENTIAL_STORE_PLATFORM: CredentialStorePlatform =
+    if cfg!(target_os = "macos") {
+        CredentialStorePlatform::Macos
+    } else if cfg!(target_os = "linux") {
+        CredentialStorePlatform::Linux
+    } else if cfg!(target_os = "windows") {
+        CredentialStorePlatform::Windows
+    } else {
+        CredentialStorePlatform::Other
+    };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthStorageOperation {
+    Command,
+    Login,
+}
+
+const MACOS_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in macOS Keychain.
+
+To fix:
+  1. Run `sce auth login` in an interactive terminal.
+  2. When macOS asks for permission to access the SCE Keychain item,
+     choose \"Always Allow\".
+  3. Retry the original command.
+
+If no prompt appears, verify that your login Keychain is unlocked
+and retry using the same installed SCE executable.";
+
+const MACOS_LOGIN_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in macOS Keychain, so `sce auth login`
+could not use its stored session. Running login again does not help until
+Keychain access is allowed.
+
+To fix:
+  1. Unlock your login Keychain (for example, in Keychain Access).
+  2. Run `sce auth login` again in an interactive terminal.
+  3. When macOS asks for permission to access the SCE Keychain item,
+     choose \"Always Allow\" to authorize this SCE executable.
+
+If no prompt appears, verify that your login Keychain is unlocked
+and retry using the same installed SCE executable.";
+
+const LINUX_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in the system keyring (Secret Service).
+
+To fix:
+  1. Make sure a Secret Service provider (such as GNOME Keyring or KWallet)
+     is running and its default collection is unlocked.
+  2. Run `sce auth login` in an interactive terminal.
+  3. Retry the original command.";
+
+const LINUX_LOGIN_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in the system keyring (Secret Service),
+so `sce auth login` could not use its stored session. Running login again does
+not help until the keyring is available.
+
+To fix:
+  1. Make sure a Secret Service provider (such as GNOME Keyring or KWallet)
+     is running and its default collection is unlocked.
+  2. Retry `sce auth login` in an interactive terminal.";
+
+const WINDOWS_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in Windows Credential Manager.
+
+To fix:
+  1. Make sure you are signed in to your Windows user account and
+     Windows Credential Manager is available.
+  2. Run `sce auth login` in an interactive terminal.
+  3. Retry the original command.";
+
+const WINDOWS_LOGIN_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in Windows Credential Manager,
+so `sce auth login` could not use its stored session. Running login again
+does not help until Credential Manager is available.
+
+To fix:
+  1. Make sure you are signed in to your Windows user account and
+     Windows Credential Manager is available.
+  2. Retry `sce auth login` in an interactive terminal.";
+
+const OTHER_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in the OS credential store.
+
+To fix:
+  1. Make sure a supported OS credential store is available and unlocked.
+  2. Run `sce auth login` in an interactive terminal.
+  3. Retry the original command.";
+
+const OTHER_LOGIN_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
+
+SCE could not access its encryption key in the OS credential store,
+so `sce auth login` could not use its stored session. Running login again
+does not help until the credential store is available.
+
+To fix:
+  1. Make sure a supported OS credential store is available and unlocked.
+  2. Retry `sce auth login` in an interactive terminal.";
+
+const fn auth_storage_unavailable_message(
+    platform: CredentialStorePlatform,
+    operation: AuthStorageOperation,
+) -> &'static str {
+    match (platform, operation) {
+        (CredentialStorePlatform::Macos, AuthStorageOperation::Command) => {
+            MACOS_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Macos, AuthStorageOperation::Login) => {
+            MACOS_LOGIN_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Linux, AuthStorageOperation::Command) => {
+            LINUX_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Linux, AuthStorageOperation::Login) => {
+            LINUX_LOGIN_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Windows, AuthStorageOperation::Command) => {
+            WINDOWS_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Windows, AuthStorageOperation::Login) => {
+            WINDOWS_LOGIN_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Other, AuthStorageOperation::Command) => {
+            OTHER_AUTH_STORAGE_UNAVAILABLE
+        }
+        (CredentialStorePlatform::Other, AuthStorageOperation::Login) => {
+            OTHER_LOGIN_AUTH_STORAGE_UNAVAILABLE
         }
     }
 }
@@ -304,5 +470,114 @@ mod tests {
         assert_eq!(parse_error.to_string(), "bad usage");
         assert_eq!(validation_error.class(), FailureClass::Validation);
         assert_eq!(validation_error.to_string(), "bad value");
+    }
+
+    const ALL_PLATFORMS: [CredentialStorePlatform; 4] = [
+        CredentialStorePlatform::Macos,
+        CredentialStorePlatform::Linux,
+        CredentialStorePlatform::Windows,
+        CredentialStorePlatform::Other,
+    ];
+    const ALL_OPERATIONS: [AuthStorageOperation; 2] =
+        [AuthStorageOperation::Command, AuthStorageOperation::Login];
+
+    #[test]
+    fn auth_storage_unavailable_keeps_stable_key_class_and_exit_code() {
+        for user_error in [
+            UserError::AuthStorageUnavailable,
+            UserError::LoginAuthStorageUnavailable,
+        ] {
+            let error = CliError::user_with_source(
+                user_error.clone(),
+                anyhow::anyhow!("keychain item secret-key-material denied"),
+            );
+            assert_eq!(user_error.key(), "auth.storage_unavailable");
+            assert_eq!(error.class(), FailureClass::Runtime);
+            assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+            assert_eq!(error.class().exit_code(), 4);
+            assert_eq!(error.to_string(), user_error.message());
+            assert!(!error.to_string().contains("secret-key-material"));
+        }
+    }
+
+    #[test]
+    fn macos_auth_storage_guidance_explains_login_and_always_allow() {
+        let message = auth_storage_unavailable_message(
+            CredentialStorePlatform::Macos,
+            AuthStorageOperation::Command,
+        );
+        assert!(message.starts_with("Authentication storage is unavailable.\n"));
+        assert!(message.contains("macOS Keychain"));
+        assert!(message.contains("Run `sce auth login` in an interactive terminal."));
+        assert!(message.contains("choose \"Always Allow\"."));
+        assert!(message.contains("Retry the original command."));
+        assert!(message.contains("login Keychain is unlocked"));
+    }
+
+    #[test]
+    fn macos_login_storage_guidance_is_not_circular() {
+        let message = auth_storage_unavailable_message(
+            CredentialStorePlatform::Macos,
+            AuthStorageOperation::Login,
+        );
+        assert!(message.contains("Running login again does not help until"));
+        assert!(message.contains("Unlock your login Keychain"));
+        assert!(message.contains("\"Always Allow\" to authorize this SCE executable"));
+        assert!(!message.contains("Retry the original command."));
+    }
+
+    #[test]
+    fn non_macos_auth_storage_guidance_never_mentions_macos() {
+        for platform in [
+            CredentialStorePlatform::Linux,
+            CredentialStorePlatform::Windows,
+            CredentialStorePlatform::Other,
+        ] {
+            for operation in ALL_OPERATIONS {
+                let message = auth_storage_unavailable_message(platform, operation);
+                assert!(message.starts_with("Authentication storage is unavailable.\n"));
+                assert!(message.contains("sce auth login"), "{platform:?}");
+                assert!(!message.contains("macOS"), "{platform:?}");
+                assert!(!message.contains("Keychain"), "{platform:?}");
+                assert!(!message.contains("Always Allow"), "{platform:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn auth_storage_guidance_never_recommends_destructive_repair() {
+        for platform in ALL_PLATFORMS {
+            for operation in ALL_OPERATIONS {
+                let message = auth_storage_unavailable_message(platform, operation).to_lowercase();
+                for forbidden in ["auth.db", "delete", "regenerat", "reset", "permanent"] {
+                    assert!(
+                        !message.contains(forbidden),
+                        "{platform:?}/{operation:?} mentions {forbidden:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn current_platform_message_is_selected_for_display() {
+        assert_eq!(
+            UserError::AuthStorageUnavailable.message(),
+            auth_storage_unavailable_message(
+                CURRENT_CREDENTIAL_STORE_PLATFORM,
+                AuthStorageOperation::Command
+            )
+        );
+        assert_eq!(
+            UserError::LoginAuthStorageUnavailable.message(),
+            auth_storage_unavailable_message(
+                CURRENT_CREDENTIAL_STORE_PLATFORM,
+                AuthStorageOperation::Login
+            )
+        );
+        assert_eq!(
+            CURRENT_CREDENTIAL_STORE_PLATFORM == CredentialStorePlatform::Macos,
+            cfg!(target_os = "macos")
+        );
     }
 }
