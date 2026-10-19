@@ -1,6 +1,7 @@
+use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Result};
 
@@ -26,13 +27,33 @@ pub(super) fn open_lock_file(db_path: &Path, create: bool) -> Result<Option<File
     }
 }
 
+#[derive(Debug)]
+pub(super) struct SharedLockConflict {
+    db_name: String,
+    db_path: PathBuf,
+}
+
+impl fmt::Display for SharedLockConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} database at {} is open in an older SCE process that does not support shared access. Try: wait for older SCE processes to exit, upgrade every installed 'sce' binary, and rerun the command",
+            self.db_name,
+            self.db_path.display()
+        )
+    }
+}
+
+impl std::error::Error for SharedLockConflict {}
+
 pub(super) fn lock_shared(file: &File, db_name: &str, db_path: &Path) -> Result<()> {
     match try_lock_shared(file) {
         Ok(()) => Ok(()),
-        Err(error) if is_lock_conflict(&error) => Err(anyhow!(
-            "{db_name} database at {} is open in an older SCE process that does not support shared access. Try: wait for older SCE processes to exit, upgrade every installed 'sce' binary, and rerun the command",
-            db_path.display()
-        )),
+        Err(error) if is_lock_conflict(&error) => Err(SharedLockConflict {
+            db_name: db_name.to_owned(),
+            db_path: db_path.to_path_buf(),
+        }
+        .into()),
         Err(error) => Err(anyhow!(
             "failed to lock {db_name} database at {}: {error}",
             db_path.display()
