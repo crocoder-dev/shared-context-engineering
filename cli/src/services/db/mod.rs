@@ -8,6 +8,7 @@ use std::{
     fs,
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Context, Result};
@@ -320,6 +321,42 @@ impl<'a> TransactionStatement<'a> {
 
 fn is_retryable_turso_error(error: &turso::Error) -> bool {
     matches!(error, turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DatabaseLocked {
+    db_name: &'static str,
+}
+
+impl std::fmt::Display for DatabaseLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} database is locked by another process", self.db_name)
+    }
+}
+
+impl std::error::Error for DatabaseLocked {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TursoBusy;
+
+impl std::fmt::Display for TursoBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "database is busy")
+    }
+}
+
+impl std::error::Error for TursoBusy {}
+
+fn turso_open_error(error: &turso::Error, message: String) -> anyhow::Error {
+    if is_retryable_turso_error(error) {
+        anyhow::Error::new(TursoBusy).context(message)
+    } else {
+        anyhow::Error::msg(message)
+    }
+}
+
+fn is_database_lock_conflict(error: &anyhow::Error) -> bool {
+    error.is::<open_lock::SharedLockConflict>() || error.is::<TursoBusy>()
 }
 
 enum WriteAttemptFailure {
@@ -1404,41 +1441,30 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         let busy_timeout = resolve_busy_timeout::<M>();
         let operation_name = format!("open encrypted {db_name} database connection");
 
+        let last_attempt_locked = AtomicBool::new(false);
+
         let conn = run_with_retry_elapsed(
             retry_policy,
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
             |_| async {
-                    open_lock::lock_shared(&open_lock, db_name, &db_path)?;
-                    let path_str = db_path.to_str().ok_or_else(|| {
-                        anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
-                    })?;
-
-                    let encryption_opts = turso::EncryptionOpts {
-                        hexkey: encryption_key.clone(),
-                        cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
-                    };
-
-                    let db = turso::Builder::new_local(path_str)
-                        .experimental_multiprocess_wal(true)
-                        .experimental_encryption(true)
-                        .with_encryption(encryption_opts)
-                        .build()
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
-                                db_path.display()
-                            )
-                        })?;
-
-                    let conn = db.connect().map_err(|e| {
-                        anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
-                    })?;
-                    apply_busy_timeout(&conn, db_name, busy_timeout)?;
-                    Ok(conn)
+                let attempt =
+                    Self::connect_locked(&db_path, &encryption_key, &open_lock, busy_timeout).await;
+                last_attempt_locked.store(
+                    attempt.as_ref().is_err_and(is_database_lock_conflict),
+                    Ordering::Relaxed,
+                );
+                attempt
             },
-        ).await?;
+        )
+        .await
+        .map_err(|error| {
+            if last_attempt_locked.load(Ordering::Relaxed) {
+                anyhow::Error::new(DatabaseLocked { db_name }).context(format!("{error:#}"))
+            } else {
+                error
+            }
+        })?;
 
         let mut db = Self {
             core: TursoConnectionCore::new(conn),
@@ -1451,6 +1477,46 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             .with_context(|| format!("failed to run {db_name} migrations"))?;
 
         Ok(db)
+    }
+
+    async fn connect_locked(
+        db_path: &Path,
+        encryption_key: &str,
+        open_lock: &fs::File,
+        busy_timeout: std::time::Duration,
+    ) -> Result<turso::Connection> {
+        let db_name = M::db_name();
+        open_lock::lock_shared(open_lock, db_name, db_path)?;
+        let path_str = db_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
+        })?;
+
+        let encryption_opts = turso::EncryptionOpts {
+            hexkey: encryption_key.to_owned(),
+            cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
+        };
+
+        let db = turso::Builder::new_local(path_str)
+            .experimental_multiprocess_wal(true)
+            .experimental_encryption(true)
+            .with_encryption(encryption_opts)
+            .build()
+            .await
+            .map_err(|e| {
+                turso_open_error(&e, format!(
+                    "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
+                    db_path.display()
+                ))
+            })?;
+
+        let conn = db.connect().map_err(|e| {
+            turso_open_error(
+                &e,
+                format!("failed to connect to encrypted {db_name} database: {e}"),
+            )
+        })?;
+        apply_busy_timeout(&conn, db_name, busy_timeout)?;
+        Ok(conn)
     }
 
     /// Execute a SQL statement that does not return rows.

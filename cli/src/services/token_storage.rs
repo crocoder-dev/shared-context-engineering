@@ -6,19 +6,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::auth::TokenResponse;
 use crate::services::auth_db::AuthDb;
-use crate::services::db::encryption_key::{CredentialAccess, CredentialAccessUnavailable};
+use crate::services::db::encryption_key::{
+    CredentialAccess, CredentialAccessDenied, CredentialAccessUnavailable,
+};
+use crate::services::db::DatabaseLocked;
 use crate::services::default_paths::auth_db_path;
+use crate::services::error::AuthStorageFailure;
 
 const DEFAULT_TOKEN_ROW_ID: i64 = 1;
 
 static AUTH_DB: OnceCell<AuthDb> = OnceCell::const_new();
 
 fn open_error(error: &anyhow::Error) -> TokenStorageError {
-    if error
-        .downcast_ref::<CredentialAccessUnavailable>()
-        .is_some()
-    {
+    if error.is::<CredentialAccessUnavailable>() || error.is::<CredentialAccessDenied>() {
         TokenStorageError::CredentialAccessUnavailable
+    } else if error.is::<DatabaseLocked>() {
+        TokenStorageError::DatabaseLocked(error.to_string())
     } else {
         TokenStorageError::Database(error.to_string())
     }
@@ -76,7 +79,18 @@ impl StoredTokens {
 pub enum TokenStorageError {
     PathResolution(String),
     Database(String),
+    DatabaseLocked(String),
     CredentialAccessUnavailable,
+}
+
+impl TokenStorageError {
+    pub fn failure(&self) -> AuthStorageFailure {
+        match self {
+            Self::CredentialAccessUnavailable => AuthStorageFailure::CredentialAccess,
+            Self::DatabaseLocked(_) => AuthStorageFailure::DatabaseLocked,
+            Self::PathResolution(_) | Self::Database(_) => AuthStorageFailure::Database,
+        }
+    }
 }
 
 impl fmt::Display for TokenStorageError {
@@ -89,6 +103,10 @@ impl fmt::Display for TokenStorageError {
             Self::Database(reason) => write!(
                 f,
                 "Token storage database error: {reason}. Try: ensure the OS credential store is available and the auth database is accessible."
+            ),
+            Self::DatabaseLocked(reason) => write!(
+                f,
+                "Token storage database is locked: {reason}. Try: wait for other SCE processes to exit and retry."
             ),
             Self::CredentialAccessUnavailable => write!(
                 f,

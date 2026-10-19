@@ -33,8 +33,8 @@ where
 
 #[allow(clippy::needless_pass_by_value)]
 fn classify_sync_error(err: TraceSyncError) -> CliError {
-    if err.is_storage_failure() {
-        CliError::user_with_source(UserError::AuthStorageUnavailable, err)
+    if let Some(failure) = err.storage_failure() {
+        CliError::user_with_source(UserError::AuthStorageUnavailable(failure), err)
     } else if err.is_authentication_failure() {
         CliError::user_with_source(UserError::NotAuthenticated, err)
     } else {

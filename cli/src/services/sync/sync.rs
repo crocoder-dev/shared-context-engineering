@@ -26,6 +26,7 @@ use crate::services::agent_trace_sync::{
 use crate::services::auth;
 use crate::services::config;
 use crate::services::db::encryption_key::CredentialAccess;
+use crate::services::error::AuthStorageFailure;
 use crate::services::sync::progress::ProgressReporter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,11 +138,11 @@ impl TraceSyncError {
     /// True when the failure came from local credential storage, whether it
     /// surfaced during the initial state request or a stream batch/refresh
     /// path.
-    pub fn is_storage_failure(&self) -> bool {
+    pub fn storage_failure(&self) -> Option<AuthStorageFailure> {
         match self {
-            Self::ControlPlane(error) => error.is_storage_failure(),
-            Self::Stream { source, .. } => source.is_storage_failure(),
-            Self::Runtime(_) => false,
+            Self::ControlPlane(error) => error.storage_failure(),
+            Self::Stream { source, .. } => source.storage_failure(),
+            Self::Runtime(_) => None,
         }
     }
 }
@@ -512,7 +513,7 @@ fn is_stream_terminal(error: &ControlPlaneError) -> bool {
             | ControlPlaneError::AuthenticationFailed(_)
             | ControlPlaneError::BadRequest(_)
             | ControlPlaneError::Forbidden(_)
-            | ControlPlaneError::Storage(_)
+            | ControlPlaneError::Storage(..)
             | ControlPlaneError::Protocol { .. }
     )
 }

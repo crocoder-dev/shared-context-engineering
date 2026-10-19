@@ -15,9 +15,9 @@ use crate::services::bash_policy::{
 use crate::services::db::encryption_key::{
     get_or_create_encryption_key, AUTH_DB_ENCRYPTION_KEY_ENV,
 };
-use crate::services::db::{DatabaseKind, DbSpec, EncryptedTursoDb};
+use crate::services::db::{DatabaseKind, DatabaseLocked, DbSpec, EncryptedTursoDb};
 use crate::services::default_paths::auth_db_path;
-use crate::services::error::CliError;
+use crate::services::error::{AuthStorageFailure, CliError};
 use crate::services::hooks::{run_hooks_subcommand, HookSubcommand};
 use crate::services::managed_telemetry::claude_helper::repository_id_for;
 use crate::services::managed_telemetry::claude_helper::tests::git_repository_with_remote;
@@ -1147,6 +1147,7 @@ async fn run_new_version_child(role: &str) {
                 error.to_string().contains(SHARED_ACCESS_REJECTION),
                 "{error}"
             );
+            assert_eq!(error.failure(), AuthStorageFailure::DatabaseLocked);
         }
         "expect-rejected-write" => {
             let error = AuthDb::new()
@@ -1157,6 +1158,7 @@ async fn run_new_version_child(role: &str) {
                 format!("{error:#}").contains(SHARED_ACCESS_REJECTION),
                 "{error:#}"
             );
+            assert!(error.is::<DatabaseLocked>(), "{error:#}");
         }
         "verify-rows" => print_verified_rows().await,
         "repository-lookup-missing" => {

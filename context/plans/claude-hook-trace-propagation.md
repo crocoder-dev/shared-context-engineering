@@ -320,6 +320,38 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - Not run against the real macOS Keychain. No live `credential_inaccessible` doctor run or real "Always Allow" dialog was exercised in this session. Running it would have read the user's login Keychain. Its text is covered by unit tests, and the non-interactive read path is unchanged.
 - "Always Allow" trust is tied to the executable's code signature. Unsigned or ad-hoc-signed upgrades can lose it, and the user then has to authorize again through `sce auth login`. This is out of scope without a Developer ID certificate.
-- Interactive Keychain failures reach `AuthStorageUnavailable` as `TokenStorageError::Database`, so a DB failure during login also shows credential-store guidance.
+- Interactive Keychain failures reach `AuthStorageUnavailable` as `TokenStorageError::Database`, so a DB failure during login also shows credential-store guidance. Resolved in the follow-up below.
 - Doctor repeats the startup credential lookup (cached `AuthDb` on success), adding up to `CREDENTIAL_LOOKUP_DEADLINE` when the store hangs. Hook startup is unaffected.
 - Linux was not re-run in this session. Run `nix flake check` on x86_64-linux before merge.
+
+## Follow-up validation: typed auth storage failure classification (PR #330)
+
+**Date:** 2026-10-19
+
+### Change
+
+- `UserError::AuthStorageUnavailable` and `LoginAuthStorageUnavailable` now carry a typed `AuthStorageFailure` cause: `CredentialAccess`, `DatabaseLocked`, or `Database`. Turso, lock, path, and I/O failures no longer show Keychain guidance. Key `auth.storage_unavailable`, the runtime class, and exit code 4 are unchanged. Details: [User-facing storage guidance](../sce/auth-db.md#user-facing-storage-guidance).
+- Interactive keyring failures get the typed `CredentialAccessDenied` marker only for `NoStorageAccess`, or, on macOS, for the `OSStatus` codes `errSecUserCanceled`, `errSecNoAccessForItem`, `errSecAuthFailed`, `errSecInteractionNotAllowed`, and `errSecInteractionRequired`.
+- The compatibility-lock conflict is a typed `SharedLockConflict` error with the same text. When the last encrypted-open retry fails on it, or on a Turso `Busy`/`BusySnapshot`, the error carries `db::DatabaseLocked`, which maps to `TokenStorageError::DatabaseLocked`. Managed telemetry still reports it as `database_error`.
+- `ControlPlaneError::Storage` carries the cause, and `is_storage_failure()` became `storage_failure() -> Option<AuthStorageFailure>` on the control-plane, stream, and sync error types.
+- The macOS command guidance now ends with "Retry the original command, or run `sce doctor` to verify telemetry access."
+- No changes to the non-interactive read path, `flock(LOCK_SH | LOCK_NB)`, lock lifetime, retry policy, Turso, setup, `doctor --fix`, signing, or release workflows.
+
+### Commands run (macOS 15.4.1, Darwin 24.4.0, arm64)
+
+- `nix flake check -L` -> exit 0 on aarch64-darwin (`cli-fmt`, `cli-clippy`, `cli-tests`: 671 passed, 0 failed). This includes all four `macos_*` compatibility-lock tests and the legacy-holder tests.
+- Targeted filters: `services::error` 16, `services::auth_command` 17, `services::db::encryption_key` 2, `services::managed_telemetry` 29, `services::doctor` 11, `services::sync` 12, `services::agent_trace_sync` 14, `services::auth_db` 24. All passed.
+- New or extended tests: per-cause message selection, with no Keychain text for DB causes on any platform or operation. Login guidance for all three causes plus `AuthError::Io`. Keyring tagging for `NoStorageAccess`, `NoEntry`, and generic platform failures, and for each macOS `OSStatus` code. The legacy-holder child roles now also assert `TokenStorageError::failure() == DatabaseLocked` and `error.is::<DatabaseLocked>()`.
+
+### Real macOS Keychain
+
+- Verified (read-only, user's login Keychain, existing `sce`/`auth DB` item left unchanged): a freshly built ad-hoc, linker-signed debug binary is a new code identity that is not in the item's ACL. `sce doctor --format json` from that binary exited 0 in about 2 s with empty stderr. It reported `managed_telemetry.reason = credential_inaccessible`, `kind = managed_telemetry_credential_inaccessible`, and the "Always Allow" remediation. It did not report `lookup_timeout`, so the lookup returned `errSecInteractionNotAllowed` without blocking on a dialog.
+- Not verified: authorized silent access by the current build, locked-Keychain behavior, interactive authorization during `sce auth login`, persistence after "Always Allow", and real Claude Code hook runs against the Keychain. These need GUI interaction, locking the user's login Keychain, or changing its ACL or search list. The adapter only targets Keychain domains, not a disposable keychain file, so these could not be isolated. Hook fail-open and no-prompt behavior stays covered by the sandboxed multiprocess tests using `SCE_AUTH_DB_ENCRYPTION_KEY`.
+
+### Residual risks
+
+- "Always Allow" trust is tied to the executable's code signature. Unsigned or ad-hoc-signed upgrades can lose it. This is out of scope without a Developer ID certificate.
+- Non-interactive failures, including a missing Keychain item while `auth.db` exists, still all map to `CredentialAccessUnavailable` (doctor `credential_inaccessible`), as before.
+- `DatabaseLocked` is detected only while opening the encrypted DB. Busy errors from later queries after retries still classify as `Database`.
+- Linux was not re-run in this session.
+
