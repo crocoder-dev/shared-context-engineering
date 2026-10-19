@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 
 #[cfg(target_os = "linux")]
 const SHARED_LOCK_COMMAND: libc::c_int = libc::F_OFD_SETLK;
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 const SHARED_LOCK_COMMAND: libc::c_int = libc::F_SETLK;
 
 pub(super) fn open_lock_file(db_path: &Path, create: bool) -> Result<Option<File>> {
@@ -40,7 +40,17 @@ pub(super) fn lock_shared(file: &File, db_name: &str, db_path: &Path) -> Result<
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
+fn try_lock_shared(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
 fn try_lock_shared(file: &File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
 
@@ -53,7 +63,7 @@ fn try_lock_shared(file: &File) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn lock_field(value: impl TryInto<libc::c_short>) -> io::Result<libc::c_short> {
     value
         .try_into()
@@ -67,7 +77,10 @@ fn try_lock_shared(_file: &File) -> io::Result<()> {
 
 #[cfg(unix)]
 fn is_lock_conflict(error: &io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(libc::EAGAIN | libc::EACCES))
+    matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN || code == libc::EACCES
+    )
 }
 
 #[cfg(not(unix))]
