@@ -58,7 +58,9 @@ Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `
 
 ### Upstream Turso multiprocess race
 
-Under heavy load, Turso 0.8.1 multiprocess WAL has an internal race on concurrent cold opens that involve writes. Stress runs (6 parallel copies of the suite, with 32 processes creating or migrating the same DB) occasionally failed: `short read on page 3`, a `turso_assert` panic `reader slot released by non-owner` in `shared_wal_coordination.rs`, or, in the Nix sandbox, a writer that stayed `database is locked` through all 10 migration attempts (about 49 s). The read-only paths never failed across about 3,800 cold-opening reader and hook processes, and that is all hooks do on a current schema. The migration regression therefore uses 4 concurrent migrators, which was 0 failures in 48 parallel stress runs. Concurrent creation and migration by many writers is left as a documented upstream limitation. It affects first-time initialization only, and the Agent Trace DB already runs in the same Turso mode.
+Under heavy load, Turso 0.8.1 multiprocess WAL has an internal race on concurrent cold opens that involve writes. Stress runs (6 parallel copies of the suite, with 32 processes creating or migrating the same DB) occasionally failed: `short read on page 3`, a `turso_assert` panic `reader slot released by non-owner` in `shared_wal_coordination.rs`, or, in the Nix sandbox, a writer that stayed `database is locked` through all 10 migration attempts (about 49 s). The read-only paths never failed across about 3,800 cold-opening reader and hook processes, and that is all hooks do on a current schema. The migration regression therefore uses 4 concurrent migrators, which was 0 failures in 48 parallel stress runs. Concurrent creation and migration by many writers is left as a documented upstream limitation. That migration limitation affects first-time initialization, and the Agent Trace DB already runs in the same Turso mode.
+
+The four-writer compatibility regression also reproduced exhausted `database is locked` retries against an already-seeded, current-schema DB when connection startup/teardown overlapped inserts. Its children previously swallowed insert failures, leaving only a short committed-row count in the parent. The regression now opens every writer before releasing concurrent inserts and keeps every connection alive until all writers finish; every insert must succeed, all 32 rows must persist, and a legacy process must reopen afterwards. This passed 80 stress repetitions across four parallel test runs. The macOS shared-lock writer regression uses the same coordination. This isolates the compatibility-lock guarantee from the Turso lifecycle race; production open/write/close behavior and retry limits are unchanged.
 
 ### Mixed-version compatibility lock
 
@@ -88,7 +90,7 @@ Mixed-version tests (`multiprocess_tests.rs`), all verifying persisted `telemetr
 - A legacy holder makes a new telemetry lookup and a new writer fail explicitly. The legacy holder's own later write persists.
 - A new holder makes a legacy open fail with the Turso lock error.
 - 3 rounds of 1 legacy writer and 2 new writers start together. Every row any writer reported committed is persisted.
-- 4 concurrent new writers all commit all 32 rows.
+- 4 new writers with coordinated connection lifetimes insert concurrently and commit all 32 rows; any insert failure includes the row and database error.
 - After every new process exits, a legacy process reopens the DB, reads the credential, and writes.
 
 macOS-only tests (`#[cfg(target_os = "macos")]`, separate processes, raw `fcntl(F_SETLK, F_WRLCK)` children that take the exact legacy lock as well as legacy Turso opens):
