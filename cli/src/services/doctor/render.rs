@@ -12,7 +12,8 @@ use super::types::{
     IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget, MutationScopeHealthRow,
     PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
 };
-use super::{DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
+use super::{managed_telemetry, DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
+use crate::services::managed_telemetry::ManagedTelemetryHealth;
 use crate::services::mutation_trace::runtime::{
     ReconciliationCounts, ReconciliationFix, ReconciliationRecommendation, StateWarning,
 };
@@ -30,7 +31,7 @@ pub(super) fn render_report(request: DoctorRequest, execution: &DoctorExecution)
 
 fn format_execution(execution: &DoctorExecution) -> String {
     let report = &execution.report;
-    let base_report = format_report(report);
+    let base_report = format_report(report, execution.managed_telemetry);
     let mut lines = base_report
         .lines()
         .map(ToOwned::to_owned)
@@ -103,11 +104,15 @@ fn format_age(age_ms: i64) -> String {
     }
 }
 
-fn format_report(report: &HookDoctorReport) -> String {
-    format_report_with_color_policy(report, supports_color())
+fn format_report(report: &HookDoctorReport, managed_telemetry: ManagedTelemetryHealth) -> String {
+    format_report_with_color_policy(report, managed_telemetry, supports_color())
 }
 
-fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: bool) -> String {
+fn format_report_with_color_policy(
+    report: &HookDoctorReport,
+    managed_telemetry: ManagedTelemetryHealth,
+    color_enabled: bool,
+) -> String {
     let blocking_problem_count = report
         .problems
         .iter()
@@ -125,7 +130,7 @@ fn format_report_with_color_policy(report: &HookDoctorReport, color_enabled: boo
     });
 
     lines.push(format!("\n{}", heading("Environment")));
-    for node in environment_nodes(report) {
+    for node in environment_nodes(report, managed_telemetry) {
         render_display_node(&mut lines, &node, color_enabled, 2, true);
     }
 
@@ -248,7 +253,10 @@ fn format_human_text_row(
     )
 }
 
-fn environment_nodes(report: &HookDoctorReport) -> Vec<DoctorDisplayNode> {
+fn environment_nodes(
+    report: &HookDoctorReport,
+    managed_telemetry: ManagedTelemetryHealth,
+) -> Vec<DoctorDisplayNode> {
     vec![
         top_level_node(
             "State",
@@ -283,7 +291,30 @@ fn environment_nodes(report: &HookDoctorReport) -> Vec<DoctorDisplayNode> {
                 )
             }),
         ),
+        managed_telemetry_node(managed_telemetry),
     ]
+}
+
+fn managed_telemetry_node(health: ManagedTelemetryHealth) -> DoctorDisplayNode {
+    match (health, managed_telemetry::diagnostic(health)) {
+        (_, Some(diagnostic)) => top_level_node(
+            "Managed telemetry",
+            DoctorDisplayStatus::Warn,
+            vec![DoctorDisplayDetail::ManagedTelemetry {
+                reason: diagnostic.reason,
+                summary: diagnostic.summary,
+                remediation: diagnostic.remediation,
+            }],
+        ),
+        (ManagedTelemetryHealth::Healthy, None) => {
+            top_level_node("Managed telemetry", DoctorDisplayStatus::Pass, Vec::new())
+        }
+        (ManagedTelemetryHealth::Disabled(_), None) => top_level_node(
+            "Managed telemetry (not configured)",
+            DoctorDisplayStatus::Pass,
+            Vec::new(),
+        ),
+    }
 }
 
 fn top_level_node(
@@ -696,6 +727,16 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
                 lines.push(format!("{prefix}Remediation: {remediation}"));
             }
         }
+        DoctorDisplayDetail::ManagedTelemetry {
+            reason,
+            summary,
+            remediation,
+        } => {
+            lines.push(format!("{prefix}Reason: {reason}"));
+            lines.push(format!("{prefix}{summary}"));
+            lines.push(format!("{prefix}{}", managed_telemetry::HOOK_IMPACT));
+            lines.extend(remediation.lines().map(|line| format!("{prefix}{line}")));
+        }
     }
 }
 
@@ -868,8 +909,6 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         })
         .collect::<Vec<_>>();
 
-    let mutation_scope_health = mutation_scope_health_json(&report.mutation_scope_health);
-
     let payload = json!({
         "status": "ok",
         "command": NAME,
@@ -917,7 +956,8 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         },
         "config_paths": config_paths,
         "hooks": hooks,
-        "mutation_scope_health": mutation_scope_health,
+        "mutation_scope_health": mutation_scope_health_json(&report.mutation_scope_health),
+        "managed_telemetry": managed_telemetry::json(execution.managed_telemetry),
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
             "severity": problem_severity(problem.severity),
@@ -1226,5 +1266,57 @@ mod reconciliation_render_tests {
         for (label, fix, expected) in cases {
             assert_eq!(ref_reconciliation_fix_json(&fix), expected, "{label}");
         }
+    }
+}
+
+#[cfg(test)]
+mod managed_telemetry_render_tests {
+    use super::{managed_telemetry_node, render_display_node};
+    use crate::services::managed_telemetry::{ManagedTelemetryHealth, TelemetryFallbackReason};
+
+    fn rendered(health: ManagedTelemetryHealth) -> Vec<String> {
+        let mut lines = Vec::new();
+        render_display_node(&mut lines, &managed_telemetry_node(health), false, 2, true);
+        lines
+    }
+
+    #[test]
+    fn healthy_and_unconfigured_telemetry_render_as_single_pass_rows() {
+        assert_eq!(
+            rendered(ManagedTelemetryHealth::Healthy),
+            ["  [PASS] Managed telemetry"]
+        );
+        assert_eq!(
+            rendered(ManagedTelemetryHealth::Disabled(
+                TelemetryFallbackReason::NotConfigured
+            )),
+            ["  [PASS] Managed telemetry (not configured)"]
+        );
+    }
+
+    #[test]
+    fn inaccessible_credentials_render_reason_impact_and_login_steps() {
+        let lines = rendered(ManagedTelemetryHealth::Disabled(
+            TelemetryFallbackReason::CredentialInaccessible,
+        ));
+        assert_eq!(lines[0], "  [WARN] Managed telemetry");
+        assert_eq!(lines[1], "    Reason: credential_inaccessible");
+        assert!(lines[2].contains("without user interaction."));
+        assert_eq!(
+            lines[3],
+            "    Claude Code hooks continue working, but telemetry export is disabled."
+        );
+        assert_eq!(lines[4], "    To fix:");
+        assert!(lines
+            .iter()
+            .any(|line| line.ends_with(". Run `sce auth login` in an interactive terminal.")));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("      3. Run `sce doctor` again to verify access.")
+        );
+        assert_eq!(
+            lines.iter().any(|line| line.contains("Always Allow")),
+            cfg!(target_os = "macos")
+        );
     }
 }

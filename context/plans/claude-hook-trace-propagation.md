@@ -290,3 +290,36 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - Linux was not re-run in this session. Its lock code is unchanged; only the conflict check now also names `EWOULDBLOCK` (== `EAGAIN` on Linux). Run `nix flake check` on x86_64-linux before merge.
 - Tested on macOS 15.4.1 only. Older macOS versions were not tested.
 - macOS was not tested against the real pre-fix `sce` binary. The legacy side used the pre-fix Turso builder configuration and raw `F_SETLK` `F_WRLCK` children.
+
+## Follow-up validation: auth storage guidance and doctor telemetry health (PR #330)
+
+**Date:** 2026-10-19
+
+### Change
+
+- `UserError::AuthStorageUnavailable` now shows platform-specific recovery steps. On macOS these are: run `sce auth login` interactively, choose "Always Allow" in the Keychain dialog, then retry. A new `LoginAuthStorageUnavailable` variant covers storage failures inside `sce auth login`, so its text does not tell the user to rerun login before Keychain access is allowed. Both keep key `auth.storage_unavailable`, the runtime class, and exit code 4. Details: [User-facing storage guidance](../sce/auth-db.md#user-facing-storage-guidance).
+- `sce doctor` has a read-only `Managed telemetry` row and a JSON `managed_telemetry` object. It reuses the readiness hint, the non-interactive existing-DB credential lookup, the lookup deadline, and `TelemetryFallbackReason`. Details: [Doctor health check](../sce/telemetry-credential.md#doctor-health-check).
+- `telemetry_readiness::state` separates `NotConfigured`, `Expired`, and `Ready` without opening `auth.db`. `is_ready` behavior is unchanged.
+- The multiprocess test sandbox now resolves the macOS state directory (`$HOME/Library/Application Support/sce`). Before, `auth_db_files()` checked `state/sce` on macOS, so its "no `auth.db*` files created" assertions passed without checking anything there.
+- No changes to hook telemetry resolution, fallback logging levels, exporter lifecycle, setup, the compatibility lock, migrations, signing, or release workflows.
+
+### Commands run (macOS 15.4.1, Darwin 24.4.0, arm64)
+
+- `nix flake check` -> exit 0 on aarch64-darwin (`cli-tests`, `cli-clippy`, `cli-fmt`, and the other checks). The first run failed only in `concurrent_legacy_and_new_writers_never_lose_committed_rows`, on a `turso_core` `wal.rs` panic (`shared WAL frame ids must increase monotonically`). That is the upstream multiprocess-WAL race listed above. The test does not use the changed code, passed 6 of 6 isolated reruns, and passed on the full rerun.
+- Targeted filters: `services::error` 15, `services::doctor` 11, `services::managed_telemetry` 29, `services::telemetry_readiness` 6, `services::auth_command` 17, `app::doctor_reconciliation_cli_tests` 9, `services::auth_db::multiprocess_tests` 24. All passed.
+- Sandboxed debug binary (`HOME` in the scratchpad, `SCE_AUTH_DB_ENCRYPTION_KEY` set) with an unreadable `auth.db` and a ready hint: text shows `[WARN] Managed telemetry` / `Reason: database_error` and the step list. JSON has `managed_telemetry.kind = managed_telemetry_database_error`. With the hint removed: `[PASS] Managed telemetry (not configured)`.
+
+### Results
+
+- Fresh state: doctor reports `not_configured` with no warning and creates no `auth.db`, `telemetry-ready.json`, or key. The child runs with an empty `SCE_AUTH_DB_ENCRYPTION_KEY`, so any key resolution would have failed the check.
+- Real seeded auth DB: `healthy` with the right key and `database_error` with a wrong or empty key. An expired hint gives `credential_expired` and a removed hint gives `not_configured`, both without a lookup. `auth.db` bytes stay unchanged and the credential still loads afterwards.
+- `sce doctor --fix` with an unreadable `auth.db`: one `manual` fix result, and `auth.db` and the hint are byte-for-byte unchanged. Neither stdout nor stderr contains the secret.
+- Unit tests cover the classification table, the lookup deadline (`lookup_timeout`), "Always Allow" only for macOS `credential_inaccessible`, no destructive or secret-bearing text, and noncircular login guidance.
+
+### Residual risks
+
+- Not run against the real macOS Keychain. No live `credential_inaccessible` doctor run or real "Always Allow" dialog was exercised in this session. Running it would have read the user's login Keychain. Its text is covered by unit tests, and the non-interactive read path is unchanged.
+- "Always Allow" trust is tied to the executable's code signature. Unsigned or ad-hoc-signed upgrades can lose it, and the user then has to authorize again through `sce auth login`. This is out of scope without a Developer ID certificate.
+- Interactive Keychain failures reach `AuthStorageUnavailable` as `TokenStorageError::Database`, so a DB failure during login also shows credential-store guidance.
+- Doctor repeats the startup credential lookup (cached `AuthDb` on success), adding up to `CREDENTIAL_LOOKUP_DEADLINE` when the store hangs. Hook startup is unaffected.
+- Linux was not re-run in this session. Run `nix flake check` on x86_64-linux before merge.

@@ -1,6 +1,6 @@
 # Telemetry credential
 
-The CLI holds one telemetry-only OpenBao credential, issued by the Control Plane and cached in the encrypted auth DB. `sce auth login` provisions it best-effort, and managed OTLP trace and log export reads it at startup as the bearer source. There is no user-facing provisioning command, refresh loop, or doctor check.
+The CLI holds one telemetry-only OpenBao credential, issued by the Control Plane and cached in the encrypted auth DB. `sce auth login` provisions it best-effort, and managed OTLP trace and log export reads it at startup as the bearer source. There is no user-facing provisioning command or refresh loop. `sce doctor` reports read-only credential health ([Doctor health check](#doctor-health-check)).
 
 ## Components
 
@@ -26,7 +26,7 @@ flowchart LR
 - Telemetry readiness hint: `cli/src/services/telemetry_readiness.rs` keeps a non-secret file, `<state_root>/sce/telemetry-ready.json` (`{"expires_at_unix_seconds": N}`), next to `auth.db`.
   - `sce auth login` writes it only after the credential has been issued and persisted. If provisioning, persistence, or writing the hint fails, the hint is cleared and the result is `unavailable`.
   - Logout and a new device-authorization session clear it before anything else.
-  - It counts as ready only while the file parses, is unexpired, and `auth.db` exists. A missing, corrupt, expired, or orphaned hint means telemetry is disabled.
+  - It counts as ready only while the file parses, is unexpired, and `auth.db` exists. A missing, corrupt, expired, or orphaned hint means telemetry is disabled. `telemetry_readiness::state` reports the same check as `NotConfigured` (no `auth.db`, or a missing or corrupt hint), `Expired`, or `Ready`, without opening `auth.db`. `is_ready` is `state == Ready`.
   - It is a fast-path hint, not authorization. The credential is still validated from the auth DB. Its purpose is that unauthenticated hooks never open `auth.db` or touch the Keychain, including existing installs that have `auth.db` but no hint, until the next `sce auth login`.
 - Concurrent saves are single-statement atomic replacements of one fixed row; the last complete writer wins.
 - `sce auth logout` deletes the WorkOS credential and the telemetry credential, attempting both even when one fails and surfacing the first storage error. `credentials_removed` is true when either record was deleted; output fields are otherwise unchanged.
@@ -35,6 +35,32 @@ flowchart LR
 ## Runtime use
 
 - `managed_telemetry::RuntimeTelemetry::resolve` first checks the readiness hint. Without it, the result is Noop with reason `not_configured` (logged at `debug`), and the auth DB is not opened. With the hint, it reads the stored credential through the non-interactive credential-store path at CLI startup (never issuing one). If the store refuses silent access, the reason is `credential_inaccessible` (logged at `debug`, so a denied Keychain does not flood the log). `sce setup` is excluded from managed telemetry so that it never reaches the credential store. a valid unexpired `token` is used only as the `Authorization: Bearer` credential for managed OTLP trace and log export; the `accessor` is never transmitted. Absent, expired, malformed, or unavailable rows select `NoopTelemetry`. Every Noop fallback is classified (`not_configured`, `credential_inaccessible`, `credential_unavailable`, `credential_expired`, `lookup_timeout`, `database_error`, `path_resolution_error`, `exporter_init_failed`) and logged locally as `sce.telemetry.fallback`; failures log at `warn` (forced, so they reach the log file at the default `error` level, never stderr while `log_to_file=true`), with the redacted `TokenStorageError` text for database and path errors, and a missing hint, an inaccessible credential store, or missing or expired credentials log at `debug`. Concurrent lookups from many hook processes are supported by the auth DB's multiprocess WAL and migration-free current-schema open ([auth-db.md](auth-db.md)). Both this lookup and the header helper's repository lookup are existing-DB reads: a missing `auth.db` yields no credential and creates no DB file or encryption key. Claude-invoked SCE hooks are admitted to this lookup and export one `sce.hook` span. Every other hook and this hidden header helper skip the lookup and stay Noop. See [cli-observability-contract.md](cli-observability-contract.md).
+
+## Doctor health check
+
+`sce doctor` reports managed telemetry as the last `Environment` row and as a top-level JSON `managed_telemetry` object. `managed_telemetry::inspect_health` computes it once per invocation, and it is read-only:
+
+- It never issues a credential, contacts the Control Plane, or starts an OTLP exporter.
+- It reads the readiness hint first. `NotConfigured` and `Expired` hints return without opening `auth.db` or touching the credential store, so a fresh install never reaches the Keychain.
+- With a `Ready` hint it runs the runtime lookup: `load_telemetry_credential` (existing DB only, `CredentialAccess::NonInteractive`) under `CREDENTIAL_LOOKUP_DEADLINE`. Errors are classified by the same `TelemetryFallbackReason` mapping the runtime uses.
+- `--fix` adds no repair for it. The problem is `manual_only`, so fix mode reports one `manual` fix result. Doctor never runs `sce auth login`, changes Keychain ACLs, or recreates a key.
+
+| Health | Text row | JSON `state` / `reason` | Problem `kind` | `next_action` |
+| --- | --- | --- | --- | --- |
+| No hint or no `auth.db` | `[PASS] Managed telemetry (not configured)` | `not_configured` / `not_configured` | none | none |
+| Credential valid | `[PASS] Managed telemetry` | `healthy` / `null` | none | none |
+| Store refuses silent access | `[WARN]` | `disabled` / `credential_inaccessible` | `managed_telemetry_credential_inaccessible` | `auth_login` |
+| Hint ready, no usable credential | `[WARN]` | `disabled` / `credential_unavailable` | `managed_telemetry_credential_unavailable` | `auth_login` |
+| Hint or credential expired | `[WARN]` | `disabled` / `credential_expired` | `managed_telemetry_credential_expired` | `auth_login` |
+| Lookup deadline exceeded | `[WARN]` | `disabled` / `lookup_timeout` | `managed_telemetry_lookup_timeout` | `manual_steps` |
+| Auth DB open/read failure | `[WARN]` | `disabled` / `database_error` | `managed_telemetry_database_error` | `manual_steps` |
+| State path unresolvable | `[WARN]` | `disabled` / `path_resolution_error` | `managed_telemetry_path_resolution_error` | `manual_steps` |
+
+- The JSON object has `state`, `reason`, `kind`, `severity` (`warning` or `null`), and `next_action`. A warning also appears in `problems` (category `global_state`, severity `warning`, fixability `manual_only`) with the same `next_action`. It never makes doctor `not_ready`.
+- Every warning says that Claude Code hooks continue working and only telemetry export is disabled.
+- Only macOS `credential_inaccessible` recommends choosing "Always Allow" in the Keychain dialog shown by `sce auth login`. Other platforms name their store (Secret Service, Windows Credential Manager) instead. Expiry, missing credentials, timeouts, and DB or path errors never mention it.
+- Output uses fixed text only. It never includes `TokenStorageError` details, Keychain error codes, keys, WorkOS tokens, or OpenBao tokens. The detailed reason stays in the local `sce.telemetry.fallback` log event that the same doctor invocation's startup lookup writes.
+- Code: `cli/src/services/doctor/managed_telemetry.rs` (classification text and JSON) and `cli/src/services/managed_telemetry.rs` (`inspect_health`, `inspect_health_with`).
 
 ## Hidden header helper
 

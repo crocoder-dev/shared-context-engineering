@@ -12,8 +12,11 @@ Human text output renders these sections in this exact order:
 2. `Repository`
 3. `Integrations`
 
-The `Environment` domain contains `State`, `Configuration`, and `Repository
-identity`. The `Repository` domain contains `Git repository`, `Post-commit Agent
+The `Environment` domain contains `State`, `Configuration`, `Repository
+identity`, and `Managed telemetry` (read-only credential health; rows, JSON, and
+remediation in [telemetry-credential.md](telemetry-credential.md#doctor-health-check)).
+A warning row expands into `Reason: <reason>`, the summary, the hook-impact line,
+and a `To fix:` step list. The `Repository` domain contains `Git repository`, `Post-commit Agent
 Trace auto-sync`, and `Git hooks`.
 
 When snapshot-ref reconciliation is recommended (or its maintenance state is
