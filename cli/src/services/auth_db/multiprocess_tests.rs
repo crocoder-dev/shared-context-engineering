@@ -354,6 +354,39 @@ fn current_schema_reader_performs_no_migration_write_under_held_write_lock() {
     sandbox.run("verify-schema");
 }
 
+struct NoRepositoryContext;
+
+impl crate::app::HasRepoRoot for NoRepositoryContext {
+    fn repo_root(&self) -> Option<&Path> {
+        None
+    }
+}
+
+fn run_setup_lifecycle_child(sandbox: &Sandbox, role: &str) {
+    wait_success(
+        role,
+        sandbox
+            .command(role)
+            .env(AUTH_DB_ENCRYPTION_KEY_ENV, "")
+            .spawn()
+            .expect("spawn setup child"),
+    );
+}
+
+#[test]
+fn setup_lifecycle_on_fresh_state_creates_no_auth_db_and_resolves_no_key() {
+    let _fan_out = serialize_fan_out();
+    run_setup_lifecycle_child(&Sandbox::new(), "setup-fresh");
+}
+
+#[test]
+fn setup_lifecycle_leaves_existing_auth_db_unchanged_and_resolves_no_key() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+    run_setup_lifecycle_child(&sandbox, "setup-existing");
+}
+
 #[test]
 fn telemetry_lookup_never_creates_a_missing_auth_db() {
     let _fan_out = serialize_fan_out();
@@ -811,6 +844,18 @@ async fn auth_db_child_process() {
             );
             assert!(!auth_db_path().expect("auth DB path").exists());
         }
+        "setup-fresh" | "setup-existing" => {
+            use crate::services::lifecycle::ServiceLifecycle;
+            let path = auth_db_path().expect("auth DB path");
+            let before = std::fs::read(&path).ok();
+            assert_eq!(before.is_some(), role == "setup-existing");
+            super::lifecycle::AuthDbLifecycle
+                .setup(&NoRepositoryContext)
+                .await
+                .expect("setup needs no auth DB key");
+            assert!(path.parent().expect("auth DB parent").is_dir());
+            assert_eq!(std::fs::read(&path).ok(), before);
+        }
         "create-schemaless" => {
             let db = EncryptedTursoDb::<SchemalessAuthDbSpec>::new()
                 .await
@@ -1000,6 +1045,7 @@ async fn seed() {
     })
     .await
     .expect("telemetry credential seeds");
+    crate::services::telemetry_readiness::mark_ready(FAR_FUTURE).expect("readiness seeds");
 }
 
 async fn run_hook_child() {
@@ -1045,7 +1091,11 @@ fn writer_rows() -> Vec<String> {
 
 async fn open_legacy_auth_db() -> Result<turso::Connection> {
     let path = auth_db_path()?;
-    let hexkey = get_or_create_encryption_key(&path, AuthDbSpec::db_name())?;
+    let hexkey = get_or_create_encryption_key(
+        &path,
+        AuthDbSpec::db_name(),
+        crate::services::db::encryption_key::CredentialAccess::Interactive,
+    )?;
     let db = turso::Builder::new_local(path.to_str().expect("UTF-8 auth DB path"))
         .experimental_encryption(true)
         .with_encryption(turso::EncryptionOpts {

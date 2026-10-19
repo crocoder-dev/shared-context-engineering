@@ -5,8 +5,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Deserialize;
 
+use crate::services::db::encryption_key::CredentialAccess;
 use crate::services::db::{DbSpec, EncryptedTursoDb};
-use crate::services::token_storage::{get_auth_db, get_existing_auth_db, TokenStorageError};
+use crate::services::token_storage::{
+    open_existing_auth_db, open_or_create_auth_db, TokenStorageError,
+};
 
 const TELEMETRY_CREDENTIAL_ROW_ID: i64 = 1;
 const WORKOS_SESSION_ROW_ID: i64 = 1;
@@ -75,6 +78,7 @@ impl TelemetryCredential {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RepositoryBindingMode {
+    #[cfg_attr(not(test), expect(dead_code))]
     Enroll,
     EnrollIfUnbound,
 }
@@ -82,11 +86,11 @@ pub enum RepositoryBindingMode {
 pub async fn save_telemetry_credential(
     credential: &TelemetryCredential,
 ) -> Result<(), TokenStorageError> {
-    save_with(get_auth_db().await?, credential).await
+    save_with(open_or_create_auth_db().await?, credential).await
 }
 
 pub async fn load_telemetry_credential() -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let Some(db) = get_existing_auth_db().await? else {
+    let Some(db) = open_existing_auth_db(CredentialAccess::NonInteractive).await? else {
         return Ok(None);
     };
     load_with(db, current_unix_timestamp_seconds()?).await
@@ -95,7 +99,7 @@ pub async fn load_telemetry_credential() -> Result<Option<TelemetryCredential>, 
 pub async fn load_repository_telemetry_credential(
     repository_id: String,
 ) -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let Some(db) = get_existing_auth_db().await? else {
+    let Some(db) = open_existing_auth_db(CredentialAccess::NonInteractive).await? else {
         return Ok(None);
     };
     load_for_repository_with(db, current_unix_timestamp_seconds()?, &repository_id).await
@@ -105,17 +109,17 @@ pub async fn bind_repository_telemetry(
     repository_id: String,
     mode: RepositoryBindingMode,
 ) -> Result<bool, TokenStorageError> {
-    bind_repository_with(
-        get_auth_db().await?,
-        current_unix_timestamp_seconds()?,
-        &repository_id,
-        mode,
-    )
-    .await
+    let Some(db) = open_existing_auth_db(CredentialAccess::Interactive).await? else {
+        return Ok(false);
+    };
+    bind_repository_with(db, current_unix_timestamp_seconds()?, &repository_id, mode).await
 }
 
 pub async fn delete_telemetry_credential() -> Result<bool, TokenStorageError> {
-    delete_with(get_auth_db().await?).await
+    let Some(db) = open_existing_auth_db(CredentialAccess::Interactive).await? else {
+        return Ok(false);
+    };
+    delete_with(db).await
 }
 
 fn database_error(message: &str) -> TokenStorageError {
@@ -913,6 +917,7 @@ mod tests {
             telemetry_headers_with(
                 Some(working_dir),
                 visible_destination_conflict(claude_helper_env),
+                true,
                 repository_id_for,
                 |repository_id: String| async move {
                     let db = TestDb::new()
