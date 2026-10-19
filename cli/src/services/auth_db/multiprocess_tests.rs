@@ -194,35 +194,21 @@ impl Sandbox {
     }
 
     fn hold(&self, role: &str) -> HeldChild {
-        let mut child = self
-            .command(role)
-            .stdin(Stdio::piped())
-            .spawn()
-            .expect("spawn holder");
+        Self::hold_command(role, self.command(role))
+    }
+
+    fn hold_command(role: &str, mut command: Command) -> HeldChild {
+        let mut child = command.stdin(Stdio::piped()).spawn().expect("spawn holder");
         let stdin = child.stdin.take().expect("holder stdin");
-        let mut stdout = BufReader::new(child.stdout.take().expect("holder stdout"));
-        let mut line = String::new();
-        loop {
-            line.clear();
-            let read = stdout.read_line(&mut line).expect("holder stdout line");
-            if read == 0 {
-                let _ = child.kill();
-                let output = child.wait_with_output().expect("holder output");
-                panic!(
-                    "{role} holder exited before ready: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-            if line.trim_end().ends_with(READY) {
-                break;
-            }
-        }
-        HeldChild {
+        let stdout = BufReader::new(child.stdout.take().expect("holder stdout"));
+        let mut held = HeldChild {
             role: role.to_string(),
             child,
             stdin,
             stdout,
-        }
+        };
+        held.wait_ready();
+        held
     }
 
     fn seed(&self) {
@@ -238,8 +224,42 @@ struct HeldChild {
 }
 
 impl HeldChild {
-    fn release(mut self) {
+    fn signal(&mut self) {
         writeln!(self.stdin).expect("release holder");
+    }
+
+    fn wait_ready(&mut self) -> String {
+        let mut captured = String::new();
+        loop {
+            let mut line = String::new();
+            let read = self
+                .stdout
+                .read_line(&mut line)
+                .expect("holder stdout line");
+            if read == 0 {
+                let _ = self.child.kill();
+                self.child.wait().expect("holder status");
+                let mut stderr = String::new();
+                self.child
+                    .stderr
+                    .take()
+                    .expect("holder stderr")
+                    .read_to_string(&mut stderr)
+                    .expect("holder stderr output");
+                panic!(
+                    "{} holder exited before ready:\n{captured}\n{stderr}",
+                    self.role
+                );
+            }
+            if line.trim_end().ends_with(READY) {
+                return captured;
+            }
+            captured.push_str(&line);
+        }
+    }
+
+    fn release(mut self) {
+        self.signal();
         drop(self.stdin);
         let mut rest = String::new();
         self.stdout
@@ -290,6 +310,29 @@ fn committed_rows(children: Vec<(String, Child)>) -> (BTreeSet<String>, usize) {
         rejected += usize::from(stdout.contains(REJECTED));
     }
     (committed, rejected)
+}
+
+fn coordinated_writer_rows(sandbox: &Sandbox) -> BTreeSet<String> {
+    // Open every connection before writes start, and keep every connection
+    // alive until all writes finish so WAL startup/teardown cannot race them.
+    let mut writers = (0..NEW_WRITERS)
+        .map(|index| {
+            let mut command = sandbox.command("coordinated-writer");
+            command.env(WRITER_ENV, format!("new-{index}"));
+            Sandbox::hold_command("coordinated-writer", command)
+        })
+        .collect::<Vec<_>>();
+    for writer in &mut writers {
+        writer.signal();
+    }
+    let mut committed = BTreeSet::new();
+    for writer in &mut writers {
+        committed.extend(prefixed_lines(&writer.wait_ready(), COMMITTED_PREFIX));
+    }
+    for writer in writers {
+        writer.release();
+    }
+    committed
 }
 
 fn read_token(stdout: &str) -> Option<&str> {
@@ -503,17 +546,7 @@ fn concurrent_new_writers_all_commit_and_legacy_reopens_afterwards() {
     let _fan_out = serialize_fan_out();
     let sandbox = Sandbox::new();
     sandbox.seed();
-
-    let writers = (0..NEW_WRITERS)
-        .map(|index| {
-            (
-                "new-writer".to_string(),
-                sandbox.writer("new-writer", &format!("new-{index}")),
-            )
-        })
-        .collect();
-    let (committed, rejected) = committed_rows(writers);
-    assert_eq!(rejected, 0);
+    let committed = coordinated_writer_rows(&sandbox);
     assert_eq!(committed.len(), NEW_WRITERS * WRITER_ROWS);
     assert_eq!(sandbox.rows(), committed);
 
@@ -580,16 +613,7 @@ fn macos_new_processes_share_the_lock_concurrently() {
         sandbox.hold("hold-open"),
         sandbox.hold("hold-open-close-other"),
     ];
-    let writers = (0..NEW_WRITERS)
-        .map(|index| {
-            (
-                "new-writer".to_string(),
-                sandbox.writer("new-writer", &format!("shared-{index}")),
-            )
-        })
-        .collect();
-    let (committed, rejected) = committed_rows(writers);
-    assert_eq!(rejected, 0);
+    let committed = coordinated_writer_rows(&sandbox);
     assert_eq!(committed.len(), NEW_WRITERS * WRITER_ROWS);
     sandbox.run("legacy-lock-expect-rejected");
     for holder in holders {
@@ -956,6 +980,7 @@ async fn auth_db_child_process() {
         }
         "upgrade" => upgrade_outdated_schema().await,
         "partial" => reject_partial_schema().await,
+        "coordinated-writer" => run_coordinated_writer_child().await,
         "hook" => run_hook_child().await,
         "hook-entry" => run_hook_entry_child().await,
         other => run_compatibility_child(other).await,
@@ -1121,6 +1146,21 @@ async fn run_new_version_child(role: &str) {
         }
         other => panic!("unknown child role {other}"),
     }
+}
+
+async fn run_coordinated_writer_child() {
+    let db = AuthDb::new()
+        .await
+        .expect("coordinated writer opens auth DB");
+    wait_for_release();
+    for row in writer_rows() {
+        db.execute(INSERT_BINDING_SQL, (row.as_str(), USER_ID, WORKSPACE_ID))
+            .await
+            .unwrap_or_else(|error| panic!("writer failed at {row}: {error:#}"));
+        println!("{COMMITTED_PREFIX}{row}");
+        tokio::time::sleep(WRITER_PAUSE).await;
+    }
+    wait_for_release();
 }
 
 async fn seed() {
