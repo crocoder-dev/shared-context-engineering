@@ -263,6 +263,30 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ### Residual risks
 
-- macOS uses a process-scoped lock and has not been built or run on a Mac. Windows has no compatibility lock.
+- macOS: resolved by the follow-up below. Other non-Linux Unix still uses a process-scoped `F_SETLK` lock and is untested. Windows has no compatibility lock.
 - Mixed old/new processes still cannot run at the same time: one side fails explicitly until the other exits. Every `sce` binary used by the account must be upgraded.
 - The upstream Turso multiprocess cold-open race for many concurrent creators or migrators is unchanged.
+
+## Follow-up validation: macOS compatibility lock lifetime (PR #330)
+
+**Date:** 2026-10-19
+
+### Change
+
+- `cli/src/services/db/open_lock.rs` on macOS now takes `flock(LOCK_SH | LOCK_NB)` on the SCE-owned `auth.db` descriptor instead of `fcntl(F_SETLK, F_RDLCK)`. The old process-scoped record lock was released whenever the process closed any descriptor for `auth.db`, even though `EncryptedTursoDb` still owned `_open_lock`. A `flock` lock belongs to the open file description, so it lasts until the `EncryptedTursoDb` is dropped or the process exits. Linux (`F_OFD_SETLK` `F_RDLCK`) and other Unix (`F_SETLK` `F_RDLCK`) are unchanged. `EWOULDBLOCK` is now listed with `EAGAIN`/`EACCES` as a lock conflict (they are the same value on Linux and macOS). Retry policy, diagnostics, and the rule that Turso is never opened after a failed lock are unchanged. No separate lock file, helper process, or dependency.
+- Four `#[cfg(target_os = "macos")]` tests in `cli/src/services/auth_db/multiprocess_tests.rs`, described in [Mixed-version compatibility lock](../sce/auth-db.md#mixed-version-compatibility-lock).
+
+### Commands run (macOS 15.4.1, Darwin 24.4.0, arm64)
+
+- Before the fix: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::auth_db::multiprocess_tests` -> 18 passed. The existing suite did not detect the lifetime bug.
+- Raw lock experiment with separate Python processes (`flock` vs `fcntl(F_SETLK)`): shared `flock` and legacy `F_WRLCK` reject each other in both directions with `EAGAIN`; two shared `flock`s coexist; a held `flock` survives an unrelated open/close in its process; an `F_SETLK` `F_RDLCK` holder that opens and closes another descriptor lets a legacy `F_WRLCK` through.
+- After the fix: same command -> 22 passed, including `thirty_two_reader_processes_all_resolve_the_credential`, `concurrent_hook_processes_export_correlated_hook_spans`, `concurrent_legacy_and_new_writers_never_lose_committed_rows`, and the 4 new macOS tests.
+- Mutation check: with `open_lock.rs` reverted to the old `F_SETLK` version, `macos_new_shared_lock_survives_unrelated_descriptor_close` fails (`legacy lock must be rejected while a new process holds the DB`). The other three macOS tests pass, as expected for the old lock.
+- 3 parallel copies of the multiprocess suite -> 3 of 3 passed.
+- `nix flake check` -> exit 0 on aarch64-darwin (`cli-clippy`, `cli-tests`, `cli-fmt`). Linux systems were omitted by the check.
+
+### Residual risks
+
+- Linux was not re-run in this session. Its lock code is unchanged; only the conflict check now also names `EWOULDBLOCK` (== `EAGAIN` on Linux). Run `nix flake check` on x86_64-linux before merge.
+- Tested on macOS 15.4.1 only. Older macOS versions were not tested.
+- macOS was not tested against the real pre-fix `sce` binary. The legacy side used the pre-fix Turso builder configuration and raw `F_SETLK` `F_WRLCK` children.

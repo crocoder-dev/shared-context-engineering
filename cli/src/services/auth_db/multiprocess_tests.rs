@@ -523,6 +523,83 @@ fn concurrent_new_writers_all_commit_and_legacy_reopens_afterwards() {
     assert_eq!(sandbox.rows(), expected);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_new_shared_lock_rejects_legacy_exclusive_lock_until_released() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let holder = sandbox.hold("hold-open");
+    sandbox.run("legacy-lock-expect-rejected");
+    sandbox.run("legacy-expect-rejected");
+    holder.release();
+
+    sandbox.run("legacy-lock-acquire");
+    sandbox.run("legacy-roundtrip");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_legacy_exclusive_lock_rejects_new_shared_lock_until_released() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let legacy = sandbox.hold("legacy-lock-hold");
+    sandbox.run("expect-rejected-read");
+    sandbox.run("expect-rejected-write");
+    legacy.release();
+
+    assert_eq!(read_token(&sandbox.run("read")), Some(TOKEN));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_new_shared_lock_survives_unrelated_descriptor_close() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let holder = sandbox.hold("hold-open-close-other");
+    sandbox.run("legacy-lock-expect-rejected");
+    sandbox.run("legacy-expect-rejected");
+    holder.release();
+
+    sandbox.run("legacy-roundtrip");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_new_processes_share_the_lock_concurrently() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let holders = [
+        sandbox.hold("hold-open"),
+        sandbox.hold("hold-open-close-other"),
+    ];
+    let writers = (0..NEW_WRITERS)
+        .map(|index| {
+            (
+                "new-writer".to_string(),
+                sandbox.writer("new-writer", &format!("shared-{index}")),
+            )
+        })
+        .collect();
+    let (committed, rejected) = committed_rows(writers);
+    assert_eq!(rejected, 0);
+    assert_eq!(committed.len(), NEW_WRITERS * WRITER_ROWS);
+    sandbox.run("legacy-lock-expect-rejected");
+    for holder in holders {
+        holder.release();
+    }
+
+    assert_eq!(sandbox.rows(), committed);
+    sandbox.run("legacy-roundtrip");
+}
+
 #[test]
 fn repository_telemetry_lookup_never_creates_a_missing_auth_db() {
     let _fan_out = serialize_fan_out();
@@ -904,6 +981,29 @@ async fn run_compatibility_child(role: &str) {
             );
         }
         "legacy-roundtrip" => legacy_roundtrip().await,
+        #[cfg(target_os = "macos")]
+        "hold-open-close-other" => {
+            let _db = AuthDb::new().await.expect("holder opens auth DB");
+            let path = auth_db_path().expect("auth DB path");
+            drop(std::fs::File::open(&path).expect("unrelated auth DB descriptor"));
+            wait_for_release();
+        }
+        #[cfg(target_os = "macos")]
+        "legacy-lock-hold" => {
+            let file = auth_db_file();
+            legacy_exclusive_lock(&file).expect("legacy lock acquires");
+            wait_for_release();
+        }
+        #[cfg(target_os = "macos")]
+        "legacy-lock-expect-rejected" => {
+            let error = legacy_exclusive_lock(&auth_db_file())
+                .expect_err("legacy lock must be rejected while a new process holds the DB");
+            assert_eq!(error.raw_os_error(), Some(libc::EAGAIN), "{error}");
+        }
+        #[cfg(target_os = "macos")]
+        "legacy-lock-acquire" => {
+            legacy_exclusive_lock(&auth_db_file()).expect("legacy lock acquires");
+        }
         "legacy-writer" => match open_legacy_auth_db().await {
             Ok(conn) => {
                 for row in writer_rows() {
@@ -1105,6 +1205,28 @@ async fn open_legacy_auth_db() -> Result<turso::Connection> {
         .build()
         .await?;
     Ok(db.connect()?)
+}
+
+#[cfg(target_os = "macos")]
+fn auth_db_file() -> std::fs::File {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(auth_db_path().expect("auth DB path"))
+        .expect("auth DB file")
+}
+
+#[cfg(target_os = "macos")]
+fn legacy_exclusive_lock(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
+    lock.l_type = libc::c_short::try_from(libc::F_WRLCK).expect("lock type");
+    lock.l_whence = libc::c_short::try_from(libc::SEEK_SET).expect("lock whence");
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const lock) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 async fn insert_binding(conn: &turso::Connection, row: &str) -> Result<()> {
