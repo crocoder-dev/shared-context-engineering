@@ -170,7 +170,9 @@ impl TelemetryFallback {
             TokenStorageError::CredentialAccessUnavailable => {
                 return Self::new(TelemetryFallbackReason::CredentialInaccessible);
             }
-            TokenStorageError::Database(_) => TelemetryFallbackReason::DatabaseError,
+            TokenStorageError::Database(_) | TokenStorageError::DatabaseLocked(_) => {
+                TelemetryFallbackReason::DatabaseError
+            }
             TokenStorageError::PathResolution(_) => TelemetryFallbackReason::PathResolutionError,
         };
         Self {

@@ -13,7 +13,7 @@ use crate::services::agent_trace_sync::control_plane::{
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
 use crate::services::db::encryption_key::CredentialAccess;
-use crate::services::error::{CliError, UserError};
+use crate::services::error::{AuthStorageFailure, CliError, UserError};
 use crate::services::managed_telemetry::claude_helper::{
     repository_id_for, visible_destination_conflict,
 };
@@ -484,7 +484,8 @@ fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Resu
 
 fn map_login_error(error: AuthError) -> CliError {
     let user_error = match &error {
-        AuthError::Io(_) | AuthError::Storage(_) => UserError::LoginAuthStorageUnavailable,
+        AuthError::Io(_) => UserError::LoginAuthStorageUnavailable(AuthStorageFailure::Database),
+        AuthError::Storage(storage) => UserError::LoginAuthStorageUnavailable(storage.failure()),
         _ => UserError::UnexpectedFailure,
     };
     CliError::user_with_source(user_error, error)
@@ -687,8 +688,8 @@ fn render_whoami_result(profile: &MeResponse, format: AuthFormat) -> Result<Stri
 fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
     let user_error = if error.is_authentication_failure() {
         UserError::NotAuthenticated
-    } else if error.is_storage_failure() {
-        UserError::AuthStorageUnavailable
+    } else if let Some(failure) = error.storage_failure() {
+        UserError::AuthStorageUnavailable(failure)
     } else {
         UserError::UnexpectedFailure
     };
@@ -700,11 +701,14 @@ fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
 }
 
 fn auth_storage_error(error: TokenStorageError) -> CliError {
-    CliError::user_with_source(UserError::AuthStorageUnavailable, error)
+    CliError::user_with_source(UserError::AuthStorageUnavailable(error.failure()), error)
 }
 
 fn login_storage_error(error: TokenStorageError) -> CliError {
-    CliError::user_with_source(UserError::LoginAuthStorageUnavailable, error)
+    CliError::user_with_source(
+        UserError::LoginAuthStorageUnavailable(error.failure()),
+        error,
+    )
 }
 
 fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
@@ -778,7 +782,10 @@ mod tests {
         )
         .await;
         assert!(!save_called.load(std::sync::atomic::Ordering::SeqCst));
-        assert_login_storage_guidance(&failed.expect_err("invalidation failure fails login"));
+        assert_login_storage_guidance(
+            &failed.expect_err("invalidation failure fails login"),
+            AuthStorageFailure::Database,
+        );
 
         let failed = replace_session_with(
             || Ok(()),
@@ -786,29 +793,56 @@ mod tests {
             || async { Err(TokenStorageError::CredentialAccessUnavailable) },
         )
         .await;
-        assert_login_storage_guidance(&failed.expect_err("save failure fails login"));
+        assert_login_storage_guidance(
+            &failed.expect_err("save failure fails login"),
+            AuthStorageFailure::CredentialAccess,
+        );
     }
 
-    fn assert_login_storage_guidance(error: &CliError) {
+    fn assert_login_storage_guidance(error: &CliError, failure: AuthStorageFailure) {
         let CliError::User {
             error: user_error, ..
         } = error
         else {
             panic!("expected a user-facing storage error");
         };
-        assert_eq!(*user_error, UserError::LoginAuthStorageUnavailable);
+        assert_eq!(*user_error, UserError::LoginAuthStorageUnavailable(failure));
         assert_eq!(user_error.key(), "auth.storage_unavailable");
         assert_eq!(error.class().exit_code(), 4);
         let message = error.to_string();
-        assert!(message.contains("Running login again does not help until"));
-        assert!(!message.contains("Retry the original command."));
+        assert!(!message.contains("Retry the original command"));
+        let keychain_guidance = message.contains("encryption key");
+        assert_eq!(
+            keychain_guidance,
+            failure == AuthStorageFailure::CredentialAccess
+        );
+        if keychain_guidance {
+            assert!(message.contains("Running login again does not help until"));
+        }
     }
 
     #[test]
     fn login_device_flow_storage_failure_uses_noncircular_guidance() {
-        assert_login_storage_guidance(&map_login_error(AuthError::Storage(
-            TokenStorageError::CredentialAccessUnavailable,
-        )));
+        for (storage, failure) in [
+            (
+                TokenStorageError::CredentialAccessUnavailable,
+                AuthStorageFailure::CredentialAccess,
+            ),
+            (
+                TokenStorageError::DatabaseLocked("busy".to_string()),
+                AuthStorageFailure::DatabaseLocked,
+            ),
+            (
+                TokenStorageError::Database("corrupt".to_string()),
+                AuthStorageFailure::Database,
+            ),
+        ] {
+            assert_login_storage_guidance(&map_login_error(AuthError::Storage(storage)), failure);
+        }
+        assert_login_storage_guidance(
+            &map_login_error(AuthError::Io(std::io::Error::other("io"))),
+            AuthStorageFailure::Database,
+        );
         let CliError::User { error, .. } = map_login_error(AuthError::MissingClientId) else {
             panic!("expected a user-facing error");
         };
@@ -831,7 +865,10 @@ mod tests {
         else {
             panic!("expected a user-facing storage error");
         };
-        assert_eq!(*user_error, UserError::AuthStorageUnavailable);
+        assert_eq!(
+            *user_error,
+            UserError::AuthStorageUnavailable(AuthStorageFailure::CredentialAccess)
+        );
         assert!(error.to_string().contains("sce auth login"));
     }
 

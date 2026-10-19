@@ -5,6 +5,7 @@ use std::fmt;
 use crate::services::agent_trace_export::{
     AgentTraceAgentTraceExportRow, AgentTraceMessageExportRow, AgentTracePartExportRow,
 };
+use crate::services::error::AuthStorageFailure;
 use control_plane::ControlPlaneError;
 
 pub const RECONCILIATION_MAX_ATTEMPTS: u32 = 5;
@@ -93,10 +94,10 @@ impl StreamSyncError {
     /// or `Terminal` failure) means local credential storage is unavailable.
     /// `Read`, `InvalidResponse`, and `DidNotConverge` never carry a
     /// `ControlPlaneError` and are never storage failures.
-    pub fn is_storage_failure(&self) -> bool {
+    pub fn storage_failure(&self) -> Option<AuthStorageFailure> {
         match self {
-            Self::Refresh(error) | Self::Terminal(error) => error.is_storage_failure(),
-            Self::Read(_) | Self::InvalidResponse(_) | Self::DidNotConverge => false,
+            Self::Refresh(error) | Self::Terminal(error) => error.storage_failure(),
+            Self::Read(_) | Self::InvalidResponse(_) | Self::DidNotConverge => None,
         }
     }
 }
