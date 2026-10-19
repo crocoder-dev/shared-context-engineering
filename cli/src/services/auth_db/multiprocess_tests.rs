@@ -73,6 +73,8 @@ const WRITER_ROWS: usize = 8;
 const WRITER_PAUSE: Duration = Duration::from_millis(20);
 const MIXED_WRITER_ROUNDS: usize = 3;
 const NEW_WRITERS: usize = 4;
+const LEGACY_HANDOFF_ROUNDS: usize = 20;
+const LEGACY_HANDOFF_READERS: usize = 8;
 const SHARED_ACCESS_REJECTION: &str = "does not support shared access";
 const LEGACY_LOCK_REJECTION: &str = "File is locked by another process";
 const LEGACY_CIPHER: &str = "aegis256";
@@ -596,6 +598,33 @@ fn concurrent_legacy_and_new_writers_never_lose_committed_rows() {
     let lost = committed.difference(&persisted).collect::<Vec<_>>();
     assert!(lost.is_empty(), "committed rows lost: {lost:?}");
     sandbox.run("legacy-roundtrip");
+}
+
+#[test]
+fn concurrent_cold_opens_after_legacy_write_all_see_committed_state() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let mut expected = BTreeSet::new();
+    for round in 0..LEGACY_HANDOFF_ROUNDS {
+        let stdout = wait_success(
+            "legacy-writer",
+            sandbox.writer("legacy-writer", &format!("legacy-handoff-{round}")),
+        );
+        let committed = prefixed_lines(&stdout, COMMITTED_PREFIX);
+        assert_eq!(committed.len(), WRITER_ROWS, "round {round}");
+        expected.extend(committed);
+        let readers = (0..LEGACY_HANDOFF_READERS)
+            .map(|_| sandbox.command("read").spawn().expect("spawn reader"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            wait_readers(readers),
+            LEGACY_HANDOFF_READERS,
+            "round {round}"
+        );
+    }
+    assert_eq!(sandbox.rows(), expected);
 }
 
 #[test]

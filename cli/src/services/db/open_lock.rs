@@ -3,7 +3,9 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+
+const COLD_OPEN_LOCK_SUFFIX: &str = "-open.lock";
 
 #[cfg(target_os = "linux")]
 const SHARED_LOCK_COMMAND: libc::c_int = libc::F_OFD_SETLK;
@@ -59,6 +61,34 @@ pub(super) fn lock_shared(file: &File, db_name: &str, db_path: &Path) -> Result<
             db_path.display()
         )),
     }
+}
+
+fn cold_open_lock_path(db_path: &Path) -> PathBuf {
+    let mut path = db_path.as_os_str().to_owned();
+    path.push(COLD_OPEN_LOCK_SUFFIX);
+    PathBuf::from(path)
+}
+
+pub(super) async fn lock_cold_open(db_path: &Path, db_name: &str) -> Result<File> {
+    let lock_path = cold_open_lock_path(db_path);
+    let db_name = db_name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .and_then(|file| file.lock().map(|()| file))
+            .map_err(|error| {
+                anyhow!(
+                    "failed to serialize opening the {db_name} database with {}: {error}",
+                    lock_path.display()
+                )
+            })
+    })
+    .await
+    .context("database cold-open lock worker failed")?
 }
 
 #[cfg(target_os = "macos")]
