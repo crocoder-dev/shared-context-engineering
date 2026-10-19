@@ -202,3 +202,34 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - Resolved 2026-10-17: the user found trace `dcd919ecc4f5d400df5b642a1a229783` in the `sce-crocoder` Dash0 dataset with 6 `sce.hook` spans as direct children of `claude_code.interaction`, two of them with child spans. The child span names were not listed, so live delivery of `sce.mutation_scope`/`sce.git_snapshot`/`sce.persistence` by name is still proven only by local loopback tests.
 - Interactive TUI sessions, subagent hooks, and other hook events were not probed for `TRACEPARENT`.
 - Each Claude hook process can now take up to `CREDENTIAL_LOOKUP_DEADLINE` + `SHUTDOWN_TIMEOUT` longer, including the blocking `PreToolUse` path; the plan's open question on a tighter hook deadline is still unresolved.
+
+## Follow-up validation: concurrent hook telemetry reliability (PR #330)
+
+**Date:** 2026-10-19
+
+### Change
+
+- Root cause of missing live `sce.hook` spans (8 of 15 expected in an earlier run): the encrypted `auth.db` opened without Turso multiprocess WAL, so concurrent hook processes failed with `LockingError` and fell back silently to Noop. Fix and evidence: [Concurrent hook span loss](../sce/claude-hook-trace-propagation.md#concurrent-hook-span-loss), [auth-db.md](../sce/auth-db.md#concurrency-and-schema-readiness).
+- Added `sce.hook.command`, `sce.telemetry.fallback` diagnostics, migration-free current-schema opens, serialized Busy-retried migrations, a 1000 ms auth DB busy timeout, and a telemetry lookup that never creates a missing `auth.db`.
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks, including cli-tests, cli-clippy, cli-fmt, pkl-generated)
+- `nix build .#checks.x86_64-linux.cli-tests --rebuild` ×2 -> all tests passed both times; the command exits 1 only on Nix's output-determinism comparison
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_db::multiprocess_tests` -> 8 passed
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential` -> 31 passed
+- Multiprocess suite stress, 6 parallel copies × 8 rounds -> 48 of 48 passed
+- Mutation checks: without `experimental_multiprocess_wal(true)`, 5 of 7 multiprocess tests fail; with unconditional migrations, the held-write-lock reader test fails
+
+### Results
+
+- 32 reader processes × 3 rounds: 32/32 each round (about 60–190 ms per round, debug build).
+- 32 concurrent hook processes: every `(sce.claude.tool_use_id, sce.hook.command)` pair exported exactly once to a loopback collector. A wrong-key child resolves Noop with reason `database_error` and unchanged hook output.
+- Mixed versions: unsafe for concurrent writers (silent lost update); sequential use and legacy reads are safe. See [Mixed-version rollout risk](../sce/auth-db.md#mixed-version-rollout-risk).
+- Live: headless session `48a276ea-ce4a-4488-8244-649f20b87a42`, trace `132a62ceed757d0d8431011311ae76af`, 13 SCE hook invocations, zero local telemetry fallbacks. Dash0 delivery is **unverified**.
+
+### Residual risks
+
+- Dash0 confirmation of the 13 spans, their `sce.hook.command` values, and `tool_use_id` equality is still needed.
+- Mixed old/new `sce` writers can lose updates; rollout guidance is in `auth-db.md`.
+- Turso 0.8.1 has a multiprocess-WAL race when many processes concurrently create or migrate a DB under heavy load. It was not observed on read-only hook paths.

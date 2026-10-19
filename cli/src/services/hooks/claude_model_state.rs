@@ -36,7 +36,10 @@ pub(super) async fn run_claude_model_state_subcommand<
             return String::new();
         }
     };
-    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(
+        crate::services::managed_telemetry::trace_export::ClaudeHookCommand::ClaudeModelState,
+        &stdin_payload,
+    );
     let session_id = fail_open_session_id(&stdin_payload);
 
     let observed_at_ms = match current_unix_time_ms() {

@@ -457,7 +457,10 @@ struct JsonPolicyResult<'a> {
 
 pub fn run_bash_policy_request(request: &BashPolicyRequest) -> Result<String, CliError> {
     let stdin_payload = read_stdin_payload()?;
-    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(
+        crate::services::managed_telemetry::trace_export::ClaudeHookCommand::PolicyBash,
+        &stdin_payload,
+    );
     run_bash_policy_request_from_payload(request, &stdin_payload)
 }
 
