@@ -391,12 +391,15 @@ pub fn record_command_name(name: &str) {
     Span::current().record(COMMAND_NAME_FIELD, name);
 }
 
-pub fn record_claude_hook_payload(command: ClaudeHookCommand, stdin_payload: &str) {
+pub fn record_claude_hook_command(command: ClaudeHookCommand) {
+    Span::current().record(HOOK_COMMAND_FIELD, command.as_str());
+}
+
+pub fn record_claude_hook_payload(stdin_payload: &str) {
     let span = Span::current();
     if span.is_disabled() {
         return;
     }
-    span.record(HOOK_COMMAND_FIELD, command.as_str());
     let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(stdin_payload) else {
         return;
     };
@@ -824,7 +827,8 @@ pub(crate) mod tests {
         let result = telemetry
             .with_default_subscriber(&mut || async {
                 record_command_name("hooks");
-                record_claude_hook_payload(ClaudeHookCommand::DiffTrace, payload);
+                record_claude_hook_command(ClaudeHookCommand::DiffTrace);
+                record_claude_hook_payload(payload);
                 tokio::task::yield_now().await;
                 Ok(String::new())
             })

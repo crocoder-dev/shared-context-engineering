@@ -225,11 +225,44 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - 32 reader processes × 3 rounds: 32/32 each round (about 60–190 ms per round, debug build).
 - 32 concurrent hook processes: every `(sce.claude.tool_use_id, sce.hook.command)` pair exported exactly once to a loopback collector. A wrong-key child resolves Noop with reason `database_error` and unchanged hook output.
-- Mixed versions: unsafe for concurrent writers (silent lost update); sequential use and legacy reads are safe. See [Mixed-version rollout risk](../sce/auth-db.md#mixed-version-rollout-risk).
+- Mixed versions: unsafe for concurrent writers (silent lost update); sequential use and legacy reads are safe. Superseded by the compatibility lock below; see [Mixed-version compatibility lock](../sce/auth-db.md#mixed-version-compatibility-lock).
 - Live: headless session `48a276ea-ce4a-4488-8244-649f20b87a42`, trace `132a62ceed757d0d8431011311ae76af`, 13 SCE hook invocations, zero local telemetry fallbacks. Dash0 delivery is **unverified**.
 
 ### Residual risks
 
 - Dash0 confirmation of the 13 spans, their `sce.hook.command` values, and `tool_use_id` equality is still needed.
-- Mixed old/new `sce` writers can lose updates; rollout guidance is in `auth-db.md`.
+- Mixed old/new `sce` writers can lose updates; rollout guidance is in `auth-db.md`. Resolved on Linux by the follow-up below.
 - Turso 0.8.1 has a multiprocess-WAL race when many processes concurrently create or migrate a DB under heavy load. It was not observed on read-only hook paths.
+
+## Follow-up validation: mixed-version lock, existing-only lookups, hook command identity (PR #330)
+
+**Date:** 2026-10-19
+
+### Change
+
+- P1: every encrypted auth DB open takes a shared compatibility lock on `auth.db` (`cli/src/services/db/open_lock.rs`): an OFD `F_RDLCK` on Linux, a classic `F_SETLK` `F_RDLCK` on other Unix. It is held for the life of the `EncryptedTursoDb`. It conflicts with the classic whole-file `F_WRLCK` that legacy Turso 0.8.1/0.7.0 takes in pre-multiprocess SCE binaries, so old and new processes can no longer hold the DB at the same time. New processes still share it, and writes still go through multiprocess WAL. Details: [Mixed-version compatibility lock](../sce/auth-db.md#mixed-version-compatibility-lock).
+- P2: `load_repository_telemetry_credential` (the `sce auth telemetry-headers` lookup) now uses the same existing-only path as `load_telemetry_credential`: `token_storage::get_existing_auth_db` → `EncryptedTursoDb::open_existing_at`, which opens the file without `O_CREAT` before resolving any key.
+- P3: hook entry points call `record_claude_hook_command` before reading stdin. `record_claude_hook_payload` now parses the payload only.
+
+### Commands run
+
+- `nix flake check` -> exit 0, all checks passed (x86_64-linux; Darwin systems omitted by the check)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::auth_db::multiprocess_tests` -> 16 passed
+- Targeted filters on the test binary: `telemetry_credential` 31, `trace_export` 14, `managed_telemetry` 26, `claude_mutation_scope` 7, `bash_policy` 36, `auth_command` 13, `services::db` 4, all passed
+- Multiprocess suite stress, 6 parallel copies × 8 rounds -> 48 of 48 passed (one contended round took about 29 s per copy)
+- Mutation checks: with the lock disabled, 3 tests fail, and the mixed-writer test loses 24 of 72 committed rows. With the repository lookup back on `get_auth_db`, the repository missing-DB test and the 32-helper test fail because `auth.db*` files are created. With the command recorded after the stdin read, the hook-entry test fails on the unreadable-stdin `diff-trace` span.
+- Real binaries: the pre-fix `sce` (`nix build git+file://…?rev=9d4f5482…#default`) against this branch's debug build in a sandboxed `HOME`/`XDG_*`, with an env-derived key.
+
+### Results
+
+- Legacy holder (`/proc/locks`: `POSIX ADVISORY WRITE`): new `sce auth whoami` and `sce auth logout` exit 4 with `Authentication storage is unavailable`, and the log records the shared-access rejection. New holder (`OFDLCK ADVISORY READ`): a second new process succeeds, and legacy `whoami`/`logout` exit 4 (log: `File is locked by another process`). After all new processes exit, legacy `whoami` and `logout` exit 0.
+- No silently lost committed write in any tested mixed-version scenario on Linux.
+- Missing `auth.db`: both lookups and 32 concurrent `telemetry-headers` runs create no `auth.db`, `-wal`, or `-tshm` file and resolve no key, and the helpers fail closed.
+- `sce.hook.command` is present on every `sce.hook` span for valid, empty, malformed, and unreadable stdin across all five commands. Fail-open hooks keep `sce.outcome=success`, and malformed `policy-bash` input records `failure`. No stdin content or token reaches the collector.
+- Dash0: **unverified**. This session had no Dash0 access, and no live Claude run was made.
+
+### Residual risks
+
+- macOS uses a process-scoped lock and has not been built or run on a Mac. Windows has no compatibility lock.
+- Mixed old/new processes still cannot run at the same time: one side fails explicitly until the other exits. Every `sce` binary used by the account must be upgraded.
+- The upstream Turso multiprocess cold-open race for many concurrent creators or migrators is unchanged.

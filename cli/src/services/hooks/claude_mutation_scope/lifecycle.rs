@@ -47,11 +47,11 @@ pub(crate) async fn run_claude_mutation_scope_subcommand<
 >(
     logger: Option<&L>,
 ) -> Result<String> {
-    let stdin_payload = hooks::read_hook_stdin()?;
-    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(
+    crate::services::managed_telemetry::trace_export::record_claude_hook_command(
         crate::services::managed_telemetry::trace_export::ClaudeHookCommand::ClaudeMutationScope,
-        &stdin_payload,
     );
+    let stdin_payload = hooks::read_hook_stdin()?;
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
     run_claude_mutation_scope_from_payload(&stdin_payload, logger).await
 }
 
@@ -542,7 +542,7 @@ mod tests {
         capture_requests_until, loopback_hook_telemetry, trace_spans, DecodedSpan,
     };
     use crate::services::managed_telemetry::trace_export::{
-        record_claude_hook_payload, ClaudeHookCommand, SHUTDOWN_TIMEOUT,
+        record_claude_hook_command, record_claude_hook_payload, ClaudeHookCommand, SHUTDOWN_TIMEOUT,
     };
     use crate::services::mutation_trace::runtime::{
         abandon_scope, advise_after_completed_boundary, coordinate,
@@ -585,7 +585,8 @@ mod tests {
         for payload in HOOK_SEQUENCE {
             let output = telemetry
                 .with_default_subscriber(&mut || async {
-                    record_claude_hook_payload(ClaudeHookCommand::ClaudeMutationScope, payload);
+                    record_claude_hook_command(ClaudeHookCommand::ClaudeMutationScope);
+                    record_claude_hook_payload(payload);
                     run_claude_mutation_scope_from_payload_with_resolver::<NoopLogger>(
                         payload,
                         None,
@@ -702,7 +703,8 @@ mod tests {
         let telemetry = loopback_hook_telemetry(address, "bao-token-value");
         let output = telemetry
             .with_default_subscriber(&mut || async {
-                record_claude_hook_payload(ClaudeHookCommand::ClaudeMutationScope, payload);
+                record_claude_hook_command(ClaudeHookCommand::ClaudeMutationScope);
+                record_claude_hook_payload(payload);
                 run_claude_mutation_scope_from_payload_with_resolver::<NoopLogger>(
                     payload,
                     None,

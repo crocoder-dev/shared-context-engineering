@@ -3823,6 +3823,7 @@ dependencies = [
  "inquire",
  "jsonschema",
  "keyring-core",
+ "libc",
  "murmur3",
  "opentelemetry",
  "opentelemetry-http",
