@@ -25,6 +25,7 @@ use crate::services::agent_trace_sync::{
 };
 use crate::services::auth;
 use crate::services::config;
+use crate::services::db::encryption_key::CredentialAccess;
 use crate::services::sync::progress::ProgressReporter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,6 +190,7 @@ where
         auth_config.control_plane_base_url.value.unwrap_or_default(),
         auth::WORKOS_DEFAULT_BASE_URL,
         auth_config.workos_client_id.value.unwrap_or_default(),
+        CredentialAccess::NonInteractive,
     );
 
     let result = run_sync_against_without_progress(
@@ -547,6 +549,7 @@ mod tests {
     };
     use crate::services::agent_trace_sync::StreamSyncError;
     use crate::services::auth::TokenResponse;
+    use crate::services::db::encryption_key::CredentialAccess;
     use crate::services::sync::progress::NoopProgressReporter;
     use crate::services::token_storage::StoredTokens;
 
@@ -627,6 +630,7 @@ mod tests {
             "http://127.0.0.1:1",
             "http://127.0.0.1:1",
             "client",
+            CredentialAccess::NonInteractive,
         );
         let mut reporter = NoopProgressReporter;
         let progress = Rc::new(RefCell::new(&mut reporter));
@@ -704,6 +708,7 @@ mod tests {
             "http://127.0.0.1:1",
             "http://127.0.0.1:1",
             "client",
+            CredentialAccess::NonInteractive,
         )
     }
 

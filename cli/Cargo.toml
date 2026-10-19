@@ -66,6 +66,7 @@ zbus-secret-service-keyring-store = { version = "1.0.0", features = ["rt-tokio-c
 
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
+security-framework = "3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store = "1"

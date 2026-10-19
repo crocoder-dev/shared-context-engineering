@@ -11,6 +11,7 @@ use crate::services::agent_trace_export::{
     self, AgentTraceAgentTraceExportRow, AgentTraceMessageExportRow, AgentTracePartExportRow,
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
+use crate::services::db::encryption_key::CredentialAccess;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
 use crate::services::telemetry_credential_storage::{self, TelemetryCredential, TelemetryIdentity};
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
@@ -197,15 +198,17 @@ pub trait CredentialStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<StoredTokens, ControlPlaneError>> + Send;
 }
 
-pub struct SystemCredentialStore;
+pub struct SystemCredentialStore {
+    access: CredentialAccess,
+}
 
 impl CredentialStore for SystemCredentialStore {
     async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-        Ok(token_storage::load_tokens().await?)
+        Ok(token_storage::load_tokens(self.access).await?)
     }
 
     async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-        Ok(token_storage::save_tokens(token).await?)
+        Ok(token_storage::save_tokens(token, self.access).await?)
     }
 }
 
@@ -300,13 +303,14 @@ impl AuthenticatedControlPlaneClient {
         base_url: impl Into<String>,
         workos_api_base_url: impl Into<String>,
         workos_client_id: impl Into<String>,
+        access: CredentialAccess,
     ) -> Self {
         Self::with_credential_store(
             http,
             base_url,
             workos_api_base_url,
             workos_client_id,
-            SystemCredentialStore,
+            SystemCredentialStore { access },
         )
     }
 }

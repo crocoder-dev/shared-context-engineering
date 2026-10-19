@@ -13,6 +13,7 @@ use trace_export::{ManagedSpanKind, ManagedTraceTelemetry};
 use crate::services::telemetry_credential_storage::{
     load_telemetry_credential, TelemetryCredential,
 };
+use crate::services::telemetry_readiness;
 use crate::services::token_storage::TokenStorageError;
 
 pub const MANAGED_OTLP_ENDPOINT: &str = "https://otel.crocoderlab.dev";
@@ -115,6 +116,8 @@ where
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TelemetryFallbackReason {
+    NotConfigured,
+    CredentialInaccessible,
     CredentialUnavailable,
     CredentialExpired,
     LookupTimeout,
@@ -126,6 +129,8 @@ pub(crate) enum TelemetryFallbackReason {
 impl TelemetryFallbackReason {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
+            Self::NotConfigured => "not_configured",
+            Self::CredentialInaccessible => "credential_inaccessible",
             Self::CredentialUnavailable => "credential_unavailable",
             Self::CredentialExpired => "credential_expired",
             Self::LookupTimeout => "lookup_timeout",
@@ -136,7 +141,13 @@ impl TelemetryFallbackReason {
     }
 
     const fn is_failure(self) -> bool {
-        !matches!(self, Self::CredentialUnavailable | Self::CredentialExpired)
+        !matches!(
+            self,
+            Self::NotConfigured
+                | Self::CredentialInaccessible
+                | Self::CredentialUnavailable
+                | Self::CredentialExpired
+        )
     }
 }
 
@@ -156,6 +167,9 @@ impl TelemetryFallback {
 
     fn from_storage_error(error: &TokenStorageError) -> Self {
         let reason = match error {
+            TokenStorageError::CredentialAccessUnavailable => {
+                return Self::new(TelemetryFallbackReason::CredentialInaccessible);
+            }
             TokenStorageError::Database(_) => TelemetryFallbackReason::DatabaseError,
             TokenStorageError::PathResolution(_) => TelemetryFallbackReason::PathResolutionError,
         };
@@ -222,12 +236,37 @@ impl RuntimeTelemetry {
         let Some(span_kind) = span_kind else {
             return Self::Noop(NoopTelemetry);
         };
-        let (telemetry, fallback) =
-            Self::resolve_with(load_telemetry_credential(), span_kind).await;
+        let (telemetry, fallback) = Self::resolve_when_ready(
+            telemetry_readiness::is_ready(now_unix_seconds()),
+            load_telemetry_credential(),
+            span_kind,
+        )
+        .await;
         if let Some(fallback) = fallback {
             fallback.log(logger);
         }
         telemetry
+    }
+
+    pub(crate) async fn resolve_when_ready<Fut>(
+        ready: bool,
+        lookup: Fut,
+        span_kind: ManagedSpanKind,
+    ) -> (Self, Option<TelemetryFallback>)
+    where
+        Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>>
+            + Send
+            + 'static,
+    {
+        if !ready {
+            return (
+                Self::Noop(NoopTelemetry),
+                Some(TelemetryFallback::new(
+                    TelemetryFallbackReason::NotConfigured,
+                )),
+            );
+        }
+        Self::resolve_with(lookup, span_kind).await
     }
 
     pub(crate) async fn resolve_with<Fut>(
@@ -349,6 +388,50 @@ mod tests {
             }
             ManagedTelemetryMode::Noop => panic!("expected managed mode"),
         }
+    }
+
+    #[tokio::test]
+    async fn claude_hook_without_readiness_never_looks_up_credentials() {
+        let looked_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = looked_up.clone();
+
+        let (telemetry, fallback) = RuntimeTelemetry::resolve_when_ready(
+            false,
+            async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(None)
+            },
+            ManagedSpanKind::ClaudeHook,
+        )
+        .await;
+
+        assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
+        let fallback = fallback.expect("disabled telemetry is diagnosed");
+        assert_eq!(fallback.reason, TelemetryFallbackReason::NotConfigured);
+        assert!(!fallback.reason.is_failure());
+        assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn claude_hook_with_inaccessible_credential_store_skips_quietly() {
+        let (telemetry, fallback) = RuntimeTelemetry::resolve_when_ready(
+            true,
+            async { Err(TokenStorageError::CredentialAccessUnavailable) },
+            ManagedSpanKind::ClaudeHook,
+        )
+        .await;
+
+        assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
+        let fallback = fallback.expect("inaccessible credentials are diagnosed");
+        assert_eq!(
+            fallback.reason,
+            TelemetryFallbackReason::CredentialInaccessible
+        );
+        assert!(!fallback.reason.is_failure());
+        let output = telemetry
+            .with_default_subscriber(&mut || async { Ok("hook-output".to_string()) })
+            .await;
+        assert_eq!(output.expect("hook result unaffected"), "hook-output");
     }
 
     #[tokio::test]

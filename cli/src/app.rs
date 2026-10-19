@@ -315,6 +315,7 @@ fn managed_span_kind(args: &[String], claude_hook_caller: bool) -> Option<Manage
                 || (claude_hook_caller && SHARED_CLAUDE_HOOK_SUBCOMMANDS.contains(&subcommand))
         }
         (Some(first), _) if first == services::hooks::NAME => false,
+        (Some(first), _) if first == services::setup::NAME => false,
         (Some(first), Some("bash")) if first == services::bash_policy::NAME => claude_hook_caller,
         (Some(first), Some("telemetry-headers")) if first == services::auth_command::NAME => false,
         _ => return Some(ManagedSpanKind::Command),
@@ -980,6 +981,7 @@ pub(crate) mod tests {
         let result = runtime.block_on(services::auth_command::telemetry_headers_with(
             Some(repo.path().to_path_buf()),
             false,
+            true,
             |_: &std::path::Path| Some("repository-a".to_string()),
             |_: String| stalled_keychain_lookup(),
         ));
@@ -1131,6 +1133,8 @@ pub(crate) mod tests {
             assert_eq!(kind(&["sce", "hooks", "pi-mutation-scope"], caller), None);
             assert_eq!(kind(&["sce", "hooks"], caller), None);
             assert_eq!(kind(&["sce", "auth", "telemetry-headers"], caller), None);
+            assert_eq!(kind(&["sce", "setup"], caller), None);
+            assert_eq!(kind(&["sce", "setup", "--claude"], caller), None);
             assert_eq!(kind(&["sce", "auth", "login"], caller), command);
             assert_eq!(kind(&["sce", "config", "show"], caller), command);
             assert_eq!(kind(&["sce", "doctor"], caller), command);
