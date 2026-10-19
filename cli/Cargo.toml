@@ -58,6 +58,9 @@ opentelemetry = { version = "=0.33.1", default-features = false, features = ["tr
 async-trait = "0.1"
 opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["trace", "logs"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 zbus-secret-service-keyring-store = { version = "1.0.0", features = ["rt-tokio-crypto-rust"] }
 

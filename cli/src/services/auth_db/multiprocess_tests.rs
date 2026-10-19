@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -9,22 +9,32 @@ use anyhow::Result;
 
 use super::{AuthDb, AuthDbSpec};
 use crate::generated_migrations;
-use crate::services::db::encryption_key::AUTH_DB_ENCRYPTION_KEY_ENV;
+use crate::services::bash_policy::{
+    run_bash_policy_request, BashPolicyRequest, PolicyInputMode, PolicyOutputMode,
+};
+use crate::services::db::encryption_key::{
+    get_or_create_encryption_key, AUTH_DB_ENCRYPTION_KEY_ENV,
+};
 use crate::services::db::{DatabaseKind, DbSpec, EncryptedTursoDb};
 use crate::services::default_paths::auth_db_path;
+use crate::services::error::CliError;
+use crate::services::hooks::{run_hooks_subcommand, HookSubcommand};
+use crate::services::managed_telemetry::claude_helper::repository_id_for;
+use crate::services::managed_telemetry::claude_helper::tests::git_repository_with_remote;
 use crate::services::managed_telemetry::trace_export::tests::{
     capture_requests_until, loopback_hook_telemetry, trace_spans,
 };
 use crate::services::managed_telemetry::trace_export::{
-    record_claude_hook_payload, ClaudeHookCommand, ManagedSpanKind,
+    record_claude_hook_command, record_claude_hook_payload, ClaudeHookCommand, ManagedSpanKind,
 };
 use crate::services::managed_telemetry::{
     load_credential_within_deadline, select_mode, ManagedTelemetryMode, RuntimeTelemetry,
     TelemetryFallbackReason,
 };
-use crate::services::observability::traits::Telemetry;
+use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::telemetry_credential_storage::{
-    load_telemetry_credential, save_telemetry_credential, test_access_token, TelemetryCredential,
+    bind_repository_telemetry, load_repository_telemetry_credential, load_telemetry_credential,
+    save_telemetry_credential, test_access_token, RepositoryBindingMode, TelemetryCredential,
     TelemetryIdentity,
 };
 
@@ -54,6 +64,30 @@ const HOOK_COMMANDS: [ClaudeHookCommand; 5] = [
 ];
 const PRE_BINDING_MIGRATIONS: usize = 3;
 const BINDING_MIGRATION_ID: &str = "004_bind_telemetry_credentials";
+const WRITER_ENV: &str = "SCE_AUTH_DB_TEST_WRITER";
+const COMMITTED_PREFIX: &str = "SCE_AUTH_DB_CHILD_COMMITTED=";
+const ROW_PREFIX: &str = "SCE_AUTH_DB_CHILD_ROW=";
+const REJECTED: &str = "SCE_AUTH_DB_CHILD_REJECTED";
+const WRITER_ROWS: usize = 8;
+const WRITER_PAUSE: Duration = Duration::from_millis(20);
+const MIXED_WRITER_ROUNDS: usize = 3;
+const NEW_WRITERS: usize = 4;
+const SHARED_ACCESS_REJECTION: &str = "does not support shared access";
+const LEGACY_LOCK_REJECTION: &str = "File is locked by another process";
+const LEGACY_CIPHER: &str = "aegis256";
+const INSERT_BINDING_SQL: &str = "INSERT INTO telemetry_repository_bindings \
+     (repository_id, user_id, workspace_id, bound_at_unix_seconds) VALUES (?1, ?2, ?3, 1)";
+const AUTH_DB_FILES: [&str; 3] = ["auth.db", "auth.db-wal", "auth.db-tshm"];
+const HEADERS_REPOSITORY: &str = "bound-repo";
+const UNBOUND_REPOSITORY: &str = "unbound-repo";
+const HEADERS_AUTHORIZATION: &str = r#"{"Authorization":"Bearer tok-multiprocess"}"#;
+const HEADERS_UNAVAILABLE: &str = "Telemetry credential is unavailable.";
+const STDIN_SECRET: &str = "SECRET_STDIN_VALUE";
+const FAIL_OPEN_HOOK_COMMANDS: [ClaudeHookCommand; 3] = [
+    ClaudeHookCommand::DiffTrace,
+    ClaudeHookCommand::ConversationTrace,
+    ClaudeHookCommand::ClaudeModelState,
+];
 
 struct PreBindingAuthDbSpec;
 
@@ -127,7 +161,32 @@ impl Sandbox {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("OTEL_") {
+                command.env_remove(key);
+            }
+        }
         command
+    }
+
+    fn writer(&self, role: &str, writer: &str) -> Child {
+        self.command(role)
+            .env(WRITER_ENV, writer)
+            .spawn()
+            .expect("spawn writer")
+    }
+
+    fn rows(&self) -> BTreeSet<String> {
+        prefixed_lines(&self.run("verify-rows"), ROW_PREFIX)
+    }
+
+    fn auth_db_files(&self) -> Vec<String> {
+        let state = self.dir.path().join("state").join("sce");
+        AUTH_DB_FILES
+            .iter()
+            .filter(|name| state.join(name).exists())
+            .map(ToString::to_string)
+            .collect()
     }
 
     fn run(&self, role: &str) -> String {
@@ -213,6 +272,24 @@ fn wait_success(role: &str, mut child: Child) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     stdout
+}
+
+fn prefixed_lines(stdout: &str, prefix: &str) -> BTreeSet<String> {
+    stdout
+        .lines()
+        .filter_map(|line| line.split_once(prefix).map(|(_, value)| value.to_string()))
+        .collect()
+}
+
+fn committed_rows(children: Vec<(String, Child)>) -> (BTreeSet<String>, usize) {
+    let mut committed = BTreeSet::new();
+    let mut rejected = 0;
+    for (role, child) in children {
+        let stdout = wait_success(&role, child);
+        committed.extend(prefixed_lines(&stdout, COMMITTED_PREFIX));
+        rejected += usize::from(stdout.contains(REJECTED));
+    }
+    (committed, rejected)
 }
 
 fn read_token(stdout: &str) -> Option<&str> {
@@ -316,6 +393,319 @@ fn concurrent_hook_processes_export_correlated_hook_spans() {
         .build()
         .expect("test runtime")
         .block_on(export_concurrent_hook_spans(&sandbox));
+}
+
+#[test]
+fn legacy_holder_rejects_new_readers_and_writers_explicitly() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let legacy = sandbox.hold("legacy-hold");
+    sandbox.run("expect-rejected-read");
+    sandbox.run("expect-rejected-write");
+    legacy.release();
+
+    assert_eq!(sandbox.rows(), BTreeSet::from(["legacy-held".to_string()]));
+    sandbox.run("legacy-roundtrip");
+}
+
+#[test]
+fn new_holder_rejects_legacy_writer_explicitly() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let holder = sandbox.hold("hold-open");
+    sandbox.run("legacy-expect-rejected");
+    holder.release();
+
+    sandbox.run("legacy-roundtrip");
+    assert_eq!(
+        sandbox.rows(),
+        BTreeSet::from(["legacy-roundtrip".to_string()])
+    );
+}
+
+#[test]
+fn concurrent_legacy_and_new_writers_never_lose_committed_rows() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let mut committed = BTreeSet::new();
+    let mut rejected = 0;
+    for round in 0..MIXED_WRITER_ROUNDS {
+        let writers = vec![
+            (
+                "legacy-writer".to_string(),
+                sandbox.writer("legacy-writer", &format!("legacy-{round}")),
+            ),
+            (
+                "new-writer".to_string(),
+                sandbox.writer("new-writer", &format!("new-{round}-a")),
+            ),
+            (
+                "new-writer".to_string(),
+                sandbox.writer("new-writer", &format!("new-{round}-b")),
+            ),
+        ];
+        let (round_committed, round_rejected) = committed_rows(writers);
+        committed.extend(round_committed);
+        rejected += round_rejected;
+    }
+    println!(
+        "mixed writers: {} committed rows, {rejected} rejected opens",
+        committed.len()
+    );
+
+    let persisted = sandbox.rows();
+    let lost = committed.difference(&persisted).collect::<Vec<_>>();
+    assert!(lost.is_empty(), "committed rows lost: {lost:?}");
+    sandbox.run("legacy-roundtrip");
+}
+
+#[test]
+fn concurrent_new_writers_all_commit_and_legacy_reopens_afterwards() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+
+    let writers = (0..NEW_WRITERS)
+        .map(|index| {
+            (
+                "new-writer".to_string(),
+                sandbox.writer("new-writer", &format!("new-{index}")),
+            )
+        })
+        .collect();
+    let (committed, rejected) = committed_rows(writers);
+    assert_eq!(rejected, 0);
+    assert_eq!(committed.len(), NEW_WRITERS * WRITER_ROWS);
+    assert_eq!(sandbox.rows(), committed);
+
+    sandbox.run("legacy-roundtrip");
+    let mut expected = committed;
+    expected.insert("legacy-roundtrip".to_string());
+    assert_eq!(sandbox.rows(), expected);
+}
+
+#[test]
+fn repository_telemetry_lookup_never_creates_a_missing_auth_db() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    let mut lookup = sandbox.command("repository-lookup-missing");
+    lookup.env(AUTH_DB_ENCRYPTION_KEY_ENV, "");
+    wait_success(
+        "repository-lookup-missing",
+        lookup.spawn().expect("spawn lookup"),
+    );
+    assert!(sandbox.auth_db_files().is_empty());
+}
+
+#[test]
+fn concurrent_telemetry_headers_on_missing_auth_db_fail_closed_without_creating_it() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    let repository = git_repository_with_remote(
+        sandbox.dir.path(),
+        HEADERS_REPOSITORY,
+        "https://github.com/acme/bound-repo",
+    );
+
+    let helpers = (0..CONCURRENT_PROCESSES)
+        .map(|_| spawn_headers(&sandbox, &repository))
+        .collect::<Vec<_>>();
+    for helper in helpers {
+        assert_headers_unavailable(helper);
+    }
+    assert!(sandbox.auth_db_files().is_empty());
+}
+
+#[test]
+fn telemetry_headers_serve_only_the_bound_repository() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    let bound = git_repository_with_remote(
+        sandbox.dir.path(),
+        HEADERS_REPOSITORY,
+        "https://github.com/acme/bound-repo",
+    );
+    let unbound = git_repository_with_remote(
+        sandbox.dir.path(),
+        UNBOUND_REPOSITORY,
+        "https://github.com/acme/unbound-repo",
+    );
+    sandbox.seed();
+    let mut bind = sandbox.command("bind");
+    bind.current_dir(&bound);
+    wait_success("bind", bind.spawn().expect("spawn bind"));
+
+    let output = spawn_headers(&sandbox, &bound)
+        .wait_with_output()
+        .expect("bound headers output");
+    assert!(output.status.success(), "bound headers failed");
+    assert!(String::from_utf8_lossy(&output.stdout).contains(HEADERS_AUTHORIZATION));
+    assert_headers_unavailable(spawn_headers(&sandbox, &unbound));
+}
+
+fn spawn_headers(sandbox: &Sandbox, repository: &Path) -> Child {
+    let mut helper = sandbox.command("headers");
+    helper.current_dir(repository);
+    helper.spawn().expect("spawn headers")
+}
+
+fn assert_headers_unavailable(helper: Child) {
+    let output = helper.wait_with_output().expect("headers output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "headers child failed: {stderr}");
+    assert!(stdout.contains("1 passed"), "{stdout}");
+    assert!(!stdout.contains("Authorization"), "{stdout}");
+    assert!(stderr.contains(HEADERS_UNAVAILABLE), "{stderr}");
+}
+
+#[test]
+fn every_claude_hook_entry_point_records_its_command_identity() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.dir.path().join("work")).expect("work dir");
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("test runtime")
+        .block_on(export_hook_entry_spans(&sandbox));
+}
+
+fn hook_stdin_cases(command: ClaudeHookCommand) -> [(Vec<u8>, String); 4] {
+    let tool_use_id = format!("toolu_entry_{}", command.as_str());
+    let valid = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "session-entry",
+        "tool_use_id": tool_use_id,
+        "tool_input": { "command": "true" },
+    })
+    .to_string();
+    [
+        (valid.into_bytes(), tool_use_id),
+        (Vec::new(), String::new()),
+        (
+            format!("{{\"tool_use_id\":\"{STDIN_SECRET}").into_bytes(),
+            String::new(),
+        ),
+        (
+            [b"\xff\xfe".as_slice(), STDIN_SECRET.as_bytes()].concat(),
+            String::new(),
+        ),
+    ]
+}
+
+async fn export_hook_entry_spans(sandbox: &Sandbox) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let address = listener.local_addr().expect("addr");
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let receiver = tokio::spawn(capture_requests_until(listener, stopped));
+
+    let mut expected = Vec::new();
+    let mut hooks = Vec::new();
+    for (index, command) in HOOK_COMMANDS.iter().enumerate() {
+        for (stdin, tool_use_id) in hook_stdin_cases(*command) {
+            let mut child = sandbox
+                .command("hook-entry")
+                .current_dir(sandbox.dir.path().join("work"))
+                .env(COLLECTOR_ENV, address.to_string())
+                .env(HOOK_INDEX_ENV, index.to_string())
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("spawn hook entry");
+            let mut child_stdin = child.stdin.take().expect("hook entry stdin");
+            child_stdin.write_all(&stdin).expect("write hook stdin");
+            drop(child_stdin);
+            hooks.push(child);
+            expected.push((command.as_str().to_string(), tool_use_id));
+        }
+    }
+    tokio::task::spawn_blocking(move || {
+        for child in hooks {
+            wait_success("hook-entry", child);
+        }
+    })
+    .await
+    .expect("hook entry children join");
+    stop.send(()).expect("stop collector");
+
+    let requests = receiver.await.expect("collector join");
+    for request in &requests {
+        let body = String::from_utf8_lossy(&request.body);
+        assert!(!body.contains(STDIN_SECRET), "hook payload leaked");
+        assert!(!body.contains("bao-token-value"), "token leaked");
+    }
+    let mut observed = Vec::new();
+    for span in trace_spans(&requests)
+        .iter()
+        .filter(|span| span.name == "sce.hook")
+    {
+        let attribute = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_default()
+        };
+        let command = attribute("sce.hook.command");
+        let tool_use_id = attribute("sce.claude.tool_use_id");
+        let outcome = attribute("sce.outcome");
+        if FAIL_OPEN_HOOK_COMMANDS
+            .iter()
+            .any(|hook| hook.as_str() == command)
+        {
+            assert_eq!(outcome, "success", "{command} must fail open");
+        }
+        if command == ClaudeHookCommand::PolicyBash.as_str() && tool_use_id.is_empty() {
+            assert_eq!(outcome, "failure", "malformed policy-bash input must fail");
+        }
+        observed.push((command, tool_use_id));
+    }
+    observed.sort();
+    expected.sort();
+    assert_eq!(observed, expected);
+}
+
+async fn run_hook_entry_child() {
+    let index = std::env::var(HOOK_INDEX_ENV)
+        .expect("hook index")
+        .parse::<usize>()
+        .expect("numeric hook index");
+    let address = std::env::var(COLLECTOR_ENV)
+        .expect("collector address")
+        .parse()
+        .expect("socket address");
+    let telemetry = loopback_hook_telemetry(address, "bao-token-value");
+    let command = HOOK_COMMANDS[index];
+    let _ = telemetry
+        .with_default_subscriber(&mut || async move {
+            let subcommand = match command {
+                ClaudeHookCommand::DiffTrace => HookSubcommand::DiffTrace,
+                ClaudeHookCommand::ConversationTrace => HookSubcommand::ConversationTrace,
+                ClaudeHookCommand::ClaudeMutationScope => HookSubcommand::ClaudeMutationScope,
+                ClaudeHookCommand::ClaudeModelState => HookSubcommand::ClaudeModelState,
+                ClaudeHookCommand::PolicyBash => {
+                    return run_bash_policy_request(&BashPolicyRequest {
+                        input: PolicyInputMode::ClaudePreToolUse,
+                        output: PolicyOutputMode::ClaudeHook,
+                    });
+                }
+            };
+            run_hooks_subcommand(&subcommand, None::<&NoopLogger>)
+                .await
+                .map_err(CliError::runtime)
+        })
+        .await;
+    telemetry.shutdown().await;
 }
 
 async fn export_concurrent_hook_spans(sandbox: &Sandbox) {
@@ -445,6 +835,131 @@ async fn auth_db_child_process() {
         "upgrade" => upgrade_outdated_schema().await,
         "partial" => reject_partial_schema().await,
         "hook" => run_hook_child().await,
+        "hook-entry" => run_hook_entry_child().await,
+        other => run_compatibility_child(other).await,
+    }
+}
+
+async fn run_compatibility_child(role: &str) {
+    match role {
+        "legacy-hold" => {
+            let conn = open_legacy_auth_db().await.expect("legacy holder opens");
+            wait_for_release();
+            insert_binding(&conn, "legacy-held")
+                .await
+                .expect("legacy holder writes after release");
+        }
+        "legacy-expect-rejected" => {
+            let Err(error) = open_legacy_auth_db().await else {
+                panic!("legacy open must be rejected while a new process holds the DB");
+            };
+            assert!(
+                format!("{error:#}").contains(LEGACY_LOCK_REJECTION),
+                "{error:#}"
+            );
+        }
+        "legacy-roundtrip" => legacy_roundtrip().await,
+        "legacy-writer" => match open_legacy_auth_db().await {
+            Ok(conn) => {
+                for row in writer_rows() {
+                    if insert_binding(&conn, &row).await.is_err() {
+                        break;
+                    }
+                    println!("{COMMITTED_PREFIX}{row}");
+                    tokio::time::sleep(WRITER_PAUSE).await;
+                }
+            }
+            Err(error) => {
+                assert!(
+                    format!("{error:#}").contains(LEGACY_LOCK_REJECTION),
+                    "{error:#}"
+                );
+                println!("{REJECTED}");
+            }
+        },
+        other => run_new_version_child(other).await,
+    }
+}
+
+async fn run_new_version_child(role: &str) {
+    match role {
+        "new-writer" => match AuthDb::new().await {
+            Ok(db) => {
+                for row in writer_rows() {
+                    if db
+                        .execute(INSERT_BINDING_SQL, (row.as_str(), USER_ID, WORKSPACE_ID))
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                    println!("{COMMITTED_PREFIX}{row}");
+                    tokio::time::sleep(WRITER_PAUSE).await;
+                }
+            }
+            Err(error) => {
+                assert!(
+                    format!("{error:#}").contains(SHARED_ACCESS_REJECTION),
+                    "{error:#}"
+                );
+                println!("{REJECTED}");
+            }
+        },
+        "expect-rejected-read" => {
+            let error = load_telemetry_credential()
+                .await
+                .expect_err("lookup must fail while a legacy process holds the DB");
+            assert!(
+                error.to_string().contains(SHARED_ACCESS_REJECTION),
+                "{error}"
+            );
+        }
+        "expect-rejected-write" => {
+            let error = AuthDb::new()
+                .await
+                .err()
+                .expect("writer open must fail while a legacy process holds the DB");
+            assert!(
+                format!("{error:#}").contains(SHARED_ACCESS_REJECTION),
+                "{error:#}"
+            );
+        }
+        "verify-rows" => print_verified_rows().await,
+        "repository-lookup-missing" => {
+            assert_eq!(
+                load_repository_telemetry_credential("repo-missing".to_string())
+                    .await
+                    .expect("missing auth DB is not an error"),
+                None
+            );
+            assert_eq!(
+                load_telemetry_credential()
+                    .await
+                    .expect("missing auth DB is not an error"),
+                None
+            );
+        }
+        "bind" => {
+            let repository_id = repository_id_for(&std::env::current_dir().expect("cwd"))
+                .expect("repository identity");
+            assert!(
+                bind_repository_telemetry(repository_id, RepositoryBindingMode::Enroll)
+                    .await
+                    .expect("binding succeeds")
+            );
+        }
+        "headers" => {
+            let code = Box::pin(crate::app::run(
+                ["sce", "auth", "telemetry-headers"]
+                    .into_iter()
+                    .map(String::from),
+            ))
+            .await;
+            println!();
+            if code != std::process::ExitCode::SUCCESS {
+                assert_eq!(code, std::process::ExitCode::from(4));
+            }
+        }
         "hook-credential-failure" => {
             let (telemetry, fallback) = RuntimeTelemetry::resolve_with(
                 load_telemetry_credential(),
@@ -512,12 +1027,118 @@ async fn run_hook_child() {
     .to_string();
     let output = telemetry
         .with_default_subscriber(&mut || async {
-            record_claude_hook_payload(hook_command(index), &payload);
+            record_claude_hook_command(hook_command(index));
+            record_claude_hook_payload(&payload);
             Ok(String::new())
         })
         .await;
     assert_eq!(output.expect("hook result"), "");
     telemetry.shutdown().await;
+}
+
+fn writer_rows() -> Vec<String> {
+    let writer = std::env::var(WRITER_ENV).expect("writer id");
+    (0..WRITER_ROWS)
+        .map(|row| format!("{writer}-{row:02}"))
+        .collect()
+}
+
+async fn open_legacy_auth_db() -> Result<turso::Connection> {
+    let path = auth_db_path()?;
+    let hexkey = get_or_create_encryption_key(&path, AuthDbSpec::db_name())?;
+    let db = turso::Builder::new_local(path.to_str().expect("UTF-8 auth DB path"))
+        .experimental_encryption(true)
+        .with_encryption(turso::EncryptionOpts {
+            hexkey,
+            cipher: LEGACY_CIPHER.to_string(),
+        })
+        .build()
+        .await?;
+    Ok(db.connect()?)
+}
+
+async fn insert_binding(conn: &turso::Connection, row: &str) -> Result<()> {
+    conn.execute(INSERT_BINDING_SQL, (row, USER_ID, WORKSPACE_ID))
+        .await?;
+    Ok(())
+}
+
+async fn legacy_roundtrip() {
+    let conn = open_legacy_auth_db()
+        .await
+        .expect("legacy binary reopens the auth DB");
+    let mut rows = conn
+        .query("SELECT token FROM telemetry_credentials WHERE id = 1", ())
+        .await
+        .expect("legacy reads telemetry credential");
+    let row = rows
+        .next()
+        .await
+        .expect("legacy credential row fetch")
+        .expect("legacy sees credential row");
+    assert_eq!(row.get::<String>(0).expect("token"), TOKEN);
+    drop(rows);
+    insert_binding(&conn, "legacy-roundtrip")
+        .await
+        .expect("legacy writes after new processes exit");
+}
+
+async fn print_verified_rows() {
+    let db = AuthDb::new().await.expect("verifier opens auth DB");
+    assert_credential_rows_intact(&db).await;
+    for row in db
+        .query_map(
+            "SELECT repository_id FROM telemetry_repository_bindings ORDER BY repository_id",
+            (),
+            |row| row.get::<String>(0).map_err(Into::into),
+        )
+        .await
+        .expect("binding rows")
+    {
+        println!("{ROW_PREFIX}{row}");
+    }
+}
+
+async fn assert_credential_rows_intact(db: &AuthDb) {
+    let tokens = db
+        .query_map(
+            "SELECT token, user_id, workspace_id FROM telemetry_credentials",
+            (),
+            |row| {
+                Ok((
+                    row.get::<String>(0)?,
+                    row.get::<String>(1)?,
+                    row.get::<String>(2)?,
+                ))
+            },
+        )
+        .await
+        .expect("telemetry credential rows");
+    assert_eq!(
+        tokens,
+        vec![(
+            TOKEN.to_string(),
+            USER_ID.to_string(),
+            WORKSPACE_ID.to_string()
+        )]
+    );
+    let sessions = db
+        .query_map("SELECT access_token FROM auth_credentials", (), |row| {
+            row.get::<String>(0).map_err(Into::into)
+        })
+        .await
+        .expect("session rows");
+    assert_eq!(
+        sessions,
+        vec![test_access_token(USER_ID, Some(WORKSPACE_ID))]
+    );
+    let check = db
+        .query_map("PRAGMA integrity_check", (), |row| {
+            row.get::<String>(0).map_err(Into::into)
+        })
+        .await
+        .expect("integrity check");
+    assert_eq!(check, vec!["ok".to_string()]);
 }
 
 fn wait_for_release() {

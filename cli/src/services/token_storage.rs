@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::auth::TokenResponse;
 use crate::services::auth_db::AuthDb;
+use crate::services::default_paths::auth_db_path;
 
 /// Constant row ID for the single token row in `auth_credentials`.
 const DEFAULT_TOKEN_ROW_ID: i64 = 1;
@@ -23,6 +24,21 @@ pub(crate) async fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> 
         Ok(db) => Ok(db),
         Err(msg) => Err(TokenStorageError::Database(msg.clone())),
     }
+}
+
+pub(crate) async fn get_existing_auth_db() -> Result<Option<&'static AuthDb>, TokenStorageError> {
+    if AUTH_DB.get().is_none() {
+        let db_path =
+            auth_db_path().map_err(|error| TokenStorageError::PathResolution(error.to_string()))?;
+        let Some(db) = AuthDb::open_existing_at(db_path)
+            .await
+            .map_err(|error| TokenStorageError::Database(error.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let _ = AUTH_DB.set(Ok(db));
+    }
+    get_auth_db().await.map(Some)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

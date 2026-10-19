@@ -41,6 +41,7 @@ const AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS: u32 = 2;
 const AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS: u64 = 100;
 
 pub mod encryption_key;
+mod open_lock;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseKind {
@@ -875,12 +876,23 @@ fn apply_busy_timeout(
         .map_err(|e| anyhow::anyhow!("failed to set {db_name} database busy timeout: {e}"))
 }
 
+async fn resolve_encryption_key(db_path: &Path, db_name: &str) -> Result<String> {
+    let key_path = db_path.to_path_buf();
+    let key_name = db_name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        encryption_key::get_or_create_encryption_key(&key_path, &key_name)
+    })
+    .await
+    .context("encryption-key resolution worker failed")?
+}
+
 pub struct TursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
 
 pub struct EncryptedTursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
+    _open_lock: fs::File,
 }
 
 impl<M: DbSpec> TursoDb<M> {
@@ -1352,16 +1364,30 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     pub async fn new() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
-        let key_path = db_path.clone();
-        let key_name = db_name.to_owned();
-        let encryption_key = tokio::task::spawn_blocking(move || {
-            encryption_key::get_or_create_encryption_key(&key_path, &key_name)
-        })
-        .await
-        .context("encryption-key resolution worker failed")??;
-
+        let encryption_key = resolve_encryption_key(&db_path, db_name).await?;
         ensure_db_parent_dir(db_name, &db_path)?;
+        let open_lock = open_lock::open_lock_file(&db_path, true)?
+            .ok_or_else(|| anyhow::anyhow!("failed to create {db_name} database file"))?;
+        Box::pin(Self::open_locked(db_path, encryption_key, open_lock)).await
+    }
 
+    pub async fn open_existing_at(db_path: impl AsRef<Path>) -> Result<Option<Self>> {
+        let db_path = db_path.as_ref().to_path_buf();
+        let Some(open_lock) = open_lock::open_lock_file(&db_path, false)? else {
+            return Ok(None);
+        };
+        let encryption_key = resolve_encryption_key(&db_path, M::db_name()).await?;
+        Box::pin(Self::open_locked(db_path, encryption_key, open_lock))
+            .await
+            .map(Some)
+    }
+
+    async fn open_locked(
+        db_path: PathBuf,
+        encryption_key: String,
+        open_lock: fs::File,
+    ) -> Result<Self> {
+        let db_name = M::db_name();
         let retry_policy = resolve_connection_open_retry_policy::<M>();
         let busy_timeout = resolve_busy_timeout::<M>();
         let operation_name = format!("open encrypted {db_name} database connection");
@@ -1371,6 +1397,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
             |_| async {
+                    open_lock::lock_shared(&open_lock, db_name, &db_path)?;
                     let path_str = db_path.to_str().ok_or_else(|| {
                         anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
                     })?;
@@ -1403,6 +1430,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
         let mut db = Self {
             core: TursoConnectionCore::new(conn),
+            _open_lock: open_lock,
         };
 
         db.core
