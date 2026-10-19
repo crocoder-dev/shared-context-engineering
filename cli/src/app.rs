@@ -297,7 +297,7 @@ where
             );
         }
     };
-    runtime.telemetry = RuntimeTelemetry::resolve(span_kind).await;
+    runtime.telemetry = RuntimeTelemetry::resolve(span_kind, &runtime.logger).await;
     let rendered = run_command_lifecycle(args, &runtime, stdout, stderr).await;
     runtime.telemetry.shutdown().await;
     app_support::exit_code_for(&rendered)
@@ -939,16 +939,24 @@ pub(crate) mod tests {
         }
         let runtime = build_runtime().unwrap();
         runtime.block_on(async {
-            let keychain =
+            let (keychain, fallback) =
                 RuntimeTelemetry::resolve_with(stalled_keychain_lookup(), ManagedSpanKind::Command)
                     .await;
             assert!(matches!(keychain, RuntimeTelemetry::Noop(_)));
-            let database = RuntimeTelemetry::resolve_with(
+            assert_eq!(
+                fallback.map(|fallback| fallback.reason),
+                Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
+            );
+            let (database, fallback) = RuntimeTelemetry::resolve_with(
                 stalled_blocking_database_lookup(),
                 ManagedSpanKind::ClaudeHook,
             )
             .await;
             assert!(matches!(database, RuntimeTelemetry::Noop(_)));
+            assert_eq!(
+                fallback.map(|fallback| fallback.reason),
+                Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
+            );
         });
         finish_runtime(runtime);
     }
@@ -1139,7 +1147,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn disallowed_managed_telemetry_resolves_to_noop_without_credential_lookup() {
-        let telemetry = RuntimeTelemetry::resolve(None).await;
+        let telemetry =
+            RuntimeTelemetry::resolve(None, &services::observability::traits::NoopLogger).await;
         assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
     }
 }

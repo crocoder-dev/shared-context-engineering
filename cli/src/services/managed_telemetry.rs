@@ -7,7 +7,7 @@ pub mod log_export;
 pub mod trace_export;
 
 use crate::services::error::CliError;
-use crate::services::observability::traits::{NoopTelemetry, Telemetry};
+use crate::services::observability::traits::{Logger, NoopTelemetry, Telemetry};
 use trace_export::{ManagedSpanKind, ManagedTraceTelemetry};
 
 use crate::services::telemetry_credential_storage::{
@@ -26,6 +26,11 @@ const TRACES_PATH: &str = "/v1/traces";
 #[cfg(test)]
 const LOGS_PATH: &str = "/v1/logs";
 const REDACTED: &str = "<redacted>";
+const TELEMETRY_FALLBACK_EVENT_ID: &str = "sce.telemetry.fallback";
+const TELEMETRY_FALLBACK_MESSAGE: &str =
+    "Managed telemetry disabled for this invocation; continuing without export";
+const FALLBACK_REASON_FIELD: &str = "reason";
+const FALLBACK_ERROR_FIELD: &str = "error";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ManagedOtlpEndpoints {
@@ -108,14 +113,97 @@ where
     joined.ok()?.ok()
 }
 
-pub(crate) async fn load_credential_within_deadline<Fut>(lookup: Fut) -> Option<TelemetryCredential>
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryFallbackReason {
+    CredentialUnavailable,
+    CredentialExpired,
+    LookupTimeout,
+    DatabaseError,
+    PathResolutionError,
+    ExporterInitFailed,
+}
+
+impl TelemetryFallbackReason {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::CredentialUnavailable => "credential_unavailable",
+            Self::CredentialExpired => "credential_expired",
+            Self::LookupTimeout => "lookup_timeout",
+            Self::DatabaseError => "database_error",
+            Self::PathResolutionError => "path_resolution_error",
+            Self::ExporterInitFailed => "exporter_init_failed",
+        }
+    }
+
+    const fn is_failure(self) -> bool {
+        !matches!(self, Self::CredentialUnavailable | Self::CredentialExpired)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TelemetryFallback {
+    pub(crate) reason: TelemetryFallbackReason,
+    detail: Option<String>,
+}
+
+impl TelemetryFallback {
+    const fn new(reason: TelemetryFallbackReason) -> Self {
+        Self {
+            reason,
+            detail: None,
+        }
+    }
+
+    fn from_storage_error(error: &TokenStorageError) -> Self {
+        let reason = match error {
+            TokenStorageError::Database(_) => TelemetryFallbackReason::DatabaseError,
+            TokenStorageError::PathResolution(_) => TelemetryFallbackReason::PathResolutionError,
+        };
+        Self {
+            reason,
+            detail: Some(error.to_string()),
+        }
+    }
+
+    fn log(&self, logger: &impl Logger) {
+        let mut fields = vec![(FALLBACK_REASON_FIELD, self.reason.as_str())];
+        if let Some(detail) = &self.detail {
+            fields.push((FALLBACK_ERROR_FIELD, detail.as_str()));
+        }
+        if self.reason.is_failure() {
+            logger.warn(
+                TELEMETRY_FALLBACK_EVENT_ID,
+                TELEMETRY_FALLBACK_MESSAGE,
+                &fields,
+                None,
+            );
+        } else {
+            logger.debug(
+                TELEMETRY_FALLBACK_EVENT_ID,
+                TELEMETRY_FALLBACK_MESSAGE,
+                &fields,
+                None,
+            );
+        }
+    }
+}
+
+pub(crate) async fn load_credential_within_deadline<Fut>(
+    lookup: Fut,
+) -> Result<TelemetryCredential, TelemetryFallback>
 where
     Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
 {
-    run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, lookup)
-        .await
-        .and_then(Result::ok)
-        .flatten()
+    match run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, lookup).await {
+        None => Err(TelemetryFallback::new(
+            TelemetryFallbackReason::LookupTimeout,
+        )),
+        Some(Err(error)) => Err(TelemetryFallback::from_storage_error(&error)),
+        Some(Ok(None)) => Err(TelemetryFallback::new(
+            TelemetryFallbackReason::CredentialUnavailable,
+        )),
+        Some(Ok(Some(credential))) => Ok(credential),
+    }
 }
 
 fn now_unix_seconds() -> u64 {
@@ -130,29 +218,52 @@ pub enum RuntimeTelemetry {
 }
 
 impl RuntimeTelemetry {
-    pub async fn resolve(span_kind: Option<ManagedSpanKind>) -> Self {
+    pub async fn resolve(span_kind: Option<ManagedSpanKind>, logger: &impl Logger) -> Self {
         let Some(span_kind) = span_kind else {
             return Self::Noop(NoopTelemetry);
         };
-        Self::resolve_with(load_telemetry_credential(), span_kind).await
+        let (telemetry, fallback) =
+            Self::resolve_with(load_telemetry_credential(), span_kind).await;
+        if let Some(fallback) = fallback {
+            fallback.log(logger);
+        }
+        telemetry
     }
 
-    pub(crate) async fn resolve_with<Fut>(lookup: Fut, span_kind: ManagedSpanKind) -> Self
+    pub(crate) async fn resolve_with<Fut>(
+        lookup: Fut,
+        span_kind: ManagedSpanKind,
+    ) -> (Self, Option<TelemetryFallback>)
     where
         Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>>
             + Send
             + 'static,
     {
-        let credential = load_credential_within_deadline(lookup).await;
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return Self::Noop(NoopTelemetry);
+        let credential = match load_credential_within_deadline(lookup).await {
+            Ok(credential) => credential,
+            Err(fallback) => return (Self::Noop(NoopTelemetry), Some(fallback)),
         };
-        match select_mode(credential, now_unix_seconds()) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return (Self::Noop(NoopTelemetry), None);
+        };
+        match select_mode(Some(credential), now_unix_seconds()) {
             ManagedTelemetryMode::Managed { bearer, endpoints } => {
-                ManagedTraceTelemetry::new(&bearer, endpoints, runtime, span_kind)
-                    .map_or(Self::Noop(NoopTelemetry), Self::Managed)
+                match ManagedTraceTelemetry::new(&bearer, endpoints, runtime, span_kind) {
+                    Ok(telemetry) => (Self::Managed(telemetry), None),
+                    Err(_) => (
+                        Self::Noop(NoopTelemetry),
+                        Some(TelemetryFallback::new(
+                            TelemetryFallbackReason::ExporterInitFailed,
+                        )),
+                    ),
+                }
             }
-            ManagedTelemetryMode::Noop => Self::Noop(NoopTelemetry),
+            ManagedTelemetryMode::Noop => (
+                Self::Noop(NoopTelemetry),
+                Some(TelemetryFallback::new(
+                    TelemetryFallbackReason::CredentialExpired,
+                )),
+            ),
         }
     }
 
@@ -241,19 +352,50 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_hook_credential_failure_or_expiry_resolves_noop() {
-        let failed = RuntimeTelemetry::resolve_with(
+    async fn claude_hook_credential_failure_or_expiry_resolves_noop_with_reason() {
+        let (failed, fallback) = RuntimeTelemetry::resolve_with(
             async { Err(TokenStorageError::Database("locked".to_string())) },
             ManagedSpanKind::ClaudeHook,
         )
         .await;
         assert!(matches!(failed, RuntimeTelemetry::Noop(_)));
-        let expired = RuntimeTelemetry::resolve_with(
+        let fallback = fallback.expect("database failure is diagnosed");
+        assert_eq!(fallback.reason, TelemetryFallbackReason::DatabaseError);
+        assert!(fallback.reason.is_failure());
+        assert!(fallback
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("locked")));
+
+        let (path, fallback) = RuntimeTelemetry::resolve_with(
+            async { Err(TokenStorageError::PathResolution("no home".to_string())) },
+            ManagedSpanKind::ClaudeHook,
+        )
+        .await;
+        assert!(matches!(path, RuntimeTelemetry::Noop(_)));
+        assert_eq!(
+            fallback.map(|fallback| fallback.reason),
+            Some(TelemetryFallbackReason::PathResolutionError)
+        );
+
+        let (expired, fallback) = RuntimeTelemetry::resolve_with(
             async { Ok(Some(credential("bao-token", 1))) },
             ManagedSpanKind::ClaudeHook,
         )
         .await;
         assert!(matches!(expired, RuntimeTelemetry::Noop(_)));
+        let fallback = fallback.expect("expiry is diagnosed");
+        assert_eq!(fallback.reason, TelemetryFallbackReason::CredentialExpired);
+        assert!(!fallback.reason.is_failure());
+        assert_eq!(fallback.detail, None);
+
+        let (missing, fallback) =
+            RuntimeTelemetry::resolve_with(async { Ok(None) }, ManagedSpanKind::ClaudeHook).await;
+        assert!(matches!(missing, RuntimeTelemetry::Noop(_)));
+        assert_eq!(
+            fallback.map(|fallback| fallback.reason),
+            Some(TelemetryFallbackReason::CredentialUnavailable)
+        );
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub const COMMAND_NAME_FIELD: &str = "sce.command.name";
 const AGENT_CLAUDE: &str = "claude";
 const HOOK_EVENT_FIELD: &str = "sce.hook.event";
 const HOOK_TOOL_FIELD: &str = "sce.hook.tool";
+const HOOK_COMMAND_FIELD: &str = "sce.hook.command";
 const CLAUDE_SESSION_ID_FIELD: &str = "sce.claude.session_id";
 const CLAUDE_TOOL_USE_ID_FIELD: &str = "sce.claude.tool_use_id";
 const CLAUDE_PAYLOAD_FIELDS: [(&str, &str); 4] = [
@@ -114,6 +115,27 @@ fn is_hook_span(metadata: &tracing::Metadata<'_>) -> bool {
 pub enum ManagedSpanKind {
     Command,
     ClaudeHook,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaudeHookCommand {
+    DiffTrace,
+    ConversationTrace,
+    ClaudeMutationScope,
+    ClaudeModelState,
+    PolicyBash,
+}
+
+impl ClaudeHookCommand {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DiffTrace => "diff-trace",
+            Self::ConversationTrace => "conversation-trace",
+            Self::ClaudeMutationScope => "claude-mutation-scope",
+            Self::ClaudeModelState => "claude-model-state",
+            Self::PolicyBash => "policy-bash",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -280,6 +302,7 @@ impl ManagedTraceTelemetry {
                 target: COMMAND_SPAN_TARGET,
                 HOOK_SPAN_NAME,
                 sce.agent = AGENT_CLAUDE,
+                sce.hook.command = field::Empty,
                 sce.hook.event = field::Empty,
                 sce.hook.tool = field::Empty,
                 sce.claude.session_id = field::Empty,
@@ -368,11 +391,12 @@ pub fn record_command_name(name: &str) {
     Span::current().record(COMMAND_NAME_FIELD, name);
 }
 
-pub fn record_claude_hook_payload(stdin_payload: &str) {
+pub fn record_claude_hook_payload(command: ClaudeHookCommand, stdin_payload: &str) {
     let span = Span::current();
     if span.is_disabled() {
         return;
     }
+    span.record(HOOK_COMMAND_FIELD, command.as_str());
     let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(stdin_payload) else {
         return;
     };
@@ -800,7 +824,7 @@ pub(crate) mod tests {
         let result = telemetry
             .with_default_subscriber(&mut || async {
                 record_command_name("hooks");
-                record_claude_hook_payload(payload);
+                record_claude_hook_payload(ClaudeHookCommand::DiffTrace, payload);
                 tokio::task::yield_now().await;
                 Ok(String::new())
             })
@@ -821,6 +845,7 @@ pub(crate) mod tests {
             ("sce.agent", "claude"),
             ("sce.claude.session_id", "session-7d07"),
             ("sce.claude.tool_use_id", "toolu_01KN1s"),
+            ("sce.hook.command", "diff-trace"),
             ("sce.hook.event", "PostToolUse"),
             ("sce.hook.tool", "Write"),
             ("sce.outcome", "success"),
