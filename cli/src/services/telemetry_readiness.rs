@@ -9,6 +9,13 @@ use crate::services::default_paths::{auth_db_path, telemetry_readiness_path};
 
 const TEMP_SUFFIX: &str = "tmp";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReadinessState {
+    NotConfigured,
+    Expired,
+    Ready,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct TelemetryReadiness {
     expires_at_unix_seconds: u64,
@@ -23,11 +30,15 @@ pub fn clear() -> Result<()> {
 }
 
 pub fn is_ready(now_unix_seconds: u64) -> bool {
-    let (Ok(readiness_path), Ok(auth_db_path)) = (telemetry_readiness_path(), auth_db_path())
-    else {
-        return false;
-    };
-    is_ready_at(&readiness_path, &auth_db_path, now_unix_seconds)
+    state(now_unix_seconds).is_ok_and(|state| state == ReadinessState::Ready)
+}
+
+pub(crate) fn state(now_unix_seconds: u64) -> Result<ReadinessState> {
+    Ok(state_at(
+        &telemetry_readiness_path()?,
+        &auth_db_path()?,
+        now_unix_seconds,
+    ))
 }
 
 pub(crate) fn mark_ready_at(path: &Path, expires_at_unix_seconds: u64) -> Result<()> {
@@ -60,12 +71,25 @@ pub(crate) fn clear_at(path: &Path) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn is_ready_at(path: &Path, auth_db_path: &Path, now_unix_seconds: u64) -> bool {
-    auth_db_path.is_file()
-        && fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<TelemetryReadiness>(&bytes).ok())
-            .is_some_and(|readiness| readiness.expires_at_unix_seconds > now_unix_seconds)
+    state_at(path, auth_db_path, now_unix_seconds) == ReadinessState::Ready
+}
+
+pub(crate) fn state_at(path: &Path, auth_db_path: &Path, now_unix_seconds: u64) -> ReadinessState {
+    if !auth_db_path.is_file() {
+        return ReadinessState::NotConfigured;
+    }
+    match fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<TelemetryReadiness>(&bytes).ok())
+    {
+        None => ReadinessState::NotConfigured,
+        Some(readiness) if readiness.expires_at_unix_seconds > now_unix_seconds => {
+            ReadinessState::Ready
+        }
+        Some(_) => ReadinessState::Expired,
+    }
 }
 
 fn temp_path_for(path: &Path) -> PathBuf {
@@ -115,6 +139,29 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&paths.readiness).unwrap(),
             format!(r#"{{"expires_at_unix_seconds":{}}}"#, NOW + 1)
+        );
+    }
+
+    #[test]
+    fn readiness_state_distinguishes_unconfigured_expired_and_ready() {
+        let paths = paths_with_auth_db();
+        assert_eq!(
+            state_at(&paths.readiness, &paths.auth_db, NOW),
+            ReadinessState::NotConfigured
+        );
+        mark_ready_at(&paths.readiness, NOW + 1).unwrap();
+        assert_eq!(
+            state_at(&paths.readiness, &paths.auth_db, NOW),
+            ReadinessState::Ready
+        );
+        assert_eq!(
+            state_at(&paths.readiness, &paths.auth_db, NOW + 1),
+            ReadinessState::Expired
+        );
+        fs::remove_file(&paths.auth_db).unwrap();
+        assert_eq!(
+            state_at(&paths.readiness, &paths.auth_db, NOW + 1),
+            ReadinessState::NotConfigured
         );
     }
 

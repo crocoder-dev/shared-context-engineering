@@ -179,7 +179,7 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
     );
     let stored_tokens = token_storage::load_tokens(CredentialAccess::Interactive)
         .await
-        .map_err(auth_storage_error)?;
+        .map_err(login_storage_error)?;
 
     let client = &client;
     let control_plane = &control_plane;
@@ -275,7 +275,7 @@ async fn maybe_renew_stored_credentials(
     {
         Ok(token) => token_storage::save_tokens(&token, CredentialAccess::Interactive)
             .await
-            .map_err(auth_storage_error)
+            .map_err(login_storage_error)
             .map(Some),
         Err(_) => Ok(None),
     }
@@ -328,8 +328,8 @@ where
     SF: Future<Output = Result<StoredTokens, TokenStorageError>>,
 {
     clear_readiness().map_err(unexpected_auth_command_error)?;
-    invalidate_telemetry.await.map_err(auth_storage_error)?;
-    save_session().await.map_err(auth_storage_error)
+    invalidate_telemetry.await.map_err(login_storage_error)?;
+    save_session().await.map_err(login_storage_error)
 }
 
 async fn provision_telemetry_credential(
@@ -484,7 +484,7 @@ fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Resu
 
 fn map_login_error(error: AuthError) -> CliError {
     let user_error = match &error {
-        AuthError::Io(_) | AuthError::Storage(_) => UserError::AuthStorageUnavailable,
+        AuthError::Io(_) | AuthError::Storage(_) => UserError::LoginAuthStorageUnavailable,
         _ => UserError::UnexpectedFailure,
     };
     CliError::user_with_source(user_error, error)
@@ -703,6 +703,10 @@ fn auth_storage_error(error: TokenStorageError) -> CliError {
     CliError::user_with_source(UserError::AuthStorageUnavailable, error)
 }
 
+fn login_storage_error(error: TokenStorageError) -> CliError {
+    CliError::user_with_source(UserError::LoginAuthStorageUnavailable, error)
+}
+
 fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
     CliError::user_with_source(UserError::UnexpectedFailure, error)
 }
@@ -773,8 +777,62 @@ mod tests {
             },
         )
         .await;
-        assert!(failed.is_err());
         assert!(!save_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_login_storage_guidance(&failed.expect_err("invalidation failure fails login"));
+
+        let failed = replace_session_with(
+            || Ok(()),
+            async { Ok(true) },
+            || async { Err(TokenStorageError::CredentialAccessUnavailable) },
+        )
+        .await;
+        assert_login_storage_guidance(&failed.expect_err("save failure fails login"));
+    }
+
+    fn assert_login_storage_guidance(error: &CliError) {
+        let CliError::User {
+            error: user_error, ..
+        } = error
+        else {
+            panic!("expected a user-facing storage error");
+        };
+        assert_eq!(*user_error, UserError::LoginAuthStorageUnavailable);
+        assert_eq!(user_error.key(), "auth.storage_unavailable");
+        assert_eq!(error.class().exit_code(), 4);
+        let message = error.to_string();
+        assert!(message.contains("Running login again does not help until"));
+        assert!(!message.contains("Retry the original command."));
+    }
+
+    #[test]
+    fn login_device_flow_storage_failure_uses_noncircular_guidance() {
+        assert_login_storage_guidance(&map_login_error(AuthError::Storage(
+            TokenStorageError::CredentialAccessUnavailable,
+        )));
+        let CliError::User { error, .. } = map_login_error(AuthError::MissingClientId) else {
+            panic!("expected a user-facing error");
+        };
+        assert_eq!(error, UserError::UnexpectedFailure);
+    }
+
+    #[tokio::test]
+    async fn logout_storage_failure_keeps_command_storage_guidance() {
+        let error = run_logout_with(
+            AuthFormat::Json,
+            || Ok(()),
+            async { Err(TokenStorageError::CredentialAccessUnavailable) },
+            async { Ok(false) },
+        )
+        .await
+        .expect_err("storage failure fails logout");
+        let CliError::User {
+            error: user_error, ..
+        } = &error
+        else {
+            panic!("expected a user-facing storage error");
+        };
+        assert_eq!(*user_error, UserError::AuthStorageUnavailable);
+        assert!(error.to_string().contains("sce auth login"));
     }
 
     #[tokio::test]

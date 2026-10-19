@@ -28,8 +28,8 @@ use crate::services::managed_telemetry::trace_export::{
     record_claude_hook_command, record_claude_hook_payload, ClaudeHookCommand, ManagedSpanKind,
 };
 use crate::services::managed_telemetry::{
-    load_credential_within_deadline, select_mode, ManagedTelemetryMode, RuntimeTelemetry,
-    TelemetryFallbackReason,
+    inspect_health, load_credential_within_deadline, select_mode, ManagedTelemetryHealth,
+    ManagedTelemetryMode, RuntimeTelemetry, TelemetryFallbackReason,
 };
 use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::telemetry_credential_storage::{
@@ -49,6 +49,7 @@ const USER_ID: &str = "user_mp";
 const WORKSPACE_ID: &str = "workspace_mp";
 const READY: &str = "SCE_AUTH_DB_CHILD_READY";
 const TOKEN_PREFIX: &str = "SCE_AUTH_DB_CHILD_TOKEN=";
+const HEALTH_PREFIX: &str = "SCE_AUTH_DB_CHILD_TELEMETRY_HEALTH=";
 const CONCURRENT_PROCESSES: usize = 32;
 const CONCURRENT_MIGRATORS: usize = 4;
 const READER_ROUNDS: usize = 3;
@@ -180,8 +181,18 @@ impl Sandbox {
         prefixed_lines(&self.run("verify-rows"), ROW_PREFIX)
     }
 
+    fn sce_state_dir(&self) -> PathBuf {
+        let root = self.dir.path();
+        let state_root = if cfg!(target_os = "macos") {
+            root.join("Library").join("Application Support")
+        } else {
+            root.join("state")
+        };
+        state_root.join("sce")
+    }
+
     fn auth_db_files(&self) -> Vec<String> {
-        let state = self.dir.path().join("state").join("sce");
+        let state = self.sce_state_dir();
         AUTH_DB_FILES
             .iter()
             .filter(|name| state.join(name).exists())
@@ -434,6 +445,52 @@ fn setup_lifecycle_leaves_existing_auth_db_unchanged_and_resolves_no_key() {
 fn telemetry_lookup_never_creates_a_missing_auth_db() {
     let _fan_out = serialize_fan_out();
     Sandbox::new().run("lookup-missing");
+}
+
+fn telemetry_health(sandbox: &Sandbox, secret: &str) -> String {
+    let stdout = wait_success(
+        "telemetry-health",
+        sandbox
+            .command("telemetry-health")
+            .env(AUTH_DB_ENCRYPTION_KEY_ENV, secret)
+            .spawn()
+            .expect("spawn health child"),
+    );
+    let health = prefixed_lines(&stdout, HEALTH_PREFIX);
+    assert_eq!(health.len(), 1, "{stdout}");
+    health.into_iter().next().expect("one health line")
+}
+
+#[test]
+fn doctor_telemetry_health_on_fresh_state_resolves_no_key_and_creates_no_auth_db() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    assert_eq!(telemetry_health(&sandbox, ""), "not_configured");
+    assert!(sandbox.auth_db_files().is_empty());
+}
+
+#[test]
+fn doctor_telemetry_health_classifies_real_auth_db_states_without_mutating_them() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+    let state = sandbox.sce_state_dir();
+    let auth_db = std::fs::read(state.join("auth.db")).expect("seeded auth DB");
+    let readiness = state.join("telemetry-ready.json");
+
+    assert_eq!(telemetry_health(&sandbox, TEST_SECRET), "healthy");
+    assert_eq!(telemetry_health(&sandbox, WRONG_SECRET), "database_error");
+    assert_eq!(telemetry_health(&sandbox, ""), "database_error");
+    assert_eq!(
+        std::fs::read(state.join("auth.db")).expect("auth DB"),
+        auth_db
+    );
+
+    std::fs::write(&readiness, br#"{"expires_at_unix_seconds":1}"#).expect("expire readiness");
+    assert_eq!(telemetry_health(&sandbox, ""), "credential_expired");
+    std::fs::remove_file(&readiness).expect("remove readiness");
+    assert_eq!(telemetry_health(&sandbox, ""), "not_configured");
+    assert_eq!(read_token(&sandbox.run("read")), Some(TOKEN));
 }
 
 #[test]
@@ -935,6 +992,13 @@ async fn auth_db_child_process() {
                 .expect("credential lookup succeeds")
                 .expect("credential present");
             println!("{TOKEN_PREFIX}{}", credential.token);
+        }
+        "telemetry-health" => {
+            let label = match inspect_health().await {
+                ManagedTelemetryHealth::Healthy => "healthy",
+                ManagedTelemetryHealth::Disabled(reason) => reason.as_str(),
+            };
+            println!("{HEALTH_PREFIX}{label}");
         }
         "lookup-missing" => {
             assert_eq!(
