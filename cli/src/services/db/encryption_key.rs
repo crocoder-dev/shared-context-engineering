@@ -1,19 +1,8 @@
-//! Encryption key management backed by an env-secret override or the OS credential store.
-//!
-//! Provides a single entry point to get-or-create a 64-character hex
-//! encryption key sourced from `SCE_AUTH_DB_ENCRYPTION_KEY` when set, or
-//! stored in the platform-native credential store (macOS Keychain,
-//! Linux Secret Service via zbus, Windows Credential Store) otherwise.
-//!
-//! On first use for a given database name (when the database file does
-//! not yet exist), a random 32-byte key is generated, hex-encoded,
-//! persisted in the credential store, and returned. Subsequent calls
-//! read the key from the credential store.
-
+use std::fmt;
 use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    OnceLock,
+    Mutex, OnceLock, PoisonError,
 };
 use std::thread;
 
@@ -21,8 +10,33 @@ use anyhow::{Context, Result};
 use keyring_core::Entry;
 use sha2::{Digest, Sha256};
 
-/// Environment variable that overrides keyring-backed auth DB encryption.
 pub const AUTH_DB_ENCRYPTION_KEY_ENV: &str = "SCE_AUTH_DB_ENCRYPTION_KEY";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialAccess {
+    Interactive,
+    NonInteractive,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CredentialAccessUnavailable {
+    db_name: String,
+}
+
+impl fmt::Display for CredentialAccessUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "encryption key for '{}' is not accessible without user interaction. \
+             Try: run 'sce auth login' to authorize credential store access.",
+            self.db_name
+        )
+    }
+}
+
+impl std::error::Error for CredentialAccessUnavailable {}
+
+static CREDENTIAL_STORE_ACCESS: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CredentialStorePlatform {
@@ -110,34 +124,42 @@ fn register_default_store() -> Result<()> {
     Ok(())
 }
 
-/// Retrieve or create the encryption key for the named database.
-///
-/// The key is stored in the platform-native credential store under the
-/// service name `"sce"` with the database name as the user/account
-/// identifier.
-///
-/// # Arguments
-/// * `db_path` — Canonical path to the database file. Used to decide
-///   whether this is a first-use (generate new key) or a subsequent
-///   access (read existing key).
-/// * `db_name` — Logical database name used as the credential store
-///   username (e.g. `"auth_db"`, `"agent_trace_db"`).
-///
-/// # Returns
-/// A 64-character lowercase hex string that is the encryption key.
-///
-/// # Errors
-/// - Returns an error if the credential store cannot be initialised on
-///   the current platform.
-/// - Returns an error if the database file exists but the keyring entry
-///   is missing (e.g. keyring was cleared on Linux).
-/// - Returns an error if key generation or credential store I/O fails.
-pub fn get_or_create_encryption_key(db_path: &Path, db_name: &str) -> Result<String> {
-    get_or_create_encryption_key_with_keyring_resolver(
-        db_path,
-        db_name,
-        get_or_create_keyring_encryption_key,
-    )
+pub fn get_or_create_encryption_key(
+    db_path: &Path,
+    db_name: &str,
+    access: CredentialAccess,
+) -> Result<String> {
+    match access {
+        CredentialAccess::Interactive => get_or_create_encryption_key_with_keyring_resolver(
+            db_path,
+            db_name,
+            get_or_create_keyring_encryption_key,
+        ),
+        CredentialAccess::NonInteractive => {
+            get_or_create_encryption_key_with_keyring_resolver(db_path, db_name, |_, db_name| {
+                read_keyring_encryption_key_without_interaction(db_name)
+            })
+        }
+    }
+}
+
+fn read_keyring_encryption_key_without_interaction(db_name: &str) -> Result<String> {
+    let unavailable = || {
+        anyhow::Error::new(CredentialAccessUnavailable {
+            db_name: db_name.to_owned(),
+        })
+    };
+    ensure_default_store().map_err(|_| unavailable())?;
+    let _serialized = CREDENTIAL_STORE_ACCESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    #[cfg(target_os = "macos")]
+    let _interaction_disabled =
+        security_framework::os::macos::keychain::SecKeychain::disable_user_interaction()
+            .map_err(|_| unavailable())?;
+    Entry::new("sce", db_name)
+        .and_then(|entry| entry.get_password())
+        .map_err(|_| unavailable())
 }
 
 fn get_or_create_encryption_key_with_keyring_resolver<F>(
@@ -166,13 +188,23 @@ fn get_or_create_keyring_encryption_key(db_path: &Path, db_name: &str) -> Result
         )
     })?;
 
-    // Try to retrieve an existing password from the credential store.
-    if let Ok(password) = entry.get_password() {
-        return Ok(password);
+    let _serialized = CREDENTIAL_STORE_ACCESS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+
+    match entry.get_password() {
+        Ok(password) => return Ok(password),
+        Err(keyring_core::Error::NoEntry) => {}
+        Err(error) => {
+            return Err(anyhow::Error::new(error)).with_context(|| {
+                format!(
+                    "failed to read encryption key for '{db_name}' from credential store. {}",
+                    credential_store_unavailable_message(current_credential_store_platform())
+                )
+            });
+        }
     }
 
-    // No existing key was found. If the database file does not exist,
-    // this is a first-use scenario: generate and store a new key.
     if !db_path.exists() {
         let hex_key = generate_key();
 
@@ -186,9 +218,6 @@ fn get_or_create_keyring_encryption_key(db_path: &Path, db_name: &str) -> Result
         return Ok(hex_key);
     }
 
-    // The database file exists but the keyring entry is missing.
-    // This can happen when credentials were removed from the OS keyring.
-    // Provide clear remediation.
     anyhow::bail!(
         "encryption key for '{db_name}' not found in credential store.\n\
          The database file exists at '{}' but no matching credential was found \

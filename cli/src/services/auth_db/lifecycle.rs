@@ -8,7 +8,7 @@ use crate::services::lifecycle::{
     HealthProblemKind, HealthSeverity, ServiceLifecycle, SetupOutcome,
 };
 
-use super::{AuthDb, AuthDbSpec};
+use super::AuthDbSpec;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AuthDbLifecycle;
@@ -49,13 +49,8 @@ impl ServiceLifecycle for AuthDbLifecycle {
     }
 
     async fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
-        if auth_db_path()?.exists() {
-            return Ok(SetupOutcome::default());
-        }
-
-        AuthDb::new()
-            .await
-            .context("Auth DB lifecycle setup failed while initializing auth DB")?;
+        bootstrap_auth_db_parent()
+            .context("Auth DB lifecycle setup failed while preparing the auth DB directory")?;
         Ok(SetupOutcome::default())
     }
 }
