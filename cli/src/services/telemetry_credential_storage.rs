@@ -6,8 +6,7 @@ use base64::Engine;
 use serde::Deserialize;
 
 use crate::services::db::{DbSpec, EncryptedTursoDb};
-use crate::services::default_paths::auth_db_path;
-use crate::services::token_storage::{get_auth_db, TokenStorageError};
+use crate::services::token_storage::{get_auth_db, get_existing_auth_db, TokenStorageError};
 
 const TELEMETRY_CREDENTIAL_ROW_ID: i64 = 1;
 const WORKOS_SESSION_ROW_ID: i64 = 1;
@@ -87,27 +86,19 @@ pub async fn save_telemetry_credential(
 }
 
 pub async fn load_telemetry_credential() -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    if !auth_db_exists()? {
+    let Some(db) = get_existing_auth_db().await? else {
         return Ok(None);
-    }
-    load_with(get_auth_db().await?, current_unix_timestamp_seconds()?).await
-}
-
-fn auth_db_exists() -> Result<bool, TokenStorageError> {
-    auth_db_path()
-        .map(|path| path.exists())
-        .map_err(|error| TokenStorageError::PathResolution(error.to_string()))
+    };
+    load_with(db, current_unix_timestamp_seconds()?).await
 }
 
 pub async fn load_repository_telemetry_credential(
     repository_id: String,
 ) -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    load_for_repository_with(
-        get_auth_db().await?,
-        current_unix_timestamp_seconds()?,
-        &repository_id,
-    )
-    .await
+    let Some(db) = get_existing_auth_db().await? else {
+        return Ok(None);
+    };
+    load_for_repository_with(db, current_unix_timestamp_seconds()?, &repository_id).await
 }
 
 pub async fn bind_repository_telemetry(
