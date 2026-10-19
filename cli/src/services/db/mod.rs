@@ -1487,6 +1487,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
     ) -> Result<turso::Connection> {
         let db_name = M::db_name();
         open_lock::lock_shared(open_lock, db_name, db_path)?;
+        let _cold_open = open_lock::lock_cold_open(db_path, db_name).await?;
         let path_str = db_path.to_str().ok_or_else(|| {
             anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
         })?;
