@@ -203,23 +203,23 @@ Repository binding, credential identity (`sub`, `workspace_id`), expiry checks, 
 
 ## Acceptance criteria
 
-- [ ] AC1: `auth.mode` (`disabled|optional|mandatory`) and `telemetry.enabled` (boolean) are accepted in global and repo-local config, unknown sub-keys and wrong types fail validation with JSON-pointer-prefixed errors, and configs without the sections remain valid.
+- [x] AC1: `auth.mode` (`disabled|optional|mandatory`) and `telemetry.enabled` (boolean) are accepted in global and repo-local config, unknown sub-keys and wrong types fail validation with JSON-pointer-prefixed errors, and configs without the sections remain valid.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::schema`; `nix run .#pkl-check-generated`.
-- [ ] AC2: Effective policy follows the precedence rules exactly: user telemetry opt-out always wins, repository `true` alone never enables telemetry, repository `false` disables it, user `disabled` auth cannot be overridden by the repository, `auth.mode: disabled` forces telemetry and auto-sync off, and any skipped invalid discovered layer forces telemetry and background cloud operations off.
+- [x] AC2: Effective policy follows the precedence rules exactly: user telemetry opt-out always wins, repository `true` alone never enables telemetry, repository `false` disables it, user `disabled` auth cannot be overridden by the repository, `auth.mode: disabled` forces telemetry and auto-sync off, and any skipped invalid discovered layer forces telemetry and background cloud operations off.
   - Validate: table-driven `resolve_access_policy` test in `cli/src/services/config/resolver.rs` covering every user × repository × degraded combination; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml access_policy`.
-- [ ] AC3: `sce config show` reports `auth.mode`, `telemetry.enabled` (value, `source`, `config_source`), and the effective telemetry state with its reason in text and JSON; `sce config validate` and `show` report the defined contradiction warnings verbatim.
+- [x] AC3: `sce config show` reports `auth.mode`, `telemetry.enabled` (value, `source`, `config_source`), and the effective telemetry state with its reason in text and JSON; `sce config validate` and `show` report the defined contradiction warnings verbatim.
   - Validate: exact-output render tests in `cli/src/services/config/render.rs`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::render`.
-- [ ] AC4: With telemetry not `Enabled`, no SCE process (command, Claude hook, doctor, headers helper) reads the readiness hint, opens `auth.db`, resolves the encryption key, issues a telemetry credential, or exports managed spans — even when a valid `auth.db`, telemetry credential, and readiness hint exist.
+- [x] AC4: With telemetry not `Enabled`, no SCE process (command, Claude hook, doctor, headers helper) reads the readiness hint, opens `auth.db`, resolves the encryption key, issues a telemetry credential, or exports managed spans — even when a valid `auth.db`, telemetry credential, and readiness hint exist.
   - Validate: unit tests with lookups that fail the test if invoked; multiprocess test in `cli/src/services/auth_db/multiprocess_tests.rs` running a Claude hook through `app::run` with an existing credential and `telemetry.enabled: false`, asserting zero exported spans at the loopback collector and an empty-key environment that would fail any key resolution.
-- [ ] AC5: With `auth.mode: disabled`, `sce auth login`, `whoami`, and `sync` fail with `auth.disabled_by_config` before any credential-store access, post-commit does not spawn auto-sync, and `sce auth logout` still deletes stored credentials.
+- [x] AC5: With `auth.mode: disabled`, `sce auth login`, `whoami`, and `sync` fail with `auth.disabled_by_config` before any credential-store access, post-commit does not spawn auto-sync, and `sce auth logout` still deletes stored credentials.
   - Validate: auth-command, sync-command, and `run_post_commit_subcommand_with` tests with injected storage/spawn closures; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command sync commit_hooks`.
-- [ ] AC6: With `auth.mode: mandatory`, unauthenticated `sce auth whoami` exits nonzero with `auth.not_authenticated`, while hooks and auto-sync behave as in `optional`; with `optional`, current outputs are byte-identical.
+- [x] AC6: With `auth.mode: mandatory`, unauthenticated `sce auth whoami` exits nonzero with `auth.not_authenticated`, while hooks and auto-sync behave as in `optional`; with `optional`, current outputs are byte-identical.
   - Validate: auth-command tests for both modes with missing and expired stored credentials.
-- [ ] AC7: Login with telemetry not `Enabled` reports `telemetry_provisioning` `disabled` (text and JSON), makes no issuance request, writes no readiness hint, and enrolls no repository; with telemetry `Enabled` the existing issued/unavailable behavior is unchanged.
+- [x] AC7: Login with telemetry not `Enabled` reports `telemetry_provisioning` `disabled` (text and JSON), makes no issuance request, writes no readiness hint, and enrolls no repository; with telemetry `Enabled` the existing issued/unavailable behavior is unchanged.
   - Validate: `run_login_with_stored_credentials` / provisioning tests with a provisioning closure that fails if called.
-- [ ] AC8: `sce setup` with the Claude target skips the Claude-native telemetry install with a fixed "disabled by SCE config" line when telemetry is not `Enabled`, leaving user Claude settings byte-unchanged, and installs as today when it is.
+- [x] AC8: `sce setup` with the Claude target skips the Claude-native telemetry install with a fixed "disabled by SCE config" line when telemetry is not `Enabled`, leaving user Claude settings byte-unchanged, and installs as today when it is.
   - Validate: `cli/src/services/setup/command.rs` tests around `render_claude_telemetry_section`.
-- [ ] AC9: `sce doctor` reports `[PASS] Managed telemetry (disabled by config)` / JSON `state: disabled_by_config` without reading `auth.db` when telemetry is not `Enabled`, and post-commit auto-sync readiness reports disabled when auth is disabled.
+- [x] AC9: `sce doctor` reports `[PASS] Managed telemetry (disabled by config)` / JSON `state: disabled_by_config` without reading `auth.db` when telemetry is not `Enabled`, and post-commit auto-sync readiness reports disabled when auth is disabled.
   - Validate: `inspect_health_with` and doctor rendering tests; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor`.
 
 ### Full validation
@@ -429,13 +429,28 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - `context/sce/auth-db.md` should note that `sync` does not reach `auth.db` under `disabled`.
   - Context synchronization: synced
 
-- [ ] T08: `Skip Claude-native telemetry install in setup without telemetry consent` (status:todo)
+- [x] T08: `Skip Claude-native telemetry install in setup without telemetry consent` (status:done)
   - Task ID: T08
   - Scope: In — `setup/command.rs::render_claude_telemetry_section` (or its caller) resolving the policy for the setup repository and skipping `install_claude_telemetry` with a fixed `Claude telemetry: skipped; SCE telemetry is disabled by config.` line when not `Enabled`. Out — removing or reconciling existing Claude settings, setup prompts, writing config keys.
   - Dependencies: T02
   - Done when: setup with the Claude target leaves user Claude settings byte-unchanged and prints the skip line when telemetry is not `Enabled`, and installs exactly as today when it is.
   - Verify: tests alongside `setup_claude_telemetry_installs_when_claude_is_selected` for enabled and disabled policies asserting file bytes and report text; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup_claude_telemetry`.
-  - Context synchronization: pending
+  - Completed: 2026-10-20
+  - Files changed: `cli/src/services/setup/command.rs`, `context/plans/auth-telemetry-policy-config.md`
+  - Result:
+    - Added the fixed constant `CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE` (`Claude telemetry: skipped; SCE telemetry is disabled by config.`) in `setup/command.rs`.
+    - `render_claude_telemetry_section(telemetry_enabled, settings_path, managed_settings_path)` returns that line before `install_claude_telemetry` runs when telemetry is not enabled, so user Claude settings are neither read nor written.
+    - `claude_telemetry_report(repository_root)` resolves `config::resolve_auth_runtime_config(repository_root)` (global layer plus `<repository_root>/.sce/config.json`); a resolution failure counts as not enabled.
+    - The enabled path is unchanged.
+  - Verify outcome:
+    - `setup_claude_telemetry` passed (6 passed, 0 failed).
+    - New `setup_claude_telemetry_skips_install_when_telemetry_is_disabled_by_config`: the disabled policy returns exactly the skip line, creates no settings file when none exists, and leaves an existing settings file byte-identical. The enabled policy on the same file installs with the exact configured and authentication-pending report and keeps existing keys.
+    - New `setup_claude_telemetry_policy_follows_layered_config`: through the resolver seam, only global `telemetry.enabled: true` is enabled. Default, repo-only `true`, repo `false` opt-out, repo `auth.mode: disabled`, and an invalid repo layer are all disabled.
+    - Existing setup telemetry tests now pass `telemetry_enabled = true`.
+    - Full CLI suite passed (696 passed, 0 failed). `cargo clippy --all-targets -- -D warnings` via `run-cli-cargo.sh` passed. `cargo fmt` applied.
+  - Deviation: none. The baseline was a clean tree at `9674e199`.
+  - Context impact: localized — the setup Claude telemetry install step. `context/sce/telemetry-credential.md` (or the setup context it references) should record that setup installs Claude-native telemetry only when the effective telemetry policy for the setup repository is `Enabled`; otherwise it prints the fixed skip line and leaves user Claude settings unchanged. Settings written by earlier setups are not removed.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -443,3 +458,47 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - `mandatory` changes very little today. Cloud commands already require credentials, and hooks must never block, so the only enforced difference is a nonzero unauthenticated `whoami`. It is kept so the future setup and auto-login work has a stable mode to build on. If no near-term consumer exists, shipping only `disabled | optional` would be the smaller version.
 - Telemetry opt-out does not stop Claude-native export from settings written by earlier setups, and those settings are user-level, shared across repositories. Should a follow-up plan for SCE-owned Claude settings reconciliation be scheduled now, so the opt-out can eventually be described as complete?
 - Repository-layer discovery uses `<cwd>/.sce/config.json`. A Claude hook or headers helper launched from a subdirectory sees only the user layer, so a repository opt-out can be missed there. Fixing this means Git-root-relative discovery for every config consumer, which is broader than this plan.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-20
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all 6 checks passed: cli-tests, cli-clippy, cli-fmt, pkl-generated-check, sce-cli-generated-input-check, codex-hook-command-check)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed, 142 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::schema` -> exit 0 (28 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml access_policy` -> exit 0 (16 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::render` -> exit 0 (3 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command` -> exit 0 (20 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync` -> exit 0 (40 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_hooks` -> exit 0 (5 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor` -> exit 0 (35 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup_claude_telemetry` -> exit 0 (6 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml multiprocess` -> exit 0 (18 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_headers` -> exit 0 (11 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry` -> exit 0 (42 passed)
+- Manual macOS Keychain check -> not run (validation host is x86_64-linux; plan marks it as not covered by CI)
+
+### Success-criteria verification
+
+- [x] AC1: auth/telemetry config sections accepted, invalid shapes rejected with pointers, absent sections valid -> `config::schema` `access_policy_config_tests` (5 tests) passed; `pkl-check-generated` passed
+- [x] AC2: effective policy precedence -> `config::resolver::access_policy_tests` (consent/opt-out, most-restrictive auth, repo auth disabled forces telemetry off, invalid global/local layers degrade policy) passed
+- [x] AC3: config show/validate report policy and warnings -> `show_json_reports_resolved_auth_and_telemetry_policy`, `show_text_reports_access_policy_after_agent_trace_and_lists_policy_warnings`, `validate_lists_policy_warnings_without_policy_fields` passed
+- [x] AC4: no readiness/auth.db/key/credential/export access without telemetry consent -> `claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential` (multiprocess), `telemetry_disabled_by_config_never_probes_readiness_or_looks_up_credentials`, `health_disabled_by_config_never_probes_readiness_or_looks_up_credentials`, `telemetry_headers_policy_follows_auth_and_invalid_config` passed
+- [x] AC5: `auth.mode: disabled` rejects login/whoami/sync before storage, no post-commit auto-sync, logout still deletes -> `whoami_follows_auth_mode_across_stored_credentials` (0 storage reads when disabled), `auth_disabled_rejection_names_the_deciding_config_file`, `sync_rejects_disabled_auth_before_storage_or_credential_access`, `classify_sync_error_maps_disabled_auth_to_auth_disabled_by_config`, `post_commit_launches_auto_sync_only_when_background_cloud_is_allowed`, `logout_deletes_both_credential_rows_when_auth_is_disabled_by_config` passed
+- [x] AC6: `mandatory` unauthenticated whoami fails with `auth.not_authenticated`; `optional` unchanged -> `whoami_follows_auth_mode_across_stored_credentials` covers all modes × none/valid/expired credentials; passed
+- [x] AC7: login without telemetry consent reports `disabled` provisioning and makes no issuance -> `login_skips_provisioning_unless_telemetry_is_enabled`, `login_reports_disabled_telemetry_provisioning_in_text_and_json` passed
+- [x] AC8: setup skips Claude telemetry install without consent, settings byte-unchanged -> `setup_claude_telemetry_skips_install_when_telemetry_is_disabled_by_config`, `setup_claude_telemetry_policy_follows_layered_config` passed
+- [x] AC9: doctor reports disabled_by_config without reading auth.db; auto-sync readiness disabled when auth disabled -> `doctor_with_telemetry_disabled_by_config_never_reads_the_auth_db`, `doctor_reports_post_commit_auto_sync_disabled_when_auth_is_disabled`, `telemetry_disabled_by_config_reports_no_problem_and_a_stable_json_state`, `telemetry_disabled_by_config_renders_pass_row_with_opt_in_line_only_for_ready_hint` passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The manual macOS check (locked login Keychain, no Keychain dialog, no `sce.hook` spans, at most one logout prompt) was not run; macOS Keychain behavior is unverified on real hardware.
+- Flake checks ran only for x86_64-linux; darwin and aarch64-linux systems were omitted.
+- Open questions in this plan (silent loss of managed export on upgrade, minimal `mandatory` semantics, legacy Claude-native settings, `<cwd>`-relative repository discovery) remain unresolved product decisions.
