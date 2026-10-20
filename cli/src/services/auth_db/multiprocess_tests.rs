@@ -72,6 +72,8 @@ const UNBOUND_REPOSITORY: &str = "unbound-repo";
 const HEADERS_AUTHORIZATION: &str = r#"{"Authorization":"Bearer tok-multiprocess"}"#;
 const HEADERS_UNAVAILABLE: &str = "Telemetry credential is unavailable.";
 const STDIN_SECRET: &str = "SECRET_STDIN_VALUE";
+const TELEMETRY_FALLBACK_EVENT: &str = "event_id=sce.telemetry.fallback";
+const FALLBACK_REASON_PREFIX: &str = "reason=";
 const FAIL_OPEN_HOOK_COMMANDS: [ClaudeHookCommand; 3] = [
     ClaudeHookCommand::DiffTrace,
     ClaudeHookCommand::ConversationTrace,
@@ -596,6 +598,72 @@ fn assert_headers_unavailable(helper: Child) {
     assert!(stderr.contains(HEADERS_UNAVAILABLE), "{stderr}");
 }
 
+fn policy_hook_fallback_reasons(sandbox: &Sandbox, telemetry_enabled: bool) -> Vec<String> {
+    let root = sandbox.dir.path();
+    let work = root.join("work");
+    std::fs::create_dir_all(&work).expect("work dir");
+    let config = root.join(format!("policy-{telemetry_enabled}.json"));
+    std::fs::write(
+        &config,
+        serde_json::json!({ "telemetry": { "enabled": telemetry_enabled } }).to_string(),
+    )
+    .expect("policy config");
+    let log_dir = root.join(format!("logs-{telemetry_enabled}"));
+    std::fs::create_dir_all(&log_dir).expect("log dir");
+    wait_success(
+        "policy-hook",
+        sandbox
+            .command("policy-hook")
+            .current_dir(&work)
+            .env(AUTH_DB_ENCRYPTION_KEY_ENV, "")
+            .env("SCE_CONFIG_FILE", &config)
+            .env("SCE_LOG_LEVEL", "debug")
+            .env("SCE_LOG_FORMAT", "text")
+            .env("SCE_LOG_DIR", &log_dir)
+            .env("CLAUDECODE", "1")
+            .env("CLAUDE_PROJECT_DIR", &work)
+            .spawn()
+            .expect("spawn policy hook"),
+    );
+    let mut reasons = Vec::new();
+    for entry in std::fs::read_dir(&log_dir).expect("log entries") {
+        let log = std::fs::read_to_string(entry.expect("log entry").path()).expect("log file");
+        reasons.extend(
+            log.lines()
+                .filter(|line| line.contains(TELEMETRY_FALLBACK_EVENT))
+                .filter_map(|line| {
+                    line.split_whitespace()
+                        .find_map(|token| token.strip_prefix(FALLBACK_REASON_PREFIX))
+                        .map(ToString::to_string)
+                }),
+        );
+    }
+    reasons
+}
+
+#[test]
+fn claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+    let state = sandbox.sce_state_dir();
+    let auth_db = std::fs::read(state.join("auth.db")).expect("seeded auth DB");
+    assert!(state.join("telemetry-ready.json").is_file());
+
+    assert_eq!(
+        policy_hook_fallback_reasons(&sandbox, false),
+        ["disabled_by_config"]
+    );
+    assert_eq!(
+        policy_hook_fallback_reasons(&sandbox, true),
+        ["database_error"]
+    );
+    assert_eq!(
+        std::fs::read(state.join("auth.db")).expect("auth DB"),
+        auth_db
+    );
+}
+
 #[test]
 fn every_claude_hook_entry_point_records_its_command_identity() {
     let _fan_out = serialize_fan_out();
@@ -766,9 +834,10 @@ async fn auth_db_child_process() {
             println!("{TOKEN_PREFIX}{}", credential.token);
         }
         "telemetry-health" => {
-            let label = match inspect_health().await {
+            let label = match inspect_health(true).await {
                 ManagedTelemetryHealth::Healthy => "healthy",
                 ManagedTelemetryHealth::Disabled(reason) => reason.as_str(),
+                ManagedTelemetryHealth::DisabledByConfig { .. } => "disabled_by_config",
             };
             println!("{HEALTH_PREFIX}{label}");
         }
@@ -819,6 +888,14 @@ async fn auth_db_child_process() {
         "verify-rows" => print_verified_rows().await,
         "coordinated-writer" => run_coordinated_writer_child().await,
         "hook-entry" => run_hook_entry_child().await,
+        "policy-hook" => {
+            let _ = Box::pin(crate::app::run(
+                ["sce", "hooks", "claude-model-state"]
+                    .into_iter()
+                    .map(String::from),
+            ))
+            .await;
+        }
         other => run_binding_child(other).await,
     }
 }
