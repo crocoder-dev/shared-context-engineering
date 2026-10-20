@@ -297,13 +297,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — config resolver and types only; no rendering or runtime enforcement change yet. The fixed warning strings and layer classification are durable contract material for `context/cli/config-precedence-contract.md`; T03 renders them.
   - Context synchronization: synced
 
-- [ ] T03: `Report auth and telemetry policy in config show and validate` (status:todo)
+- [x] T03: `Report auth and telemetry policy in config show and validate` (status:done)
   - Task ID: T03
   - Scope: In — `config/render.rs` text lines and JSON objects for `auth.mode` and `telemetry.enabled` (value, `source`, `config_source`) plus effective telemetry state and reason (`result.resolved.auth`, `result.resolved.telemetry`); contradiction warnings in `show` warnings and `validate` warnings; a fixed note when telemetry is disabled that Claude settings written by earlier setups are not changed. Out — enforcement.
   - Dependencies: T02
   - Done when: `show` text and JSON include the new fields in a deterministic position for defaults, global-only, local-only, and contradictory layers; `validate` stays limited to its existing fields and lists the new warnings.
   - Verify: exact-output tests in `config/render.rs` for default, user-enabled, repo-only-enabled, and auth-disabled-with-telemetry cases in both formats; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::render`.
-  - Context synchronization: pending
+  - Completed: 2026-10-20
+  - Files changed: `cli/src/services/config/render.rs`, `cli/src/services/config/types.rs`, `cli/src/services/config/resolver.rs`, `context/plans/auth-telemetry-policy-config.md`
+  - Result: `config show` text now lists, directly after `agent_trace.auto_sync` and before `otel.*`, `- auth.mode: <mode> (source: …[, config_source: …])`, `- telemetry.enabled: <bool> (source: …[, config_source: …])`, `- telemetry.effective: enabled` or `- telemetry.effective: disabled (reason: <reason>)`, and, only when disabled, `- telemetry.note: Claude Code telemetry settings written by earlier sce setup runs are not changed by telemetry.enabled.` JSON adds `result.resolved.auth.mode` (`value`/`source`/`config_source`) and `result.resolved.telemetry` with `enabled` (`value`/`source`/`config_source`), `effective` (`state`, `reason` or `null`), and `note` (fixed string, or `null` when enabled). Added `TelemetryPolicyState::as_str`/`disabled_reason` and `TelemetryDisabledReason::as_str` (`not_enabled`, `user_opt_out`, `no_user_consent`, `repository_opt_out`, `auth_disabled`, `invalid_config`). Removed `#[allow(dead_code)]` from `AuthMode::as_str`. `resolve_runtime_config_with` is now `pub(super)` so render tests resolve real layered configs. Contradiction warnings already flow through `validation_warnings` into `show` and `validate`, so no warning code changed. `validate` output fields are unchanged.
+  - Verify outcome: `config::render` passed (3 passed, 0 failed). The new `render::tests` module covers default, user-enabled, repo-only-enabled (with repo `mandatory`), and auth-disabled-with-telemetry cases. For each, it checks the exact text policy block and its position, the exact JSON `auth`/`telemetry` objects, show warnings in both formats, and exact `validate` text and JSON. `config::` passed (63 passed, 0 failed). `cargo clippy --all-targets -- -D warnings` via `run-cli-cargo.sh` passed.
+  - Deviation: none in scope. Test text assertions strip ANSI escapes so they hold when stdout is a TTY.
+  - Context impact: localized — `config show` and `config validate` output contract. `context/cli/config-precedence-contract.md` should document the new show text lines, the JSON `resolved.auth`/`resolved.telemetry` shape, the reason strings, and the fixed telemetry note.
+  - Context synchronization: synced
 
 - [ ] T04: `Gate managed telemetry startup and doctor health on telemetry policy` (status:todo)
   - Task ID: T04

@@ -4,7 +4,7 @@
 
 This file describes how the CLI turns the per-layer `auth.mode` and `telemetry.enabled` config values into one effective access policy (`ResolvedAccessPolicy`). Key syntax and schema validation are in [config precedence contract](config-precedence-contract.md). The precedence model is recorded in [ADR: consent-gated access policy precedence](../decisions/2026-10-20-consent-gated-access-policy-precedence.md).
 
-Status: the resolver computes and exposes the policy. `sce config show`/`validate` rendering and consumer enforcement (managed telemetry, the headers helper, auth commands, sync, auto-sync, setup) are not wired yet. Until they are, the policy has no runtime effect beyond the warnings it adds to config resolution.
+Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Consumer enforcement (managed telemetry, the headers helper, auth commands, sync, auto-sync, setup) is not wired yet. Until it is, the policy has no runtime effect beyond what config inspection reports.
 
 ## Terms
 
@@ -67,6 +67,21 @@ The resolver appends these fixed strings to `validation_warnings`, after the bas
    `A discovered config file was skipped as invalid; SCE telemetry and background cloud operations are disabled.`
 
 Each string is a `WARNING_*` constant in `resolver.rs`. The skipped file's own error still appears in `validation_errors`.
+
+## Reporting
+
+`sce config show` reports the policy (`cli/src/services/config/render.rs`).
+
+- **Text:** four lines directly after `agent_trace.auto_sync` and before `otel.*`:
+  - `- auth.mode: <mode> (source: …[, config_source: …])` (the effective mode and its deciding layer)
+  - `- telemetry.enabled: <bool> (source: …[, config_source: …])` (the configured merged value)
+  - `- telemetry.effective: enabled`, or `- telemetry.effective: disabled (reason: <reason>)`
+  - only when disabled: `- telemetry.note: Claude Code telemetry settings written by earlier sce setup runs are not changed by telemetry.enabled.`
+- **JSON:** `result.resolved.auth.mode` and `result.resolved.telemetry.enabled` use the usual `{value, source, config_source}` shape. `result.resolved.telemetry.effective` is `{state, reason}`, where `reason` is `null` when the state is enabled. `result.resolved.telemetry.note` is the fixed note string, or `null` when enabled.
+- **Reason strings** (`TelemetryDisabledReason::as_str`): `not_enabled`, `user_opt_out`, `no_user_consent`, `repository_opt_out`, `auth_disabled`, `invalid_config`.
+- **Warnings:** the contradiction warnings appear in `show` warnings after any `Skipped invalid config: …` entries. In `validate` they appear in `warnings` / `Validation warnings`. `validate` adds no policy fields.
+
+The note documents a coverage limit: telemetry opt-out does not remove Claude-native telemetry settings already written to user-level Claude settings.
 
 ## Exposure
 
