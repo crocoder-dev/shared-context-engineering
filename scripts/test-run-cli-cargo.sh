@@ -21,6 +21,9 @@ mkdir -p \
   "${test_repo}/config/lib/agent-trace-plugin" \
   "${test_repo}/config/lib/bash-policy-plugin" \
   "${test_repo}/config/lib/pi-plugin" \
+  "${test_repo}/config/lib/mutation-scope-plugin" \
+  "${test_repo}/config/lib/sce-info/.claude-plugin" \
+  "${test_repo}/config/lib/sce-info/hooks" \
   "${fake_bin}" \
   "${state_root}" \
   "${tmp_dir}"
@@ -33,6 +36,10 @@ printf 'generator-v1\n' > "${test_repo}/config/pkl/generate.pkl"
 printf 'agent-trace\n' > "${test_repo}/config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts"
 printf 'bash-policy\n' > "${test_repo}/config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts"
 printf 'pi-extension\n' > "${test_repo}/config/lib/pi-plugin/sce-pi-extension.ts"
+printf 'mutation-scope\n' > "${test_repo}/config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts"
+printf 'plugin\n' > "${test_repo}/config/lib/sce-info/.claude-plugin/plugin.json"
+printf 'hooks\n' > "${test_repo}/config/lib/sce-info/hooks/hooks.json"
+printf 'register\n' > "${test_repo}/config/lib/sce-info/hooks/register.ts"
 
 cat > "${fake_bin}/pkl" <<'EOF'
 #!/usr/bin/env bash

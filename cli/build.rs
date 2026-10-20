@@ -26,6 +26,9 @@ const CANONICAL_GENERATOR_INPUTS: &[&str] = &[
     "config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts",
     "config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts",
     "config/lib/pi-plugin/sce-pi-extension.ts",
+    "config/lib/sce-info/.claude-plugin/plugin.json",
+    "config/lib/sce-info/hooks/hooks.json",
+    "config/lib/sce-info/hooks/register.ts",
 ];
 
 const TARGETS: &[TargetSpec] = &[
@@ -867,6 +870,14 @@ mod tests {
         let handoff_root = temp.path().join("handoff");
 
         write_file(&repository_root, "config/pkl/generate.pkl", "generator");
+        write_file(&repository_root, ".version", "0.0.0");
+        for relative_path in [
+            "config/lib/sce-info/.claude-plugin/plugin.json",
+            "config/lib/sce-info/hooks/hooks.json",
+            "config/lib/sce-info/hooks/register.ts",
+        ] {
+            write_file(&repository_root, relative_path, "sce info runtime");
+        }
         write_file(
             &repository_root,
             "config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts",
@@ -955,7 +966,10 @@ mod tests {
         let temp = TempDir::new("missing-handoff");
         let repository_root = temp.path().join("repository");
         write_file(&repository_root, "config/pkl/generate.pkl", "generator");
-        for relative_path in CANONICAL_GENERATOR_INPUTS.iter().skip(1) {
+        for relative_path in CANONICAL_GENERATOR_INPUTS
+            .iter()
+            .filter(|path| **path != "config/pkl")
+        {
             write_file(&repository_root, relative_path, "plugin");
         }
 
@@ -1011,5 +1025,21 @@ mod tests {
                 .expect_err("stale handoff must fail");
         assert!(error.to_string().contains("is stale"));
         assert!(error.to_string().contains("Regenerate it"));
+    }
+
+    #[test]
+    fn changed_sce_info_runtime_sources_reject_stale_generated_input() {
+        for source in [
+            "config/lib/sce-info/.claude-plugin/plugin.json",
+            "config/lib/sce-info/hooks/hooks.json",
+            "config/lib/sce-info/hooks/register.ts",
+        ] {
+            let (temp, repository_root, handoff_root) = create_fixture();
+            write_file(&repository_root, source, "changed runtime source");
+            let error =
+                stage_generated_input(&repository_root, &handoff_root, &temp.path().join("out"))
+                    .expect_err("changed sce-info runtime source must invalidate the handoff");
+            assert!(error.to_string().contains("is stale"), "{source}: {error}");
+        }
     }
 }

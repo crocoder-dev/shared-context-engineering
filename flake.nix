@@ -157,6 +157,9 @@
           ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
           ./config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts
           ./config/lib/pi-plugin/sce-pi-extension.ts
+          ./config/lib/sce-info/.claude-plugin/plugin.json
+          ./config/lib/sce-info/hooks/hooks.json
+          ./config/lib/sce-info/hooks/register.ts
           ./config/schema/agent-trace.schema.json
         ];
         cliGeneratedInputSrc = pkgs.lib.fileset.toSource {
@@ -168,6 +171,9 @@
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts
             ./config/lib/pi-plugin/sce-pi-extension.ts
+            ./config/lib/sce-info/.claude-plugin/plugin.json
+            ./config/lib/sce-info/hooks/hooks.json
+            ./config/lib/sce-info/hooks/register.ts
             ./scripts/produce-cli-generated-input.sh
           ];
         };
@@ -252,6 +258,9 @@
             ./config/pkl/renderers/fixtures/validate-forbidden-path-check.pkl
             ./config/pkl/renderers/fixtures/validation-repair-check.pkl
             ./config/lib/pi-plugin/sce-pi-extension.ts
+            ./config/lib/sce-info/.claude-plugin/plugin.json
+            ./config/lib/sce-info/hooks/hooks.json
+            ./config/lib/sce-info/hooks/register.ts
             ./config/lib/bash-policy-plugin/opencode-bash-policy-plugin.ts
             ./config/lib/agent-trace-plugin/opencode-sce-agent-trace-plugin.ts
             ./config/lib/mutation-scope-plugin/opencode-sce-mutation-scope-plugin.ts

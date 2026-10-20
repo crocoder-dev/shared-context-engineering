@@ -32,6 +32,9 @@ hidden expectedArtifactPaths = new Mapping {
     ["config/.claude/skills/\(path)"] = true
   }
   ["config/.claude/settings.json"] = true
+  ["config/.claude/skills/sce-info/.claude-plugin/plugin.json"] = true
+  ["config/.claude/skills/sce-info/hooks/hooks.json"] = true
+  ["config/.claude/skills/sce-info/hooks/register.ts"] = true
   ["config/.claude/hooks/run-sce-or-show-install-guidance.sh"] = true
 
   for (slug, _ in pi.commands) {
@@ -57,6 +60,21 @@ hidden generatedArtifacts = new Mapping {
     [path] = artifact.text
   }
 }
+
+local sceInfoExpectedSources = new Mapping {
+  ["config/.claude/skills/sce-info/.claude-plugin/plugin.json"] = read("../../lib/sce-info/.claude-plugin/plugin.json").text
+  ["config/.claude/skills/sce-info/hooks/hooks.json"] = read("../../lib/sce-info/hooks/hooks.json").text
+  ["config/.claude/skills/sce-info/hooks/register.ts"] = read("../../lib/sce-info/hooks/register.ts").text
+}
+
+local assertSceInfoRuntimeContract = (artifacts: Mapping) ->
+  if (
+    sceInfoExpectedSources.every((path, source) -> artifacts.containsKey(path) && artifacts[path] == source)
+    && artifacts.every((path, _) -> !path.contains("/sce-info/") || sceInfoExpectedSources.containsKey(path))
+    && artifacts["config/.claude/skills/sce-info/.claude-plugin/plugin.json"].contains("\"name\": \"sce-splash\"")
+    && artifacts["config/.claude/skills/sce-info/hooks/hooks.json"].contains("\"./register.ts\"")
+  ) "sce-info: exactly three unchanged Claude-only runtime assets; development files excluded"
+  else throw("sce-info runtime allowlist, source contents, or target isolation violated")
 
 local assertCodexHookInvocationContract = (artifacts: Mapping) ->
   let (text = artifacts["config/.codex/hooks.json"])
@@ -505,7 +523,7 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// workflow, excluding `sce-decision`). Stating the total as a literal makes
 /// an unintended inventory change fail here instead of silently becoming the
 /// new expectation.
-local expectedArtifactPathCount = 142
+local expectedArtifactPathCount = 145
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
@@ -1270,6 +1288,7 @@ contractChecks {
   ["compact-execution-contracts"] = assertCompactExecutionContracts.apply(workflowDocuments)
   ["compact-execution-contract-negative-fixtures"] = assertCompactExecutionContractFixtures
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
+  ["sce-info-runtime"] = assertSceInfoRuntimeContract.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
   ["codex-hook-helper-fail-closed"] = assertCodexHelperFailClosedMode.apply(generatedArtifacts)
   ["codex-skills-exclude-arguments"] = assertCodexSkillsExcludeArguments.apply(generatedArtifacts)

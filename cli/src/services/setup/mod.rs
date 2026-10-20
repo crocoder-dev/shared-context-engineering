@@ -1017,3 +1017,90 @@ where
 pub fn setup_cancelled_text() -> String {
     value("Setup cancelled. No files were changed.")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sce_info_assets_install_only_for_claude_and_exclude_development_files() {
+        let expected = [
+            "skills/sce-info/.claude-plugin/plugin.json",
+            "skills/sce-info/hooks/hooks.json",
+            "skills/sce-info/hooks/register.ts",
+        ];
+
+        for target in concrete_targets_for(SetupTarget::All) {
+            let assets: Vec<_> = embedded_assets_for_concrete_target(*target)
+                .iter()
+                .filter(|asset| asset.relative_path.contains("/sce-info/"))
+                .collect();
+            if *target == ConcreteSetupTarget::Claude {
+                assert_eq!(assets.len(), expected.len());
+                for path in expected {
+                    let asset = assets
+                        .iter()
+                        .find(|asset| asset.relative_path == path)
+                        .unwrap();
+                    assert!(!asset.bytes.is_empty());
+                }
+            } else {
+                assert!(assets.is_empty(), "sce-info leaked into {target:?}");
+            }
+        }
+
+        for selection in [
+            SetupTarget::Claude,
+            SetupTarget::All,
+            SetupTarget::OpenCode,
+            SetupTarget::Pi,
+            SetupTarget::Codex,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            let unrelated = root.join(".claude/skills/custom.txt");
+            fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
+            fs::write(&unrelated, "user content").unwrap();
+            let targets = concrete_targets_for(selection);
+            install_embedded_setup_assets(root, targets, &[]).unwrap();
+            let installs_claude = targets.contains(&ConcreteSetupTarget::Claude);
+            for path in expected {
+                let installed = root.join(".claude").join(path);
+                if installs_claude {
+                    let asset = CLAUDE_EMBEDDED_ASSETS
+                        .iter()
+                        .find(|asset| asset.relative_path == path)
+                        .unwrap();
+                    assert_eq!(fs::read(installed).unwrap(), asset.bytes);
+                } else {
+                    assert!(!installed.exists());
+                }
+            }
+            let package = root.join(".claude/skills/sce-info");
+            assert!(!package.join("tests").exists());
+            assert!(!package.join("tsconfig.json").exists());
+            for path in [
+                ".opencode/skills/sce-info",
+                ".pi/skills/sce-info",
+                ".agents/skills/sce-info",
+                ".codex/skills/sce-info",
+            ] {
+                assert!(!root.join(path).exists());
+            }
+            assert_eq!(fs::read_to_string(&unrelated).unwrap(), "user content");
+
+            if installs_claude {
+                let local_test = package.join("tests/local.test.ts");
+                fs::create_dir_all(local_test.parent().unwrap()).unwrap();
+                fs::write(&local_test, "user test").unwrap();
+                fs::write(package.join("tsconfig.json"), "user config").unwrap();
+                install_embedded_setup_assets(root, targets, &[]).unwrap();
+                assert_eq!(fs::read_to_string(local_test).unwrap(), "user test");
+                assert_eq!(
+                    fs::read_to_string(package.join("tsconfig.json")).unwrap(),
+                    "user config"
+                );
+            }
+        }
+    }
+}

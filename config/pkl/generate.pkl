@@ -46,6 +46,11 @@ output {
         text = "\(document.text)\n"
       }
     }
+    for (path, source in claude.sceInfoRuntimeFiles) {
+      ["config/.claude/skills/\(path)"] {
+        text = source
+      }
+    }
     for (slug, document in pi.commands) {
       ["config/.pi/prompts/\(slug).md"] {
         text = "\(document.text)\n"

@@ -21,6 +21,22 @@
   The merged bytes then flow through the same stage/atomic-swap choreography as every other asset, so this is a content-computation seam layered on the shared install policy, not a different write path.
 - `sce doctor --fix` reuses this same per-asset install path for all three repairable merge targets rather than running its own repair logic: `crate::services::setup::repair_merge_target_asset` looks up the one embedded asset by relative path and reinstalls only it through `install_single_asset_with_rename`, so a drifted `.claude/settings.json`, `.opencode/opencode.json`, or structurally unhealthy `.codex/hooks.json` is repaired by merge — every other installed asset and every user key is left untouched. Codex diagnosis uses `codex_hook_config::diagnose_document`, which classifies each required registration structurally (`PresentAndCurrent`/`Missing`/`Stale`, or the whole document `Malformed`) instead of one whole-document equality check; a structurally current registration is separately, read-only gated on Codex's own hook-trust state (`codex_hook_trust::trust_readiness`), which `--fix` never touches since SCE cannot grant that trust (see [doctor human text contract](doctor-human-text-contract.md)). `sce doctor` tells a Claude/OpenCode merge target's drift apart from a legitimately extended file by SCE-fragment equality instead of the byte-exact `sha256` check every other integration asset uses.
 
+## Claude-only sce-info package
+
+`sce setup --claude` and `sce setup --all` install the three runtime files in
+`.claude/skills/sce-info`: `.claude-plugin/plugin.json`, `hooks/hooks.json`, and
+`hooks/register.ts`. The package retains its `sce-splash` manifest identity
+and supplied startup-rendering behavior. Packaging does not add a workflow
+entrypoint or change plugin activation. Individual OpenCode, Pi, and Codex
+setup targets install no `sce-info` assets.
+
+The [canonical generation allowlist](../patterns.md#pkl-renderer-layering)
+excludes development tests and `tsconfig.json` before CLI embedding. Setup
+therefore never copies these development files, but still preserves a
+pre-existing unowned test or configuration file inside the local package.
+Exclusion from the payload is not a deletion policy; the existing per-asset
+atomic swap and catalog-derived pruning rules remain in force.
+
 ## Scope boundary
 
 - This file captures the non-destructive, per-file install policy shared by config-install and required-hook install flows, including the merge-target content-computation seam for Claude, OpenCode, and Codex hook configuration.

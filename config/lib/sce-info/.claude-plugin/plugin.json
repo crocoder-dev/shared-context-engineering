@@ -1,0 +1,5 @@
+{
+  "name": "sce-splash",
+  "version": "0.1.0",
+  "description": "Adds a subtle \"with SCE\" line beneath the Claude Code startup branding"
+}
