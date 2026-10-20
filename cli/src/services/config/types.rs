@@ -87,6 +87,35 @@ impl LogFormat {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthMode {
+    Disabled,
+    Optional,
+    Mandatory,
+}
+
+impl AuthMode {
+    pub(crate) fn parse(raw: &str, source: &str) -> anyhow::Result<Self> {
+        match raw {
+            "disabled" => Ok(Self::Disabled),
+            "optional" => Ok(Self::Optional),
+            "mandatory" => Ok(Self::Mandatory),
+            _ => anyhow::bail!(
+                "Invalid auth mode '{raw}' from {source}. Valid values: disabled, optional, mandatory."
+            ),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Optional => "optional",
+            Self::Mandatory => "mandatory",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ValueSource {
     Flag,
     Env,
