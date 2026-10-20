@@ -916,8 +916,9 @@ mod tests {
         let headers_for = |working_dir: std::path::PathBuf| {
             telemetry_headers_with(
                 Some(working_dir),
-                visible_destination_conflict(claude_helper_env),
                 true,
+                visible_destination_conflict(claude_helper_env),
+                || true,
                 repository_id_for,
                 |repository_id: String| async move {
                     let db = TestDb::new()
