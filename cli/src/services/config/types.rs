@@ -189,7 +189,6 @@ impl ResolvedAccessPolicy {
         self.telemetry == TelemetryPolicyState::Enabled
     }
 
-    #[allow(dead_code)]
     pub(crate) fn auth_allowed(&self) -> bool {
         self.auth_mode.value != AuthMode::Disabled
     }

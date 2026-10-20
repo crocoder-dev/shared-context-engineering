@@ -359,13 +359,41 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — headers-helper contract. `context/sce/telemetry-credential.md` should record that `sce auth telemetry-headers` checks the effective telemetry policy (resolved from its working directory) before the destination tripwire, readiness hint, repository resolution, and `auth.db` lookup, and fails closed with the existing fixed diagnostic.
   - Context synchronization: synced
 
-- [ ] T06: `Enforce auth mode and telemetry consent in auth login and whoami` (status:todo)
+- [x] T06: `Enforce auth mode and telemetry consent in auth login and whoami` (status:done)
   - Task ID: T06
   - Scope: In — `UserError::AuthDisabledByConfig` (`auth.disabled_by_config`) in `error.rs`; `run_login` and `run_whoami` checking the policy from `resolve_auth_runtime_config` before any `token_storage` call; `TelemetryProvisioningResult::Disabled` (status `disabled`, fixed message naming `telemetry.enabled`) and skipping `provision_telemetry_credential` when telemetry is not `Enabled`; `mandatory` unauthenticated `whoami` → `NotAuthenticated`; logout unchanged. Out — sync, setup.
   - Dependencies: T02
   - Done when: the auth rows of the behavior matrix hold for all three modes; `optional` outputs are byte-identical to today; logout under `disabled` still deletes both credential rows.
   - Verify: table-driven tests over mode × stored credentials {none, valid, expired} using injected storage/provision closures that fail if called where access is forbidden; login text/JSON rendering tests for `disabled` provisioning; `run_logout_with` test under `disabled`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command error`.
-  - Context synchronization: pending
+  - Completed: 2026-10-20
+  - Files changed: `cli/src/services/error.rs`, `cli/src/services/auth_command/mod.rs`, `cli/src/services/config/types.rs`, `context/plans/auth-telemetry-policy-config.md`
+  - Result:
+    - Added `UserError::AuthDisabledByConfig(AuthPolicyConfigFile)` (key `auth.disabled_by_config`, runtime class). `AuthPolicyConfigFile` is `Global | Repository | ConfigFlag | ConfigEnv`. Each variant has a fixed message: `Authentication is disabled by \`auth.mode: disabled\` in <file>.`, a blank line, then `To use SCE authentication, set \`auth.mode\` to \`optional\` or \`mandatory\` in that file, then retry.`
+    - `run_login` and `run_whoami` resolve config through `resolve_auth_runtime_config` first. They delegate to the new `run_login_with` / `run_whoami_with`, which call `ensure_auth_allowed` before the injected `load_tokens`. That check maps `auth_mode.source` to the config file named in the message.
+    - Added `TelemetryProvisioningResult::Disabled` (status `disabled`, message ``Telemetry credential provisioning is disabled by SCE config. Set `telemetry.enabled: true` in the global SCE config to enable it.``). Text login renders it as `Note: <message>` under the headline.
+    - `provision_if_enabled` returns `Disabled` without running provisioning (no issuance, no readiness hint, no enrollment) on both the renewal path and the text/JSON device-flow paths.
+    - `whoami` with no stored credentials returns `UserError::NotAuthenticated` under `mandatory` and keeps the existing unauthenticated success render under `optional`.
+    - Logout is unchanged.
+    - Removed `#[allow(dead_code)]` from `ResolvedAccessPolicy::auth_allowed`.
+    - Removed the doc comments on `UserError`, `AuthStorageFailure`, and the new enum in `error.rs`, at the user's request.
+  - Verify outcome:
+    - `auth_command` passed (20 passed, 0 failed).
+    - New tests:
+      - `login_follows_auth_mode_across_stored_credentials`: 3 modes × {none, valid, expired}. Under `disabled`, storage is never read.
+      - `login_skips_provisioning_unless_telemetry_is_enabled`: the provisioning closure panics if called.
+      - `whoami_follows_auth_mode_across_stored_credentials`: `optional` and unauthenticated gives byte-identical output; `mandatory` and none, or expired, gives `auth.not_authenticated`.
+      - `auth_disabled_rejection_names_the_deciding_config_file`
+      - `login_reports_disabled_telemetry_provisioning_in_text_and_json`
+      - `logout_deletes_both_credential_rows_when_auth_is_disabled_by_config`
+    - `error` filter: the new `auth_disabled_by_config_has_stable_runtime_catalog_mapping_per_file` passed. In 2 of 5 filtered runs, the unrelated `app::tests::managed_export_marks_failed_output_and_exports_final_error_log` failed intermittently: it runs `sce help` against a loopback collector, hit its 5 s receive timeout, and passed on rerun. It does not touch auth code.
+    - Full CLI suite passed (690 passed, 0 failed).
+    - `cargo clippy --all-targets -- -D warnings` via `run-cli-cargo.sh` passed. `cargo fmt` applied.
+  - Deviation:
+    - `ResolvedValue` records a layer kind, not a path, so the rejection message names the config layer (global, repository `.sce/config.json`, `--config` file, `SCE_CONFIG_FILE` file) rather than a filesystem path.
+    - `whoami` now resolves config before reading storage. With an invalid explicit config file, an unauthenticated `whoami` now fails with the config error instead of rendering the unauthenticated success.
+    - Logout takes no policy input, so its `disabled` test resolves a real `auth.mode: disabled` config and then shows that `run_logout_with` still clears readiness and deletes both rows.
+  - Context impact: localized — the auth command contract. `context/cli/cli-command-surface.md` should record that `login` and `whoami` are rejected with `auth.disabled_by_config` before credential-store access, `login` reports `telemetry_provisioning` `disabled` without telemetry consent, and unauthenticated `whoami` under `mandatory` fails with `auth.not_authenticated`. `context/sce/telemetry-credential.md` should record that provisioning during login is gated on the telemetry policy. `context/sce/auth-db.md` should note that `login` and `whoami` do not reach `auth.db` under `disabled`.
+  - Context synchronization: synced
 
 - [ ] T07: `Gate sce sync and post-commit auto-sync on auth policy` (status:todo)
   - Task ID: T07
