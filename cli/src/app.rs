@@ -1105,47 +1105,37 @@ pub(crate) mod tests {
 
     #[test]
     fn only_claude_hook_invocations_are_admitted_to_managed_hook_telemetry() {
-        let kind = |args: &[&str], claude_caller: bool| {
+        const HOOK: Option<ManagedSpanKind> = Some(ManagedSpanKind::ClaudeHook);
+        const COMMAND: Option<ManagedSpanKind> = Some(ManagedSpanKind::Command);
+        let cases: [(&[&str], bool, Option<ManagedSpanKind>); 20] = [
+            (&["sce", "hooks", "claude-mutation-scope"], false, HOOK),
+            (&["sce", "hooks", "claude-model-state"], false, HOOK),
+            (&["sce", "hooks", "diff-trace"], true, HOOK),
+            (&["sce", "hooks", "diff-trace"], false, None),
+            (&["sce", "hooks", "conversation-trace"], true, HOOK),
+            (&["sce", "hooks", "conversation-trace"], false, None),
+            (&["sce", "policy", "bash"], true, HOOK),
+            (&["sce", "policy", "bash"], false, None),
+            (&["sce", "hooks", "pre-commit"], true, None),
+            (&["sce", "--verbose", "hooks", "codex"], true, None),
+            (&["sce", "hooks", "codex-mutation-scope"], true, None),
+            (&["sce", "hooks", "opencode-mutation-scope"], true, None),
+            (&["sce", "hooks", "pi-mutation-scope"], true, None),
+            (&["sce", "hooks"], true, None),
+            (&["sce", "auth", "telemetry-headers"], true, None),
+            (&["sce", "setup"], true, None),
+            (&["sce", "setup", "--claude"], true, None),
+            (&["sce", "auth", "login"], true, COMMAND),
+            (&["sce", "config", "show"], false, COMMAND),
+            (&["sce", "doctor"], true, COMMAND),
+        ];
+        for (args, claude_caller, expected) in cases {
             let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
-            managed_span_kind(&args, claude_caller)
-        };
-        let claude_hook = Some(ManagedSpanKind::ClaudeHook);
-        let command = Some(ManagedSpanKind::Command);
-        for caller in [false, true] {
             assert_eq!(
-                kind(&["sce", "hooks", "claude-mutation-scope"], caller),
-                claude_hook
+                managed_span_kind(&args, claude_caller),
+                expected,
+                "{args:?} claude_caller={claude_caller}"
             );
-            assert_eq!(
-                kind(&["sce", "hooks", "claude-model-state"], caller),
-                claude_hook
-            );
-            assert_eq!(kind(&["sce", "hooks", "pre-commit"], caller), None);
-            assert_eq!(kind(&["sce", "--verbose", "hooks", "codex"], caller), None);
-            assert_eq!(
-                kind(&["sce", "hooks", "codex-mutation-scope"], caller),
-                None
-            );
-            assert_eq!(
-                kind(&["sce", "hooks", "opencode-mutation-scope"], caller),
-                None
-            );
-            assert_eq!(kind(&["sce", "hooks", "pi-mutation-scope"], caller), None);
-            assert_eq!(kind(&["sce", "hooks"], caller), None);
-            assert_eq!(kind(&["sce", "auth", "telemetry-headers"], caller), None);
-            assert_eq!(kind(&["sce", "setup"], caller), None);
-            assert_eq!(kind(&["sce", "setup", "--claude"], caller), None);
-            assert_eq!(kind(&["sce", "auth", "login"], caller), command);
-            assert_eq!(kind(&["sce", "config", "show"], caller), command);
-            assert_eq!(kind(&["sce", "doctor"], caller), command);
-        }
-        for shared in [
-            &["sce", "hooks", "diff-trace"][..],
-            &["sce", "hooks", "conversation-trace"],
-            &["sce", "policy", "bash"],
-        ] {
-            assert_eq!(kind(shared, true), claude_hook);
-            assert_eq!(kind(shared, false), None);
         }
     }
 

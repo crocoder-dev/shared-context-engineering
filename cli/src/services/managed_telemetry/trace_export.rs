@@ -448,12 +448,20 @@ pub(crate) mod tests {
 
     pub(crate) async fn capture_requests_until(
         listener: TcpListener,
+        stop: tokio::sync::oneshot::Receiver<()>,
+    ) -> Vec<CapturedRequest> {
+        capture_requests_with_status_until(listener, "HTTP/1.1 200 OK", stop).await
+    }
+
+    async fn capture_requests_with_status_until(
+        listener: TcpListener,
+        status_line: &'static str,
         mut stop: tokio::sync::oneshot::Receiver<()>,
     ) -> Vec<CapturedRequest> {
         let mut captured = Vec::new();
         loop {
             tokio::select! {
-                request = capture_one_request(&listener, "HTTP/1.1 200 OK") => captured.push(request),
+                request = capture_one_request(&listener, status_line) => captured.push(request),
                 _ = &mut stop => return captured,
             }
         }
@@ -802,18 +810,21 @@ pub(crate) mod tests {
         ] {
             assert!(!log_body.contains(leaked), "leaked {leaked}");
         }
+        let spans = decode_spans(&trace.body);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].name, "sce.command");
+        assert_eq!(
+            spans[0].sce_attributes(),
+            [("sce.command.name", "config"), ("sce.outcome", "success")]
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+        );
+        assert!(spans[0]
+            .resource_attributes
+            .contains(&("service.name".to_string(), "sce".to_string())));
         let body = String::from_utf8_lossy(&trace.body).to_string();
-        for expected in [
-            "sce.command",
-            "sce.command.name",
-            "config",
-            "service.name",
-            "success",
-        ] {
-            assert!(body.contains(expected), "missing {expected}");
+        for leaked in ["local-accessor-secret", "bao-token-value"] {
+            assert!(!body.contains(leaked), "leaked {leaked}");
         }
-        assert!(!body.contains("local-accessor-secret"));
-        assert!(!body.contains("bao-token-value"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -998,29 +1009,45 @@ pub(crate) mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn managed_trace_export_does_not_follow_redirects_or_alter_results() {
+        let destination = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind destination");
+        let destination_address = destination.local_addr().expect("destination addr");
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("addr");
-        let receiver = tokio::spawn(capture_requests(
-            listener,
-            "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://127.0.0.1:1/steal",
-            1,
+        let redirect: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: http://{destination_address}/v1/traces"
+            )
+            .into_boxed_str(),
+        );
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn(capture_requests_with_status_until(
+            listener, redirect, stopped,
         ));
         let telemetry = loopback_telemetry(address, "bao-token-value");
+        let expected = CliError::runtime(anyhow::anyhow!("boom"));
 
-        let result = telemetry
+        let error = telemetry
             .with_default_subscriber(&mut || async {
                 Err(CliError::runtime(anyhow::anyhow!("boom")))
             })
-            .await;
-        assert!(result.is_err());
+            .await
+            .expect_err("command error is preserved");
+        assert_eq!(error.code(), expected.code());
+        assert_eq!(error.to_string(), expected.to_string());
         telemetry.shutdown().await;
+        stop.send(()).expect("stop receiver");
 
         let requests = receiver.await.expect("receiver join");
-        assert!(!requests.is_empty());
+        assert!(!trace_spans(&requests).is_empty());
         for request in &requests {
             let head = request.head.to_ascii_lowercase();
-            assert!(head.starts_with("post /v1/traces ") || head.starts_with("post /v1/logs "));
+            assert!(head.contains("authorization: bearer bao-token-value"));
         }
+        let redirected =
+            tokio::time::timeout(Duration::from_millis(300), destination.accept()).await;
+        assert!(redirected.is_err(), "redirect destination was contacted");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1039,53 +1066,77 @@ pub(crate) mod tests {
         assert!(started.elapsed() < Duration::from_secs(6));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ambient_otlp_environment_cannot_redirect_or_inject_headers() {
-        let alternate = TcpListener::bind("127.0.0.1:0").await.expect("bind alt");
+    #[test]
+    fn ambient_otlp_environment_cannot_redirect_or_inject_headers() {
+        crate::app::tests::run_fault_child(
+            "services::managed_telemetry::trace_export::tests::isolated_ambient_otlp_environment",
+        );
+    }
+
+    #[test]
+    fn isolated_ambient_otlp_environment() {
+        if !crate::app::tests::is_fault_child() {
+            return;
+        }
+        let bind = || {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            listener.set_nonblocking(true).expect("nonblocking");
+            listener
+        };
+        let (alternate, collector) = (bind(), bind());
         let alternate_address = alternate.local_addr().expect("alt addr");
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let address = listener.local_addr().expect("addr");
-        std::env::set_var(
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            format!("http://{alternate_address}"),
-        );
-        std::env::set_var(
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-            format!("http://{alternate_address}/v1/traces"),
-        );
-        std::env::set_var("OTEL_EXPORTER_OTLP_HEADERS", "x-ambient-leak=1");
-        std::env::set_var("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc");
-        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 2));
-        let telemetry = loopback_telemetry(address, "bao-token-value");
-
-        let result = telemetry
-            .with_default_subscriber(&mut || async {
-                record_command_name("config");
-                tracing::info!(target: "sce", event_id = "sce.test.event", event_message = "Starting command");
-                Ok("payload".to_string())
-            })
-            .await;
-        assert_eq!(result.expect("command result"), "payload");
-        telemetry.shutdown().await;
-        for name in [
-            "OTEL_EXPORTER_OTLP_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-            "OTEL_EXPORTER_OTLP_HEADERS",
-            "OTEL_EXPORTER_OTLP_PROTOCOL",
+        let address = collector.local_addr().expect("addr");
+        for (name, value) in [
+            (
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                format!("http://{alternate_address}"),
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                format!("http://{alternate_address}/v1/traces"),
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                format!("http://{alternate_address}/v1/logs"),
+            ),
+            (
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "x-ambient-leak=1,authorization=Bearer ambient-leak".to_string(),
+            ),
+            ("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc".to_string()),
         ] {
-            std::env::remove_var(name);
+            std::env::set_var(name, value);
         }
+        let runtime = crate::app::build_runtime().expect("runtime");
+        runtime.block_on(async {
+            let alternate = TcpListener::from_std(alternate).expect("alt listener");
+            let collector = TcpListener::from_std(collector).expect("listener");
+            let receiver = tokio::spawn(capture_requests(collector, "HTTP/1.1 200 OK", 2));
+            let telemetry = loopback_telemetry(address, "bao-token-value");
 
-        let requests = receiver.await.expect("receiver join");
-        assert_eq!(requests.len(), 2);
-        for request in &requests {
-            let head = request.head.to_ascii_lowercase();
-            assert!(head.contains("authorization: bearer bao-token-value"));
-            assert!(!head.contains("x-ambient-leak"));
-            assert!(head.contains("application/x-protobuf"));
-        }
-        let unexpected = tokio::time::timeout(Duration::from_millis(300), alternate.accept()).await;
-        assert!(unexpected.is_err(), "alternate receiver was contacted");
+            let result = telemetry
+                .with_default_subscriber(&mut || async {
+                    record_command_name("config");
+                    tracing::info!(target: "sce", event_id = "sce.test.event", event_message = "Starting command");
+                    Ok("payload".to_string())
+                })
+                .await;
+            assert_eq!(result.expect("command result"), "payload");
+            telemetry.shutdown().await;
+
+            let requests = receiver.await.expect("receiver join");
+            assert_eq!(requests.len(), 2);
+            for request in &requests {
+                let head = request.head.to_ascii_lowercase();
+                assert!(head.contains("authorization: bearer bao-token-value"));
+                assert!(!head.contains("ambient-leak"));
+                assert!(head.contains("application/x-protobuf"));
+            }
+            let unexpected =
+                tokio::time::timeout(Duration::from_millis(300), alternate.accept()).await;
+            assert!(unexpected.is_err(), "alternate receiver was contacted");
+        });
+        crate::app::finish_runtime(runtime);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1116,7 +1167,8 @@ pub(crate) mod tests {
     async fn concurrent_commands_keep_results_and_export_isolated() {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let address = listener.local_addr().expect("addr");
-        let receiver = tokio::spawn(capture_requests(listener, "HTTP/1.1 200 OK", 1));
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn(capture_requests_until(listener, stopped));
         let telemetry = std::sync::Arc::new(loopback_telemetry(address, "bao-token-value"));
 
         let first = {
@@ -1150,21 +1202,30 @@ pub(crate) mod tests {
             .shutdown()
             .await;
 
-        let requests = receiver.await.expect("receiver join");
-        let trace = requests
+        stop.send(()).expect("stop receiver");
+
+        let mut commands = trace_spans(&receiver.await.expect("receiver join"))
             .iter()
-            .find(|request| {
-                request
-                    .head
-                    .to_ascii_lowercase()
-                    .starts_with("post /v1/traces ")
-            })
-            .expect("trace request");
-        let body = String::from_utf8_lossy(&trace.body).to_string();
-        assert!(body.contains("first"));
-        assert!(body.contains("second"));
-        assert!(body.contains("success"));
-        assert!(body.contains("failure"));
+            .filter(|span| span.name == "sce.command")
+            .map(DecodedSpan::sce_attributes)
+            .collect::<Vec<_>>();
+        commands.sort();
+        let failure_class = CliError::runtime(anyhow::anyhow!("boom")).code();
+        let expected = [
+            vec![("sce.command.name", "first"), ("sce.outcome", "success")],
+            vec![
+                ("sce.command.name", "second"),
+                ("sce.error.class", failure_class),
+                ("sce.outcome", "failure"),
+            ],
+        ]
+        .map(|attributes| {
+            attributes
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(commands, expected);
     }
 
     #[test]

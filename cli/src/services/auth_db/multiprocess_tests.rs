@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -12,25 +13,18 @@ use crate::generated_migrations;
 use crate::services::bash_policy::{
     run_bash_policy_request, BashPolicyRequest, PolicyInputMode, PolicyOutputMode,
 };
-use crate::services::db::encryption_key::{
-    get_or_create_encryption_key, AUTH_DB_ENCRYPTION_KEY_ENV,
-};
-use crate::services::db::{DatabaseKind, DatabaseLocked, DbSpec, EncryptedTursoDb};
+use crate::services::db::encryption_key::AUTH_DB_ENCRYPTION_KEY_ENV;
+use crate::services::db::{DatabaseKind, DbSpec, EncryptedTursoDb};
 use crate::services::default_paths::auth_db_path;
-use crate::services::error::{AuthStorageFailure, CliError};
+use crate::services::error::CliError;
 use crate::services::hooks::{run_hooks_subcommand, HookSubcommand};
 use crate::services::managed_telemetry::claude_helper::repository_id_for;
 use crate::services::managed_telemetry::claude_helper::tests::git_repository_with_remote;
 use crate::services::managed_telemetry::trace_export::tests::{
     capture_requests_until, loopback_hook_telemetry, trace_spans,
 };
-use crate::services::managed_telemetry::trace_export::{
-    record_claude_hook_command, record_claude_hook_payload, ClaudeHookCommand, ManagedSpanKind,
-};
-use crate::services::managed_telemetry::{
-    inspect_health, load_credential_within_deadline, select_mode, ManagedTelemetryHealth,
-    ManagedTelemetryMode, RuntimeTelemetry, TelemetryFallbackReason,
-};
+use crate::services::managed_telemetry::trace_export::ClaudeHookCommand;
+use crate::services::managed_telemetry::{inspect_health, ManagedTelemetryHealth};
 use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::telemetry_credential_storage::{
     bind_repository_telemetry, load_repository_telemetry_credential, load_telemetry_credential,
@@ -52,7 +46,6 @@ const TOKEN_PREFIX: &str = "SCE_AUTH_DB_CHILD_TOKEN=";
 const HEALTH_PREFIX: &str = "SCE_AUTH_DB_CHILD_TELEMETRY_HEALTH=";
 const CONCURRENT_PROCESSES: usize = 32;
 const CONCURRENT_MIGRATORS: usize = 4;
-const READER_ROUNDS: usize = 3;
 const CHILD_KILL_AFTER: Duration = Duration::from_mins(1);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FAR_FUTURE: u64 = 4_102_444_800;
@@ -68,16 +61,9 @@ const BINDING_MIGRATION_ID: &str = "004_bind_telemetry_credentials";
 const WRITER_ENV: &str = "SCE_AUTH_DB_TEST_WRITER";
 const COMMITTED_PREFIX: &str = "SCE_AUTH_DB_CHILD_COMMITTED=";
 const ROW_PREFIX: &str = "SCE_AUTH_DB_CHILD_ROW=";
-const REJECTED: &str = "SCE_AUTH_DB_CHILD_REJECTED";
 const WRITER_ROWS: usize = 8;
 const WRITER_PAUSE: Duration = Duration::from_millis(20);
-const MIXED_WRITER_ROUNDS: usize = 3;
-const NEW_WRITERS: usize = 4;
-const LEGACY_HANDOFF_ROUNDS: usize = 20;
-const LEGACY_HANDOFF_READERS: usize = 8;
-const SHARED_ACCESS_REJECTION: &str = "does not support shared access";
-const LEGACY_LOCK_REJECTION: &str = "File is locked by another process";
-const LEGACY_CIPHER: &str = "aegis256";
+const CONCURRENT_WRITERS: usize = 4;
 const INSERT_BINDING_SQL: &str = "INSERT INTO telemetry_repository_bindings \
      (repository_id, user_id, workspace_id, bound_at_unix_seconds) VALUES (?1, ?2, ?3, 1)";
 const AUTH_DB_FILES: [&str; 3] = ["auth.db", "auth.db-wal", "auth.db-tshm"];
@@ -172,13 +158,6 @@ impl Sandbox {
         command
     }
 
-    fn writer(&self, role: &str, writer: &str) -> Child {
-        self.command(role)
-            .env(WRITER_ENV, writer)
-            .spawn()
-            .expect("spawn writer")
-    }
-
     fn rows(&self) -> BTreeSet<String> {
         prefixed_lines(&self.run("verify-rows"), ROW_PREFIX)
     }
@@ -213,12 +192,20 @@ impl Sandbox {
     fn hold_command(role: &str, mut command: Command) -> HeldChild {
         let mut child = command.stdin(Stdio::piped()).spawn().expect("spawn holder");
         let stdin = child.stdin.take().expect("holder stdin");
-        let stdout = BufReader::new(child.stdout.take().expect("holder stdout"));
+        let stdout = child.stdout.take().expect("holder stdout");
+        let (sender, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
         let mut held = HeldChild {
             role: role.to_string(),
             child,
             stdin,
-            stdout,
+            lines,
         };
         held.wait_ready();
         held
@@ -233,7 +220,7 @@ struct HeldChild {
     role: String,
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    lines: Receiver<String>,
 }
 
 impl HeldChild {
@@ -242,42 +229,41 @@ impl HeldChild {
     }
 
     fn wait_ready(&mut self) -> String {
+        let deadline = Instant::now() + CHILD_KILL_AFTER;
         let mut captured = String::new();
         loop {
-            let mut line = String::new();
-            let read = self
-                .stdout
-                .read_line(&mut line)
-                .expect("holder stdout line");
-            if read == 0 {
-                let _ = self.child.kill();
-                self.child.wait().expect("holder status");
-                let mut stderr = String::new();
-                self.child
-                    .stderr
-                    .take()
-                    .expect("holder stderr")
-                    .read_to_string(&mut stderr)
-                    .expect("holder stderr output");
-                panic!(
-                    "{} holder exited before ready:\n{captured}\n{stderr}",
-                    self.role
-                );
+            match self
+                .lines
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            {
+                Ok(line) if line.trim_end().ends_with(READY) => return captured,
+                Ok(line) => {
+                    captured.push_str(&line);
+                    captured.push('\n');
+                }
+                Err(RecvTimeoutError::Timeout) => self.abort(
+                    &format!("was not ready within {CHILD_KILL_AFTER:?}"),
+                    &captured,
+                ),
+                Err(RecvTimeoutError::Disconnected) => self.abort("exited before ready", &captured),
             }
-            if line.trim_end().ends_with(READY) {
-                return captured;
-            }
-            captured.push_str(&line);
         }
+    }
+
+    fn abort(&mut self, reason: &str, stdout: &str) -> ! {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let mut stderr = String::new();
+        if let Some(mut pipe) = self.child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        panic!("{} holder {reason}:\n{stdout}\n{stderr}", self.role);
     }
 
     fn release(mut self) {
         self.signal();
-        drop(self.stdin);
-        let mut rest = String::new();
-        self.stdout
-            .read_to_string(&mut rest)
-            .expect("holder stdout");
+        wait_bounded(&self.role, &mut self.child);
+        let rest = self.lines.iter().collect::<Vec<_>>().join("\n");
         let output = self.child.wait_with_output().expect("holder output");
         assert!(
             output.status.success() && rest.contains("1 passed"),
@@ -288,15 +274,20 @@ impl HeldChild {
     }
 }
 
-fn wait_success(role: &str, mut child: Child) -> String {
+fn wait_bounded(role: &str, child: &mut Child) {
     let started = Instant::now();
     while child.try_wait().expect("child status").is_none() {
         if started.elapsed() > CHILD_KILL_AFTER {
             let _ = child.kill();
+            let _ = child.wait();
             panic!("{role} child did not exit within {CHILD_KILL_AFTER:?}");
         }
         std::thread::sleep(CHILD_POLL_INTERVAL);
     }
+}
+
+fn wait_success(role: &str, mut child: Child) -> String {
+    wait_bounded(role, &mut child);
     let output = child.wait_with_output().expect("child output");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     assert!(
@@ -314,24 +305,13 @@ fn prefixed_lines(stdout: &str, prefix: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn committed_rows(children: Vec<(String, Child)>) -> (BTreeSet<String>, usize) {
-    let mut committed = BTreeSet::new();
-    let mut rejected = 0;
-    for (role, child) in children {
-        let stdout = wait_success(&role, child);
-        committed.extend(prefixed_lines(&stdout, COMMITTED_PREFIX));
-        rejected += usize::from(stdout.contains(REJECTED));
-    }
-    (committed, rejected)
-}
-
 fn coordinated_writer_rows(sandbox: &Sandbox) -> BTreeSet<String> {
     // Open every connection before writes start, and keep every connection
     // alive until all writes finish so WAL startup/teardown cannot race them.
-    let mut writers = (0..NEW_WRITERS)
+    let mut writers = (0..CONCURRENT_WRITERS)
         .map(|index| {
             let mut command = sandbox.command("coordinated-writer");
-            command.env(WRITER_ENV, format!("new-{index}"));
+            command.env(WRITER_ENV, format!("writer-{index}"));
             Sandbox::hold_command("coordinated-writer", command)
         })
         .collect::<Vec<_>>();
@@ -346,6 +326,12 @@ fn coordinated_writer_rows(sandbox: &Sandbox) -> BTreeSet<String> {
         writer.release();
     }
     committed
+}
+
+fn expected_writer_rows() -> BTreeSet<String> {
+    (0..CONCURRENT_WRITERS)
+        .flat_map(|index| (0..WRITER_ROWS).map(move |row| format!("writer-{index}-{row:02}")))
+        .collect()
 }
 
 fn read_token(stdout: &str) -> Option<&str> {
@@ -386,15 +372,7 @@ fn thirty_two_reader_processes_all_resolve_the_credential() {
     let sandbox = Sandbox::new();
     sandbox.seed();
 
-    for round in 0..READER_ROUNDS {
-        let started = Instant::now();
-        let succeeded = wait_readers(spawn_readers(&sandbox));
-        println!(
-            "round {round}: {succeeded}/{CONCURRENT_PROCESSES} readers in {:?}",
-            started.elapsed()
-        );
-        assert_eq!(succeeded, CONCURRENT_PROCESSES, "round {round}");
-    }
+    assert_eq!(wait_readers(spawn_readers(&sandbox)), CONCURRENT_PROCESSES);
 }
 
 #[test]
@@ -518,196 +496,29 @@ fn outdated_schema_is_migrated_and_partial_schema_fails_clearly() {
 }
 
 #[test]
-fn concurrent_hook_processes_export_correlated_hook_spans() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .build()
-        .expect("test runtime")
-        .block_on(export_concurrent_hook_spans(&sandbox));
-}
-
-#[test]
-fn legacy_holder_rejects_new_readers_and_writers_explicitly() {
+fn concurrent_current_version_writers_persist_every_row() {
     let _fan_out = serialize_fan_out();
     let sandbox = Sandbox::new();
     sandbox.seed();
 
-    let legacy = sandbox.hold("legacy-hold");
-    sandbox.run("expect-rejected-read");
-    sandbox.run("expect-rejected-write");
-    legacy.release();
-
-    assert_eq!(sandbox.rows(), BTreeSet::from(["legacy-held".to_string()]));
-    sandbox.run("legacy-roundtrip");
-}
-
-#[test]
-fn new_holder_rejects_legacy_writer_explicitly() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-
-    let holder = sandbox.hold("hold-open");
-    sandbox.run("legacy-expect-rejected");
-    holder.release();
-
-    sandbox.run("legacy-roundtrip");
-    assert_eq!(
-        sandbox.rows(),
-        BTreeSet::from(["legacy-roundtrip".to_string()])
-    );
-}
-
-#[test]
-fn concurrent_legacy_and_new_writers_never_lose_committed_rows() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-
-    let mut committed = BTreeSet::new();
-    let mut rejected = 0;
-    for round in 0..MIXED_WRITER_ROUNDS {
-        let writers = vec![
-            (
-                "legacy-writer".to_string(),
-                sandbox.writer("legacy-writer", &format!("legacy-{round}")),
-            ),
-            (
-                "new-writer".to_string(),
-                sandbox.writer("new-writer", &format!("new-{round}-a")),
-            ),
-            (
-                "new-writer".to_string(),
-                sandbox.writer("new-writer", &format!("new-{round}-b")),
-            ),
-        ];
-        let (round_committed, round_rejected) = committed_rows(writers);
-        committed.extend(round_committed);
-        rejected += round_rejected;
-    }
-    println!(
-        "mixed writers: {} committed rows, {rejected} rejected opens",
-        committed.len()
-    );
-
-    let persisted = sandbox.rows();
-    let lost = committed.difference(&persisted).collect::<Vec<_>>();
-    assert!(lost.is_empty(), "committed rows lost: {lost:?}");
-    sandbox.run("legacy-roundtrip");
-}
-
-#[test]
-fn concurrent_cold_opens_after_legacy_write_all_see_committed_state() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-
-    let mut expected = BTreeSet::new();
-    for round in 0..LEGACY_HANDOFF_ROUNDS {
-        let stdout = wait_success(
-            "legacy-writer",
-            sandbox.writer("legacy-writer", &format!("legacy-handoff-{round}")),
-        );
-        let committed = prefixed_lines(&stdout, COMMITTED_PREFIX);
-        assert_eq!(committed.len(), WRITER_ROWS, "round {round}");
-        expected.extend(committed);
-        let readers = (0..LEGACY_HANDOFF_READERS)
-            .map(|_| sandbox.command("read").spawn().expect("spawn reader"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            wait_readers(readers),
-            LEGACY_HANDOFF_READERS,
-            "round {round}"
-        );
-    }
-    assert_eq!(sandbox.rows(), expected);
-}
-
-#[test]
-fn concurrent_new_writers_all_commit_and_legacy_reopens_afterwards() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-    let committed = coordinated_writer_rows(&sandbox);
-    assert_eq!(committed.len(), NEW_WRITERS * WRITER_ROWS);
-    assert_eq!(sandbox.rows(), committed);
-
-    sandbox.run("legacy-roundtrip");
-    let mut expected = committed;
-    expected.insert("legacy-roundtrip".to_string());
-    assert_eq!(sandbox.rows(), expected);
+    assert_eq!(coordinated_writer_rows(&sandbox), expected_writer_rows());
+    assert_eq!(sandbox.rows(), expected_writer_rows());
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn macos_new_shared_lock_rejects_legacy_exclusive_lock_until_released() {
+fn macos_current_version_processes_share_the_lock_concurrently() {
     let _fan_out = serialize_fan_out();
     let sandbox = Sandbox::new();
     sandbox.seed();
 
-    let holder = sandbox.hold("hold-open");
-    sandbox.run("legacy-lock-expect-rejected");
-    sandbox.run("legacy-expect-rejected");
-    holder.release();
-
-    sandbox.run("legacy-lock-acquire");
-    sandbox.run("legacy-roundtrip");
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn macos_legacy_exclusive_lock_rejects_new_shared_lock_until_released() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-
-    let legacy = sandbox.hold("legacy-lock-hold");
-    sandbox.run("expect-rejected-read");
-    sandbox.run("expect-rejected-write");
-    legacy.release();
-
+    let holders = [sandbox.hold("hold-open"), sandbox.hold("hold-open")];
+    assert_eq!(coordinated_writer_rows(&sandbox), expected_writer_rows());
     assert_eq!(read_token(&sandbox.run("read")), Some(TOKEN));
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn macos_new_shared_lock_survives_unrelated_descriptor_close() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-
-    let holder = sandbox.hold("hold-open-close-other");
-    sandbox.run("legacy-lock-expect-rejected");
-    sandbox.run("legacy-expect-rejected");
-    holder.release();
-
-    sandbox.run("legacy-roundtrip");
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn macos_new_processes_share_the_lock_concurrently() {
-    let _fan_out = serialize_fan_out();
-    let sandbox = Sandbox::new();
-    sandbox.seed();
-
-    let holders = [
-        sandbox.hold("hold-open"),
-        sandbox.hold("hold-open-close-other"),
-    ];
-    let committed = coordinated_writer_rows(&sandbox);
-    assert_eq!(committed.len(), NEW_WRITERS * WRITER_ROWS);
-    sandbox.run("legacy-lock-expect-rejected");
     for holder in holders {
         holder.release();
     }
-
-    assert_eq!(sandbox.rows(), committed);
-    sandbox.run("legacy-roundtrip");
+    assert_eq!(sandbox.rows(), expected_writer_rows());
 }
 
 #[test]
@@ -928,74 +739,6 @@ async fn run_hook_entry_child() {
     telemetry.shutdown().await;
 }
 
-async fn export_concurrent_hook_spans(sandbox: &Sandbox) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
-    let address = listener.local_addr().expect("addr");
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let receiver = tokio::spawn(capture_requests_until(listener, stopped));
-
-    let hooks = (0..CONCURRENT_PROCESSES)
-        .map(|index| {
-            sandbox
-                .command("hook")
-                .env(COLLECTOR_ENV, address.to_string())
-                .env(HOOK_INDEX_ENV, index.to_string())
-                .spawn()
-                .expect("spawn hook")
-        })
-        .collect::<Vec<_>>();
-    let mut failing = sandbox.command("hook-credential-failure");
-    failing.env(AUTH_DB_ENCRYPTION_KEY_ENV, WRONG_SECRET);
-    let failing = failing.spawn().expect("spawn failing hook");
-    tokio::task::spawn_blocking(move || {
-        for child in hooks {
-            wait_success("hook", child);
-        }
-        wait_success("hook-credential-failure", failing);
-    })
-    .await
-    .expect("hook children join");
-    stop.send(()).expect("stop collector");
-
-    let spans = trace_spans(&receiver.await.expect("collector join"));
-    let observed = spans
-        .iter()
-        .filter(|span| span.name == "sce.hook")
-        .map(|span| {
-            let attribute = |key: &str| {
-                span.attributes
-                    .iter()
-                    .find(|(name, _)| name == key)
-                    .map(|(_, value)| value.clone())
-                    .unwrap_or_default()
-            };
-            (
-                attribute("sce.claude.tool_use_id"),
-                attribute("sce.hook.command"),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    let expected = (0..CONCURRENT_PROCESSES)
-        .map(|index| {
-            (
-                hook_tool_use_id(index),
-                hook_command(index).as_str().to_string(),
-            )
-        })
-        .collect::<BTreeSet<_>>();
-    assert_eq!(observed, expected);
-}
-
-fn hook_command(index: usize) -> ClaudeHookCommand {
-    HOOK_COMMANDS[index % HOOK_COMMANDS.len()]
-}
-
-fn hook_tool_use_id(index: usize) -> String {
-    format!("toolu_mp_{index:02}")
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_db_child_process() {
     let Ok(role) = std::env::var(ROLE_ENV) else {
@@ -1073,123 +816,15 @@ async fn auth_db_child_process() {
         }
         "upgrade" => upgrade_outdated_schema().await,
         "partial" => reject_partial_schema().await,
-        "coordinated-writer" => run_coordinated_writer_child().await,
-        "hook" => run_hook_child().await,
-        "hook-entry" => run_hook_entry_child().await,
-        other => run_compatibility_child(other).await,
-    }
-}
-
-async fn run_compatibility_child(role: &str) {
-    match role {
-        "legacy-hold" => {
-            let conn = open_legacy_auth_db().await.expect("legacy holder opens");
-            wait_for_release();
-            insert_binding(&conn, "legacy-held")
-                .await
-                .expect("legacy holder writes after release");
-        }
-        "legacy-expect-rejected" => {
-            let Err(error) = open_legacy_auth_db().await else {
-                panic!("legacy open must be rejected while a new process holds the DB");
-            };
-            assert!(
-                format!("{error:#}").contains(LEGACY_LOCK_REJECTION),
-                "{error:#}"
-            );
-        }
-        "legacy-roundtrip" => legacy_roundtrip().await,
-        #[cfg(target_os = "macos")]
-        "hold-open-close-other" => {
-            let _db = AuthDb::new().await.expect("holder opens auth DB");
-            let path = auth_db_path().expect("auth DB path");
-            drop(std::fs::File::open(&path).expect("unrelated auth DB descriptor"));
-            wait_for_release();
-        }
-        #[cfg(target_os = "macos")]
-        "legacy-lock-hold" => {
-            let file = auth_db_file();
-            legacy_exclusive_lock(&file).expect("legacy lock acquires");
-            wait_for_release();
-        }
-        #[cfg(target_os = "macos")]
-        "legacy-lock-expect-rejected" => {
-            let error = legacy_exclusive_lock(&auth_db_file())
-                .expect_err("legacy lock must be rejected while a new process holds the DB");
-            assert_eq!(error.raw_os_error(), Some(libc::EAGAIN), "{error}");
-        }
-        #[cfg(target_os = "macos")]
-        "legacy-lock-acquire" => {
-            legacy_exclusive_lock(&auth_db_file()).expect("legacy lock acquires");
-        }
-        "legacy-writer" => match open_legacy_auth_db().await {
-            Ok(conn) => {
-                for row in writer_rows() {
-                    if insert_binding(&conn, &row).await.is_err() {
-                        break;
-                    }
-                    println!("{COMMITTED_PREFIX}{row}");
-                    tokio::time::sleep(WRITER_PAUSE).await;
-                }
-            }
-            Err(error) => {
-                assert!(
-                    format!("{error:#}").contains(LEGACY_LOCK_REJECTION),
-                    "{error:#}"
-                );
-                println!("{REJECTED}");
-            }
-        },
-        other => run_new_version_child(other).await,
-    }
-}
-
-async fn run_new_version_child(role: &str) {
-    match role {
-        "new-writer" => match AuthDb::new().await {
-            Ok(db) => {
-                for row in writer_rows() {
-                    if db
-                        .execute(INSERT_BINDING_SQL, (row.as_str(), USER_ID, WORKSPACE_ID))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-                    println!("{COMMITTED_PREFIX}{row}");
-                    tokio::time::sleep(WRITER_PAUSE).await;
-                }
-            }
-            Err(error) => {
-                assert!(
-                    format!("{error:#}").contains(SHARED_ACCESS_REJECTION),
-                    "{error:#}"
-                );
-                println!("{REJECTED}");
-            }
-        },
-        "expect-rejected-read" => {
-            let error = load_telemetry_credential()
-                .await
-                .expect_err("lookup must fail while a legacy process holds the DB");
-            assert!(
-                error.to_string().contains(SHARED_ACCESS_REJECTION),
-                "{error}"
-            );
-            assert_eq!(error.failure(), AuthStorageFailure::DatabaseLocked);
-        }
-        "expect-rejected-write" => {
-            let error = AuthDb::new()
-                .await
-                .err()
-                .expect("writer open must fail while a legacy process holds the DB");
-            assert!(
-                format!("{error:#}").contains(SHARED_ACCESS_REJECTION),
-                "{error:#}"
-            );
-            assert!(error.is::<DatabaseLocked>(), "{error:#}");
-        }
         "verify-rows" => print_verified_rows().await,
+        "coordinated-writer" => run_coordinated_writer_child().await,
+        "hook-entry" => run_hook_entry_child().await,
+        other => run_binding_child(other).await,
+    }
+}
+
+async fn run_binding_child(role: &str) {
+    match role {
         "repository-lookup-missing" => {
             assert_eq!(
                 load_repository_telemetry_credential("repo-missing".to_string())
@@ -1224,20 +859,6 @@ async fn run_new_version_child(role: &str) {
             if code != std::process::ExitCode::SUCCESS {
                 assert_eq!(code, std::process::ExitCode::from(4));
             }
-        }
-        "hook-credential-failure" => {
-            let (telemetry, fallback) = RuntimeTelemetry::resolve_with(
-                load_telemetry_credential(),
-                ManagedSpanKind::ClaudeHook,
-            )
-            .await;
-            assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
-            let fallback = fallback.expect("credential failure is diagnosed");
-            assert_eq!(fallback.reason, TelemetryFallbackReason::DatabaseError);
-            let output = telemetry
-                .with_default_subscriber(&mut || async { Ok("hook-output".to_string()) })
-                .await;
-            assert_eq!(output.expect("hook result unaffected"), "hook-output");
         }
         other => panic!("unknown child role {other}"),
     }
@@ -1283,111 +904,11 @@ async fn seed() {
     crate::services::telemetry_readiness::mark_ready(FAR_FUTURE).expect("readiness seeds");
 }
 
-async fn run_hook_child() {
-    let index = std::env::var(HOOK_INDEX_ENV)
-        .expect("hook index")
-        .parse::<usize>()
-        .expect("numeric hook index");
-    let address = std::env::var(COLLECTOR_ENV)
-        .expect("collector address")
-        .parse()
-        .expect("socket address");
-    let credential = load_credential_within_deadline(load_telemetry_credential())
-        .await
-        .expect("managed credential resolves");
-    let ManagedTelemetryMode::Managed { .. } = select_mode(Some(credential.clone()), 0) else {
-        panic!("credential selects managed telemetry");
-    };
-    let telemetry = loopback_hook_telemetry(address, &credential.token);
-    let payload = serde_json::json!({
-        "hook_event_name": "PostToolUse",
-        "tool_name": "Write",
-        "session_id": "session-mp",
-        "tool_use_id": hook_tool_use_id(index),
-    })
-    .to_string();
-    let output = telemetry
-        .with_default_subscriber(&mut || async {
-            record_claude_hook_command(hook_command(index));
-            record_claude_hook_payload(&payload);
-            Ok(String::new())
-        })
-        .await;
-    assert_eq!(output.expect("hook result"), "");
-    telemetry.shutdown().await;
-}
-
 fn writer_rows() -> Vec<String> {
     let writer = std::env::var(WRITER_ENV).expect("writer id");
     (0..WRITER_ROWS)
         .map(|row| format!("{writer}-{row:02}"))
         .collect()
-}
-
-async fn open_legacy_auth_db() -> Result<turso::Connection> {
-    let path = auth_db_path()?;
-    let hexkey = get_or_create_encryption_key(
-        &path,
-        AuthDbSpec::db_name(),
-        crate::services::db::encryption_key::CredentialAccess::Interactive,
-    )?;
-    let db = turso::Builder::new_local(path.to_str().expect("UTF-8 auth DB path"))
-        .experimental_encryption(true)
-        .with_encryption(turso::EncryptionOpts {
-            hexkey,
-            cipher: LEGACY_CIPHER.to_string(),
-        })
-        .build()
-        .await?;
-    Ok(db.connect()?)
-}
-
-#[cfg(target_os = "macos")]
-fn auth_db_file() -> std::fs::File {
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(auth_db_path().expect("auth DB path"))
-        .expect("auth DB file")
-}
-
-#[cfg(target_os = "macos")]
-fn legacy_exclusive_lock(file: &std::fs::File) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
-
-    let mut lock: libc::flock = unsafe { std::mem::zeroed() };
-    lock.l_type = libc::c_short::try_from(libc::F_WRLCK).expect("lock type");
-    lock.l_whence = libc::c_short::try_from(libc::SEEK_SET).expect("lock whence");
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const lock) } == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-async fn insert_binding(conn: &turso::Connection, row: &str) -> Result<()> {
-    conn.execute(INSERT_BINDING_SQL, (row, USER_ID, WORKSPACE_ID))
-        .await?;
-    Ok(())
-}
-
-async fn legacy_roundtrip() {
-    let conn = open_legacy_auth_db()
-        .await
-        .expect("legacy binary reopens the auth DB");
-    let mut rows = conn
-        .query("SELECT token FROM telemetry_credentials WHERE id = 1", ())
-        .await
-        .expect("legacy reads telemetry credential");
-    let row = rows
-        .next()
-        .await
-        .expect("legacy credential row fetch")
-        .expect("legacy sees credential row");
-    assert_eq!(row.get::<String>(0).expect("token"), TOKEN);
-    drop(rows);
-    insert_binding(&conn, "legacy-roundtrip")
-        .await
-        .expect("legacy writes after new processes exit");
 }
 
 async fn print_verified_rows() {

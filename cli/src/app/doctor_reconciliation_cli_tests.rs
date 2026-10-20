@@ -606,16 +606,12 @@ async fn doctor_fix_recovers_from_every_initial_maintenance_state_condition() {
     }
 }
 
-fn managed_telemetry_problems(report: &Value) -> Vec<Value> {
+fn global_state_warnings(report: &Value) -> Vec<Value> {
     report["problems"]
         .as_array()
         .expect("problems array")
         .iter()
-        .filter(|problem| {
-            problem["summary"]
-                .as_str()
-                .is_some_and(|summary| summary.contains("telemetry export is disabled"))
-        })
+        .filter(|problem| problem["category"] == "global_state" && problem["severity"] == "warning")
         .cloned()
         .collect()
 }
@@ -633,7 +629,8 @@ async fn doctor_on_fresh_state_reports_unconfigured_telemetry_without_a_warning(
         .json();
 
     assert_eq!(report["managed_telemetry"]["state"], "not_configured");
-    assert!(managed_telemetry_problems(&report).is_empty());
+    let warnings = global_state_warnings(&report);
+    assert!(warnings.is_empty(), "{warnings:#?}");
     assert!(!auth_dir.join("auth.db").exists());
     assert!(!auth_dir.join("telemetry-ready.json").exists());
 }
@@ -664,24 +661,24 @@ async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_e
         "{}",
         fix.stdout
     );
-    let problems = managed_telemetry_problems(&report);
-    assert_eq!(problems.len(), 1, "{}", fix.stdout);
-    assert_eq!(problems[0]["severity"], "warning");
-    assert_eq!(problems[0]["fixability"], "manual_only");
-    assert!(!problems[0]["remediation"]["text"]
-        .as_str()
-        .expect("remediation")
-        .contains("Always Allow"));
-    let telemetry_fixes = non_reconciliation_fix_results(&report, sandbox.dir.path())
-        .into_iter()
+    let warnings = global_state_warnings(&report);
+    assert_eq!(warnings.len(), 1, "{}", fix.stdout);
+    assert_eq!(warnings[0]["fixability"], "manual_only");
+    assert_eq!(warnings[0]["remediation"]["next_action"], "manual_steps");
+    let summary = warnings[0]["summary"].as_str().expect("summary");
+    let fixes = report["fix_results"]
+        .as_array()
+        .expect("fix_results array")
+        .iter()
         .filter(|entry| {
-            entry["detail"]
-                .as_str()
-                .is_some_and(|detail| detail.contains("telemetry"))
+            entry["category"] == "global_state"
+                && entry["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.starts_with(summary))
         })
         .collect::<Vec<_>>();
-    assert_eq!(telemetry_fixes.len(), 1, "{}", fix.stdout);
-    assert_eq!(telemetry_fixes[0]["outcome"], "manual");
+    assert_eq!(fixes.len(), 1, "{}", fix.stdout);
+    assert_eq!(fixes[0]["outcome"], "manual");
     assert_eq!(
         std::fs::read(&auth_db).expect("auth DB kept"),
         UNREADABLE_AUTH_DB
