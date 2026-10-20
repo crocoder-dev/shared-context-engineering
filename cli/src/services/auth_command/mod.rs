@@ -105,24 +105,34 @@ where
 }
 
 async fn run_telemetry_headers() -> Result<String, CliError> {
+    let working_dir = std::env::current_dir().ok();
+    let telemetry_enabled = working_dir.as_deref().is_some_and(telemetry_enabled_for);
     telemetry_headers_with(
-        std::env::current_dir().ok(),
+        working_dir,
+        telemetry_enabled,
         visible_destination_conflict(|key| std::env::var(key).ok()),
-        telemetry_readiness::is_ready(current_unix_seconds()),
+        || telemetry_readiness::is_ready(current_unix_seconds()),
         repository_id_for,
         telemetry_credential_storage::load_repository_telemetry_credential,
     )
     .await
 }
 
-pub(crate) async fn telemetry_headers_with<R, L, Fut>(
+fn telemetry_enabled_for(working_dir: &Path) -> bool {
+    config::resolve_auth_runtime_config(working_dir)
+        .is_ok_and(|config| config.access_policy.telemetry_enabled())
+}
+
+pub(crate) async fn telemetry_headers_with<P, R, L, Fut>(
     working_dir: Option<PathBuf>,
+    telemetry_enabled: bool,
     destination_conflict: bool,
-    ready: bool,
+    ready_probe: P,
     resolve_repository: R,
     lookup: L,
 ) -> Result<String, CliError>
 where
+    P: FnOnce() -> bool,
     R: FnOnce(&Path) -> Option<String> + Send + 'static,
     L: FnOnce(String) -> Fut + Send + 'static,
     Fut: Future<
@@ -133,7 +143,10 @@ where
         > + Send
         + 'static,
 {
-    let Some(working_dir) = working_dir.filter(|_| ready && !destination_conflict) else {
+    if !telemetry_enabled || destination_conflict {
+        return Err(telemetry_headers_unavailable());
+    }
+    let Some(working_dir) = working_dir.filter(|_| ready_probe()) else {
         return Err(telemetry_headers_unavailable());
     };
     let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
@@ -877,48 +890,93 @@ mod tests {
 
     #[tokio::test]
     async fn telemetry_headers_fail_closed_before_lookup_without_repository_or_on_conflict() {
-        let lookup_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let lookup = |called: std::sync::Arc<std::sync::atomic::AtomicBool>| {
-            move |_repository_id: String| async move {
-                called.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(Some(telemetry_credential("tok-scoped")))
-            }
-        };
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
         let working_dir = Some(PathBuf::from("/workspace/repo"));
-
-        let error = telemetry_headers_with(
-            working_dir.clone(),
-            false,
-            false,
-            |_: &Path| Some("repo-a".to_string()),
-            lookup(std::sync::Arc::clone(&lookup_called)),
-        )
-        .await
-        .expect_err("helper must fail closed without telemetry readiness");
-        assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE);
-
-        for (dir, conflict, repository) in [
-            (working_dir.clone(), true, Some("repo-a")),
-            (None, false, Some("repo-a")),
-            (working_dir.clone(), false, None),
-        ] {
+        let cases = [
+            (
+                "policy disabled",
+                working_dir.clone(),
+                false,
+                false,
+                true,
+                Some("repo-a"),
+            ),
+            (
+                "not ready",
+                working_dir.clone(),
+                true,
+                false,
+                false,
+                Some("repo-a"),
+            ),
+            (
+                "destination conflict",
+                working_dir.clone(),
+                true,
+                true,
+                true,
+                Some("repo-a"),
+            ),
+            ("no working dir", None, true, false, true, Some("repo-a")),
+            (
+                "no repository",
+                working_dir.clone(),
+                true,
+                false,
+                true,
+                None,
+            ),
+        ];
+        for (case, dir, telemetry_enabled, conflict, ready, repository) in cases {
+            let probed = Arc::new(AtomicBool::new(false));
+            let resolved = Arc::new(AtomicBool::new(false));
+            let looked_up = Arc::new(AtomicBool::new(false));
             let error = telemetry_headers_with(
                 dir,
+                telemetry_enabled,
                 conflict,
-                true,
-                move |_: &Path| repository.map(str::to_string),
-                lookup(std::sync::Arc::clone(&lookup_called)),
+                {
+                    let probed = Arc::clone(&probed);
+                    move || {
+                        probed.store(true, Ordering::SeqCst);
+                        ready
+                    }
+                },
+                {
+                    let resolved = Arc::clone(&resolved);
+                    move |_: &Path| {
+                        resolved.store(true, Ordering::SeqCst);
+                        repository.map(str::to_string)
+                    }
+                },
+                {
+                    let looked_up = Arc::clone(&looked_up);
+                    move |_repository_id: String| async move {
+                        looked_up.store(true, Ordering::SeqCst);
+                        Ok(Some(telemetry_credential("tok-scoped")))
+                    }
+                },
             )
             .await
-            .expect_err("helper must fail closed");
-            assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE);
+            .expect_err(case);
+            assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE, "{case}");
+            assert!(!looked_up.load(Ordering::SeqCst), "{case}: lookup ran");
+            if !telemetry_enabled {
+                assert!(!probed.load(Ordering::SeqCst), "{case}: readiness probed");
+                assert!(
+                    !resolved.load(Ordering::SeqCst),
+                    "{case}: repository resolved"
+                );
+            }
         }
-        assert!(!lookup_called.load(std::sync::atomic::Ordering::SeqCst));
 
         let headers = telemetry_headers_with(
             working_dir,
-            false,
             true,
+            false,
+            || true,
             |dir: &Path| (dir == Path::new("/workspace/repo")).then(|| "repo-a".to_string()),
             |repository_id: String| async move {
                 assert_eq!(repository_id, "repo-a");
@@ -928,6 +986,47 @@ mod tests {
         .await
         .expect("authorized repository should render");
         assert_eq!(headers, r#"{"Authorization":"Bearer tok-scoped"}"#);
+    }
+
+    #[test]
+    fn telemetry_headers_policy_follows_auth_and_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.json");
+        let local_dir = dir.path().join(".sce");
+        std::fs::create_dir_all(&local_dir).unwrap();
+        let local = local_dir.join("config.json");
+        let enabled = |global_json: &str, local_json: Option<&str>| {
+            std::fs::write(&global, global_json).unwrap();
+            match local_json {
+                Some(json) => std::fs::write(&local, json).unwrap(),
+                None => {
+                    let _ = std::fs::remove_file(&local);
+                }
+            }
+            config::resolver::resolve_auth_runtime_config_with(
+                dir.path(),
+                |_| None,
+                |path| std::fs::read_to_string(path).map_err(anyhow::Error::from),
+                Path::exists,
+                || Ok(global.clone()),
+            )
+            .is_ok_and(|config| config.access_policy.telemetry_enabled())
+        };
+
+        assert!(enabled(r#"{"telemetry":{"enabled":true}}"#, None));
+        assert!(!enabled("{}", None));
+        assert!(!enabled(
+            r#"{"telemetry":{"enabled":true},"auth":{"mode":"disabled"}}"#,
+            None
+        ));
+        assert!(!enabled(
+            r#"{"telemetry":{"enabled":true}}"#,
+            Some(r#"{"auth":{"mode":"disabled"}}"#)
+        ));
+        assert!(!enabled(
+            r#"{"telemetry":{"enabled":true}}"#,
+            Some(r#"{"telemetry":{"enabled":"yes"}}"#)
+        ));
     }
 
     #[test]

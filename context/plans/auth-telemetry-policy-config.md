@@ -325,13 +325,39 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — managed telemetry startup and doctor health contract. `context/sce/cli-observability-contract.md` should list the `disabled_by_config` fallback reason and the startup policy gate. `context/sce/telemetry-credential.md` should record the policy gate before the readiness hint and lookup. The doctor managed-telemetry output contract gains the `disabled_by_config` row, JSON state, and fixed opt-in line.
   - Context synchronization: synced
 
-- [ ] T05: `Fail closed in the telemetry headers helper when telemetry is disabled` (status:todo)
+- [x] T05: `Fail closed in the telemetry headers helper when telemetry is disabled` (status:done)
   - Task ID: T05
   - Scope: In — `auth_command::run_telemetry_headers` resolving the policy from the working directory and `telemetry_headers_with` taking a `telemetry_enabled` input checked before readiness, repository resolution, and lookup. Out — Claude settings changes.
   - Dependencies: T02
   - Done when: telemetry not `Enabled` (including `auth.mode: disabled` and invalid discovered config) yields the existing fixed `Telemetry credential is unavailable.` with empty stdout, without calling the repository resolver or lookup; enabled behavior is unchanged.
   - Verify: extend `telemetry_headers_fail_closed_before_lookup_without_repository_or_on_conflict` into a table including the policy-disabled row with resolver/lookup closures that fail if called; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_headers`.
-  - Context synchronization: pending
+  - Completed: 2026-10-20
+  - Files changed: `cli/src/services/auth_command/mod.rs`, `cli/src/services/config/types.rs`, `cli/src/app.rs`, `cli/src/services/telemetry_credential_storage.rs`, `cli/src/services/auth_db/multiprocess_tests.rs`, `context/plans/auth-telemetry-policy-config.md`
+  - Result:
+    - `run_telemetry_headers` resolves the policy from the current directory through `config::resolve_auth_runtime_config`. A missing working directory or a resolution failure counts as not enabled.
+    - `telemetry_headers_with(working_dir, telemetry_enabled, destination_conflict, ready_probe, resolve_repository, lookup)` checks `telemetry_enabled` (and the destination conflict) first. It then checks the working directory, then runs the readiness probe, then calls the repository resolver and the lookup.
+    - Readiness is now a lazy `FnOnce() -> bool` probe, so `telemetry-ready.json` is never read when the policy is off.
+    - The failure path still returns the fixed `Telemetry credential is unavailable.` runtime error, with empty stdout.
+    - Removed `#[allow(dead_code)]` from `ResolvedAuthRuntimeConfig.access_policy`.
+    - Updated the existing call sites in the app stall test and the storage headers test to pass `telemetry_enabled = true` and `|| true`.
+  - Verify outcome:
+    - `telemetry_headers` passed (11 passed, 0 failed). The rewritten `telemetry_headers_fail_closed_before_lookup_without_repository_or_on_conflict` is now a table: policy disabled, not ready, destination conflict, no working dir, no repository.
+      - Every row records whether the readiness probe, the repository resolver, and the lookup were called. Lookup is never called. For the policy-disabled row, neither the probe nor the resolver runs.
+      - The enabled path still renders `{"Authorization":"Bearer tok-scoped"}`.
+    - New `telemetry_headers_policy_follows_auth_and_invalid_config` resolves real layered configs and checks the cases below. Only the global `true` case resolves to enabled:
+      - global `true` → enabled
+      - default → disabled
+      - global `auth.mode: disabled` → disabled
+      - repo `auth.mode: disabled` → disabled
+      - invalid repo layer → disabled
+    - `telemetry_headers_serve_only_the_bound_repository` (multiprocess, through `app::run`) also checks that the bound repository with an explicit `telemetry.enabled: false` config fails closed with the fixed diagnostic.
+    - Full CLI suite passed (683 passed, 0 failed). `cargo clippy --all-targets -- -D warnings` via `run-cli-cargo.sh` passed. `cargo fmt` applied.
+  - Deviation:
+    - The destination-conflict check now also runs before the readiness probe. It is a pure env check, so behavior is unchanged.
+    - The multiprocess headers children now pass an explicit `SCE_CONFIG_FILE` with `telemetry.enabled: true`, because the default policy disables telemetry. The config file is written once, before concurrent spawns.
+    - Process: implementation edits started before the gate was shown. The `approved` token pre-authorized them, and T04's work was staged, so the baseline-relative diff is the unstaged delta.
+  - Context impact: localized — headers-helper contract. `context/sce/telemetry-credential.md` should record that `sce auth telemetry-headers` checks the effective telemetry policy (resolved from its working directory) before the destination tripwire, readiness hint, repository resolution, and `auth.db` lookup, and fails closed with the existing fixed diagnostic.
+  - Context synchronization: synced
 
 - [ ] T06: `Enforce auth mode and telemetry consent in auth login and whoami` (status:todo)
   - Task ID: T06

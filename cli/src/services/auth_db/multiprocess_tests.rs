@@ -546,8 +546,9 @@ fn concurrent_telemetry_headers_on_missing_auth_db_fail_closed_without_creating_
         "https://github.com/acme/bound-repo",
     );
 
+    let config = headers_policy_config(&sandbox, true);
     let helpers = (0..CONCURRENT_PROCESSES)
-        .map(|_| spawn_headers(&sandbox, &repository))
+        .map(|_| spawn_headers(&sandbox, &repository, &config))
         .collect::<Vec<_>>();
     for helper in helpers {
         assert_headers_unavailable(helper);
@@ -574,17 +575,35 @@ fn telemetry_headers_serve_only_the_bound_repository() {
     bind.current_dir(&bound);
     wait_success("bind", bind.spawn().expect("spawn bind"));
 
-    let output = spawn_headers(&sandbox, &bound)
+    let enabled = headers_policy_config(&sandbox, true);
+    let disabled = headers_policy_config(&sandbox, false);
+    let output = spawn_headers(&sandbox, &bound, &enabled)
         .wait_with_output()
         .expect("bound headers output");
     assert!(output.status.success(), "bound headers failed");
     assert!(String::from_utf8_lossy(&output.stdout).contains(HEADERS_AUTHORIZATION));
-    assert_headers_unavailable(spawn_headers(&sandbox, &unbound));
+    assert_headers_unavailable(spawn_headers(&sandbox, &unbound, &enabled));
+    assert_headers_unavailable(spawn_headers(&sandbox, &bound, &disabled));
 }
 
-fn spawn_headers(sandbox: &Sandbox, repository: &Path) -> Child {
+fn headers_policy_config(sandbox: &Sandbox, telemetry_enabled: bool) -> PathBuf {
+    let config = sandbox
+        .dir
+        .path()
+        .join(format!("headers-policy-{telemetry_enabled}.json"));
+    std::fs::write(
+        &config,
+        serde_json::json!({ "telemetry": { "enabled": telemetry_enabled } }).to_string(),
+    )
+    .expect("headers policy config");
+    config
+}
+
+fn spawn_headers(sandbox: &Sandbox, repository: &Path, config: &Path) -> Child {
     let mut helper = sandbox.command("headers");
-    helper.current_dir(repository);
+    helper
+        .current_dir(repository)
+        .env("SCE_CONFIG_FILE", config);
     helper.spawn().expect("spawn headers")
 }
 

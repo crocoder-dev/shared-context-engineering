@@ -986,8 +986,9 @@ pub(crate) mod tests {
         let runtime = build_runtime().unwrap();
         let result = runtime.block_on(services::auth_command::telemetry_headers_with(
             Some(repo.path().to_path_buf()),
-            false,
             true,
+            false,
+            || true,
             |_: &std::path::Path| Some("repository-a".to_string()),
             |_: String| stalled_keychain_lookup(),
         ));

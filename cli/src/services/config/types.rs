@@ -287,7 +287,6 @@ pub(crate) struct LoadedConfigPath {
 pub(crate) struct ResolvedAuthRuntimeConfig {
     pub(crate) workos_client_id: ResolvedOptionalValue<String>,
     pub(crate) control_plane_base_url: ResolvedOptionalValue<String>,
-    #[allow(dead_code)]
     pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
