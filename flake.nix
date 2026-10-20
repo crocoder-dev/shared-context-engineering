@@ -57,6 +57,105 @@
           };
         });
 
+        typescriptPlatformPackage =
+          if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then {
+            name = "typescript-linux-x64";
+            hash = "sha512-EYdf2cNg7rgCWJnxCdJ+F3V39O8ihb37eHAu1LK8oAFizgTQbPOK7zHHXbPt8rX24COqODXeI3sIf0fCXG7H/A==";
+          } else if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then {
+            name = "typescript-linux-arm64";
+            hash = "sha512-Qh4eU4/y3yDjnfjjyPYihMj5/ODIlmt+Bzu17OI+fiSRDW57QmU5SiN63exPRNJPKUzcc1INa1NXdrJ+MqHjUQ==";
+          } else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isx86_64 then {
+            name = "typescript-darwin-x64";
+            hash = "sha512-SZ9xZInqApNlNGc9s0W1VSsktYSOe9cFqNOIqmN1Gs8SmkjKZYFt017G4VwPxASInODuAdbTW7sXiFUf893RgA==";
+          } else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then {
+            name = "typescript-darwin-arm64";
+            hash = "sha512-gowzar9MwS/aRWp6f3a4KUqzRjAZjOsmGNCM6LcTgXum+dBfgsBVMN+AgvOCCbguXyick6LJhpBszxMebJ8syA==";
+          } else
+            throw "Unsupported TypeScript platform for ${system}";
+        typescriptPlatform = pkgs.stdenvNoCC.mkDerivation rec {
+          pname = typescriptPlatformPackage.name;
+          version = "7.0.2";
+
+          src = pkgs.fetchurl {
+            url = "https://registry.npmjs.org/@typescript/${pname}/-/${pname}-${version}.tgz";
+            hash = typescriptPlatformPackage.hash;
+          };
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out"
+            cp -R . "$out"
+
+            runHook postInstall
+          '';
+        };
+        typescript_7 = pkgs.stdenvNoCC.mkDerivation rec {
+          pname = "typescript";
+          version = "7.0.2";
+
+          src = pkgs.fetchurl {
+            url = "https://registry.npmjs.org/typescript/-/typescript-${version}.tgz";
+            hash = "sha512-8FYau96o3NKOhbjKi/qNvG/W5jhzxkbdm5sj9AbZ/5T5sWqn3hJgLfGx27sRKZWTvyzCP8dLRBTf5tBTSRVUNA==";
+          };
+
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p \
+              "$out/lib/node_modules/typescript" \
+              "$out/lib/node_modules/@typescript/${typescriptPlatformPackage.name}" \
+              "$out/bin"
+            cp -R . "$out/lib/node_modules/typescript"
+            cp -R "${typescriptPlatform}/." "$out/lib/node_modules/@typescript/${typescriptPlatformPackage.name}"
+            makeWrapper "${pkgs.nodejs_24}/bin/node" "$out/bin/tsc" \
+              --add-flags "$out/lib/node_modules/typescript/bin/tsc"
+            makeWrapper "${pkgs.nodejs_24}/bin/node" "$out/bin/tsserver" \
+              --add-flags "$out/lib/node_modules/typescript/bin/tsserver"
+
+            runHook postInstall
+          '';
+        };
+
+        tsgoVersion = "0.36.4";
+        tsgoPlatformPackage =
+          if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64 then {
+            name = "tsgo-linux-x64";
+            hash = "sha512-+BuwiG5d8dLNrrN1PB5GA3gRkBwvlUYmMkm/XkttaLnppp9jePFkB8CgAiNV8j290q7BVO2nQjao5aPkVwmluw==";
+          } else if pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isAarch64 then {
+            name = "tsgo-linux-arm64";
+            hash = "sha512-aOv+wVbZWgBt9PGXPA874qgw151GrzkWqaswe+4TXjhdw/M4i35PCUH5T+uaQj3FnQ1NWiPqHIGfNBRjf3xG6w==";
+          } else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isx86_64 then {
+            name = "tsgo-darwin-x64";
+            hash = "sha512-4QZh0n/nUoTI7sp4o7gDEviJ/jXH+IFTVqIyQ2w2fqqPoOvaGl9bVoR/2f9j/67hvY4DHcXKaccpmyoRYhaYsw==";
+          } else if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64 then {
+            name = "tsgo-darwin-arm64";
+            hash = "sha512-oOcWdKQucNch6G4CvidHEzmfgeKEPMvFcz+DXuKGonBLwVHX+i1VYGbZwccEOoiitOg7eWVl4e8S0qKMXg3/gg==";
+          } else
+            throw "Unsupported tsgo platform for ${system}";
+        tsgoPlatform = pkgs.stdenvNoCC.mkDerivation {
+          pname = tsgoPlatformPackage.name;
+          version = tsgoVersion;
+          src = pkgs.fetchurl {
+            url = "https://registry.npmjs.org/@effect/${tsgoPlatformPackage.name}/-/${tsgoPlatformPackage.name}-${tsgoVersion}.tgz";
+            hash = tsgoPlatformPackage.hash;
+          };
+          installPhase = ''
+            mkdir -p "$out"
+            cp -R . "$out"
+          '';
+        };
+        effectTsgo = pkgs.writeShellScriptBin "effect-tsgo" ''
+          if [ "''${1:-}" = "get-exe-path" ]; then
+            printf '%s\n' "${tsgoPlatform}/artifacts/typescript/7.0.2/tsc"
+            exit 0
+          fi
+          echo "effect-tsgo in this shell only provides get-exe-path for the Neovim LSP." >&2
+          exit 1
+        '';
+
         quintLanguageServerPackage = pkgs.buildNpmPackage {
           pname = "quint-language-server";
           version = "0.19.0";
@@ -560,7 +659,9 @@
             pkl-lsp
             quint
             quintLanguageServerPackage
-            typescript
+            pkgs.nodejs_24
+            pkgs.pnpm_11
+            typescript_7
             typescript-language-server
             vscode-json-languageserver
             rust-analyzer
@@ -570,7 +671,7 @@
             pkgs.flatpak
             pkgs.flatpak-builder
           ]
-          ++ [ rustToolchain ];
+          ++ [ rustToolchain effectTsgo ];
 
         defaultDevShellHook = ''
           version_of() {
