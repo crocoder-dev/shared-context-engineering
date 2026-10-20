@@ -179,7 +179,7 @@ pub(crate) fn resolve_hook_runtime_config(cwd: &Path) -> Result<ResolvedHookRunt
 
 pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
     cwd: &Path,
-) -> Result<ResolvedValue<bool>> {
+) -> Result<(ResolvedValue<bool>, ResolvedAccessPolicy)> {
     let runtime = resolve_runtime_config_with(
         &ConfigRequest {
             report_format: ReportFormat::Text,
@@ -196,7 +196,7 @@ pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
         resolve_default_global_config_path,
     )?;
 
-    Ok(runtime.agent_trace_auto_sync)
+    Ok((runtime.agent_trace_auto_sync, runtime.access_policy))
 }
 
 pub(crate) fn resolve_agent_trace_storage_runtime_config(

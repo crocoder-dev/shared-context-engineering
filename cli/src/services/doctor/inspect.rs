@@ -515,9 +515,9 @@ fn collect_post_commit_auto_sync_health(
 ) -> PostCommitAutoSyncHealth {
     let resolved = config::resolve_agent_trace_auto_sync_runtime_config(repository_root).ok();
     let (enabled, source, config_source) =
-        resolved.map_or((true, "unresolved", None), |resolved| {
+        resolved.map_or((true, "unresolved", None), |(resolved, access_policy)| {
             (
-                resolved.value,
+                access_policy.auto_sync_allowed(resolved.value),
                 resolved.source.as_str(),
                 resolved
                     .source

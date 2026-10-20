@@ -11,11 +11,9 @@ use crate::services::agent_trace_sync::control_plane::{
     AuthenticatedControlPlaneClient, ControlPlaneError, MeResponse,
 };
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
-use crate::services::config::{
-    self, AuthMode, ConfigPathSource, ResolvedAccessPolicy, ResolvedAuthRuntimeConfig, ValueSource,
-};
+use crate::services::config::{self, AuthMode, ResolvedAccessPolicy, ResolvedAuthRuntimeConfig};
 use crate::services::db::encryption_key::CredentialAccess;
-use crate::services::error::{AuthPolicyConfigFile, AuthStorageFailure, CliError, UserError};
+use crate::services::error::{AuthStorageFailure, CliError, UserError};
 use crate::services::managed_telemetry::claude_helper::{
     repository_id_for, visible_destination_conflict,
 };
@@ -189,30 +187,14 @@ fn resolve_current_auth_config() -> Result<ResolvedAuthRuntimeConfig, CliError> 
 }
 
 fn ensure_auth_allowed(policy: &ResolvedAccessPolicy) -> Result<(), CliError> {
-    if policy.auth_allowed() {
+    let Some(file) = policy.auth_disabled_config_file() else {
         return Ok(());
-    }
-    let source = policy.auth_mode.source;
-    let file = match source {
-        ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal) => {
-            AuthPolicyConfigFile::Repository
-        }
-        ValueSource::Flag | ValueSource::ConfigFile(ConfigPathSource::Flag) => {
-            AuthPolicyConfigFile::ConfigFlag
-        }
-        ValueSource::Env | ValueSource::ConfigFile(ConfigPathSource::Env) => {
-            AuthPolicyConfigFile::ConfigEnv
-        }
-        ValueSource::Default
-        | ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal) => {
-            AuthPolicyConfigFile::Global
-        }
     };
     Err(CliError::user_with_source(
         UserError::AuthDisabledByConfig(file),
         anyhow!(
             "auth.mode resolved to disabled (source: {})",
-            source.as_str()
+            policy.auth_mode.source.as_str()
         ),
     ))
 }
@@ -849,6 +831,8 @@ fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::config::{ConfigPathSource, ValueSource};
+    use crate::services::error::AuthPolicyConfigFile;
 
     fn storage_failure() -> TokenStorageError {
         TokenStorageError::Database("failed".to_string())

@@ -30,9 +30,14 @@ Non-interactive setup does not change this key in an existing config. The separa
 ## Trigger boundary
 
 The post-commit hook first completes its existing Agent Trace validation and
-repository-scoped database persistence. Only after both succeed does it inspect
-`agent_trace.auto_sync`. When enabled, the hook asks the sync-owned launcher to
-start the current `sce` executable with exactly:
+repository-scoped database persistence. Only after both succeed does it resolve
+the hook runtime config. It launches only when `agent_trace.auto_sync` is true
+and the [effective access policy](access-policy.md#enforcement) allows
+background cloud operations: `auth.mode` is not `disabled` and no discovered
+config file was skipped as invalid. A launch suppressed by policy spawns
+nothing, logs the `debug` event `sce.agent_trace.auto_sync_skipped_by_policy`,
+and still returns the hook's normal success. When allowed, the hook asks the
+sync-owned launcher to start the current `sce` executable with exactly:
 
 ```text
 sync --format json
@@ -55,8 +60,11 @@ second synchronization database.
 canonical managed block is the hook-side readiness proof, using the same
 managed-block currency semantics as setup. The report exposes
 `post_commit_auto_sync` in JSON with `state`, `enabled`, `source`, and
-`config_source` fields. Its states are `ready` for enabled/current,
-`disabled` for an explicit false opt-out, `not_ready` for enabled but missing,
+`config_source` fields. `enabled` is the effective value: the configured
+setting gated by the access policy's background-cloud permission, while
+`source` and `config_source` describe `agent_trace.auto_sync`. Its states are
+`ready` for enabled/current, `disabled` for an explicit false opt-out or a
+policy that disallows background cloud operations, `not_ready` for enabled but missing,
 stale, unreadable, or otherwise non-current hook content, and `not_applicable`
 outside repository scope. The disabled state is healthy and does not alter the
 existing problem/remediation or overall readiness rules for unrelated hook
