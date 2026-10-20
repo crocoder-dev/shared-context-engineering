@@ -401,6 +401,8 @@ where
         agent_trace_repository_id: None,
         agent_trace_repository_remote: None,
         agent_trace_auto_sync: None,
+        auth_mode: None,
+        telemetry_enabled: None,
         otel: schema::OtelFileConfig::default(),
         bash_policy_presets: None,
         bash_policy_custom: None,
