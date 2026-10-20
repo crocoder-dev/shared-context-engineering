@@ -11,9 +11,11 @@ use crate::services::agent_trace_sync::control_plane::{
     AuthenticatedControlPlaneClient, ControlPlaneError, MeResponse,
 };
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
-use crate::services::config;
+use crate::services::config::{
+    self, AuthMode, ConfigPathSource, ResolvedAccessPolicy, ResolvedAuthRuntimeConfig, ValueSource,
+};
 use crate::services::db::encryption_key::CredentialAccess;
-use crate::services::error::{AuthStorageFailure, CliError, UserError};
+use crate::services::error::{AuthPolicyConfigFile, AuthStorageFailure, CliError, UserError};
 use crate::services::managed_telemetry::claude_helper::{
     repository_id_for, visible_destination_conflict,
 };
@@ -31,12 +33,14 @@ pub type AuthFormat = OutputFormat;
 const TELEMETRY_PROVISIONING_WARNING: &str =
     "Telemetry credential provisioning was unavailable. Retry with `sce auth login`.";
 const TELEMETRY_PROVISIONING_SUCCESS: &str = "Telemetry credential provisioned.";
+const TELEMETRY_PROVISIONING_DISABLED: &str = "Telemetry credential provisioning is disabled by SCE config. Set `telemetry.enabled: true` in the global SCE config to enable it.";
 const TELEMETRY_HEADERS_UNAVAILABLE: &str = "Telemetry credential is unavailable.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TelemetryProvisioningResult {
     Issued,
     Unavailable,
+    Disabled,
 }
 
 impl TelemetryProvisioningResult {
@@ -44,6 +48,7 @@ impl TelemetryProvisioningResult {
         match self {
             Self::Issued => "issued",
             Self::Unavailable => "unavailable",
+            Self::Disabled => "disabled",
         }
     }
 
@@ -51,6 +56,7 @@ impl TelemetryProvisioningResult {
         match self {
             Self::Issued => TELEMETRY_PROVISIONING_SUCCESS,
             Self::Unavailable => TELEMETRY_PROVISIONING_WARNING,
+            Self::Disabled => TELEMETRY_PROVISIONING_DISABLED,
         }
     }
 }
@@ -175,13 +181,45 @@ fn telemetry_headers_unavailable() -> CliError {
     CliError::runtime(anyhow!(TELEMETRY_HEADERS_UNAVAILABLE))
 }
 
-pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
-    let client = reqwest::Client::new();
+fn resolve_current_auth_config() -> Result<ResolvedAuthRuntimeConfig, CliError> {
     let cwd = std::env::current_dir()
         .context("failed to determine current directory for auth config resolution")
         .map_err(unexpected_auth_command_error)?;
-    let auth_config =
-        config::resolve_auth_runtime_config(&cwd).map_err(unexpected_auth_command_error)?;
+    config::resolve_auth_runtime_config(&cwd).map_err(unexpected_auth_command_error)
+}
+
+fn ensure_auth_allowed(policy: &ResolvedAccessPolicy) -> Result<(), CliError> {
+    if policy.auth_allowed() {
+        return Ok(());
+    }
+    let source = policy.auth_mode.source;
+    let file = match source {
+        ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal) => {
+            AuthPolicyConfigFile::Repository
+        }
+        ValueSource::Flag | ValueSource::ConfigFile(ConfigPathSource::Flag) => {
+            AuthPolicyConfigFile::ConfigFlag
+        }
+        ValueSource::Env | ValueSource::ConfigFile(ConfigPathSource::Env) => {
+            AuthPolicyConfigFile::ConfigEnv
+        }
+        ValueSource::Default
+        | ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal) => {
+            AuthPolicyConfigFile::Global
+        }
+    };
+    Err(CliError::user_with_source(
+        UserError::AuthDisabledByConfig(file),
+        anyhow!(
+            "auth.mode resolved to disabled (source: {})",
+            source.as_str()
+        ),
+    ))
+}
+
+pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
+    let client = reqwest::Client::new();
+    let auth_config = resolve_current_auth_config()?;
     let client_id = auth_config.workos_client_id.value.unwrap_or_default();
     let control_plane = AuthenticatedControlPlaneClient::new(
         client.clone(),
@@ -190,26 +228,61 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
         client_id.clone(),
         CredentialAccess::Interactive,
     );
-    let stored_tokens = token_storage::load_tokens(CredentialAccess::Interactive)
-        .await
-        .map_err(login_storage_error)?;
+    let telemetry_enabled = auth_config.access_policy.telemetry_enabled();
 
     let client = &client;
     let control_plane = &control_plane;
     let client_id = client_id.as_str();
-    run_login_with_stored_credentials(
+    run_login_with(
         format,
-        stored_tokens,
+        &auth_config.access_policy,
+        || token_storage::load_tokens(CredentialAccess::Interactive),
         |stored_tokens| async move {
             maybe_renew_stored_credentials(client, client_id, stored_tokens).await
         },
         || async move { provision_telemetry_credential(control_plane).await },
         |format| async move {
             match format {
-                AuthFormat::Text => run_text_login(client, client_id, control_plane).await,
-                AuthFormat::Json => run_login_json(client, client_id, format, control_plane).await,
+                AuthFormat::Text => {
+                    run_text_login(client, client_id, control_plane, telemetry_enabled).await
+                }
+                AuthFormat::Json => {
+                    run_login_json(client, client_id, format, control_plane, telemetry_enabled)
+                        .await
+                }
             }
         },
+    )
+    .await
+}
+
+async fn run_login_with<T, TF, R, P, D, RF, PF, DF>(
+    format: AuthFormat,
+    policy: &ResolvedAccessPolicy,
+    load_tokens: T,
+    renew: R,
+    provision: P,
+    device_login: D,
+) -> Result<String, CliError>
+where
+    T: FnOnce() -> TF,
+    TF: Future<Output = Result<Option<StoredTokens>, TokenStorageError>>,
+    R: FnOnce(StoredTokens) -> RF,
+    RF: Future<Output = Result<Option<StoredTokens>, CliError>>,
+    P: FnOnce() -> PF,
+    PF: Future<Output = TelemetryProvisioningResult>,
+    D: FnOnce(AuthFormat) -> DF,
+    DF: Future<Output = Result<String, CliError>>,
+{
+    ensure_auth_allowed(policy)?;
+    let stored_tokens = load_tokens().await.map_err(login_storage_error)?;
+    let telemetry_enabled = policy.telemetry_enabled();
+    run_login_with_stored_credentials(
+        format,
+        stored_tokens,
+        renew,
+        || provision_if_enabled(telemetry_enabled, provision),
+        device_login,
     )
     .await
 }
@@ -245,19 +318,7 @@ where
 }
 
 pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
-    if token_storage::load_tokens(CredentialAccess::Interactive)
-        .await
-        .map_err(auth_storage_error)?
-        .is_none()
-    {
-        return render_unauthenticated_whoami(format).map_err(unexpected_auth_command_error);
-    }
-
-    let cwd = std::env::current_dir()
-        .context("failed to determine current directory for auth config resolution")
-        .map_err(unexpected_auth_command_error)?;
-    let auth_config =
-        config::resolve_auth_runtime_config(&cwd).map_err(unexpected_auth_command_error)?;
+    let auth_config = resolve_current_auth_config()?;
     let client = AuthenticatedControlPlaneClient::new(
         reqwest::Client::new(),
         auth_config.control_plane_base_url.value.unwrap_or_default(),
@@ -265,8 +326,40 @@ pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
         auth_config.workos_client_id.value.unwrap_or_default(),
         CredentialAccess::Interactive,
     );
-    let profile = client
-        .me()
+    let client = &client;
+    run_whoami_with(
+        format,
+        &auth_config.access_policy,
+        || token_storage::load_tokens(CredentialAccess::Interactive),
+        || client.me(),
+    )
+    .await
+}
+
+async fn run_whoami_with<T, TF, F, FF>(
+    format: AuthFormat,
+    policy: &ResolvedAccessPolicy,
+    load_tokens: T,
+    fetch_profile: F,
+) -> Result<String, CliError>
+where
+    T: FnOnce() -> TF,
+    TF: Future<Output = Result<Option<StoredTokens>, TokenStorageError>>,
+    F: FnOnce() -> FF,
+    FF: Future<Output = Result<MeResponse, ControlPlaneError>>,
+{
+    ensure_auth_allowed(policy)?;
+    if load_tokens().await.map_err(auth_storage_error)?.is_none() {
+        if policy.auth_mode.value == AuthMode::Mandatory {
+            return Err(CliError::user_with_source(
+                UserError::NotAuthenticated,
+                anyhow!("auth.mode is mandatory and no stored credentials exist"),
+            ));
+        }
+        return render_unauthenticated_whoami(format).map_err(unexpected_auth_command_error);
+    }
+
+    let profile = fetch_profile()
         .await
         .map_err(|error| map_whoami_control_plane_error(&error))?;
 
@@ -345,6 +438,20 @@ where
     save_session().await.map_err(login_storage_error)
 }
 
+async fn provision_if_enabled<P, PF>(
+    telemetry_enabled: bool,
+    provision: P,
+) -> TelemetryProvisioningResult
+where
+    P: FnOnce() -> PF,
+    PF: Future<Output = TelemetryProvisioningResult>,
+{
+    if !telemetry_enabled {
+        return TelemetryProvisioningResult::Disabled;
+    }
+    provision().await
+}
+
 async fn provision_telemetry_credential(
     client: &AuthenticatedControlPlaneClient,
 ) -> TelemetryProvisioningResult {
@@ -402,6 +509,7 @@ async fn run_text_login(
     client: &reqwest::Client,
     client_id: &str,
     control_plane: &AuthenticatedControlPlaneClient,
+    telemetry_enabled: bool,
 ) -> Result<String, CliError> {
     let authorization =
         auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
@@ -421,7 +529,10 @@ async fn run_text_login(
 
     let stored_tokens = save_new_session_tokens(&token).await?;
 
-    let telemetry = provision_telemetry_credential(control_plane).await;
+    let telemetry = provision_if_enabled(telemetry_enabled, || {
+        provision_telemetry_credential(control_plane)
+    })
+    .await;
     render_login_result_with_telemetry(
         &DeviceAuthFlowResult {
             authorization,
@@ -438,6 +549,7 @@ async fn run_login_json(
     client_id: &str,
     format: AuthFormat,
     control_plane: &AuthenticatedControlPlaneClient,
+    telemetry_enabled: bool,
 ) -> Result<String, CliError> {
     let authorization =
         auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
@@ -455,7 +567,10 @@ async fn run_login_json(
 
     let stored_tokens = save_new_session_tokens(&token).await?;
 
-    let telemetry = provision_telemetry_credential(control_plane).await;
+    let telemetry = provision_if_enabled(telemetry_enabled, || {
+        provision_telemetry_credential(control_plane)
+    })
+    .await;
     render_login_result_with_telemetry(
         &DeviceAuthFlowResult {
             authorization,
@@ -579,6 +694,9 @@ fn render_login_text_with_color_policy(
         TelemetryProvisioningResult::Issued => headline,
         TelemetryProvisioningResult::Unavailable => {
             format!("{}\nWarning: {}", headline, telemetry.message())
+        }
+        TelemetryProvisioningResult::Disabled => {
+            format!("{}\nNote: {}", headline, telemetry.message())
         }
     }
 }
@@ -1269,5 +1387,321 @@ mod tests {
         );
         assert_eq!(unrecorded, TelemetryProvisioningResult::Unavailable);
         assert!(cleared.get());
+    }
+
+    fn access_policy(mode: AuthMode, source: ValueSource, telemetry: bool) -> ResolvedAccessPolicy {
+        use crate::services::config::{
+            ResolvedValue, TelemetryDisabledReason, TelemetryPolicyState,
+        };
+
+        ResolvedAccessPolicy {
+            auth_mode: ResolvedValue {
+                value: mode,
+                source,
+            },
+            telemetry_enabled: ResolvedValue {
+                value: telemetry,
+                source: ValueSource::Default,
+            },
+            telemetry: if telemetry {
+                TelemetryPolicyState::Enabled
+            } else {
+                TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled)
+            },
+            background_cloud_allowed: mode != AuthMode::Disabled,
+        }
+    }
+
+    fn global_policy(mode: AuthMode, telemetry: bool) -> ResolvedAccessPolicy {
+        access_policy(
+            mode,
+            ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal),
+            telemetry,
+        )
+    }
+
+    fn me_response() -> MeResponse {
+        use crate::services::agent_trace_sync::control_plane::{MeAuthorization, MeUser};
+
+        MeResponse {
+            user: MeUser {
+                email: "dev@example.test".to_string(),
+                first_name: None,
+                last_name: None,
+            },
+            authorization: MeAuthorization {
+                permissions: Vec::new(),
+                role: None,
+            },
+            workspace: None,
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum StoredCredentials {
+        None,
+        Valid,
+        Expired,
+    }
+
+    fn user_error_key(result: &Result<String, CliError>) -> Option<&'static str> {
+        match result {
+            Err(CliError::User { error, .. }) => Some(error.key()),
+            _ => None,
+        }
+    }
+
+    #[tokio::test]
+    async fn login_follows_auth_mode_across_stored_credentials() {
+        for mode in [AuthMode::Disabled, AuthMode::Optional, AuthMode::Mandatory] {
+            for stored in [
+                StoredCredentials::None,
+                StoredCredentials::Valid,
+                StoredCredentials::Expired,
+            ] {
+                let policy = global_policy(mode, true);
+                let storage_reads = std::sync::atomic::AtomicUsize::new(0);
+                let storage_reads = &storage_reads;
+                let result = run_login_with(
+                    AuthFormat::Json,
+                    &policy,
+                    || async move {
+                        storage_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(match stored {
+                            StoredCredentials::None => None,
+                            StoredCredentials::Valid | StoredCredentials::Expired => {
+                                Some(stored_tokens())
+                            }
+                        })
+                    },
+                    |tokens| async move {
+                        Ok(match stored {
+                            StoredCredentials::Valid => Some(tokens),
+                            StoredCredentials::None | StoredCredentials::Expired => None,
+                        })
+                    },
+                    || async { TelemetryProvisioningResult::Issued },
+                    |_format| async { Ok("device-login-complete".to_string()) },
+                )
+                .await;
+
+                let reads = storage_reads.load(std::sync::atomic::Ordering::SeqCst);
+                match (mode, stored) {
+                    (AuthMode::Disabled, _) => {
+                        assert_eq!(user_error_key(&result), Some("auth.disabled_by_config"));
+                        assert_eq!(reads, 0, "{mode:?} {stored:?}");
+                    }
+                    (_, StoredCredentials::Valid) => {
+                        let output = result.expect("renewed login should succeed");
+                        assert!(output.contains("\"renewed\": true"));
+                        assert!(output.contains("\"status\": \"issued\""));
+                        assert_eq!(reads, 1);
+                    }
+                    (_, StoredCredentials::None | StoredCredentials::Expired) => {
+                        assert_eq!(result.expect("device login"), "device-login-complete");
+                        assert_eq!(reads, 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn login_skips_provisioning_unless_telemetry_is_enabled() {
+        for mode in [AuthMode::Optional, AuthMode::Mandatory] {
+            let output = run_login_with(
+                AuthFormat::Json,
+                &global_policy(mode, false),
+                || async { Ok(Some(stored_tokens())) },
+                |tokens| async move { Ok(Some(tokens)) },
+                || async { panic!("provisioning must not run without telemetry consent") },
+                |_format| async { panic!("renewed credentials must not use device login") },
+            )
+            .await
+            .expect("renewed login should succeed");
+
+            assert!(output.contains("\"status\": \"disabled\""));
+            assert!(output.contains(TELEMETRY_PROVISIONING_DISABLED));
+        }
+
+        let disabled = provision_if_enabled(false, || async {
+            panic!("provisioning must not run without telemetry consent")
+        })
+        .await;
+        let enabled =
+            provision_if_enabled(true, || async { TelemetryProvisioningResult::Unavailable }).await;
+
+        assert_eq!(disabled, TelemetryProvisioningResult::Disabled);
+        assert_eq!(enabled, TelemetryProvisioningResult::Unavailable);
+    }
+
+    #[tokio::test]
+    async fn whoami_follows_auth_mode_across_stored_credentials() {
+        let unauthenticated =
+            render_unauthenticated_whoami(AuthFormat::Json).expect("unauthenticated render");
+        let authenticated =
+            render_whoami_result(&me_response(), AuthFormat::Json).expect("profile render");
+
+        for mode in [AuthMode::Disabled, AuthMode::Optional, AuthMode::Mandatory] {
+            for stored in [
+                StoredCredentials::None,
+                StoredCredentials::Valid,
+                StoredCredentials::Expired,
+            ] {
+                let policy = global_policy(mode, false);
+                let storage_reads = std::sync::atomic::AtomicUsize::new(0);
+                let storage_reads = &storage_reads;
+                let result = run_whoami_with(
+                    AuthFormat::Json,
+                    &policy,
+                    || async move {
+                        storage_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(match stored {
+                            StoredCredentials::None => None,
+                            StoredCredentials::Valid | StoredCredentials::Expired => {
+                                Some(stored_tokens())
+                            }
+                        })
+                    },
+                    || async move {
+                        match stored {
+                            StoredCredentials::Valid => Ok(me_response()),
+                            StoredCredentials::Expired => Err(
+                                ControlPlaneError::AuthenticationFailed("expired".to_string()),
+                            ),
+                            StoredCredentials::None => {
+                                panic!("no stored credentials must not fetch a profile")
+                            }
+                        }
+                    },
+                )
+                .await;
+
+                let reads = storage_reads.load(std::sync::atomic::Ordering::SeqCst);
+                match (mode, stored) {
+                    (AuthMode::Disabled, _) => {
+                        assert_eq!(user_error_key(&result), Some("auth.disabled_by_config"));
+                        assert_eq!(reads, 0);
+                    }
+                    (AuthMode::Optional, StoredCredentials::None) => {
+                        assert_eq!(result.expect("unauthenticated success"), unauthenticated);
+                    }
+                    (AuthMode::Mandatory, StoredCredentials::None)
+                    | (_, StoredCredentials::Expired) => {
+                        assert_eq!(
+                            user_error_key(&result),
+                            Some("auth.not_authenticated"),
+                            "{mode:?} {stored:?}"
+                        );
+                    }
+                    (_, StoredCredentials::Valid) => {
+                        assert_eq!(result.expect("profile"), authenticated);
+                    }
+                }
+                if mode != AuthMode::Disabled {
+                    assert_eq!(reads, 1, "{mode:?} {stored:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn auth_disabled_rejection_names_the_deciding_config_file() {
+        for (source, expected) in [
+            (
+                ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal),
+                AuthPolicyConfigFile::Global,
+            ),
+            (
+                ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal),
+                AuthPolicyConfigFile::Repository,
+            ),
+            (
+                ValueSource::ConfigFile(ConfigPathSource::Flag),
+                AuthPolicyConfigFile::ConfigFlag,
+            ),
+            (
+                ValueSource::ConfigFile(ConfigPathSource::Env),
+                AuthPolicyConfigFile::ConfigEnv,
+            ),
+        ] {
+            let Err(CliError::User { error, .. }) =
+                ensure_auth_allowed(&access_policy(AuthMode::Disabled, source, true))
+            else {
+                panic!("disabled auth must be rejected for {source:?}");
+            };
+            assert_eq!(error, UserError::AuthDisabledByConfig(expected));
+        }
+
+        for mode in [AuthMode::Optional, AuthMode::Mandatory] {
+            assert!(ensure_auth_allowed(&global_policy(mode, false)).is_ok());
+        }
+    }
+
+    #[test]
+    fn login_reports_disabled_telemetry_provisioning_in_text_and_json() {
+        let text =
+            render_login_text_with_color_policy(TelemetryProvisioningResult::Disabled, false);
+        let json = render_login_result_with_telemetry(
+            &device_auth_result(),
+            AuthFormat::Json,
+            TelemetryProvisioningResult::Disabled,
+        )
+        .expect("disabled JSON login output should render");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(
+            text,
+            "✓ Authentication succeeded.\nNote: Telemetry credential provisioning is disabled by SCE config. Set `telemetry.enabled: true` in the global SCE config to enable it."
+        );
+        assert_eq!(
+            value["telemetry_provisioning"],
+            json!({
+                "status": "disabled",
+                "message": TELEMETRY_PROVISIONING_DISABLED,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn logout_deletes_both_credential_rows_when_auth_is_disabled_by_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = dir.path().join("global.json");
+        std::fs::write(&global, r#"{"auth":{"mode":"disabled"}}"#).unwrap();
+        let policy = config::resolver::resolve_auth_runtime_config_with(
+            dir.path(),
+            |_| None,
+            |path| std::fs::read_to_string(path).map_err(anyhow::Error::from),
+            Path::exists,
+            || Ok(global.clone()),
+        )
+        .expect("config resolves")
+        .access_policy;
+        assert!(!policy.auth_allowed());
+
+        let events = std::sync::Mutex::new(Vec::new());
+        let output = run_logout_with(
+            AuthFormat::Json,
+            || {
+                events.lock().unwrap().push("clear-readiness");
+                Ok(())
+            },
+            async {
+                events.lock().unwrap().push("delete-workos");
+                Ok(true)
+            },
+            async {
+                events.lock().unwrap().push("delete-telemetry");
+                Ok(true)
+            },
+        )
+        .await
+        .expect("logout should succeed");
+
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["clear-readiness", "delete-workos", "delete-telemetry"]
+        );
+        assert!(output.contains("\"credentials_removed\": true"));
     }
 }
