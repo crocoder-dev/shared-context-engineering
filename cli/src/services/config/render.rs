@@ -7,8 +7,12 @@ use super::resolver::{
     AuthConfigKeySpec, RuntimeConfig, CONTROL_PLANE_BASE_URL_KEY, PRECEDENCE_DESCRIPTION,
     WORKOS_CLIENT_ID_KEY,
 };
-use super::types::{AgentTraceDbRetryConfig, DatabaseRetryConfig};
+use super::types::{
+    AgentTraceDbRetryConfig, DatabaseRetryConfig, ResolvedAccessPolicy, TelemetryDisabledReason,
+};
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ResolvedValue, ValueSource};
+
+const TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE: &str = "Claude Code telemetry settings written by earlier sce setup runs are not changed by telemetry.enabled.";
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
@@ -49,6 +53,7 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                     &runtime.agent_trace_auto_sync.value.to_string(),
                     runtime.agent_trace_auto_sync.source,
                 ),
+                format_access_policy_text(&runtime.access_policy),
                 format_otel_text(runtime),
                 format_bash_policies_text(&runtime.bash_policies),
                 format_database_retry_text(&runtime.database_retry),
@@ -95,6 +100,8 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
                                 runtime.agent_trace_auto_sync.source,
                             ),
                         },
+                        "auth": format_auth_policy_json(&runtime.access_policy),
+                        "telemetry": format_telemetry_policy_json(&runtime.access_policy),
                         "otel": format_otel_json(runtime),
                         "policies": {
                             "bash": format_bash_policies_json(&runtime.bash_policies),
@@ -107,6 +114,73 @@ pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportF
             serde_json::to_string_pretty(&payload).expect("config show payload should serialize")
         }
     }
+}
+
+fn format_access_policy_text(policy: &ResolvedAccessPolicy) -> String {
+    let mut lines = vec![
+        format_resolved_value_text(
+            "auth.mode",
+            policy.auth_mode.value.as_str(),
+            policy.auth_mode.source,
+        ),
+        format_resolved_value_text(
+            "telemetry.enabled",
+            &policy.telemetry_enabled.value.to_string(),
+            policy.telemetry_enabled.source,
+        ),
+    ];
+    let effective = match policy.telemetry.disabled_reason() {
+        Some(reason) => format!(
+            "- {}: {} (reason: {})",
+            style::label("telemetry.effective"),
+            style::value(policy.telemetry.as_str()),
+            style::label(reason.as_str())
+        ),
+        None => format!(
+            "- {}: {}",
+            style::label("telemetry.effective"),
+            style::value(policy.telemetry.as_str())
+        ),
+    };
+    lines.push(effective);
+    if let Some(note) = telemetry_policy_note(policy) {
+        lines.push(format!(
+            "- {}: {}",
+            style::label("telemetry.note"),
+            style::value(note)
+        ));
+    }
+    lines.join("\n")
+}
+
+fn format_auth_policy_json(policy: &ResolvedAccessPolicy) -> Value {
+    json!({
+        "mode": format_resolved_value_json(
+            policy.auth_mode.value.as_str(),
+            policy.auth_mode.source,
+        ),
+    })
+}
+
+fn format_telemetry_policy_json(policy: &ResolvedAccessPolicy) -> Value {
+    json!({
+        "enabled": format_resolved_value_json(
+            policy.telemetry_enabled.value,
+            policy.telemetry_enabled.source,
+        ),
+        "effective": {
+            "state": policy.telemetry.as_str(),
+            "reason": policy.telemetry.disabled_reason().map(TelemetryDisabledReason::as_str),
+        },
+        "note": telemetry_policy_note(policy),
+    })
+}
+
+fn telemetry_policy_note(policy: &ResolvedAccessPolicy) -> Option<&'static str> {
+    policy
+        .telemetry
+        .disabled_reason()
+        .map(|_| TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE)
 }
 
 fn otel_fields(runtime: &RuntimeConfig) -> [(&'static str, &ResolvedValue<String>); 5] {
@@ -587,4 +661,265 @@ fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>
         "source": value.source.map(ValueSource::as_str),
         "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use serde_json::{json, Value};
+
+    use super::{
+        format_show_output, format_validate_output, TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE,
+    };
+    use crate::services::config::resolver::{
+        resolve_runtime_config_with, RuntimeConfig,
+        WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT,
+        WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED,
+    };
+    use crate::services::config::{ConfigRequest, ReportFormat};
+
+    const GLOBAL_PATH: &str = "/tmp/render-policy-global/sce/config.json";
+    const LOCAL_PATH: &str = "/tmp/render-policy-repo/.sce/config.json";
+
+    struct PolicyCase {
+        name: &'static str,
+        global: &'static str,
+        local: &'static str,
+        text_lines: Vec<String>,
+        auth_json: Value,
+        telemetry_json: Value,
+        warnings: Vec<String>,
+    }
+
+    fn discovered_paths_exist(path: &Path) -> bool {
+        path == Path::new(GLOBAL_PATH) || path == Path::new(LOCAL_PATH)
+    }
+
+    fn resolve(global: &'static str, local: &'static str) -> RuntimeConfig {
+        resolve_runtime_config_with(
+            &ConfigRequest {
+                report_format: ReportFormat::Text,
+                config_path: None,
+                log_level: None,
+            },
+            Path::new("/tmp/render-policy-repo"),
+            |_| None,
+            move |path| {
+                if path == Path::new(GLOBAL_PATH) {
+                    Ok(global.to_string())
+                } else {
+                    Ok(local.to_string())
+                }
+            },
+            discovered_paths_exist,
+            || Ok(PathBuf::from(GLOBAL_PATH)),
+        )
+        .unwrap()
+    }
+
+    fn strip_ansi(text: &str) -> String {
+        let mut stripped = String::with_capacity(text.len());
+        let mut chars = text.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\u{1b}' {
+                for next in chars.by_ref() {
+                    if next == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                stripped.push(ch);
+            }
+        }
+        stripped
+    }
+
+    fn policy_text_block(output: &str) -> Vec<String> {
+        let lines = strip_ansi(output)
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let start = lines
+            .iter()
+            .position(|line| line.starts_with("- agent_trace.auto_sync:"))
+            .expect("show output should list agent_trace.auto_sync")
+            + 1;
+        let end = lines
+            .iter()
+            .position(|line| line.starts_with("- otel.endpoint:"))
+            .expect("show output should list otel.endpoint");
+        lines[start..end].to_vec()
+    }
+
+    fn resolved_json(source: &str, config_source: Option<&str>, value: &Value) -> Value {
+        json!({
+            "value": value,
+            "source": source,
+            "config_source": config_source,
+        })
+    }
+
+    fn policy_cases() -> Vec<PolicyCase> {
+        let note_line = format!("- telemetry.note: {TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE}");
+        vec![
+            PolicyCase {
+                name: "default",
+                global: "{}",
+                local: "{}",
+                text_lines: vec![
+                    "- auth.mode: optional (source: default)".to_string(),
+                    "- telemetry.enabled: false (source: default)".to_string(),
+                    "- telemetry.effective: disabled (reason: not_enabled)".to_string(),
+                    note_line.clone(),
+                ],
+                auth_json: json!({
+                    "mode": resolved_json("default", None, &json!("optional")),
+                }),
+                telemetry_json: json!({
+                    "enabled": resolved_json("default", None, &json!(false)),
+                    "effective": {"state": "disabled", "reason": "not_enabled"},
+                    "note": TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE,
+                }),
+                warnings: Vec::new(),
+            },
+            PolicyCase {
+                name: "user-enabled",
+                global: r#"{"telemetry":{"enabled":true}}"#,
+                local: "{}",
+                text_lines: vec![
+                    "- auth.mode: optional (source: default)".to_string(),
+                    "- telemetry.enabled: true (source: config_file, config_source: default_discovered_global)".to_string(),
+                    "- telemetry.effective: enabled".to_string(),
+                ],
+                auth_json: json!({
+                    "mode": resolved_json("default", None, &json!("optional")),
+                }),
+                telemetry_json: json!({
+                    "enabled": resolved_json("config_file", Some("default_discovered_global"), &json!(true)),
+                    "effective": {"state": "enabled", "reason": null},
+                    "note": null,
+                }),
+                warnings: Vec::new(),
+            },
+            PolicyCase {
+                name: "repo-only-enabled",
+                global: "{}",
+                local: r#"{"auth":{"mode":"mandatory"},"telemetry":{"enabled":true}}"#,
+                text_lines: vec![
+                    "- auth.mode: mandatory (source: config_file, config_source: default_discovered_local)".to_string(),
+                    "- telemetry.enabled: true (source: config_file, config_source: default_discovered_local)".to_string(),
+                    "- telemetry.effective: disabled (reason: no_user_consent)".to_string(),
+                    note_line.clone(),
+                ],
+                auth_json: json!({
+                    "mode": resolved_json("config_file", Some("default_discovered_local"), &json!("mandatory")),
+                }),
+                telemetry_json: json!({
+                    "enabled": resolved_json("config_file", Some("default_discovered_local"), &json!(true)),
+                    "effective": {"state": "disabled", "reason": "no_user_consent"},
+                    "note": TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE,
+                }),
+                warnings: vec![WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT.to_string()],
+            },
+            PolicyCase {
+                name: "auth-disabled-with-telemetry",
+                global: r#"{"auth":{"mode":"disabled"},"telemetry":{"enabled":true}}"#,
+                local: "{}",
+                text_lines: vec![
+                    "- auth.mode: disabled (source: config_file, config_source: default_discovered_global)".to_string(),
+                    "- telemetry.enabled: true (source: config_file, config_source: default_discovered_global)".to_string(),
+                    "- telemetry.effective: disabled (reason: auth_disabled)".to_string(),
+                    note_line,
+                ],
+                auth_json: json!({
+                    "mode": resolved_json("config_file", Some("default_discovered_global"), &json!("disabled")),
+                }),
+                telemetry_json: json!({
+                    "enabled": resolved_json("config_file", Some("default_discovered_global"), &json!(true)),
+                    "effective": {"state": "disabled", "reason": "auth_disabled"},
+                    "note": TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE,
+                }),
+                warnings: vec![WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED.to_string()],
+            },
+        ]
+    }
+
+    fn warnings_text_line(warnings: &[String]) -> String {
+        if warnings.is_empty() {
+            "Validation warnings: none".to_string()
+        } else {
+            format!("Validation warnings: {}", warnings.join(" | "))
+        }
+    }
+
+    #[test]
+    fn show_text_reports_access_policy_after_agent_trace_and_lists_policy_warnings() {
+        for case in policy_cases() {
+            let runtime = resolve(case.global, case.local);
+            let output = format_show_output(&runtime, ReportFormat::Text);
+
+            assert_eq!(policy_text_block(&output), case.text_lines, "{}", case.name);
+            assert_eq!(
+                strip_ansi(&output).lines().last(),
+                Some(warnings_text_line(&case.warnings).as_str()),
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn show_json_reports_resolved_auth_and_telemetry_policy() {
+        for case in policy_cases() {
+            let runtime = resolve(case.global, case.local);
+            let payload: Value =
+                serde_json::from_str(&format_show_output(&runtime, ReportFormat::Json)).unwrap();
+            let resolved = &payload["result"]["resolved"];
+
+            assert_eq!(resolved["auth"], case.auth_json, "{}", case.name);
+            assert_eq!(resolved["telemetry"], case.telemetry_json, "{}", case.name);
+            assert_eq!(
+                payload["result"]["warnings"],
+                json!(case.warnings),
+                "{}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn validate_lists_policy_warnings_without_policy_fields() {
+        for case in policy_cases() {
+            let runtime = resolve(case.global, case.local);
+            let text = strip_ansi(&format_validate_output(&runtime, ReportFormat::Text));
+            let payload: Value =
+                serde_json::from_str(&format_validate_output(&runtime, ReportFormat::Json))
+                    .unwrap();
+
+            assert_eq!(
+                text,
+                format!(
+                    "SCE config validation: valid\nValidation issues: none\n{}",
+                    warnings_text_line(&case.warnings)
+                ),
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                payload,
+                json!({
+                    "status": "ok",
+                    "result": {
+                        "command": "config_validate",
+                        "valid": true,
+                        "issues": [],
+                        "warnings": case.warnings,
+                    }
+                }),
+                "{}",
+                case.name
+            );
+        }
+    }
 }

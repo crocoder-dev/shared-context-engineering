@@ -381,7 +381,7 @@ pub(super) fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Res
 }
 
 #[allow(clippy::too_many_lines)]
-fn resolve_runtime_config_with<FEnv, FRead, FGlobalPath>(
+pub(super) fn resolve_runtime_config_with<FEnv, FRead, FGlobalPath>(
     request: &ConfigRequest,
     cwd: &Path,
     env_lookup: FEnv,

@@ -105,7 +105,6 @@ impl AuthMode {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Disabled => "disabled",
@@ -138,6 +137,22 @@ pub(crate) enum TelemetryPolicyState {
     Disabled(TelemetryDisabledReason),
 }
 
+impl TelemetryPolicyState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled(_) => "disabled",
+        }
+    }
+
+    pub(crate) fn disabled_reason(self) -> Option<TelemetryDisabledReason> {
+        match self {
+            Self::Enabled => None,
+            Self::Disabled(reason) => Some(reason),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TelemetryDisabledReason {
     NotEnabled,
@@ -146,6 +161,19 @@ pub(crate) enum TelemetryDisabledReason {
     RepositoryOptOut,
     AuthDisabled,
     InvalidConfig,
+}
+
+impl TelemetryDisabledReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NotEnabled => "not_enabled",
+            Self::UserOptOut => "user_opt_out",
+            Self::NoUserConsent => "no_user_consent",
+            Self::RepositoryOptOut => "repository_opt_out",
+            Self::AuthDisabled => "auth_disabled",
+            Self::InvalidConfig => "invalid_config",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
