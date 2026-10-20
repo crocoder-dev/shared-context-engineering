@@ -1,0 +1,4 @@
+{
+  "description": "sce-splash hooks module",
+  "modules": ["./register.ts"]
+}
