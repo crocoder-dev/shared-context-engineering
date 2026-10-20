@@ -395,13 +395,39 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — the auth command contract. `context/cli/cli-command-surface.md` should record that `login` and `whoami` are rejected with `auth.disabled_by_config` before credential-store access, `login` reports `telemetry_provisioning` `disabled` without telemetry consent, and unauthenticated `whoami` under `mandatory` fails with `auth.not_authenticated`. `context/sce/telemetry-credential.md` should record that provisioning during login is gated on the telemetry policy. `context/sce/auth-db.md` should note that `login` and `whoami` do not reach `auth.db` under `disabled`.
   - Context synchronization: synced
 
-- [ ] T07: `Gate sce sync and post-commit auto-sync on auth policy` (status:todo)
+- [x] T07: `Gate sce sync and post-commit auto-sync on auth policy` (status:done)
   - Task ID: T07
   - Scope: In — `sync::sync::run_current_sync_without_progress` returning a policy rejection before storage/credential access when auth is `disabled`, mapped by `sync/command.rs::classify_sync_error` to `AuthDisabledByConfig`; `commit_hooks::run_post_commit_subcommand` deciding launch from `ResolvedHookRuntimeConfig` (`auto_sync && background_cloud_allowed`); doctor `post_commit_auto_sync` reporting disabled when auth policy prevents it. Out — changing the auto-sync launcher or sync protocol.
   - Dependencies: T02, T06
   - Done when: `sce sync` under `disabled` fails with `auth.disabled_by_config` and no credential-store access; post-commit with `auto_sync: true` under `disabled` or degraded config never calls the launcher and still succeeds; `optional`/`mandatory` behavior is unchanged.
   - Verify: `run_post_commit_subcommand_with` table test with a launch closure that records calls across {auto_sync false/true} × {disabled, optional, mandatory, degraded}; sync classification test; doctor auto-sync state test; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml commit_hooks sync doctor`.
-  - Context synchronization: pending
+  - Completed: 2026-10-20
+  - Files changed: `cli/src/services/sync/sync.rs`, `cli/src/services/sync/command.rs`, `cli/src/services/hooks/commit_hooks.rs`, `cli/src/services/config/types.rs`, `cli/src/services/config/resolver.rs`, `cli/src/services/doctor/inspect.rs`, `cli/src/services/auth_command/mod.rs`, `cli/src/app/doctor_reconciliation_cli_tests.rs`, `context/plans/auth-telemetry-policy-config.md`
+  - Result:
+    - Added `TraceSyncError::AuthDisabled(AuthPolicyConfigFile)`. It is not an authentication failure and has no storage failure.
+    - `run_current_sync_without_progress` now resolves `resolve_auth_runtime_config` first. When auth is disabled it returns `AuthDisabled` before Agent Trace storage resolution and before the control-plane client (and so before any credential-store access) is built.
+    - `classify_sync_error` maps `AuthDisabled` to `UserError::AuthDisabledByConfig` (key `auth.disabled_by_config`), ahead of the storage and authentication checks.
+    - Added `ResolvedAccessPolicy::auth_disabled_config_file()`, which maps the deciding `auth.mode` source to `AuthPolicyConfigFile`. `auth_command::ensure_auth_allowed` now uses it, so login, whoami, and sync share one mapping.
+    - `run_post_commit_subcommand_with` now takes a `ResolvedHookRuntimeConfig` resolver (production: `config::resolve_hook_runtime_config`). It launches auto-sync only when `access_policy.auto_sync_allowed(agent_trace_auto_sync)` is true. When auto-sync is configured but suppressed, it logs debug event `sce.agent_trace.auto_sync_skipped_by_policy`. The hook still succeeds either way.
+    - `resolve_agent_trace_auto_sync_runtime_config` now also returns the access policy. Doctor's `post_commit_auto_sync.enabled` is now the configured value gated by `background_cloud_allowed`. So auth `disabled`, or a degraded config, reports state `disabled` / `[PASS] Post-commit Agent Trace auto-sync (disabled by config)`. `source` and `config_source` still describe `agent_trace.auto_sync`.
+    - Removed `#[allow(dead_code)]` from `ResolvedAccessPolicy::auto_sync_allowed` and `ResolvedHookRuntimeConfig.access_policy`; `config/types.rs` now has no `dead_code` allows from this plan.
+  - Verify outcome:
+    - `commit_hooks sync doctor` filters passed (78 passed, 0 failed).
+    - New `post_commit_launches_auto_sync_only_when_background_cloud_is_allowed`: real layered configs across {auto_sync false, true} × {disabled, optional, mandatory, degraded (invalid repo layer)}, with a recording launch closure. Auto-sync launches only for `true` + `optional`/`mandatory`. The skip debug event is logged only when auto-sync is configured but suppressed. Every row returns the success output.
+    - New `sync_rejects_disabled_auth_before_storage_or_credential_access`: a non-Git temp dir with repository `auth.mode: disabled` yields `AuthDisabled(Repository)` rather than a storage `Runtime` error. This proves the gate runs before storage and the client are built.
+    - New `classify_sync_error_maps_disabled_auth_to_auth_disabled_by_config`: covers all four config-file variants (key and message).
+    - New CLI test `doctor_reports_post_commit_auto_sync_disabled_when_auth_is_disabled`: repo `auto_sync: true` reports enabled; adding `auth.mode: disabled` gives JSON `{state: disabled, enabled: false, source: config_file, config_source: default_discovered_local}` and the `(disabled by config)` PASS text row.
+    - `auth_command` passed (20 passed) after the shared-mapping refactor.
+    - Full CLI suite passed (694 passed, 0 failed). `cargo clippy --all-targets -- -D warnings` via `run-cli-cargo.sh` passed. `cargo fmt` applied.
+  - Deviation:
+    - Sync now resolves the auth config before the Agent Trace storage config. When both would fail, a config error now surfaces before a storage error; both are still runtime failures.
+    - Doctor JSON `post_commit_auto_sync.enabled` now reports the effective (policy-gated) value instead of the raw configured value.
+    - `optional`/`mandatory` sync and post-commit behavior is unchanged: the policy check only adds a precondition.
+  - Context impact: localized — the sync command, the post-commit auto-sync trigger, and the doctor auto-sync row.
+    - `context/cli/agent-trace-auto-sync.md` should record that post-commit launches only when `auto_sync` is true and background cloud operations are allowed (auth not `disabled`, no skipped invalid layer), with the debug skip event, and that doctor reports `disabled` in those cases.
+    - `context/cli/cli-command-surface.md` should record that `sce sync` is rejected with `auth.disabled_by_config` before storage or credential access.
+    - `context/sce/auth-db.md` should note that `sync` does not reach `auth.db` under `disabled`.
+  - Context synchronization: synced
 
 - [ ] T08: `Skip Claude-native telemetry install in setup without telemetry consent` (status:todo)
   - Task ID: T08

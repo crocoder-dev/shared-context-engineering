@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use clap::ValueEnum;
 
+use crate::services::error::AuthPolicyConfigFile;
 use crate::services::output_format::OutputFormat;
 
 pub const NAME: &str = "config";
@@ -193,9 +194,29 @@ impl ResolvedAccessPolicy {
         self.auth_mode.value != AuthMode::Disabled
     }
 
-    #[allow(dead_code)]
     pub(crate) fn auto_sync_allowed(&self, configured: bool) -> bool {
         configured && self.background_cloud_allowed
+    }
+
+    pub(crate) fn auth_disabled_config_file(&self) -> Option<AuthPolicyConfigFile> {
+        if self.auth_allowed() {
+            return None;
+        }
+        Some(match self.auth_mode.source {
+            ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal) => {
+                AuthPolicyConfigFile::Repository
+            }
+            ValueSource::Flag | ValueSource::ConfigFile(ConfigPathSource::Flag) => {
+                AuthPolicyConfigFile::ConfigFlag
+            }
+            ValueSource::Env | ValueSource::ConfigFile(ConfigPathSource::Env) => {
+                AuthPolicyConfigFile::ConfigEnv
+            }
+            ValueSource::Default
+            | ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal) => {
+                AuthPolicyConfigFile::Global
+            }
+        })
     }
 }
 
@@ -305,7 +326,6 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
 pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
     pub(crate) agent_trace_auto_sync: bool,
-    #[allow(dead_code)]
     pub(crate) access_policy: ResolvedAccessPolicy,
 }
 

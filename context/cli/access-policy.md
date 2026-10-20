@@ -4,7 +4,7 @@
 
 This file describes how the CLI turns the per-layer `auth.mode` and `telemetry.enabled` config values into one effective access policy (`ResolvedAccessPolicy`). Key syntax and schema validation are in [config precedence contract](config-precedence-contract.md). The precedence model is recorded in [ADR: consent-gated access policy precedence](../decisions/2026-10-20-consent-gated-access-policy-precedence.md).
 
-Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Managed telemetry startup, `sce doctor`'s managed-telemetry health, the hidden `sce auth telemetry-headers` helper, and `sce auth login` / `whoami` enforce the policy (see [Enforcement](#enforcement)). Sync, auto-sync, and setup do not enforce it yet.
+Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Managed telemetry startup, `sce doctor`'s managed-telemetry and auto-sync health, the hidden `sce auth telemetry-headers` helper, `sce auth login` / `whoami`, `sce sync`, and post-commit auto-sync enforce the policy (see [Enforcement](#enforcement)). Setup does not enforce it yet.
 
 ## Terms
 
@@ -49,6 +49,7 @@ flowchart TD
   - `telemetry_enabled()` is true only for `Enabled`.
   - `auth_allowed()` is true when the mode is not `disabled`.
   - `auto_sync_allowed(configured)` is `configured && background_cloud_allowed`.
+  - `auth_disabled_config_file()` returns the `AuthPolicyConfigFile` of the deciding layer when the mode is `disabled`, otherwise `None`. Every `auth.disabled_by_config` rejection uses it.
 - **Explicit config files:** an invalid explicit config file stays fatal, so it never produces a degraded policy.
 
 ## Contradiction warnings
@@ -97,3 +98,6 @@ The note documents a coverage limit: telemetry opt-out does not remove Claude-na
   - Login provisions a telemetry credential only when telemetry is `Enabled`. Otherwise `telemetry_provisioning` is `disabled`, with the fixed message ``Telemetry credential provisioning is disabled by SCE config. Set `telemetry.enabled: true` in the global SCE config to enable it.``, shown in text as a `Note:` line. Disabled provisioning issues nothing, writes no readiness hint, and enrolls no repository.
   - Under `mandatory`, `whoami` without stored credentials fails with `auth.not_authenticated`. Under `optional`, it renders the unauthenticated success report as before.
 - **`sce auth logout`:** performs no policy check in any mode, so it still clears the readiness hint and deletes both stored credential rows under `disabled`.
+- **`sce sync`:** resolves the policy from the repository root before it resolves Agent Trace storage or builds the control-plane client. Under `disabled` it fails with `auth.disabled_by_config` (same message and deciding-file naming as login), so `auth.db` and the credential store are never reached. `optional` and `mandatory` keep the existing behavior. See [sync command: error classification](sync-command.md#error-classification).
+- **Post-commit auto-sync:** the hook launches `sce sync` only when `auto_sync_allowed(agent_trace.auto_sync)` holds, so auth `disabled` or a degraded config suppresses the launch. A suppressed launch is silent apart from a `debug` log, and the hook still succeeds. See [automatic Agent Trace synchronization](agent-trace-auto-sync.md#trigger-boundary).
+- **`sce doctor` auto-sync row:** `post_commit_auto_sync.enabled` is the effective value (`auto_sync_allowed` of the configured value). When the policy suppresses auto-sync, the row reports state `disabled`. `source` / `config_source` still describe `agent_trace.auto_sync`.

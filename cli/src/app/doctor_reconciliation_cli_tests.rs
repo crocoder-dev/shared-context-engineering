@@ -708,6 +708,42 @@ async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_e
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_post_commit_auto_sync_disabled_when_auth_is_disabled() {
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    let config_dir = sandbox.repo.join(".sce");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    let config = config_dir.join("config.json");
+
+    std::fs::write(&config, r#"{"agent_trace":{"auto_sync":true}}"#).expect("config");
+    let allowed = sandbox.run(&["doctor", "--format", "json"]).json();
+    assert_eq!(allowed["post_commit_auto_sync"]["enabled"], true);
+    assert_ne!(allowed["post_commit_auto_sync"]["state"], "disabled");
+
+    std::fs::write(
+        &config,
+        r#"{"agent_trace":{"auto_sync":true},"auth":{"mode":"disabled"}}"#,
+    )
+    .expect("config");
+    let report = sandbox.run(&["doctor", "--format", "json"]).json();
+    assert_eq!(
+        report["post_commit_auto_sync"],
+        serde_json::json!({
+            "state": "disabled",
+            "enabled": false,
+            "source": "config_file",
+            "config_source": "default_discovered_local",
+        })
+    );
+    let text = sandbox.run(&["doctor"]);
+    assert!(
+        text.stdout
+            .contains("[PASS] Post-commit Agent Trace auto-sync (disabled by config)\n"),
+        "{}",
+        text.stdout
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn doctor_with_telemetry_disabled_by_config_never_reads_the_auth_db() {
     let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
     let auth_dir = sandbox.state_root().join("sce");
