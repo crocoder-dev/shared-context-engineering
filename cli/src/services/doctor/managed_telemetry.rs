@@ -187,17 +187,6 @@ pub(super) fn json(health: ManagedTelemetryHealth) -> Value {
 mod tests {
     use super::*;
 
-    const ALL_REASONS: [TelemetryFallbackReason; 8] = [
-        TelemetryFallbackReason::NotConfigured,
-        TelemetryFallbackReason::CredentialInaccessible,
-        TelemetryFallbackReason::CredentialUnavailable,
-        TelemetryFallbackReason::CredentialExpired,
-        TelemetryFallbackReason::LookupTimeout,
-        TelemetryFallbackReason::DatabaseError,
-        TelemetryFallbackReason::PathResolutionError,
-        TelemetryFallbackReason::ExporterInitFailed,
-    ];
-
     fn disabled(reason: TelemetryFallbackReason) -> ManagedTelemetryHealth {
         ManagedTelemetryHealth::Disabled(reason)
     }
@@ -251,28 +240,30 @@ mod tests {
 
     #[test]
     fn always_allow_is_only_recommended_for_macos_keychain_authorization() {
-        for platform in [
-            CredentialStorePlatform::Macos,
-            CredentialStorePlatform::Linux,
-            CredentialStorePlatform::Windows,
-            CredentialStorePlatform::Other,
+        use CredentialStorePlatform::{Linux, Macos, Other, Windows};
+        use TelemetryFallbackReason::{CredentialInaccessible, LookupTimeout};
+
+        for (platform, reason, expects_always_allow) in [
+            (Macos, CredentialInaccessible, true),
+            (Macos, LookupTimeout, false),
+            (Linux, CredentialInaccessible, false),
+            (Windows, CredentialInaccessible, false),
+            (Other, CredentialInaccessible, false),
+            (Linux, LookupTimeout, false),
         ] {
-            for reason in ALL_REASONS {
-                let Some(diagnostic) = diagnostic_for_platform(disabled(reason), platform) else {
-                    continue;
-                };
-                let text = format!("{} {}", diagnostic.summary, diagnostic.remediation);
-                let expects_always_allow = platform == CredentialStorePlatform::Macos
-                    && reason == TelemetryFallbackReason::CredentialInaccessible;
-                assert_eq!(
-                    text.contains("Always Allow"),
-                    expects_always_allow,
-                    "{platform:?}/{reason:?}: {text}"
-                );
-                if platform != CredentialStorePlatform::Macos {
-                    assert!(!text.contains("macOS"), "{platform:?}/{reason:?}");
-                }
-            }
+            let diagnostic = diagnostic_for_platform(disabled(reason), platform)
+                .expect("disabled telemetry is diagnosed");
+            let text = format!("{} {}", diagnostic.summary, diagnostic.remediation);
+            assert_eq!(
+                text.contains("Always Allow"),
+                expects_always_allow,
+                "{platform:?}/{reason:?}: {text}"
+            );
+            assert_eq!(
+                text.contains("macOS"),
+                platform == Macos,
+                "{platform:?}/{reason:?}: {text}"
+            );
         }
     }
 

@@ -717,8 +717,6 @@ fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     use super::*;
 
     fn storage_failure() -> TokenStorageError {
@@ -971,55 +969,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn valid_stored_credentials_are_provisioned_after_workos_persistence() {
-        let provision_calls = AtomicBool::new(false);
-        let tokens = stored_tokens();
-        let output = run_login_with_stored_credentials(
-            AuthFormat::Json,
-            Some(tokens.clone()),
-            |stored| async move {
-                assert_eq!(stored, tokens);
-                Ok(Some(stored))
-            },
-            || async {
-                provision_calls.store(true, Ordering::SeqCst);
-                TelemetryProvisioningResult::Issued
-            },
-            |_format| async { panic!("valid stored credentials must not use device login") },
-        )
-        .await
-        .expect("valid stored login should succeed");
-
-        assert!(provision_calls.load(Ordering::SeqCst));
-        assert!(output.contains("\"renewed\": true"));
-        assert!(output.contains("\"status\": \"issued\""));
-    }
-
-    #[tokio::test]
-    async fn renewed_stored_credentials_are_provisioned_after_workos_persistence() {
-        let provision_calls = AtomicBool::new(false);
+    async fn stored_credentials_are_provisioned_only_after_renewal_completes() {
         let original = stored_tokens();
         let renewed = StoredTokens {
             access_token: "renewed-access".to_string(),
             refresh_token: "renewed-refresh".to_string(),
             ..original.clone()
         };
-        let output = run_login_with_stored_credentials(
-            AuthFormat::Json,
-            Some(original),
-            |_stored| async move { Ok(Some(renewed)) },
-            || async {
-                provision_calls.store(true, Ordering::SeqCst);
-                TelemetryProvisioningResult::Issued
-            },
-            |_format| async { panic!("renewed stored credentials must not use device login") },
-        )
-        .await
-        .expect("renewed stored login should succeed");
+        for returned in [original.clone(), renewed] {
+            let events = std::sync::Mutex::new(Vec::new());
+            let events = &events;
+            let expected_stored = original.clone();
+            let output = run_login_with_stored_credentials(
+                AuthFormat::Json,
+                Some(original.clone()),
+                |stored| async move {
+                    assert_eq!(stored, expected_stored);
+                    tokio::task::yield_now().await;
+                    events.lock().unwrap().push("renewal-complete");
+                    Ok(Some(returned))
+                },
+                || async move {
+                    events.lock().unwrap().push("provision");
+                    TelemetryProvisioningResult::Issued
+                },
+                |_format| async { panic!("stored credentials must not use device login") },
+            )
+            .await
+            .expect("stored login should succeed");
 
-        assert!(provision_calls.load(Ordering::SeqCst));
-        assert!(output.contains("\"renewed\": true"));
-        assert!(output.contains("\"status\": \"issued\""));
+            assert_eq!(*events.lock().unwrap(), ["renewal-complete", "provision"]);
+            assert!(output.contains("\"renewed\": true"));
+            assert!(output.contains("\"status\": \"issued\""));
+        }
     }
 
     #[tokio::test]
@@ -1085,64 +1067,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_credential_logout_reports_removal_when_only_telemetry_deleted() {
-        let output = run_logout_with(AuthFormat::Json, || Ok(()), async { Ok(false) }, async {
-            Ok(true)
-        })
-        .await
-        .expect("logout should succeed");
-        assert!(output.contains("\"credentials_removed\": true"));
-    }
+    async fn logout_clears_readiness_and_attempts_both_deletions_before_reporting() {
+        use AuthStorageFailure::{CredentialAccess, DatabaseLocked};
 
-    #[tokio::test]
-    async fn telemetry_credential_logout_attempts_both_deletions_on_telemetry_failure() {
-        let workos_called = AtomicBool::new(false);
-        let result = run_logout_with(
-            AuthFormat::Json,
-            || Ok(()),
-            async {
-                workos_called.store(true, Ordering::SeqCst);
-                Ok(true)
-            },
-            async { Err(storage_failure()) },
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(workos_called.load(Ordering::SeqCst));
-    }
+        fn deletion(result: Result<bool, AuthStorageFailure>) -> Result<bool, TokenStorageError> {
+            result.map_err(|failure| match failure {
+                CredentialAccess => TokenStorageError::CredentialAccessUnavailable,
+                _ => TokenStorageError::DatabaseLocked("busy".to_string()),
+            })
+        }
 
-    #[tokio::test]
-    async fn telemetry_credential_logout_deletes_telemetry_on_workos_failure() {
-        let telemetry_called = AtomicBool::new(false);
-        let result = run_logout_with(
-            AuthFormat::Json,
-            || Ok(()),
-            async { Err(storage_failure()) },
-            async {
-                telemetry_called.store(true, Ordering::SeqCst);
-                Ok(true)
-            },
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(telemetry_called.load(Ordering::SeqCst));
-    }
+        for (workos, telemetry, expected) in [
+            (Ok(false), Ok(true), Ok(())),
+            (Ok(true), Err(DatabaseLocked), Err(DatabaseLocked)),
+            (Err(CredentialAccess), Ok(true), Err(CredentialAccess)),
+            (
+                Err(CredentialAccess),
+                Err(DatabaseLocked),
+                Err(CredentialAccess),
+            ),
+        ] {
+            let events = std::sync::Mutex::new(Vec::new());
+            let result = run_logout_with(
+                AuthFormat::Json,
+                || {
+                    events.lock().unwrap().push("clear-readiness");
+                    Ok(())
+                },
+                async {
+                    events.lock().unwrap().push("delete-workos");
+                    deletion(workos)
+                },
+                async {
+                    events.lock().unwrap().push("delete-telemetry");
+                    deletion(telemetry)
+                },
+            )
+            .await;
 
-    #[tokio::test]
-    async fn logout_clears_telemetry_readiness_even_when_credential_deletion_fails() {
-        let cleared = AtomicBool::new(false);
-        let result = run_logout_with(
-            AuthFormat::Json,
-            || {
-                cleared.store(true, Ordering::SeqCst);
-                Ok(())
-            },
-            async { Err(storage_failure()) },
-            async { Err(storage_failure()) },
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(cleared.load(Ordering::SeqCst));
+            assert_eq!(
+                *events.lock().unwrap(),
+                ["clear-readiness", "delete-workos", "delete-telemetry"],
+                "{workos:?} {telemetry:?}"
+            );
+            match (result, expected) {
+                (Ok(output), Ok(())) => assert!(output.contains("\"credentials_removed\": true")),
+                (Err(CliError::User { error, .. }), Err(failure)) => {
+                    assert_eq!(error, UserError::AuthStorageUnavailable(failure));
+                }
+                (result, expected) => {
+                    panic!("{workos:?} {telemetry:?}: {result:?} != {expected:?}")
+                }
+            }
+        }
     }
 
     #[test]

@@ -124,9 +124,47 @@ mod tests {
     }
 
     #[test]
-    fn absent_readiness_is_not_ready() {
-        let paths = paths_with_auth_db();
-        assert!(!is_ready_at(&paths.readiness, &paths.auth_db, NOW));
+    fn readiness_state_requires_valid_unexpired_marker_and_auth_db() {
+        for (case, marker, auth_db, expected) in [
+            ("missing marker", None, true, ReadinessState::NotConfigured),
+            (
+                "malformed marker",
+                Some(b"not json".to_vec()),
+                true,
+                ReadinessState::NotConfigured,
+            ),
+            (
+                "valid marker",
+                Some(format!(r#"{{"expires_at_unix_seconds":{}}}"#, NOW + 1).into_bytes()),
+                true,
+                ReadinessState::Ready,
+            ),
+            (
+                "expired marker",
+                Some(format!(r#"{{"expires_at_unix_seconds":{NOW}}}"#).into_bytes()),
+                true,
+                ReadinessState::Expired,
+            ),
+            (
+                "missing auth DB",
+                Some(format!(r#"{{"expires_at_unix_seconds":{}}}"#, NOW + 1).into_bytes()),
+                false,
+                ReadinessState::NotConfigured,
+            ),
+        ] {
+            let paths = paths_with_auth_db();
+            if let Some(marker) = marker {
+                fs::write(&paths.readiness, marker).unwrap();
+            }
+            if !auth_db {
+                fs::remove_file(&paths.auth_db).unwrap();
+            }
+            assert_eq!(
+                state_at(&paths.readiness, &paths.auth_db, NOW),
+                expected,
+                "{case}"
+            );
+        }
     }
 
     #[test]
@@ -143,38 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn readiness_state_distinguishes_unconfigured_expired_and_ready() {
-        let paths = paths_with_auth_db();
-        assert_eq!(
-            state_at(&paths.readiness, &paths.auth_db, NOW),
-            ReadinessState::NotConfigured
-        );
-        mark_ready_at(&paths.readiness, NOW + 1).unwrap();
-        assert_eq!(
-            state_at(&paths.readiness, &paths.auth_db, NOW),
-            ReadinessState::Ready
-        );
-        assert_eq!(
-            state_at(&paths.readiness, &paths.auth_db, NOW + 1),
-            ReadinessState::Expired
-        );
-        fs::remove_file(&paths.auth_db).unwrap();
-        assert_eq!(
-            state_at(&paths.readiness, &paths.auth_db, NOW + 1),
-            ReadinessState::NotConfigured
-        );
-    }
-
-    #[test]
-    fn readiness_without_auth_db_is_stale() {
-        let paths = paths_with_auth_db();
-        mark_ready_at(&paths.readiness, NOW + 1).unwrap();
-        fs::remove_file(&paths.auth_db).unwrap();
-
-        assert!(!is_ready_at(&paths.readiness, &paths.auth_db, NOW));
-    }
-
-    #[test]
     fn clearing_readiness_disables_it_and_is_idempotent() {
         let paths = paths_with_auth_db();
         mark_ready_at(&paths.readiness, NOW + 1).unwrap();
@@ -182,13 +188,6 @@ mod tests {
         clear_at(&paths.readiness).unwrap();
         clear_at(&paths.readiness).unwrap();
 
-        assert!(!is_ready_at(&paths.readiness, &paths.auth_db, NOW));
-    }
-
-    #[test]
-    fn corrupt_readiness_is_not_ready() {
-        let paths = paths_with_auth_db();
-        fs::write(&paths.readiness, b"not json").unwrap();
         assert!(!is_ready_at(&paths.readiness, &paths.auth_db, NOW));
     }
 }
