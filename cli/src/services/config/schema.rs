@@ -222,9 +222,7 @@ pub(crate) struct FileConfig {
     pub(crate) agent_trace_repository_id: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_remote: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_auto_sync: Option<FileConfigValue<bool>>,
-    #[allow(dead_code)]
     pub(crate) auth_mode: Option<FileConfigValue<AuthMode>>,
-    #[allow(dead_code)]
     pub(crate) telemetry_enabled: Option<FileConfigValue<bool>>,
     pub(crate) otel: OtelFileConfig,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,

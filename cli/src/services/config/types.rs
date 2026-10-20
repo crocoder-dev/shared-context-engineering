@@ -116,6 +116,62 @@ impl AuthMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PolicyLayer {
+    User,
+    Repository,
+}
+
+impl PolicyLayer {
+    pub(crate) const fn from_config_path_source(source: ConfigPathSource) -> Self {
+        match source {
+            ConfigPathSource::Flag
+            | ConfigPathSource::Env
+            | ConfigPathSource::DefaultDiscoveredGlobal => Self::User,
+            ConfigPathSource::DefaultDiscoveredLocal => Self::Repository,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryPolicyState {
+    Enabled,
+    Disabled(TelemetryDisabledReason),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryDisabledReason {
+    NotEnabled,
+    UserOptOut,
+    NoUserConsent,
+    RepositoryOptOut,
+    AuthDisabled,
+    InvalidConfig,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedAccessPolicy {
+    pub(crate) auth_mode: ResolvedValue<AuthMode>,
+    pub(crate) telemetry_enabled: ResolvedValue<bool>,
+    pub(crate) telemetry: TelemetryPolicyState,
+    pub(crate) background_cloud_allowed: bool,
+}
+
+#[allow(dead_code)]
+impl ResolvedAccessPolicy {
+    pub(crate) fn telemetry_enabled(&self) -> bool {
+        self.telemetry == TelemetryPolicyState::Enabled
+    }
+
+    pub(crate) fn auth_allowed(&self) -> bool {
+        self.auth_mode.value != AuthMode::Disabled
+    }
+
+    pub(crate) fn auto_sync_allowed(&self, configured: bool) -> bool {
+        configured && self.background_cloud_allowed
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ValueSource {
     Flag,
     Env,
@@ -202,6 +258,8 @@ pub(crate) struct LoadedConfigPath {
 pub(crate) struct ResolvedAuthRuntimeConfig {
     pub(crate) workos_client_id: ResolvedOptionalValue<String>,
     pub(crate) control_plane_base_url: ResolvedOptionalValue<String>,
+    #[allow(dead_code)]
+    pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -213,12 +271,16 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) log_file_retention_limit: usize,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(crate) validation_errors: Vec<String>,
+    #[allow(dead_code)]
+    pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
     pub(crate) agent_trace_auto_sync: bool,
+    #[allow(dead_code)]
+    pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
