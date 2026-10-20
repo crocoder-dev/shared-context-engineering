@@ -4,7 +4,7 @@
 
 This file describes how the CLI turns the per-layer `auth.mode` and `telemetry.enabled` config values into one effective access policy (`ResolvedAccessPolicy`). Key syntax and schema validation are in [config precedence contract](config-precedence-contract.md). The precedence model is recorded in [ADR: consent-gated access policy precedence](../decisions/2026-10-20-consent-gated-access-policy-precedence.md).
 
-Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Consumer enforcement (managed telemetry, the headers helper, auth commands, sync, auto-sync, setup) is not wired yet. Until it is, the policy has no runtime effect beyond what config inspection reports.
+Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Managed telemetry startup and `sce doctor`'s managed-telemetry health enforce the telemetry state (see [Enforcement](#enforcement)). The headers helper, auth commands, sync, auto-sync, and setup do not enforce the policy yet.
 
 ## Terms
 
@@ -86,3 +86,8 @@ The note documents a coverage limit: telemetry opt-out does not remove Claude-na
 ## Exposure
 
 `ResolvedAuthRuntimeConfig`, `ResolvedHookRuntimeConfig`, and `ResolvedObservabilityRuntimeConfig` each carry `access_policy`, cloned from the same resolution that produced the rest of the projection. No consumer resolves config a second time to get the policy.
+
+## Enforcement
+
+- **Managed telemetry startup** (commands and admitted Claude hooks): `cli/src/app.rs` takes `telemetry_enabled()` from the startup `ResolvedObservabilityRuntimeConfig`. When telemetry is not `Enabled`, `RuntimeTelemetry::resolve` returns Noop with fallback reason `disabled_by_config` (logged at `debug`). This happens before the readiness hint is read, `auth.db` is opened, or the credential store is touched. See [telemetry credential](../sce/telemetry-credential.md).
+- **`sce doctor` managed-telemetry health:** doctor resolves the policy for the inspected repository root. A resolution failure counts as not enabled. When telemetry is not `Enabled`, it reports `[PASS] Managed telemetry (disabled by config)` (JSON `state` / `reason` `disabled_by_config`). It may check whether the readiness hint file exists, but never reads it or touches `auth.db`. See [telemetry credential: doctor health check](../sce/telemetry-credential.md#doctor-health-check).

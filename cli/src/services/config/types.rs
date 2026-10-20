@@ -184,16 +184,17 @@ pub(crate) struct ResolvedAccessPolicy {
     pub(crate) background_cloud_allowed: bool,
 }
 
-#[allow(dead_code)]
 impl ResolvedAccessPolicy {
     pub(crate) fn telemetry_enabled(&self) -> bool {
         self.telemetry == TelemetryPolicyState::Enabled
     }
 
+    #[allow(dead_code)]
     pub(crate) fn auth_allowed(&self) -> bool {
         self.auth_mode.value != AuthMode::Disabled
     }
 
+    #[allow(dead_code)]
     pub(crate) fn auto_sync_allowed(&self, configured: bool) -> bool {
         configured && self.background_cloud_allowed
     }
@@ -299,7 +300,6 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) log_file_retention_limit: usize,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(crate) validation_errors: Vec<String>,
-    #[allow(dead_code)]
     pub(crate) access_policy: ResolvedAccessPolicy,
 }
 

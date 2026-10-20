@@ -314,6 +314,20 @@ fn managed_telemetry_node(health: ManagedTelemetryHealth) -> DoctorDisplayNode {
             DoctorDisplayStatus::Pass,
             Vec::new(),
         ),
+        (
+            ManagedTelemetryHealth::DisabledByConfig {
+                readiness_hint_present,
+            },
+            None,
+        ) => top_level_node(
+            "Managed telemetry (disabled by config)",
+            DoctorDisplayStatus::Pass,
+            if readiness_hint_present {
+                vec![DoctorDisplayDetail::Note(managed_telemetry::OPT_IN_NOTE)]
+            } else {
+                Vec::new()
+            },
+        ),
     }
 }
 
@@ -656,6 +670,11 @@ fn render_display_node(
         &node.label,
     ));
     if !expand_unhealthy || node.status == DoctorDisplayStatus::Pass {
+        for detail in &node.details {
+            if matches!(detail, DoctorDisplayDetail::Note(_)) {
+                render_display_detail(lines, detail, indent + 2);
+            }
+        }
         return;
     }
 
@@ -737,6 +756,7 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
             lines.push(format!("{prefix}{}", managed_telemetry::HOOK_IMPACT));
             lines.extend(remediation.lines().map(|line| format!("{prefix}{line}")));
         }
+        DoctorDisplayDetail::Note(note) => lines.push(format!("{prefix}{note}")),
     }
 }
 
@@ -1291,6 +1311,25 @@ mod managed_telemetry_render_tests {
                 TelemetryFallbackReason::NotConfigured
             )),
             ["  [PASS] Managed telemetry (not configured)"]
+        );
+    }
+
+    #[test]
+    fn telemetry_disabled_by_config_renders_pass_row_with_opt_in_line_only_for_ready_hint() {
+        assert_eq!(
+            rendered(ManagedTelemetryHealth::DisabledByConfig {
+                readiness_hint_present: false
+            }),
+            ["  [PASS] Managed telemetry (disabled by config)"]
+        );
+        assert_eq!(
+            rendered(ManagedTelemetryHealth::DisabledByConfig {
+                readiness_hint_present: true
+            }),
+            [
+                "  [PASS] Managed telemetry (disabled by config)",
+                "    Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the global SCE config to resume it.",
+            ]
         );
     }
 
