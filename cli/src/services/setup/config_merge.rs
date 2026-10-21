@@ -395,7 +395,6 @@ pub(crate) enum ClaudeTelemetryRemovalMerge {
     HelperMissing,
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn remove_claude_telemetry_settings(
     existing_bytes: Option<&[u8]>,
     source_path: &str,
@@ -460,7 +459,6 @@ pub(crate) fn remove_claude_telemetry_settings(
     ))
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn settings_configure_claude_telemetry(settings: &Value) -> bool {
     if settings.get(CLAUDE_OTEL_HEADERS_HELPER_KEY).is_some() {
         return true;

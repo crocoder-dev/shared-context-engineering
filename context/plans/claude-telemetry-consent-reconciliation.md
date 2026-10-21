@@ -344,7 +344,7 @@ Ordering and consent:
   - Context impact: none. This adds internal pure helpers with no callers, and there is no user-visible behavior change until T02/T03.
   - Context synchronization: synced
 
-- [ ] T02: `Add guarded filesystem removal and fixed report lines` (status:todo)
+- [x] T02: `Add guarded filesystem removal and fixed report lines` (status:done)
   - Task ID: T02
   - Scope:
     - In: `setup/claude_telemetry.rs`:
@@ -358,7 +358,12 @@ Ordering and consent:
     - Every failure-table row maps to the documented outcome and line, with no write in any non-`Removed` outcome.
     - The success line appears only after `write_atomically` returns `Ok`.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_telemetry_removal`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_telemetry_install`.
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed: `cli/src/services/setup/claude_telemetry.rs`, `cli/src/services/setup/config_merge.rs`, `cli/src/services/setup/command.rs`
+  - Result: Added `ClaudeTelemetryRemovalOutcome`, `ClaudeTelemetryRemovalReport`, `remove_claude_telemetry`, and private `remove_claude_telemetry_with(.., reread)`. The steps run in the planned order: read → best-effort managed note via `settings_configure_claude_telemetry` → pure removal → `symlink_metadata` symlink check → owner-write-bit check (Unix; `readonly()` elsewhere) → injected re-read comparison → `write_atomically`. Outcomes other than `Removed` never write. Added fixed text constants and `format_claude_telemetry_removal_report(&report, claude_selected)`. `NotInstalled` renders the existing disabled-by-config line only when Claude is selected. Preserved lines name the path, give a remediation, and say SCE telemetry stays disabled by config. The `Failed` line names the path and detail and says consent remains withdrawn. The managed note is appended as a second line. Deviations: `ClaudeTelemetryRemovalReport` carries `settings_path` so the report lines can name the file. `CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE` moved from `command.rs` to `claude_telemetry.rs` as `pub(crate)` and is imported back, with the same text. The `0o555` parent-directory case is its own test, `claude_telemetry_removal_reports_failed_replace_in_unwritable_directory`, because it needs permissions restored before cleanup. T01's `expect(dead_code)` attributes were removed from `config_merge.rs`. `remove_claude_telemetry` and `format_claude_telemetry_removal_report` now carry `#[cfg_attr(not(test), expect(dead_code))]` until T03 wires them in, and T03 must remove them.
+  - Verify outcomes: `claude_telemetry_removal` → 6 passed, 0 failed (3 from T01 + `claude_telemetry_removal_filesystem_outcomes`, `claude_telemetry_removal_reports_failed_replace_in_unwritable_directory`, `claude_telemetry_removal_report_renders_fixed_lines`) (passed); `claude_telemetry_install` → 8 passed, 0 failed (passed). Extra: `run-cli-cargo.sh clippy --all-targets -- -D warnings` clean; `claude_telemetry` filter → 19 passed (passed).
+  - Context impact: none. These are internal filesystem helpers with no production callers yet, so user-visible behavior is unchanged until T03 wires the removal into setup.
+  - Context synchronization: synced
 
 - [ ] T03: `Trigger Claude telemetry removal on global consent withdrawal in setup` (status:todo)
   - Task ID: T03
