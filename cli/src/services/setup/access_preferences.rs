@@ -37,6 +37,7 @@ pub(crate) enum GlobalWriteOutcome {
 pub(crate) enum GlobalAccessPreferencesError {
     InvalidGlobalConfig { path: PathBuf, reason: String },
     ConcurrentModification { path: PathBuf },
+    SymlinkManaged { path: PathBuf },
     Io(anyhow::Error),
 }
 
@@ -51,6 +52,11 @@ impl fmt::Display for GlobalAccessPreferencesError {
             Self::ConcurrentModification { path } => write!(
                 f,
                 "Global SCE config '{}' changed while setup was updating it and was left unchanged.",
+                path.display()
+            ),
+            Self::SymlinkManaged { path } => write!(
+                f,
+                "Global SCE config '{}' is a symlink and was left unchanged; SCE cannot modify a symlink-managed global config. Update the file's source directly (for example, your Nix or Home Manager configuration).",
                 path.display()
             ),
             Self::Io(error) => write!(f, "{error:#}"),
@@ -148,6 +154,11 @@ where
             path: path.to_path_buf(),
         });
     }
+    if is_symlink(path).map_err(GlobalAccessPreferencesError::Io)? {
+        return Err(GlobalAccessPreferencesError::SymlinkManaged {
+            path: path.to_path_buf(),
+        });
+    }
 
     write_atomically(path, serialized.as_bytes()).map_err(GlobalAccessPreferencesError::Io)?;
     Ok(GlobalWriteOutcome::Written)
@@ -177,6 +188,15 @@ fn invalid_global_config(path: &Path, reason: &str) -> GlobalAccessPreferencesEr
     GlobalAccessPreferencesError::InvalidGlobalConfig {
         path: path.to_path_buf(),
         reason: reason.to_string(),
+    }
+}
+
+fn is_symlink(path: &Path) -> anyhow::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to inspect global SCE config '{}'", path.display())),
     }
 }
 
@@ -421,6 +441,81 @@ mod tests {
         fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(result, Err(GlobalAccessPreferencesError::Io(_))));
         assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn access_preferences_writer_refuses_to_replace_symlinked_global_config() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let original = br#"{"log_level":"info"}"#.to_vec();
+        for (name, target_exists, target_mode) in [
+            ("valid target", true, 0o644),
+            ("read-only target", true, 0o444),
+            ("dangling target", false, 0o644),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let target = dir.path().join("store").join("config.json");
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            if target_exists {
+                fs::write(&target, &original).unwrap();
+                fs::set_permissions(&target, fs::Permissions::from_mode(target_mode)).unwrap();
+            }
+            let path = dir.path().join("config.json");
+            symlink(&target, &path).unwrap();
+
+            let error =
+                persist_global_access_preferences(&path, Some(AuthMode::Optional), Some(true))
+                    .unwrap_err();
+
+            assert!(
+                matches!(error, GlobalAccessPreferencesError::SymlinkManaged { .. }),
+                "{name}: {error}"
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("Update the file's source directly"),
+                "{name}"
+            );
+            assert!(
+                fs::symlink_metadata(&path)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink(),
+                "{name}"
+            );
+            assert_eq!(fs::read_link(&path).unwrap(), target, "{name}");
+            if target_exists {
+                assert_eq!(fs::read(&target).unwrap(), original, "{name}");
+            } else {
+                assert!(!target.exists(), "{name}");
+            }
+            assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2, "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn access_preferences_writer_leaves_symlinked_global_config_alone_when_unchanged() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        let current = br#"{"auth":{"mode":"optional"},"telemetry":{"enabled":true}}"#.to_vec();
+        fs::write(&target, &current).unwrap();
+        let path = dir.path().join("config.json");
+        symlink(&target, &path).unwrap();
+
+        let outcome =
+            persist_global_access_preferences(&path, Some(AuthMode::Optional), Some(true)).unwrap();
+
+        assert_eq!(outcome, GlobalWriteOutcome::Unchanged);
+        assert!(fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(fs::read(&target).unwrap(), current);
     }
 
     #[test]

@@ -955,6 +955,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn repository_readiness_follows_binding_rather_than_credential_issuance() {
+        let (_guard, db) = open_db().await;
+        log_in_as(&db, USER_A, WORKSPACE_A, "tok-a").await;
+        assert!(
+            bind_repository_with(&db, now(), REPOSITORY_A, RepositoryBindingMode::Enroll)
+                .await
+                .expect("bind should succeed")
+        );
+
+        log_in_as(&db, USER_B, WORKSPACE_B, "tok-b").await;
+        assert!(
+            !bind_repository_with(
+                &db,
+                now(),
+                REPOSITORY_A,
+                RepositoryBindingMode::EnrollIfUnbound
+            )
+            .await
+            .expect("bind should succeed"),
+            "issued credential must not take over a repository bound to another identity"
+        );
+        assert!(load_with(&db, now())
+            .await
+            .expect("load should succeed")
+            .into_valid()
+            .is_some());
+        assert_eq!(repository_token(&db, REPOSITORY_A).await, None);
+
+        seed_session(&db, USER_A, WORKSPACE_A).await;
+        save_with(&db, &credential("tok-a-existing", FAR_FUTURE))
+            .await
+            .expect("save should succeed");
+        assert_eq!(
+            repository_token(&db, REPOSITORY_A).await,
+            Some("tok-a-existing".to_string()),
+            "already-authorized repository is ready without a new enrollment"
+        );
+    }
+
+    #[tokio::test]
     async fn incomplete_identity_is_never_saved() {
         let (_guard, db) = open_db().await;
         let result = save_with(
