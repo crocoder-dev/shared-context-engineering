@@ -1,8 +1,10 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
+use crate::services::auth_command::{self, AuthFormat, LoginReport, TelemetryProvisioningResult};
 use crate::services::config::{AuthMode, ResolvedAccessPolicy, ValueSource};
 use crate::services::error::{AuthPolicyConfigFile, CliError, UserError};
 use crate::services::lifecycle::{
@@ -21,6 +23,13 @@ const SAVED_ACCESS_SCOPE: &str = "applies to all repositories on this machine";
 const AUTH_LOGOUT_HINT_LINE: &str =
     "- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.";
 const GLOBAL_ACCESS_WRITE_REMEDIATION: &str = "No repository files were changed. Run 'sce config validate' to check the file, then rerun 'sce setup'.";
+const SETUP_LOGIN_DISABLED_LINE: &str =
+    "SCE login: skipped; SCE authentication is disabled by config.";
+const SETUP_LOGIN_NOT_REQUESTED_LINE: &str =
+    "SCE login: not requested; run 'sce auth login' to log in or refresh credentials.";
+const SETUP_LOGIN_DECLINED_LINE: &str = "SCE login: skipped; run 'sce auth login' to log in.";
+const SETUP_LOGIN_FAILED_PREFIX: &str = "SCE login: failed: ";
+const SETUP_LOGIN_RETRY_LINE: &str = "Run 'sce auth login' to retry.";
 
 pub struct SetupCommand {
     pub request: setup::SetupRequest,
@@ -79,6 +88,7 @@ impl SetupCommand {
             optional_workflows: prompted_optional_workflows,
             agent_trace_auto_sync,
             attribution_hooks_enabled,
+            login_intent,
             ..
         }) = setup_dispatch
         {
@@ -97,17 +107,27 @@ impl SetupCommand {
             .map_err(unexpected_failure)?;
             sections.push(setup_message);
 
+            let mut telemetry_issued = false;
             if let Some((access_save, auth_db_present)) = &interactive_access {
-                sections.push(setup_access_report(
+                let (access_section, policy) = setup_access_report(
                     &repository_root,
                     access_save,
                     resolve_access_policy,
                     *auth_db_present,
-                )?);
+                )?;
+                sections.push(access_section);
+
+                let login_status =
+                    run_setup_login_step(setup_login_action(&policy, login_intent), || {
+                        auth_command::run_login_in(&repository_root, AuthFormat::Text)
+                    })
+                    .await?;
+                telemetry_issued = login_status.telemetry_issued();
+                sections.push(render_setup_login_section(&login_status));
             }
 
             if claude_telemetry_selected {
-                sections.push(claude_telemetry_report(&repository_root));
+                sections.push(claude_telemetry_report(&repository_root, telemetry_issued));
             }
         }
 
@@ -286,17 +306,108 @@ fn setup_access_report<R>(
     access_save: &SetupAccessSave,
     resolve_policy: R,
     auth_db_present: bool,
-) -> Result<String, CliError>
+) -> Result<(String, ResolvedAccessPolicy), CliError>
 where
     R: Fn(&Path) -> anyhow::Result<ResolvedAccessPolicy>,
 {
     let policy = resolve_policy(repository_root).map_err(unexpected_failure)?;
+    let section = render_setup_access_section(access_save, &policy, auth_db_present);
 
-    Ok(render_setup_access_section(
-        access_save,
-        &policy,
-        auth_db_present,
-    ))
+    Ok((section, policy))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SetupLoginSkip {
+    AuthDisabled,
+    NotOffered,
+    Declined,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SetupLoginAction {
+    Skip(SetupLoginSkip),
+    Run { required: bool },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum SetupLoginStatus {
+    Skipped(SetupLoginSkip),
+    Authenticated(LoginReport),
+    Failed(UserError),
+}
+
+impl SetupLoginStatus {
+    fn telemetry_issued(&self) -> bool {
+        matches!(
+            self,
+            Self::Authenticated(LoginReport {
+                telemetry: TelemetryProvisioningResult::Issued,
+                ..
+            })
+        )
+    }
+}
+
+fn setup_login_action(
+    policy: &ResolvedAccessPolicy,
+    intent: setup::SetupLoginIntent,
+) -> SetupLoginAction {
+    if !policy.auth_allowed() {
+        return SetupLoginAction::Skip(SetupLoginSkip::AuthDisabled);
+    }
+    if policy.auth_mode.value == AuthMode::Mandatory {
+        return SetupLoginAction::Run { required: true };
+    }
+    match intent {
+        setup::SetupLoginIntent::Requested => SetupLoginAction::Run { required: false },
+        setup::SetupLoginIntent::Declined => SetupLoginAction::Skip(SetupLoginSkip::Declined),
+        setup::SetupLoginIntent::NotOffered => SetupLoginAction::Skip(SetupLoginSkip::NotOffered),
+    }
+}
+
+async fn run_setup_login_step<L, LF>(
+    action: SetupLoginAction,
+    login: L,
+) -> Result<SetupLoginStatus, CliError>
+where
+    L: FnOnce() -> LF,
+    LF: Future<Output = Result<LoginReport, CliError>>,
+{
+    let required = match action {
+        SetupLoginAction::Skip(skip) => return Ok(SetupLoginStatus::Skipped(skip)),
+        SetupLoginAction::Run { required } => required,
+    };
+
+    match login().await {
+        Ok(report) => Ok(SetupLoginStatus::Authenticated(report)),
+        Err(error) if required => Err(CliError::user_with_source(
+            UserError::SetupLoginRequired,
+            error,
+        )),
+        Err(CliError::User { error, .. }) => Ok(SetupLoginStatus::Failed(error)),
+        Err(CliError::Internal { .. }) => {
+            Ok(SetupLoginStatus::Failed(UserError::UnexpectedFailure))
+        }
+    }
+}
+
+fn render_setup_login_section(status: &SetupLoginStatus) -> String {
+    match status {
+        SetupLoginStatus::Skipped(SetupLoginSkip::AuthDisabled) => {
+            SETUP_LOGIN_DISABLED_LINE.to_string()
+        }
+        SetupLoginStatus::Skipped(SetupLoginSkip::NotOffered) => {
+            SETUP_LOGIN_NOT_REQUESTED_LINE.to_string()
+        }
+        SetupLoginStatus::Skipped(SetupLoginSkip::Declined) => {
+            SETUP_LOGIN_DECLINED_LINE.to_string()
+        }
+        SetupLoginStatus::Authenticated(report) => report.rendered.clone(),
+        SetupLoginStatus::Failed(error) => format!(
+            "{SETUP_LOGIN_FAILED_PREFIX}{}\n{SETUP_LOGIN_RETRY_LINE}",
+            error.message()
+        ),
+    }
 }
 
 fn render_setup_access_section(
@@ -375,12 +486,13 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
     )
 }
 
-fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
+fn claude_telemetry_report(repository_root: &std::path::Path, telemetry_issued: bool) -> String {
     let telemetry_enabled = config::resolve_auth_runtime_config(repository_root)
         .is_ok_and(|config| config.access_policy.telemetry_enabled());
 
     render_claude_telemetry_section(
         telemetry_enabled,
+        telemetry_issued,
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
     )
@@ -388,6 +500,7 @@ fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
 
 fn render_claude_telemetry_section(
     telemetry_enabled: bool,
+    telemetry_issued: bool,
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
 ) -> String {
@@ -404,7 +517,8 @@ fn render_claude_telemetry_section(
             .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
-    let authentication_pending = installed == ClaudeTelemetryInstallOutcome::Configured;
+    let authentication_pending =
+        installed == ClaudeTelemetryInstallOutcome::Configured && !telemetry_issued;
 
     format_claude_telemetry_report(&installed, authentication_pending)
 }
@@ -557,6 +671,7 @@ mod tests {
         dispatch_targets_claude(dispatch).then(|| {
             render_claude_telemetry_section(
                 telemetry_enabled,
+                false,
                 Some(&root.join("settings.json")),
                 &root.join("managed.json"),
             )
@@ -571,6 +686,7 @@ mod tests {
 
         let report = render_claude_telemetry_section(
             true,
+            false,
             Some(&settings),
             &dir.path().join("managed.json"),
         );
@@ -585,11 +701,42 @@ mod tests {
 
         let report = render_claude_telemetry_section(
             true,
+            false,
             Some(&dir.path().join("settings.json")),
             &dir.path().join("managed.json"),
         );
 
         assert!(report.contains("authentication pending"));
+    }
+
+    #[test]
+    fn setup_claude_telemetry_omits_the_pending_line_only_when_setup_login_issued_a_credential() {
+        for (login_status, pending) in [
+            (login_success(TelemetryProvisioningResult::Issued), false),
+            (
+                login_success(TelemetryProvisioningResult::Unavailable),
+                true,
+            ),
+            (login_success(TelemetryProvisioningResult::Disabled), true),
+            (SetupLoginStatus::Skipped(SetupLoginSkip::Declined), true),
+            (SetupLoginStatus::Failed(UserError::UnexpectedFailure), true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+
+            let report = render_claude_telemetry_section(
+                true,
+                login_status.telemetry_issued(),
+                Some(&dir.path().join("settings.json")),
+                &dir.path().join("managed.json"),
+            );
+
+            assert!(report.starts_with("Claude telemetry: configured"));
+            assert_eq!(
+                report.contains("authentication pending"),
+                pending,
+                "{login_status:?}"
+            );
+        }
     }
 
     fn assert_installed(root: &Path) {
@@ -787,6 +934,11 @@ mod tests {
                 auth_db_present,
             )
             .unwrap()
+            .0
+        }
+
+        fn policy(&self) -> ResolvedAccessPolicy {
+            self.resolve_policy()(&self.repo).unwrap()
         }
     }
 
@@ -1017,5 +1169,234 @@ mod tests {
                 fixture.global.display()
             )
         );
+    }
+
+    const LOGIN_RENDERED: &str = "Logged in to SCE.\nTelemetry credential provisioned.";
+
+    fn login_success(telemetry: TelemetryProvisioningResult) -> SetupLoginStatus {
+        SetupLoginStatus::Authenticated(LoginReport {
+            rendered: LOGIN_RENDERED.to_string(),
+            telemetry,
+        })
+    }
+
+    fn policy_for(global: Option<&str>, repository: Option<&str>) -> ResolvedAccessPolicy {
+        let fixture = AccessFixture::new();
+        if let Some(global) = global {
+            fs::write(&fixture.global, global).unwrap();
+        }
+        if let Some(repository) = repository {
+            fixture.write_repo_config(repository);
+        }
+        fixture.policy()
+    }
+
+    fn run_login_step<F>(action: SetupLoginAction, login: F) -> Result<SetupLoginStatus, CliError>
+    where
+        F: FnOnce() -> Result<LoginReport, CliError>,
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(run_setup_login_step(action, || async move { login() }))
+    }
+
+    fn login_must_not_run() -> Result<LoginReport, CliError> {
+        panic!("login must not be invoked")
+    }
+
+    #[test]
+    fn setup_login_action_covers_every_effective_mode_and_intent() {
+        use crate::services::setup::SetupLoginIntent::{Declined, NotOffered, Requested};
+
+        let optional = policy_for(Some(r#"{"auth":{"mode":"optional"}}"#), None);
+        let mandatory = policy_for(Some(r#"{"auth":{"mode":"mandatory"}}"#), None);
+        let disabled = policy_for(Some(r#"{"auth":{"mode":"disabled"}}"#), None);
+        let repository_mandatory = policy_for(
+            Some(r#"{"auth":{"mode":"optional"}}"#),
+            Some(r#"{"auth":{"mode":"mandatory"}}"#),
+        );
+        let repository_disabled = policy_for(
+            Some(r#"{"auth":{"mode":"mandatory"}}"#),
+            Some(r#"{"auth":{"mode":"disabled"}}"#),
+        );
+        let default = policy_for(None, None);
+
+        let auth_disabled = SetupLoginAction::Skip(SetupLoginSkip::AuthDisabled);
+        let required = SetupLoginAction::Run { required: true };
+        for (policy, intent, expected) in [
+            (
+                &optional,
+                Requested,
+                SetupLoginAction::Run { required: false },
+            ),
+            (
+                &optional,
+                Declined,
+                SetupLoginAction::Skip(SetupLoginSkip::Declined),
+            ),
+            (
+                &optional,
+                NotOffered,
+                SetupLoginAction::Skip(SetupLoginSkip::NotOffered),
+            ),
+            (
+                &default,
+                Requested,
+                SetupLoginAction::Run { required: false },
+            ),
+            (
+                &default,
+                NotOffered,
+                SetupLoginAction::Skip(SetupLoginSkip::NotOffered),
+            ),
+            (&mandatory, Requested, required),
+            (&mandatory, Declined, required),
+            (&mandatory, NotOffered, required),
+            (&repository_mandatory, Declined, required),
+            (&repository_mandatory, NotOffered, required),
+            (&disabled, Requested, auth_disabled),
+            (&disabled, Declined, auth_disabled),
+            (&disabled, NotOffered, auth_disabled),
+            (&repository_disabled, Requested, auth_disabled),
+            (&repository_disabled, NotOffered, auth_disabled),
+        ] {
+            assert_eq!(
+                setup_login_action(policy, intent),
+                expected,
+                "{:?} {intent:?}",
+                policy.auth_mode
+            );
+        }
+    }
+
+    #[test]
+    fn setup_login_step_never_invokes_login_when_skipped() {
+        for skip in [
+            SetupLoginSkip::AuthDisabled,
+            SetupLoginSkip::Declined,
+            SetupLoginSkip::NotOffered,
+        ] {
+            let status = run_login_step(SetupLoginAction::Skip(skip), login_must_not_run).unwrap();
+            assert_eq!(status, SetupLoginStatus::Skipped(skip));
+        }
+    }
+
+    #[test]
+    fn setup_login_step_reports_optional_failure_as_successful_setup() {
+        let status = run_login_step(SetupLoginAction::Run { required: false }, || {
+            Err(CliError::user_with_source(
+                UserError::NotAuthenticated,
+                anyhow::anyhow!("device code expired"),
+            ))
+        })
+        .unwrap();
+        assert_eq!(
+            status,
+            SetupLoginStatus::Failed(UserError::NotAuthenticated)
+        );
+        assert_eq!(
+            render_setup_login_section(&status),
+            format!(
+                "SCE login: failed: {}\nRun 'sce auth login' to retry.",
+                UserError::NotAuthenticated.message()
+            )
+        );
+
+        let status = run_login_step(SetupLoginAction::Run { required: false }, || {
+            Err(CliError::runtime(anyhow::anyhow!(
+                "access_token=secret-value leaked in a diagnostic"
+            )))
+        })
+        .unwrap();
+        assert_eq!(
+            status,
+            SetupLoginStatus::Failed(UserError::UnexpectedFailure)
+        );
+        assert!(!render_setup_login_section(&status).contains("secret-value"));
+    }
+
+    #[test]
+    fn setup_login_step_fails_mandatory_login_with_setup_login_required() {
+        let error = run_login_step(SetupLoginAction::Run { required: true }, || {
+            Err(CliError::user_with_source(
+                UserError::NotAuthenticated,
+                anyhow::anyhow!("device code expired"),
+            ))
+        })
+        .unwrap_err();
+
+        let CliError::User {
+            error: user_error,
+            source: Some(source),
+        } = &error
+        else {
+            panic!("expected a user error with the login error as source");
+        };
+        assert_eq!(*user_error, UserError::SetupLoginRequired);
+        assert_eq!(user_error.key(), "auth.setup_login_required");
+        assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(source.to_string(), UserError::NotAuthenticated.message());
+    }
+
+    #[test]
+    fn setup_login_step_includes_login_text_for_mandatory_and_accepted_optional_login() {
+        for required in [true, false] {
+            let status = run_login_step(SetupLoginAction::Run { required }, || {
+                Ok(LoginReport {
+                    rendered: LOGIN_RENDERED.to_string(),
+                    telemetry: TelemetryProvisioningResult::Issued,
+                })
+            })
+            .unwrap();
+            assert_eq!(status, login_success(TelemetryProvisioningResult::Issued));
+            assert!(status.telemetry_issued());
+            assert_eq!(render_setup_login_section(&status), LOGIN_RENDERED);
+        }
+    }
+
+    #[test]
+    fn setup_login_section_renders_exact_skip_lines_without_credentials() {
+        for (skip, expected) in [
+            (
+                SetupLoginSkip::AuthDisabled,
+                "SCE login: skipped; SCE authentication is disabled by config.",
+            ),
+            (
+                SetupLoginSkip::Declined,
+                "SCE login: skipped; run 'sce auth login' to log in.",
+            ),
+            (
+                SetupLoginSkip::NotOffered,
+                "SCE login: not requested; run 'sce auth login' to log in or refresh credentials.",
+            ),
+        ] {
+            assert_eq!(
+                render_setup_login_section(&SetupLoginStatus::Skipped(skip)),
+                expected
+            );
+        }
+
+        let tokens = crate::services::token_storage::StoredTokens {
+            access_token: "secret-access-token-value".to_string(),
+            token_type: "Bearer".to_string(),
+            expires_in: 3600,
+            refresh_token: "secret-refresh-token-value".to_string(),
+            scope: None,
+            stored_at_unix_seconds: 1,
+        };
+        let rendered = auth_command::render_login_refresh_result_with_telemetry(
+            &tokens,
+            AuthFormat::Text,
+            TelemetryProvisioningResult::Issued,
+        )
+        .unwrap();
+        let output = render_setup_login_section(&SetupLoginStatus::Authenticated(LoginReport {
+            rendered,
+            telemetry: TelemetryProvisioningResult::Issued,
+        }));
+        assert!(output.contains("Authentication succeeded."));
+        assert!(!output.contains("secret-access-token-value"));
+        assert!(!output.contains("secret-refresh-token-value"));
     }
 }

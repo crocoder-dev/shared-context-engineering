@@ -25,7 +25,7 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
   - `Log in to SCE now?` (`Confirm`; default Yes). It is offered only when the prospective mode is `optional`, the effective mode is not `mandatory`, and either an access prompt was asked in this run or no `auth.db` file exists.
   - A repository or explicit (`--config` / `SCE_CONFIG_FILE`) `auth.mode: disabled` skips all three prompts. Cancelling any of them is the standard setup cancellation.
   - Inputs are read without credential access: the resolved access policy, the global user config file, and the presence of the `auth.db` file.
-  - The answers are carried on the dispatch result (`auth_mode`, `telemetry_enabled`, and a `SetupLoginIntent` of `NotOffered | Declined | Requested`). Only answers given in this run are carried; a prompt suppressed by a persisted value carries `None`. The login intent is not yet acted on by a login step.
+  - The answers are carried on the dispatch result (`auth_mode`, `telemetry_enabled`, and a `SetupLoginIntent` of `NotOffered | Declined | Requested`). Only answers given in this run are carried; a prompt suppressed by a persisted value carries `None`. The login intent feeds the [setup login step](#setup-login).
   - The answers are saved to the global user config before any repository write (see [Global access preferences](#global-access-preferences)).
   - Non-interactive, hooks-only, and context-only setup never read these inputs or prompt.
 - The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit opt-ins for both setup-controlled behaviors: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}, "policies": {"attribution_hooks": {"enabled": true}}}` (where `<version>` is the CLI release version, with a trailing newline).
@@ -55,6 +55,27 @@ Setup saves `auth.mode` and `telemetry.enabled` only to the global user config, 
   - The source wording matches `sce config show`, and the reason strings are the [access-policy reasons](../cli/access-policy.md#reporting). The effective lines come from re-resolution, so, for example, a repository `telemetry.enabled: false` still reports `disabled (reason: repository_opt_out)` after global consent.
   - When a repository or explicit file locks auth to `disabled`, the section adds the first line of the matching `auth.disabled_by_config` message, which names that file.
   - When the effective mode is `disabled` and an `auth.db` file exists, it adds `- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.`
+
+## Setup login
+
+Interactive setup runs login after the `SCE access` section and before the Claude telemetry stage. It never runs for non-interactive, hooks-only, or context-only setup. The action is decided by `setup_login_action` (`cli/src/services/setup/command.rs`) from the same re-resolved effective policy the `SCE access` section reports, plus the dispatch's `SetupLoginIntent`, not from the prompt answer alone:
+
+| Effective `auth.mode` | Login intent | Action |
+|---|---|---|
+| `disabled` | any | Skipped. No `auth.db` or credential-store access. |
+| `mandatory` | any | Login is required. |
+| `optional` | `Requested` | Login runs. |
+| `optional` | `Declined` / `NotOffered` | Skipped. |
+
+- **Login path:** the step calls `auth_command::run_login_in(<repository root>, text)`, the same flow as `sce auth login` from that directory. Stored credentials are renewed when possible, with the device flow as the fallback. Because the global access answers were saved first, telemetry provisioning and repository enrollment inside login see the new consent.
+- **Output:** a section after `SCE access:` with one fixed outcome. No token or credential value is printed.
+  - effective `disabled`: `SCE login: skipped; SCE authentication is disabled by config.`
+  - declined: `SCE login: skipped; run 'sce auth login' to log in.`
+  - not offered (an existing `auth.db` and no access prompt asked this run): `SCE login: not requested; run 'sce auth login' to log in or refresh credentials.`
+  - success: the `sce auth login` text report.
+  - optional failure: `SCE login: failed: <fixed UserError message>`, then `Run 'sce auth login' to retry.` Setup still succeeds. An uncatalogued login failure renders the `UnexpectedFailure` message.
+- **Mandatory failure:** setup exits with `UserError::SetupLoginRequired` (`auth.setup_login_required`, `SCE-ERR-RUNTIME`, exit code 4) and keeps the login error as the source. The fixed message says local setup completed and tells the user to run `sce auth login`, then rerun `sce setup`. Installed assets and saved answers are not rolled back.
+- **Claude telemetry stage:** the `authentication pending` line is omitted only when this run's login returned an issued telemetry credential (see [telemetry credential: Claude-native telemetry](telemetry-credential.md)).
 
 ## Context baseline bootstrap
 

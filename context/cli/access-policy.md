@@ -121,6 +121,8 @@ The note documents a coverage limit: telemetry opt-out does not remove Claude-na
 
 Interactive `sce setup` saves its auth-mode and telemetry-consent answers only to the global user config (the user layer), before any repository write. It never writes them to the repository or explicit layers ([ADR](../decisions/2026-10-21-setup-writes-access-answers-to-user-layer-only.md)). Setup does not change this resolver's precedence: after the install it re-resolves the policy and reports the effective state, so repository and explicit restrictions still win. The write, its failure handling, and the `SCE access` report are described in [setup local bootstrap: global access preferences](../sce/setup-repo-local-config-bootstrap.md#global-access-preferences).
 
+Setup then enforces the re-resolved mode with a login step: it never logs in under effective `disabled`, logs in under `optional` only when the user accepted the login offer, and always logs in under `mandatory`. A failed mandatory login exits with `auth.setup_login_required`. See [setup login](../sce/setup-repo-local-config-bootstrap.md#setup-login).
+
 ## Exposure
 
 `ResolvedAuthRuntimeConfig`, `ResolvedHookRuntimeConfig`, and `ResolvedObservabilityRuntimeConfig` each carry `access_policy`, cloned from the same resolution that produced the rest of the projection. No consumer resolves config a second time to get the policy.

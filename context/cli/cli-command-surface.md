@@ -62,6 +62,8 @@ Record SCE involvement in Git commits?
 
 The confirmations are independent and default to Yes, so Enter persists `true`; an explicit `n` changes only its corresponding value. Successful target setup records the answers at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled` in repo-local `.sce/config.json` while retaining the existing JSON merge and newline behavior.
 
+After those confirmations, interactive setup asks the SCE access prompts (account mode, telemetry consent, login offer), saves the answers to the global user config, and, after the install, runs `sce auth login` from the repository root when the effective mode requires it or the user accepted. A failed mandatory login exits with `auth.setup_login_required`. See [setup local bootstrap: setup login](../sce/setup-repo-local-config-bootstrap.md#setup-login).
+
 Non-interactive target setup never prompts. A missing config receives explicit `true` values for both behaviors; an existing config's explicit values and omissions remain unchanged by the non-interactive behavior-selection path. The auto-sync resolver remains config-file-only with omitted fallback `false`, and attribution retains its `SCE_ATTRIBUTION_HOOKS_DISABLED` precedence, `SCE_DISABLED` kill switch, and staged-diff AI-overlap gate. See [setup local bootstrap](../sce/setup-repo-local-config-bootstrap.md), [config precedence](config-precedence-contract.md), and [hook routing](../sce/agent-trace-hooks-command-routing.md).
 
 ## Nix installability surface
