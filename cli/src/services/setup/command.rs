@@ -30,6 +30,8 @@ const SETUP_LOGIN_NOT_REQUESTED_LINE: &str =
 const SETUP_LOGIN_DECLINED_LINE: &str = "SCE login: skipped; run 'sce auth login' to log in.";
 const SETUP_LOGIN_FAILED_PREFIX: &str = "SCE login: failed: ";
 const SETUP_LOGIN_RETRY_LINE: &str = "Run 'sce auth login' to retry.";
+const RECONFIGURE_HINT_LINE: &str =
+    "- Run 'sce setup --reconfigure' to change saved setup answers.";
 
 pub struct SetupCommand {
     pub request: setup::SetupRequest,
@@ -161,6 +163,7 @@ impl SetupCommand {
                 &setup::persisted_integration_targets(repository_root),
                 setup::persisted_setup_confirmations(repository_root),
                 setup::SetupAccessGate::default(),
+                false,
             )
             .map_err(unexpected_failure)?;
 
@@ -185,6 +188,7 @@ impl SetupCommand {
                 &global_config_path,
                 resolve_access_policy,
                 auth_db_present,
+                self.request.reconfigure,
             )? {
                 InteractiveSetup::Cancelled => PreparedSetup::Cancelled,
                 InteractiveSetup::Ready {
@@ -213,6 +217,7 @@ struct SetupAccessSave {
     auth_mode: Option<AuthMode>,
     telemetry_enabled: Option<bool>,
     outcome: GlobalWriteOutcome,
+    prompts_suppressed: bool,
 }
 
 #[derive(Debug)]
@@ -235,6 +240,7 @@ fn prepare_interactive_setup<P, R>(
     global_config_path: &Path,
     resolve_policy: R,
     auth_db_present: bool,
+    reconfigure: bool,
 ) -> Result<InteractiveSetup, CliError>
 where
     P: setup::SetupTargetPrompter,
@@ -253,20 +259,24 @@ where
         &setup::persisted_integration_targets(repository_root),
         persisted_confirmations,
         setup::SetupAccessGate::from_policy(&policy, auth_db_present),
+        reconfigure,
     )
     .map_err(unexpected_failure)?;
 
-    let (auth_mode, telemetry_enabled) = match &dispatch {
+    let (auth_mode, telemetry_enabled, prompts_suppressed) = match &dispatch {
         setup::SetupDispatch::Cancelled => return Ok(InteractiveSetup::Cancelled),
         setup::SetupDispatch::Proceed {
             auth_mode,
             telemetry_enabled,
+            prompts_suppressed,
             ..
-        } => (*auth_mode, *telemetry_enabled),
+        } => (*auth_mode, *telemetry_enabled, *prompts_suppressed),
     };
 
-    let access_save =
-        persist_setup_access_preferences(global_config_path, auth_mode, telemetry_enabled)?;
+    let access_save = SetupAccessSave {
+        prompts_suppressed,
+        ..persist_setup_access_preferences(global_config_path, auth_mode, telemetry_enabled)?
+    };
 
     Ok(InteractiveSetup::Ready {
         dispatch,
@@ -288,6 +298,7 @@ fn persist_setup_access_preferences(
         auth_mode,
         telemetry_enabled,
         outcome,
+        prompts_suppressed: false,
     })
 }
 
@@ -457,6 +468,9 @@ fn render_setup_access_section(
     }
     if !policy.auth_allowed() && auth_db_present {
         lines.push(AUTH_LOGOUT_HINT_LINE.to_string());
+    }
+    if access_save.prompts_suppressed {
+        lines.push(RECONFIGURE_HINT_LINE.to_string());
     }
 
     lines.join("\n")
@@ -659,6 +673,7 @@ mod tests {
             &[],
             PersistedSetupConfirmations::default(),
             SetupAccessGate::default(),
+            false,
         )
         .expect("dispatch should resolve")
     }
@@ -916,6 +931,14 @@ mod tests {
         }
 
         fn prepare(&self, prompter: &FakePrompter) -> Result<InteractiveSetup, CliError> {
+            self.prepare_with(prompter, false)
+        }
+
+        fn prepare_with(
+            &self,
+            prompter: &FakePrompter,
+            reconfigure: bool,
+        ) -> Result<InteractiveSetup, CliError> {
             prepare_interactive_setup(
                 &self.repo,
                 prompter,
@@ -923,6 +946,7 @@ mod tests {
                 &self.global,
                 self.resolve_policy(),
                 false,
+                reconfigure,
             )
         }
 
@@ -1012,6 +1036,7 @@ mod tests {
                 auth_mode: None,
                 telemetry_enabled: None,
                 outcome: GlobalWriteOutcome::Unchanged,
+                prompts_suppressed: true,
             }
         );
         assert_eq!(fs::read(&fixture.global).unwrap(), first);
@@ -1118,6 +1143,7 @@ mod tests {
             auth_mode: None,
             telemetry_enabled: None,
             outcome: GlobalWriteOutcome::Unchanged,
+            prompts_suppressed: false,
         };
 
         let fixture = AccessFixture::new();
@@ -1169,6 +1195,66 @@ mod tests {
                 fixture.global.display()
             )
         );
+    }
+
+    #[test]
+    fn setup_access_section_hints_reconfigure_when_saved_answers_suppressed_prompts() {
+        let fixture = AccessFixture::new();
+        let prompter = FakePrompter::answering(AuthMode::Optional, false);
+        ready(fixture.prepare(&prompter));
+
+        let (_, rerun) = ready(fixture.prepare(&prompter));
+        assert_eq!(
+            fixture.report(&rerun, false),
+            format!(
+                "SCE access:\n\
+                 - saved access preferences: unchanged (global SCE config '{}')\n\
+                 - effective auth.mode: optional (source: config_file, config_source: default_discovered_global)\n\
+                 - effective telemetry: disabled (reason: user_opt_out)\n\
+                 - Run 'sce setup --reconfigure' to change saved setup answers.",
+                fixture.global.display()
+            )
+        );
+
+        let (_, reconfigured) = ready(fixture.prepare_with(&prompter, true));
+        assert!(!reconfigured.prompts_suppressed);
+        assert!(!fixture
+            .report(&reconfigured, false)
+            .contains(RECONFIGURE_HINT_LINE));
+    }
+
+    #[test]
+    fn reconfigure_rewrites_saved_global_answers() {
+        let fixture = AccessFixture::new();
+        ready(fixture.prepare(&FakePrompter::answering(AuthMode::Disabled, false)));
+        assert_eq!(read_json_file(&fixture.global)["auth"]["mode"], "disabled");
+
+        let (rerun, _) =
+            ready(fixture.prepare(&FakePrompter::answering(AuthMode::Mandatory, true)));
+        assert!(matches!(
+            rerun,
+            SetupDispatch::Proceed {
+                auth_mode: None,
+                telemetry_enabled: None,
+                ..
+            }
+        ));
+        assert_eq!(read_json_file(&fixture.global)["auth"]["mode"], "disabled");
+
+        let (dispatch, access_save) =
+            ready(fixture.prepare_with(&FakePrompter::answering(AuthMode::Mandatory, true), true));
+        assert!(matches!(
+            dispatch,
+            SetupDispatch::Proceed {
+                auth_mode: Some(AuthMode::Mandatory),
+                telemetry_enabled: Some(true),
+                ..
+            }
+        ));
+        assert_eq!(access_save.outcome, GlobalWriteOutcome::Written);
+        let global = read_json_file(&fixture.global);
+        assert_eq!(global["auth"]["mode"], "mandatory");
+        assert_eq!(global["telemetry"]["enabled"], true);
     }
 
     const LOGIN_RENDERED: &str = "Logged in to SCE.\nTelemetry credential provisioned.";
