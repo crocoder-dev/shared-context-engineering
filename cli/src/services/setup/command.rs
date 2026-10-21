@@ -5,7 +5,7 @@ use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
-use crate::services::{config, setup};
+use crate::services::{config, managed_telemetry, setup};
 
 const CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE: &str =
     "Claude telemetry: skipped; SCE telemetry is disabled by config.";
@@ -33,12 +33,23 @@ impl SetupCommand {
                 None => setup::persisted_optional_workflows(&repository_root),
             };
 
+            let persisted_confirmations = setup::persisted_setup_confirmations(&repository_root);
+            let (persisted_confirmations, access_gate) = match mode {
+                setup::SetupMode::Interactive => {
+                    interactive_access_inputs(&repository_root, persisted_confirmations)?
+                }
+                setup::SetupMode::NonInteractive(_) => {
+                    (persisted_confirmations, setup::SetupAccessGate::default())
+                }
+            };
+
             match setup::resolve_setup_dispatch(
                 mode,
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
                 &setup::persisted_integration_targets(&repository_root),
-                setup::persisted_setup_confirmations(&repository_root),
+                persisted_confirmations,
+                access_gate,
             )
             .map_err(unexpected_failure)?
             {
@@ -85,6 +96,7 @@ impl SetupCommand {
             optional_workflows: prompted_optional_workflows,
             agent_trace_auto_sync,
             attribution_hooks_enabled,
+            ..
         }) = setup_dispatch
         {
             let optional_workflows = prompted_optional_workflows
@@ -109,6 +121,25 @@ impl SetupCommand {
 
         Ok(sections.join("\n\n"))
     }
+}
+
+fn interactive_access_inputs(
+    repository_root: &std::path::Path,
+    persisted_confirmations: setup::PersistedSetupConfirmations,
+) -> Result<(setup::PersistedSetupConfirmations, setup::SetupAccessGate), CliError> {
+    let policy = config::resolve_auth_runtime_config(repository_root)
+        .map_err(unexpected_failure)?
+        .access_policy;
+    let global_config_path =
+        config::resolver::resolve_default_global_config_path().map_err(unexpected_failure)?;
+    let global_preferences =
+        setup::access_preferences::read_global_access_preferences(&global_config_path)
+            .map_err(unexpected_failure)?;
+
+    Ok((
+        persisted_confirmations.with_global_access_preferences(global_preferences),
+        setup::SetupAccessGate::from_policy(&policy, managed_telemetry::auth_db_present()),
+    ))
 }
 
 fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
@@ -220,8 +251,8 @@ mod tests {
     use crate::services::config::AuthMode;
     use crate::services::setup::{
         resolve_setup_dispatch, resolve_setup_request, ConcreteSetupTarget,
-        PersistedSetupConfirmations, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
-        SetupTargetPrompter,
+        PersistedSetupConfirmations, SetupAccessGate, SetupCliOptions, SetupDispatch, SetupMode,
+        SetupTarget, SetupTargetPrompter,
     };
 
     struct FakePrompter {
@@ -268,6 +299,7 @@ mod tests {
             &[],
             &[],
             PersistedSetupConfirmations::default(),
+            SetupAccessGate::default(),
         )
         .expect("dispatch should resolve")
     }
