@@ -8,6 +8,9 @@ use std::{
 use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
+#[allow(dead_code)]
+pub(crate) mod access_preferences;
+mod atomic_write;
 pub(crate) mod claude_telemetry;
 pub mod command;
 pub(crate) mod config_merge;

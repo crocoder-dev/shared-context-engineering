@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
+use super::atomic_write::write_atomically;
 use super::config_merge::{
     merge_claude_telemetry_settings, ClaudeTelemetryMergeOutcome, ClaudeTelemetrySkipReason,
 };
@@ -15,8 +16,6 @@ const CLAUDE_USER_DIR_NAME: &str = ".claude";
 const LINUX_MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.json";
 const MACOS_MANAGED_SETTINGS_PATH: &str =
     "/Library/Application Support/ClaudeCode/managed-settings.json";
-const NEW_SETTINGS_FILE_MODE: u32 = 0o600;
-const TEMP_SUFFIX: &str = ".sce-tmp";
 
 const CONFIGURED_LINE: &str =
     "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
@@ -127,43 +126,6 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("Failed to read '{}'", path.display())),
     }
-}
-
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("Settings path '{}' has no parent directory", path.display()))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("Failed to create '{}'", parent.display()))?;
-
-    let mut temp_name = path.as_os_str().to_os_string();
-    temp_name.push(TEMP_SUFFIX);
-    let temp_path = PathBuf::from(temp_name);
-
-    fs::write(&temp_path, bytes)
-        .with_context(|| format!("Failed to write '{}'", temp_path.display()))?;
-    apply_mode(path, &temp_path)?;
-    fs::rename(&temp_path, path).with_context(|| {
-        let _ = fs::remove_file(&temp_path);
-        format!("Failed to replace '{}'", path.display())
-    })
-}
-
-#[cfg(unix)]
-fn apply_mode(target: &Path, temp_path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = match fs::metadata(target) {
-        Ok(metadata) => metadata.permissions().mode() & 0o7777,
-        Err(_) => NEW_SETTINGS_FILE_MODE,
-    };
-    fs::set_permissions(temp_path, fs::Permissions::from_mode(mode))
-        .with_context(|| format!("Failed to set permissions on '{}'", temp_path.display()))
-}
-
-#[cfg(not(unix))]
-fn apply_mode(_target: &Path, _temp_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
