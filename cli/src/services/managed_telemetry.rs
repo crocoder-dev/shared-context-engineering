@@ -12,7 +12,7 @@ use trace_export::{ManagedSpanKind, ManagedTraceTelemetry};
 
 use crate::services::default_paths::telemetry_readiness_path;
 use crate::services::telemetry_credential_storage::{
-    load_telemetry_credential, TelemetryCredential,
+    load_telemetry_credential, TelemetryCredential, TelemetryCredentialLookup,
 };
 use crate::services::telemetry_readiness::{self, ReadinessState};
 use crate::services::token_storage::TokenStorageError;
@@ -212,17 +212,23 @@ pub(crate) async fn load_credential_within_deadline<Fut>(
     lookup: Fut,
 ) -> Result<TelemetryCredential, TelemetryFallback>
 where
-    Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
+    Fut: Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
 {
     match run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, lookup).await {
         None => Err(TelemetryFallback::new(
             TelemetryFallbackReason::LookupTimeout,
         )),
         Some(Err(error)) => Err(TelemetryFallback::from_storage_error(&error)),
-        Some(Ok(None)) => Err(TelemetryFallback::new(
+        Some(Ok(TelemetryCredentialLookup::Missing)) => Err(TelemetryFallback::new(
+            TelemetryFallbackReason::NotConfigured,
+        )),
+        Some(Ok(TelemetryCredentialLookup::Expired)) => Err(TelemetryFallback::new(
+            TelemetryFallbackReason::CredentialExpired,
+        )),
+        Some(Ok(TelemetryCredentialLookup::Unusable)) => Err(TelemetryFallback::new(
             TelemetryFallbackReason::CredentialUnavailable,
         )),
-        Some(Ok(Some(credential))) => Ok(credential),
+        Some(Ok(TelemetryCredentialLookup::Valid(credential))) => Ok(credential),
     }
 }
 
@@ -259,7 +265,7 @@ pub(crate) async fn inspect_health_with<R, H, Fut>(
 where
     R: FnOnce() -> anyhow::Result<ReadinessState>,
     H: FnOnce() -> bool,
-    Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
+    Fut: Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
 {
     if !telemetry_enabled {
         return ManagedTelemetryHealth::DisabledByConfig {
@@ -329,9 +335,7 @@ impl RuntimeTelemetry {
     ) -> (Self, Option<TelemetryFallback>)
     where
         R: FnOnce() -> bool,
-        Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>>
-            + Send
-            + 'static,
+        Fut: Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
     {
         if !telemetry_enabled {
             return (
@@ -357,9 +361,7 @@ impl RuntimeTelemetry {
         span_kind: ManagedSpanKind,
     ) -> (Self, Option<TelemetryFallback>)
     where
-        Fut: Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>>
-            + Send
-            + 'static,
+        Fut: Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
     {
         let credential = match load_credential_within_deadline(lookup).await {
             Ok(credential) => credential,
@@ -483,7 +485,7 @@ mod tests {
             || false,
             async move {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(None)
+                Ok(TelemetryCredentialLookup::Missing)
             },
             ManagedSpanKind::ClaudeHook,
         )
@@ -496,7 +498,7 @@ mod tests {
         assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    fn forbidden_lookup() -> Result<Option<TelemetryCredential>, TokenStorageError> {
+    fn forbidden_lookup() -> Result<TelemetryCredentialLookup, TokenStorageError> {
         panic!("credential lookup must not run when telemetry is disabled by config")
     }
 
@@ -591,7 +593,7 @@ mod tests {
         );
 
         let (expired, fallback) = RuntimeTelemetry::resolve_with(
-            async { Ok(Some(credential("bao-token", 1))) },
+            async { Ok(TelemetryCredentialLookup::Valid(credential("bao-token", 1))) },
             ManagedSpanKind::ClaudeHook,
         )
         .await;
@@ -601,20 +603,36 @@ mod tests {
         assert!(!fallback.reason.is_failure());
         assert_eq!(fallback.detail, None);
 
-        let (missing, fallback) =
-            RuntimeTelemetry::resolve_with(async { Ok(None) }, ManagedSpanKind::ClaudeHook).await;
-        assert!(matches!(missing, RuntimeTelemetry::Noop(_)));
-        assert_eq!(
-            fallback.map(|fallback| fallback.reason),
-            Some(TelemetryFallbackReason::CredentialUnavailable)
-        );
+        for (lookup, reason) in [
+            (
+                TelemetryCredentialLookup::Missing,
+                TelemetryFallbackReason::NotConfigured,
+            ),
+            (
+                TelemetryCredentialLookup::Expired,
+                TelemetryFallbackReason::CredentialExpired,
+            ),
+            (
+                TelemetryCredentialLookup::Unusable,
+                TelemetryFallbackReason::CredentialUnavailable,
+            ),
+        ] {
+            let (telemetry, fallback) =
+                RuntimeTelemetry::resolve_with(async { Ok(lookup) }, ManagedSpanKind::ClaudeHook)
+                    .await;
+            assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
+            let fallback = fallback.expect("unusable lookup is diagnosed");
+            assert_eq!(fallback.reason, reason);
+            assert!(!fallback.reason.is_failure());
+            assert_eq!(fallback.detail, None);
+        }
     }
 
     fn tracked_lookup(
-        result: Result<Option<TelemetryCredential>, TokenStorageError>,
+        result: Result<TelemetryCredentialLookup, TokenStorageError>,
     ) -> (
         std::sync::Arc<std::sync::atomic::AtomicBool>,
-        impl Future<Output = Result<Option<TelemetryCredential>, TokenStorageError>> + Send + 'static,
+        impl Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
     ) {
         let looked_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = looked_up.clone();
@@ -636,7 +654,9 @@ mod tests {
                 TelemetryFallbackReason::CredentialExpired,
             ),
         ] {
-            let (looked_up, lookup) = tracked_lookup(Ok(Some(credential("bao-token", NOW + 60))));
+            let (looked_up, lookup) = tracked_lookup(Ok(TelemetryCredentialLookup::Valid(
+                credential("bao-token", NOW + 60),
+            )));
             let health = inspect_health_with(true, || Ok(readiness), || false, lookup, NOW).await;
             assert_eq!(health, ManagedTelemetryHealth::Disabled(reason));
             assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
@@ -646,11 +666,14 @@ mod tests {
     #[tokio::test]
     async fn health_with_readiness_classifies_lookup_outcomes() {
         let cases: Vec<(
-            Result<Option<TelemetryCredential>, TokenStorageError>,
+            Result<TelemetryCredentialLookup, TokenStorageError>,
             ManagedTelemetryHealth,
         )> = vec![
             (
-                Ok(Some(credential("bao-token", NOW + 60))),
+                Ok(TelemetryCredentialLookup::Valid(credential(
+                    "bao-token",
+                    NOW + 60,
+                ))),
                 ManagedTelemetryHealth::Healthy,
             ),
             (
@@ -658,11 +681,22 @@ mod tests {
                 ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialInaccessible),
             ),
             (
-                Ok(None),
+                Ok(TelemetryCredentialLookup::Missing),
+                ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::NotConfigured),
+            ),
+            (
+                Ok(TelemetryCredentialLookup::Expired),
+                ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialExpired),
+            ),
+            (
+                Ok(TelemetryCredentialLookup::Unusable),
                 ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialUnavailable),
             ),
             (
-                Ok(Some(credential("bao-token", NOW))),
+                Ok(TelemetryCredentialLookup::Valid(credential(
+                    "bao-token",
+                    NOW,
+                ))),
                 ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialExpired),
             ),
             (
@@ -691,7 +725,7 @@ mod tests {
             true,
             || Ok(ReadinessState::Ready),
             || false,
-            std::future::pending::<Result<Option<TelemetryCredential>, TokenStorageError>>(),
+            std::future::pending::<Result<TelemetryCredentialLookup, TokenStorageError>>(),
             NOW,
         )
         .await;

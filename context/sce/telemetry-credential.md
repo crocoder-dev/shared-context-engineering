@@ -15,12 +15,17 @@ The CLI holds one telemetry-only OpenBao credential, issued by the Control Plane
 ```mermaid
 flowchart LR
     Issue[issue_telemetry_credential] --> Save[save: INSERT OR REPLACE row 1]
-    Save --> Load[load: unexpired valid row only]
-    Load -->|expired or corrupt| None[None, never mints]
+    Save --> Load[load: classify row 1]
+    Load --> Lookup[Missing / Expired / Unusable / Valid, never mints]
     Logout[sce auth logout] --> Delete[delete row]
 ```
 
-- Lookup never mints or refreshes; an expired, empty-field, negative-expiry, or identity-less (pre-`004` legacy) row is returned as `None`, so legacy rows require one `sce auth login`.
+- Lookup never mints or refreshes. `load_telemetry_credential` returns a `TelemetryCredentialLookup`:
+  - `Missing`: no `auth.db`, or no telemetry row.
+  - `Unusable`: an empty token or accessor, a negative expiry, an identity-less (pre-`004` legacy) row, no WorkOS session, or a session identity that differs from the stored one. Legacy rows therefore require one `sce auth login`.
+  - `Expired`: an owned, complete row whose expiry is not after now.
+  - `Valid`: anything else.
+  - The runtime and doctor map `Missing` to `not_configured`, `Expired` to `credential_expired`, and `Unusable` to `credential_unavailable`. Repository lookups and enrollment accept only `Valid`.
 - Ownership: every lookup decodes the stored WorkOS session's access-token claims and returns the credential only when `(sub, workspace_id)` equals the identity stored with it. Switching user or workspace therefore makes an older credential unusable even if it was never deleted. A new device-authorization login also deletes the stored telemetry credential before saving the new WorkOS session (`replace_session_with`), so a failed re-issuance leaves no credential; if that delete fails, the new session is not saved. Renewal of the same session keeps the credential.
 - Repository bindings: `telemetry_repository_bindings` maps a repository ID (the canonical `repository_identity` hash, from `agent_trace.repository_id` or the configured remote) to the `(user_id, workspace_id)` it was enrolled under. Enrollment requires a valid, session-owned credential and records that credential's identity. `sce setup` no longer enrolls repositories, because it must not open the encrypted auth DB or touch the OS credential store. The explicit rebinding mode (`Enroll`) currently has no production caller. A successful `sce auth login` enrolls the working-directory repository only if it is unbound (`EnrollIfUnbound`), so a login never silently moves a repository to another workspace. Bindings survive logout and rotation; they authorize nothing without a matching credential.
 - Telemetry readiness hint: `cli/src/services/telemetry_readiness.rs` keeps a non-secret file, `<state_root>/sce/telemetry-ready.json` (`{"expires_at_unix_seconds": N}`), next to `auth.db`.
@@ -49,10 +54,10 @@ flowchart LR
 | Health | Text row | JSON `state` / `reason` | Problem `kind` | `next_action` |
 | --- | --- | --- | --- | --- |
 | Telemetry not `Enabled` by policy | `[PASS] Managed telemetry (disabled by config)` | `disabled_by_config` / `disabled_by_config` | none | none |
-| No hint or no `auth.db` | `[PASS] Managed telemetry (not configured)` | `not_configured` / `not_configured` | none | none |
+| No hint, no `auth.db`, or no telemetry row | `[PASS] Managed telemetry (not configured)` | `not_configured` / `not_configured` | none | none |
 | Credential valid | `[PASS] Managed telemetry` | `healthy` / `null` | none | none |
 | Store refuses silent access | `[WARN]` | `disabled` / `credential_inaccessible` | `managed_telemetry_credential_inaccessible` | `auth_login` |
-| Hint ready, no usable credential | `[WARN]` | `disabled` / `credential_unavailable` | `managed_telemetry_credential_unavailable` | `auth_login` |
+| Hint ready, unusable row (no WorkOS session, identity mismatch, legacy or malformed) | `[WARN]` | `disabled` / `credential_unavailable` | `managed_telemetry_credential_unavailable` | `auth_login` |
 | Hint or credential expired | `[WARN]` | `disabled` / `credential_expired` | `managed_telemetry_credential_expired` | `auth_login` |
 | Lookup deadline exceeded | `[WARN]` | `disabled` / `lookup_timeout` | `managed_telemetry_lookup_timeout` | `manual_steps` |
 | Auth DB open/read failure | `[WARN]` | `disabled` / `database_error` | `managed_telemetry_database_error` | `manual_steps` |

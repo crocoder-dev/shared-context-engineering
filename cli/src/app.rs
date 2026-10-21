@@ -913,20 +913,20 @@ pub(crate) mod tests {
     }
 
     async fn stalled_keychain_lookup() -> Result<
-        Option<services::telemetry_credential_storage::TelemetryCredential>,
+        services::telemetry_credential_storage::TelemetryCredentialLookup,
         services::token_storage::TokenStorageError,
     > {
         let _ = tokio::task::spawn_blocking(|| std::thread::sleep(Duration::from_hours(1))).await;
-        Ok(None)
+        Ok(services::telemetry_credential_storage::TelemetryCredentialLookup::Missing)
     }
 
     async fn stalled_blocking_database_lookup() -> Result<
-        Option<services::telemetry_credential_storage::TelemetryCredential>,
+        services::telemetry_credential_storage::TelemetryCredentialLookup,
         services::token_storage::TokenStorageError,
     > {
         tokio::task::yield_now().await;
         std::thread::sleep(Duration::from_hours(1));
-        Ok(None)
+        Ok(services::telemetry_credential_storage::TelemetryCredentialLookup::Missing)
     }
 
     #[test]
@@ -990,7 +990,11 @@ pub(crate) mod tests {
             false,
             || true,
             |_: &std::path::Path| Some("repository-a".to_string()),
-            |_: String| stalled_keychain_lookup(),
+            |_: String| async {
+                stalled_keychain_lookup().await.map(
+                    services::telemetry_credential_storage::TelemetryCredentialLookup::into_valid,
+                )
+            },
         ));
         finish_runtime(runtime);
         let mut stdout = Vec::new();
