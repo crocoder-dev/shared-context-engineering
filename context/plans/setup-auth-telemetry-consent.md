@@ -335,7 +335,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: internal (new crate-private setup helper; no user-visible behavior, CLI surface, or contract change until T04/T05 wire it in)
   - Context synchronization: synced
 
-- [ ] T02: `Return a typed login report from auth login with an explicit working directory` (status:todo)
+- [x] T02: `Return a typed login report from auth login with an explicit working directory` (status:done)
   - Task ID: T02
   - Scope: In:
     - In `cli/src/services/auth_command/mod.rs`, add `pub(crate) struct LoginReport { rendered: String, telemetry: TelemetryProvisioningResult }` and `pub(crate) async fn run_login_in(working_dir: &Path, format: AuthFormat) -> Result<LoginReport, CliError>`.
@@ -346,7 +346,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Dependencies: none
   - Done when: `sce auth login` text and JSON output are byte-identical, existing auth_command tests pass unchanged, and new tests assert that `LoginReport.telemetry` is `Disabled` when policy telemetry is off and `Issued` when the provisioning closure issues, and that enrollment receives the supplied working directory.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command`
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/auth_command/mod.rs`
+  - Result:
+    - Added `pub(crate) struct LoginReport { rendered, telemetry }` with `pub(crate)` fields and `pub(crate) async fn run_login_in(working_dir, format) -> Result<LoginReport, CliError>`.
+    - `run_login` now reads `current_dir` (same error context as before) and returns `run_login_in(..).rendered`; render functions are untouched, so `sce auth login` text/JSON output is byte-identical.
+    - `run_login_with`, `run_login_with_stored_credentials`, `run_text_login`, and `run_login_json` return `LoginReport`; the stored-credential refresh path carries its provisioning result into the report.
+    - `provision_telemetry_credential` takes the working directory; `enroll_current_repository_if_unbound` was replaced by `enroll_repository_if_unbound(working_dir)` over a generic seam `enroll_repository_if_unbound_with(working_dir, repository_id_for, bind)`.
+    - Policy resolution goes through new `resolve_auth_config_in(working_dir)`; `resolve_current_auth_config` delegates to it.
+  - Deviations and assumptions:
+    - Existing tests needed mechanical type adaptation only (`.rendered` / `device_login_report()` fixture); their assertions are unchanged.
+  - Verify outcomes:
+    - `auth_command`: passed (21 tests, including new `login_report_carries_issued_telemetry_when_policy_enables_it` and `repository_enrollment_uses_the_supplied_working_directory`; `LoginReport.telemetry == Disabled` asserted in `login_skips_provisioning_unless_telemetry_is_enabled`).
+    - Additional check: `clippy --all-targets -- --deny warnings` is clean.
+  - Context impact: internal (crate-private login API seam for setup; no user-visible CLI behavior or output change until T06 wires it in)
+  - Context synchronization: synced
 
 - [ ] T03: `Add auth-mode, telemetry-consent, and login-offer prompts to the setup prompt seam` (status:todo)
   - Task ID: T03
