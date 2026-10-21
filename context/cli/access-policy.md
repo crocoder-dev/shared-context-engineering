@@ -4,7 +4,7 @@
 
 This file describes how the CLI turns the per-layer `auth.mode` and `telemetry.enabled` config values into one effective access policy (`ResolvedAccessPolicy`). Key syntax and schema validation are in [config precedence contract](config-precedence-contract.md). The precedence model is recorded in [ADR: consent-gated access policy precedence](../decisions/2026-10-20-consent-gated-access-policy-precedence.md).
 
-Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Managed telemetry startup, `sce doctor`'s managed-telemetry and auto-sync health, the hidden `sce auth telemetry-headers` helper, `sce auth login` / `whoami`, `sce sync`, and post-commit auto-sync enforce the policy (see [Enforcement](#enforcement)). Setup does not enforce it yet.
+Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Managed telemetry startup, `sce doctor`'s managed-telemetry and auto-sync health, the hidden `sce auth telemetry-headers` helper, `sce auth login` / `whoami`, `sce sync`, and post-commit auto-sync enforce the policy (see [Enforcement](#enforcement)). Interactive `sce setup` is the writer for the user layer's access keys (see [Setup](#setup)).
 
 ## Terms
 
@@ -21,6 +21,7 @@ Status: the resolver computes and exposes the policy, and `sce config show` / `v
   - `telemetry`: the effective state, `TelemetryPolicyState` (`Enabled`, or `Disabled(reason)`).
   - `background_cloud_allowed`.
 - **Degraded:** at least one default-discovered file was skipped as invalid.
+- **Setup global access preferences** (`GlobalAccessPreferences`): the `auth.mode` / `telemetry.enabled` values in the global user config that interactive setup reads to suppress its access prompts and writes from new answers. Read as `Missing`, `Valid { auth_mode, telemetry_enabled }` (an absent key means not asked yet), or `Invalid`. See [Setup](#setup).
 
 ## Repository discovery
 
@@ -115,6 +116,10 @@ Each string is a `WARNING_*` constant in `resolver.rs`. The skipped file's own e
 - **Warnings:** the contradiction warnings appear in `show` warnings after any `Skipped invalid config: …` entries. In `validate` they appear in `warnings` / `Validation warnings`. `validate` adds no policy fields.
 
 The note documents a coverage limit: telemetry opt-out does not remove Claude-native telemetry settings already written to user-level Claude settings.
+
+## Setup
+
+Interactive `sce setup` saves its auth-mode and telemetry-consent answers only to the global user config (the user layer), before any repository write. It never writes them to the repository or explicit layers ([ADR](../decisions/2026-10-21-setup-writes-access-answers-to-user-layer-only.md)). Setup does not change this resolver's precedence: after the install it re-resolves the policy and reports the effective state, so repository and explicit restrictions still win. The write, its failure handling, and the `SCE access` report are described in [setup local bootstrap: global access preferences](../sce/setup-repo-local-config-bootstrap.md#global-access-preferences).
 
 ## Exposure
 

@@ -448,7 +448,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: internal, interim. Interactive setup now asks prompts 5–7, but their answers are not persisted or acted on until T05/T06. The report output is unchanged, and non-interactive, hooks-only, and context-only behavior is unchanged. Durable context for the prompt sequence belongs with T05–T07 per the plan's Context sync list.
   - Context synchronization: synced
 
-- [ ] T05: `Persist global access preferences in setup and report the effective policy` (status:todo)
+- [x] T05: `Persist global access preferences in setup and report the effective policy` (status:done)
   - Task ID: T05
   - Scope: In:
     - In `SetupCommand::execute`, call `persist_global_access_preferences` right after dispatch and before `bootstrap_context_baseline`, only when `Proceed` carries an access value.
@@ -473,7 +473,39 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - Exact-output tests cover the `SCE access` section.
     - Non-interactive output is byte-identical.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::`
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/setup/command.rs`
+    - `cli/src/services/setup/mod.rs`
+  - Result:
+    - `SetupCommand::execute` now resolves dispatch through `prepare_dispatch`. For interactive runs it calls `prepare_interactive_setup`, which resolves the policy, reads the global preferences, runs dispatch, and then calls `persist_setup_access_preferences`. All of this happens before `bootstrap_context_baseline`, so the global write is setup's first write.
+    - The policy resolver, global path, and `auth_db_present` are injected. In production these are `resolve_auth_runtime_config`, `resolve_default_global_config_path`, and `managed_telemetry::auth_db_present()`. Non-interactive dispatch is unchanged and reads nothing new.
+    - A writer failure returns a runtime `CliError` with a fixed three-line message: `Failed to save SCE access preferences to the global SCE config '<path>'.`, the writer error, then `No repository files were changed. Run 'sce config validate' to check the file, then rerun 'sce setup'.`
+    - After the target install, `setup_access_report` re-resolves the policy and `render_setup_access_section` adds the `SCE access:` section, for interactive runs only. It shows:
+      - the saved values with the global path and the "applies to all repositories on this machine" scope, or `saved access preferences: unchanged (global SCE config '<path>')`
+      - `effective auth.mode: <mode> (source: …, config_source: …)`, using the `sce config show` source vocabulary
+      - `effective telemetry: enabled` or `effective telemetry: disabled (reason: <reason>)`
+      - the first line of the `auth_disabled_by_config` message when a repository or explicit file locks auth
+      - the `sce auth logout` hint under effective `disabled` when `auth.db` exists
+    - Removed `interactive_access_inputs` and T01's `#[allow(dead_code)]` on `access_preferences`.
+  - Deviations and assumptions:
+    - The effective lines are labelled `effective auth.mode` and `effective telemetry`, so they cannot be confused with the saved `auth.mode` / `telemetry.enabled` lines.
+    - A global config that is already invalid at read time does not abort setup. Per the Design gate, prompts 5 and 6 are skipped and no write is attempted. Setup aborts only when the write itself fails (an unwritable directory, a file that became invalid, or a concurrent modification). The writer-level invalid-file refusal is covered by `setup_access_write_refuses_an_invalid_global_config_with_a_fixed_message`.
+    - The `SCE access` section sits between the target-install section and the Claude telemetry stage. T06 inserts login after the re-resolution and adds the login outcome.
+    - The write-failure error is a plain runtime `CliError` (`SCE-ERR-RUNTIME`), not a new `UserError` variant.
+  - Verify outcomes:
+    - `setup::`: passed (85 tests). The new `command::tests` cover:
+      - answers land only in the global file, unrelated global keys are preserved, and the repository config gets no `auth` or `telemetry` keys
+      - a rerun, and identical answers, leave the global bytes unchanged
+      - an invalid global file skips the access writes and stays untouched
+      - a read-only global directory aborts before `context/` or `.sce/` exists
+      - an invalid global file is refused with the fixed message
+      - repository opt-out combined with global consent reports `disabled (reason: repository_opt_out)`
+      - exact-output `SCE access` sections (saved, unchanged, logout hint, repository lock)
+    - Existing non-interactive and Claude telemetry setup tests are unchanged and green.
+    - Additional check: `clippy --all-targets -- --deny warnings` is clean.
+  - Context impact: user-visible. Interactive `sce setup` now writes `auth.mode` / `telemetry.enabled` to the global config before any repository write, fails with a fixed message when that write fails, and prints a new `SCE access` section. Affected areas: setup lifecycle and prompt docs (`context/sce/setup-repo-local-config-bootstrap.md`), access policy (`context/cli/access-policy.md`), and config precedence (`context/cli/config-precedence-contract.md`).
+  - Context synchronization: synced
 
 - [ ] T06: `Run optional or mandatory login from interactive setup through auth login` (status:todo)
   - Task ID: T06
