@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 
+use super::atomic_write::write_atomically;
 use super::config_merge::{
     merge_claude_telemetry_settings, ClaudeTelemetryMergeOutcome, ClaudeTelemetrySkipReason,
 };
@@ -15,13 +16,13 @@ const CLAUDE_USER_DIR_NAME: &str = ".claude";
 const LINUX_MANAGED_SETTINGS_PATH: &str = "/etc/claude-code/managed-settings.json";
 const MACOS_MANAGED_SETTINGS_PATH: &str =
     "/Library/Application Support/ClaudeCode/managed-settings.json";
-const NEW_SETTINGS_FILE_MODE: u32 = 0o600;
-const TEMP_SUFFIX: &str = ".sce-tmp";
 
 const CONFIGURED_LINE: &str =
     "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
-const AUTH_PENDING_LINE: &str =
-    "Claude telemetry: authentication pending for this repository; run 'sce auth login' in this repository to start exporting.";
+const NOT_READY_LINE: &str =
+    "Claude telemetry: not ready for this repository; no valid SCE telemetry credential is authorized for it, so Claude will not export. Run 'sce auth login' in this repository with the SCE account it is enrolled under.";
+const NOT_CHECKED_LINE: &str =
+    "Claude telemetry: configured; repository authorization was not checked during non-interactive setup.";
 const SKIPPED_HELPER_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.";
 const SKIPPED_DISABLED_LINE: &str =
@@ -91,15 +92,25 @@ pub(crate) fn install_claude_telemetry(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepositoryAuthorization {
+    Authorized,
+    Unauthorized,
+    NotChecked,
+}
+
 pub(crate) fn format_claude_telemetry_report(
     outcome: &ClaudeTelemetryInstallOutcome,
-    authentication_pending: bool,
+    authorization: RepositoryAuthorization,
 ) -> String {
     match outcome {
-        ClaudeTelemetryInstallOutcome::Configured if authentication_pending => {
-            format!("{CONFIGURED_LINE}\n{AUTH_PENDING_LINE}")
-        }
-        ClaudeTelemetryInstallOutcome::Configured => CONFIGURED_LINE.to_string(),
+        ClaudeTelemetryInstallOutcome::Configured => match authorization {
+            RepositoryAuthorization::Authorized => CONFIGURED_LINE.to_string(),
+            RepositoryAuthorization::Unauthorized => {
+                format!("{CONFIGURED_LINE}\n{NOT_READY_LINE}")
+            }
+            RepositoryAuthorization::NotChecked => NOT_CHECKED_LINE.to_string(),
+        },
         ClaudeTelemetryInstallOutcome::SkippedConflict(reason) => {
             skipped_conflict_line(*reason).to_string()
         }
@@ -127,43 +138,6 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("Failed to read '{}'", path.display())),
     }
-}
-
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("Settings path '{}' has no parent directory", path.display()))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("Failed to create '{}'", parent.display()))?;
-
-    let mut temp_name = path.as_os_str().to_os_string();
-    temp_name.push(TEMP_SUFFIX);
-    let temp_path = PathBuf::from(temp_name);
-
-    fs::write(&temp_path, bytes)
-        .with_context(|| format!("Failed to write '{}'", temp_path.display()))?;
-    apply_mode(path, &temp_path)?;
-    fs::rename(&temp_path, path).with_context(|| {
-        let _ = fs::remove_file(&temp_path);
-        format!("Failed to replace '{}'", path.display())
-    })
-}
-
-#[cfg(unix)]
-fn apply_mode(target: &Path, temp_path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mode = match fs::metadata(target) {
-        Ok(metadata) => metadata.permissions().mode() & 0o7777,
-        Err(_) => NEW_SETTINGS_FILE_MODE,
-    };
-    fs::set_permissions(temp_path, fs::Permissions::from_mode(mode))
-        .with_context(|| format!("Failed to set permissions on '{}'", temp_path.display()))
-}
-
-#[cfg(not(unix))]
-fn apply_mode(_target: &Path, _temp_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -309,20 +283,27 @@ mod tests {
             )
         );
         assert_eq!(fs::read(&settings).unwrap(), original);
-        let report = format_claude_telemetry_report(&outcome, false);
+        let report =
+            format_claude_telemetry_report(&outcome, RepositoryAuthorization::Unauthorized);
         assert!(report.contains("explicitly disable telemetry"));
         assert!(!report.contains("configured"));
     }
 
     #[test]
-    fn claude_telemetry_report_marks_authentication_pending_without_helper_name() {
-        let pending =
-            format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, true);
-        let ready =
-            format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, false);
+    fn claude_telemetry_report_marks_unready_repository_without_helper_name() {
+        let report = |authorization| {
+            format_claude_telemetry_report(
+                &ClaudeTelemetryInstallOutcome::Configured,
+                authorization,
+            )
+        };
+        let pending = report(RepositoryAuthorization::Unauthorized);
+        let not_checked = report(RepositoryAuthorization::NotChecked);
 
-        assert!(pending.contains("authentication pending"));
-        assert!(!ready.contains("authentication pending"));
+        assert!(pending.contains("not ready for this repository"));
+        assert_eq!(report(RepositoryAuthorization::Authorized), CONFIGURED_LINE);
+        assert_eq!(not_checked, NOT_CHECKED_LINE);
+        assert!(!not_checked.contains("not ready"));
         assert!(!pending.contains("telemetry-headers"));
     }
 }

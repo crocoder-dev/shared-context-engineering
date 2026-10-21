@@ -979,7 +979,7 @@ where
     Ok(None)
 }
 
-fn resolve_default_global_config_path() -> Result<PathBuf> {
+pub(crate) fn resolve_default_global_config_path() -> Result<PathBuf> {
     Ok(resolve_sce_default_locations()?.global_config_file())
 }
 

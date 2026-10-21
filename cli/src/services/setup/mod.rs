@@ -5,9 +5,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::services::config::{AuthMode, ConfigPathSource, ResolvedAccessPolicy, ValueSource};
+use crate::services::error::AuthPolicyConfigFile;
 use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
+pub(crate) mod access_preferences;
+mod atomic_write;
 pub(crate) mod claude_telemetry;
 pub mod command;
 pub(crate) mod config_merge;
@@ -228,11 +232,16 @@ pub enum SetupDispatch {
         optional_workflows: Option<Vec<String>>,
         agent_trace_auto_sync: Option<bool>,
         attribution_hooks_enabled: Option<bool>,
+        auth_mode: Option<AuthMode>,
+        telemetry_enabled: Option<bool>,
+        login_intent: SetupLoginIntent,
+        prompts_suppressed: bool,
     },
     Cancelled,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct SetupCliOptions {
     pub target: Option<SetupTarget>,
     pub non_interactive: bool,
@@ -241,6 +250,7 @@ pub struct SetupCliOptions {
     pub bootstrap_context: bool,
 
     pub workflows: Vec<String>,
+    pub reconfigure: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -251,9 +261,18 @@ pub struct SetupRequest {
     pub context_only: bool,
 
     pub optional_workflows: Option<Vec<String>>,
+    pub reconfigure: bool,
 }
 
 pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
+    if options.reconfigure {
+        if let Some(conflict) = reconfigure_conflicting_option(&options) {
+            bail!(
+                "Option '--reconfigure' cannot be used with '{conflict}'. Try: run 'sce setup --reconfigure' alone to change saved setup answers interactively."
+            );
+        }
+    }
+
     if options.repo_path.is_some() && !options.hooks {
         bail!(
             "Option '--repo' requires '--hooks'. Try: run 'sce setup --hooks --repo <path>' or remove '--repo'."
@@ -289,6 +308,7 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
             hooks_repo_path: None,
             context_only: true,
             optional_workflows: None,
+            reconfigure: false,
         });
     }
 
@@ -315,7 +335,32 @@ pub fn resolve_setup_request(options: SetupCliOptions) -> Result<SetupRequest> {
         hooks_repo_path: options.repo_path,
         context_only: false,
         optional_workflows,
+        reconfigure: options.reconfigure,
     })
+}
+
+fn reconfigure_conflicting_option(options: &SetupCliOptions) -> Option<&'static str> {
+    if let Some(target) = options.target {
+        return Some(setup_target_flag(target));
+    }
+    [
+        (options.non_interactive, "--non-interactive"),
+        (options.hooks, "--hooks"),
+        (options.repo_path.is_some(), "--repo"),
+        (options.bootstrap_context, "--bootstrap-context"),
+    ]
+    .into_iter()
+    .find_map(|(present, flag)| present.then_some(flag))
+}
+
+fn setup_target_flag(target: SetupTarget) -> &'static str {
+    match target {
+        SetupTarget::OpenCode => "--opencode",
+        SetupTarget::Claude => "--claude",
+        SetupTarget::Pi => "--pi",
+        SetupTarget::Codex => "--codex",
+        SetupTarget::All => "--all",
+    }
 }
 
 fn validate_optional_workflow_slugs(raw_slugs: &[String]) -> Result<Vec<String>> {
@@ -428,6 +473,34 @@ pub fn persisted_optional_workflows(repository_root: &Path) -> Vec<String> {
 pub struct PersistedSetupConfirmations {
     pub agent_trace_auto_sync: Option<bool>,
     pub attribution_hooks_enabled: Option<bool>,
+    pub auth_mode: Option<AuthMode>,
+    pub telemetry_enabled: Option<bool>,
+    pub global_config_invalid: bool,
+}
+
+impl PersistedSetupConfirmations {
+    pub(crate) fn with_global_access_preferences(
+        self,
+        preferences: access_preferences::GlobalAccessPreferences,
+    ) -> Self {
+        use access_preferences::GlobalAccessPreferences;
+
+        match preferences {
+            GlobalAccessPreferences::Missing => self,
+            GlobalAccessPreferences::Valid {
+                auth_mode,
+                telemetry_enabled,
+            } => Self {
+                auth_mode,
+                telemetry_enabled,
+                ..self
+            },
+            GlobalAccessPreferences::Invalid => Self {
+                global_config_invalid: true,
+                ..self
+            },
+        }
+    }
 }
 
 pub fn persisted_setup_confirmations(repository_root: &Path) -> PersistedSetupConfirmations {
@@ -440,14 +513,44 @@ pub fn persisted_setup_confirmations(repository_root: &Path) -> PersistedSetupCo
         attribution_hooks_enabled: config
             .attribution_hooks_enabled
             .map(|setting| setting.value),
+        ..PersistedSetupConfirmations::default()
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SetupAccessGate {
+    pub auth_locked_by: Option<AuthPolicyConfigFile>,
+    pub mandatory_locked: bool,
+    pub auth_db_present: bool,
+}
+
+impl SetupAccessGate {
+    pub(crate) fn from_policy(policy: &ResolvedAccessPolicy, auth_db_present: bool) -> Self {
+        let auth_locked_by = policy
+            .auth_disabled_config_file()
+            .filter(|file| *file != AuthPolicyConfigFile::Global);
+
+        Self {
+            auth_locked_by,
+            mandatory_locked: policy.auth_mode.value == AuthMode::Mandatory
+                && policy.auth_mode.source
+                    != ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal),
+            auth_db_present,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SetupLoginIntent {
+    NotOffered,
+    Declined,
+    Requested,
 }
 
 fn persisted_file_config(
     repository_root: &Path,
 ) -> Option<crate::services::config::schema::FileConfig> {
     use crate::services::config::schema::parse_file_config;
-    use crate::services::config::ConfigPathSource;
 
     let config_path = RepoPaths::new(repository_root).sce_config_file();
     let raw = fs::read_to_string(&config_path).ok()?;
@@ -912,8 +1015,11 @@ pub trait SetupTargetPrompter {
         defaults: &[ConcreteSetupTarget],
     ) -> Result<Option<Vec<ConcreteSetupTarget>>>;
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>>;
-    fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>>;
-    fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>>;
+    fn prompt_agent_trace_auto_sync(&self, default: bool) -> Result<Option<bool>>;
+    fn prompt_attribution_hooks_enabled(&self, default: bool) -> Result<Option<bool>>;
+    fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>>;
+    fn prompt_telemetry_consent(&self, default: bool) -> Result<Option<bool>>;
+    fn prompt_login(&self) -> Result<Option<bool>>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -931,12 +1037,24 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
         prompt::prompt_optional_workflows(defaults)
     }
 
-    fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>> {
-        prompt::prompt_agent_trace_auto_sync()
+    fn prompt_agent_trace_auto_sync(&self, default: bool) -> Result<Option<bool>> {
+        prompt::prompt_agent_trace_auto_sync(default)
     }
 
-    fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>> {
-        prompt::prompt_attribution_hooks_enabled()
+    fn prompt_attribution_hooks_enabled(&self, default: bool) -> Result<Option<bool>> {
+        prompt::prompt_attribution_hooks_enabled(default)
+    }
+
+    fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>> {
+        prompt::prompt_auth_mode(default)
+    }
+
+    fn prompt_telemetry_consent(&self, default: bool) -> Result<Option<bool>> {
+        prompt::prompt_telemetry_consent(default)
+    }
+
+    fn prompt_login(&self) -> Result<Option<bool>> {
+        prompt::prompt_login()
     }
 }
 
@@ -961,6 +1079,8 @@ pub fn resolve_setup_dispatch<P>(
     optional_workflow_defaults: &[String],
     configured_targets: &[ConcreteSetupTarget],
     persisted_confirmations: PersistedSetupConfirmations,
+    access_gate: SetupAccessGate,
+    reconfigure: bool,
 ) -> Result<SetupDispatch>
 where
     P: SetupTargetPrompter,
@@ -977,24 +1097,37 @@ where
                 return Ok(SetupDispatch::Cancelled);
             };
 
-            let Some(agent_trace_auto_sync) =
-                persisted_confirmations.agent_trace_auto_sync.map_or_else(
-                    || prompter.prompt_agent_trace_auto_sync(),
-                    |value| Ok(Some(value)),
-                )?
+            let Some(agent_trace_auto_sync) = persisted_or_prompted(
+                persisted_confirmations.agent_trace_auto_sync,
+                reconfigure,
+                |default| prompter.prompt_agent_trace_auto_sync(default),
+            )?
             else {
                 return Ok(SetupDispatch::Cancelled);
             };
 
-            let Some(attribution_hooks_enabled) = persisted_confirmations
-                .attribution_hooks_enabled
-                .map_or_else(
-                    || prompter.prompt_attribution_hooks_enabled(),
-                    |value| Ok(Some(value)),
-                )?
+            let Some(attribution_hooks_enabled) = persisted_or_prompted(
+                persisted_confirmations.attribution_hooks_enabled,
+                reconfigure,
+                |default| prompter.prompt_attribution_hooks_enabled(default),
+            )?
             else {
                 return Ok(SetupDispatch::Cancelled);
             };
+
+            let Some(access) = resolve_setup_access_choices(
+                prompter,
+                persisted_confirmations,
+                access_gate,
+                reconfigure,
+            )?
+            else {
+                return Ok(SetupDispatch::Cancelled);
+            };
+
+            let behavior_prompts_suppressed = !reconfigure
+                && (persisted_confirmations.agent_trace_auto_sync.is_some()
+                    || persisted_confirmations.attribution_hooks_enabled.is_some());
 
             Ok(SetupDispatch::Proceed {
                 targets,
@@ -1002,6 +1135,10 @@ where
                 optional_workflows: Some(optional_workflows),
                 agent_trace_auto_sync: Some(agent_trace_auto_sync),
                 attribution_hooks_enabled: Some(attribution_hooks_enabled),
+                auth_mode: access.auth_mode,
+                telemetry_enabled: access.telemetry_enabled,
+                login_intent: access.login_intent,
+                prompts_suppressed: behavior_prompts_suppressed || access.prompts_suppressed,
             })
         }
         SetupMode::NonInteractive(target) => Ok(SetupDispatch::Proceed {
@@ -1010,8 +1147,116 @@ where
             optional_workflows: None,
             agent_trace_auto_sync: None,
             attribution_hooks_enabled: None,
+            auth_mode: None,
+            telemetry_enabled: None,
+            login_intent: SetupLoginIntent::NotOffered,
+            prompts_suppressed: false,
         }),
     }
+}
+
+const FIRST_RUN_BEHAVIOR_DEFAULT: bool = true;
+
+fn persisted_or_prompted<F>(
+    persisted: Option<bool>,
+    reconfigure: bool,
+    prompt: F,
+) -> Result<Option<bool>>
+where
+    F: FnOnce(bool) -> Result<Option<bool>>,
+{
+    match persisted {
+        Some(value) if !reconfigure => Ok(Some(value)),
+        persisted => prompt(persisted.unwrap_or(FIRST_RUN_BEHAVIOR_DEFAULT)),
+    }
+}
+
+const FIRST_RUN_AUTH_MODE_DEFAULT: AuthMode = AuthMode::Optional;
+const FIRST_RUN_TELEMETRY_CONSENT_DEFAULT: bool = false;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SetupAccessChoices {
+    auth_mode: Option<AuthMode>,
+    telemetry_enabled: Option<bool>,
+    login_intent: SetupLoginIntent,
+    prompts_suppressed: bool,
+}
+
+fn resolve_setup_access_choices<P>(
+    prompter: &P,
+    persisted: PersistedSetupConfirmations,
+    gate: SetupAccessGate,
+    reconfigure: bool,
+) -> Result<Option<SetupAccessChoices>>
+where
+    P: SetupTargetPrompter,
+{
+    let mut choices = SetupAccessChoices {
+        auth_mode: None,
+        telemetry_enabled: None,
+        login_intent: SetupLoginIntent::NotOffered,
+        prompts_suppressed: false,
+    };
+
+    if gate.auth_locked_by.is_some() {
+        return Ok(Some(choices));
+    }
+
+    let global_writable = !persisted.global_config_invalid;
+
+    if global_writable && (reconfigure || persisted.auth_mode.is_none()) {
+        let default = persisted.auth_mode.unwrap_or(FIRST_RUN_AUTH_MODE_DEFAULT);
+        let Some(mode) = prompter.prompt_auth_mode(default)? else {
+            return Ok(None);
+        };
+        choices.auth_mode = Some(mode);
+    } else if global_writable {
+        choices.prompts_suppressed = true;
+    }
+
+    let prospective_mode =
+        choices
+            .auth_mode
+            .or(persisted.auth_mode)
+            .unwrap_or(if gate.mandatory_locked {
+                AuthMode::Mandatory
+            } else {
+                AuthMode::Optional
+            });
+
+    if prospective_mode == AuthMode::Disabled {
+        return Ok(Some(choices));
+    }
+
+    if global_writable && (reconfigure || persisted.telemetry_enabled.is_none()) {
+        let default = persisted
+            .telemetry_enabled
+            .unwrap_or(FIRST_RUN_TELEMETRY_CONSENT_DEFAULT);
+        let Some(consent) = prompter.prompt_telemetry_consent(default)? else {
+            return Ok(None);
+        };
+        choices.telemetry_enabled = Some(consent);
+    } else if global_writable {
+        choices.prompts_suppressed = true;
+    }
+
+    let access_prompted = choices.auth_mode.is_some() || choices.telemetry_enabled.is_some();
+    let login_offered = prospective_mode == AuthMode::Optional
+        && !gate.mandatory_locked
+        && (access_prompted || !gate.auth_db_present);
+
+    if login_offered {
+        let Some(accepted) = prompter.prompt_login()? else {
+            return Ok(None);
+        };
+        choices.login_intent = if accepted {
+            SetupLoginIntent::Requested
+        } else {
+            SetupLoginIntent::Declined
+        };
+    }
+
+    Ok(Some(choices))
 }
 
 pub fn setup_cancelled_text() -> String {
@@ -1020,7 +1265,791 @@ pub fn setup_cancelled_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
+    use crate::services::config::{ResolvedValue, TelemetryDisabledReason, TelemetryPolicyState};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum PromptCall {
+        Targets,
+        Workflows,
+        AutoSync(bool),
+        Attribution(bool),
+        AuthMode(AuthMode),
+        Telemetry(bool),
+        Login,
+    }
+
+    struct RecordingPrompter {
+        calls: RefCell<Vec<PromptCall>>,
+        auth_mode: Option<AuthMode>,
+        telemetry: Option<bool>,
+        login: Option<bool>,
+    }
+
+    impl RecordingPrompter {
+        fn answering(
+            auth_mode: Option<AuthMode>,
+            telemetry: Option<bool>,
+            login: Option<bool>,
+        ) -> Self {
+            Self {
+                calls: RefCell::new(Vec::new()),
+                auth_mode,
+                telemetry,
+                login,
+            }
+        }
+
+        fn record(&self, call: PromptCall) {
+            self.calls.borrow_mut().push(call);
+        }
+
+        fn access_calls(&self) -> Vec<PromptCall> {
+            self.calls
+                .borrow()
+                .iter()
+                .copied()
+                .filter(|call| {
+                    matches!(
+                        call,
+                        PromptCall::AuthMode(_) | PromptCall::Telemetry(_) | PromptCall::Login
+                    )
+                })
+                .collect()
+        }
+    }
+
+    impl SetupTargetPrompter for RecordingPrompter {
+        fn prompt_targets(
+            &self,
+            _defaults: &[ConcreteSetupTarget],
+        ) -> Result<Option<Vec<ConcreteSetupTarget>>> {
+            self.record(PromptCall::Targets);
+            Ok(Some(vec![ConcreteSetupTarget::Claude]))
+        }
+
+        fn prompt_optional_workflows(&self, _defaults: &[String]) -> Result<Option<Vec<String>>> {
+            self.record(PromptCall::Workflows);
+            Ok(Some(Vec::new()))
+        }
+
+        fn prompt_agent_trace_auto_sync(&self, default: bool) -> Result<Option<bool>> {
+            self.record(PromptCall::AutoSync(default));
+            Ok(Some(true))
+        }
+
+        fn prompt_attribution_hooks_enabled(&self, default: bool) -> Result<Option<bool>> {
+            self.record(PromptCall::Attribution(default));
+            Ok(Some(true))
+        }
+
+        fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>> {
+            self.record(PromptCall::AuthMode(default));
+            Ok(self.auth_mode)
+        }
+
+        fn prompt_telemetry_consent(&self, default: bool) -> Result<Option<bool>> {
+            self.record(PromptCall::Telemetry(default));
+            Ok(self.telemetry)
+        }
+
+        fn prompt_login(&self) -> Result<Option<bool>> {
+            self.record(PromptCall::Login);
+            Ok(self.login)
+        }
+    }
+
+    fn interactive_dispatch(
+        prompter: &RecordingPrompter,
+        persisted: PersistedSetupConfirmations,
+        gate: SetupAccessGate,
+    ) -> SetupDispatch {
+        resolve_setup_dispatch(
+            SetupMode::Interactive,
+            prompter,
+            &[],
+            &[],
+            persisted,
+            gate,
+            false,
+        )
+        .expect("dispatch should resolve")
+    }
+
+    fn access_values(
+        dispatch: &SetupDispatch,
+    ) -> (Option<AuthMode>, Option<bool>, SetupLoginIntent) {
+        match dispatch {
+            SetupDispatch::Proceed {
+                auth_mode,
+                telemetry_enabled,
+                login_intent,
+                ..
+            } => (*auth_mode, *telemetry_enabled, *login_intent),
+            SetupDispatch::Cancelled => panic!("dispatch was cancelled"),
+        }
+    }
+
+    #[test]
+    fn first_interactive_run_asks_access_prompts_after_existing_prompts_with_defaults() {
+        let prompter =
+            RecordingPrompter::answering(Some(AuthMode::Optional), Some(true), Some(true));
+
+        let dispatch = interactive_dispatch(
+            &prompter,
+            PersistedSetupConfirmations::default(),
+            SetupAccessGate::default(),
+        );
+
+        assert_eq!(
+            *prompter.calls.borrow(),
+            vec![
+                PromptCall::Targets,
+                PromptCall::Workflows,
+                PromptCall::AutoSync(true),
+                PromptCall::Attribution(true),
+                PromptCall::AuthMode(AuthMode::Optional),
+                PromptCall::Telemetry(false),
+                PromptCall::Login,
+            ]
+        );
+        assert_eq!(
+            access_values(&dispatch),
+            (
+                Some(AuthMode::Optional),
+                Some(true),
+                SetupLoginIntent::Requested
+            )
+        );
+    }
+
+    type AccessValues = (Option<AuthMode>, Option<bool>, SetupLoginIntent);
+    type AccessCase = (
+        &'static str,
+        Option<AuthMode>,
+        PersistedSetupConfirmations,
+        SetupAccessGate,
+        Vec<PromptCall>,
+        AccessValues,
+    );
+
+    fn persisted_access(
+        auth_mode: Option<AuthMode>,
+        telemetry_enabled: Option<bool>,
+        global_config_invalid: bool,
+    ) -> PersistedSetupConfirmations {
+        PersistedSetupConfirmations {
+            auth_mode,
+            telemetry_enabled,
+            global_config_invalid,
+            ..PersistedSetupConfirmations::default()
+        }
+    }
+
+    fn access_gate(
+        auth_locked_by: Option<AuthPolicyConfigFile>,
+        mandatory_locked: bool,
+        auth_db_present: bool,
+    ) -> SetupAccessGate {
+        SetupAccessGate {
+            auth_locked_by,
+            mandatory_locked,
+            auth_db_present,
+        }
+    }
+
+    fn assert_access_cases(cases: Vec<AccessCase>) {
+        for (name, auth_answer, persisted, gate, expected_calls, expected_values) in cases {
+            let prompter = RecordingPrompter::answering(
+                auth_answer,
+                expected_values.1.or(Some(true)),
+                Some(expected_values.2 != SetupLoginIntent::Declined),
+            );
+
+            let dispatch = interactive_dispatch(&prompter, persisted, gate);
+
+            assert_eq!(prompter.access_calls(), expected_calls, "{name}");
+            assert_eq!(access_values(&dispatch), expected_values, "{name}");
+        }
+    }
+
+    #[test]
+    fn access_mode_and_telemetry_prompts_follow_persisted_values_locks_and_selected_mode() {
+        use AuthMode::{Disabled, Mandatory, Optional};
+        use PromptCall::{AuthMode as Mode, Login, Telemetry};
+        use SetupLoginIntent::{Declined, NotOffered};
+
+        assert_access_cases(vec![
+            (
+                "persisted globals suppress mode and telemetry; auth.db present skips login",
+                Some(Optional),
+                persisted_access(Some(Optional), Some(true), false),
+                access_gate(None, false, true),
+                vec![],
+                (None, None, NotOffered),
+            ),
+            (
+                "persisted mode with telemetry unanswered asks telemetry then login",
+                None,
+                persisted_access(Some(Optional), None, false),
+                access_gate(None, false, true),
+                vec![Telemetry(false), Login],
+                (None, Some(false), Declined),
+            ),
+            (
+                "selected disabled skips telemetry and login",
+                Some(Disabled),
+                PersistedSetupConfirmations::default(),
+                access_gate(None, false, false),
+                vec![Mode(Optional)],
+                (Some(Disabled), None, NotOffered),
+            ),
+            (
+                "persisted global disabled skips every access prompt",
+                None,
+                persisted_access(Some(Disabled), None, false),
+                access_gate(None, false, false),
+                vec![],
+                (None, None, NotOffered),
+            ),
+            (
+                "repository lock skips mode, telemetry, and login",
+                Some(Mandatory),
+                PersistedSetupConfirmations::default(),
+                access_gate(Some(AuthPolicyConfigFile::Repository), false, false),
+                vec![],
+                (None, None, NotOffered),
+            ),
+            (
+                "explicit config lock skips mode, telemetry, and login",
+                Some(Optional),
+                PersistedSetupConfirmations::default(),
+                access_gate(Some(AuthPolicyConfigFile::ConfigEnv), false, false),
+                vec![],
+                (None, None, NotOffered),
+            ),
+            (
+                "invalid global skips mode and telemetry",
+                Some(Optional),
+                persisted_access(None, None, true),
+                access_gate(None, false, true),
+                vec![],
+                (None, None, NotOffered),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn login_offer_follows_mode_auth_db_and_prompts_asked_this_run() {
+        use AuthMode::{Mandatory, Optional};
+        use PromptCall::{AuthMode as Mode, Login, Telemetry};
+        use SetupLoginIntent::{Declined, NotOffered, Requested};
+
+        assert_access_cases(vec![
+            (
+                "persisted globals without auth.db still offer login",
+                Some(Optional),
+                persisted_access(Some(Optional), Some(false), false),
+                access_gate(None, false, false),
+                vec![Login],
+                (None, None, Declined),
+            ),
+            (
+                "selected mandatory skips login",
+                Some(Mandatory),
+                PersistedSetupConfirmations::default(),
+                access_gate(None, false, false),
+                vec![Mode(Optional), Telemetry(false)],
+                (Some(Mandatory), Some(false), NotOffered),
+            ),
+            (
+                "effective mandatory skips login after an optional answer",
+                Some(Optional),
+                PersistedSetupConfirmations::default(),
+                access_gate(None, true, false),
+                vec![Mode(Optional), Telemetry(false)],
+                (Some(Optional), Some(false), NotOffered),
+            ),
+            (
+                "invalid global offers login when auth.db is absent",
+                Some(Optional),
+                persisted_access(None, None, true),
+                access_gate(None, false, false),
+                vec![Login],
+                (None, None, Requested),
+            ),
+            (
+                "answers asked this run offer login even with auth.db present",
+                Some(Optional),
+                PersistedSetupConfirmations::default(),
+                access_gate(None, false, true),
+                vec![Mode(Optional), Telemetry(false), Login],
+                (Some(Optional), Some(true), Requested),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn cancelling_any_access_prompt_cancels_setup() {
+        let cases = [
+            RecordingPrompter::answering(None, Some(true), Some(true)),
+            RecordingPrompter::answering(Some(AuthMode::Optional), None, Some(true)),
+            RecordingPrompter::answering(Some(AuthMode::Optional), Some(true), None),
+        ];
+
+        for (index, prompter) in cases.iter().enumerate() {
+            let dispatch = interactive_dispatch(
+                prompter,
+                PersistedSetupConfirmations::default(),
+                SetupAccessGate::default(),
+            );
+
+            assert_eq!(dispatch, SetupDispatch::Cancelled);
+            assert_eq!(prompter.access_calls().len(), index + 1);
+        }
+    }
+
+    #[test]
+    fn telemetry_default_ignores_claude_target_and_auth_db() {
+        for auth_db_present in [false, true] {
+            let prompter =
+                RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(false));
+
+            interactive_dispatch(
+                &prompter,
+                PersistedSetupConfirmations {
+                    agent_trace_auto_sync: Some(true),
+                    ..PersistedSetupConfirmations::default()
+                },
+                SetupAccessGate {
+                    auth_db_present,
+                    ..SetupAccessGate::default()
+                },
+            );
+
+            assert!(prompter
+                .calls
+                .borrow()
+                .contains(&PromptCall::Telemetry(false)));
+        }
+    }
+
+    #[test]
+    fn non_interactive_targets_prompt_nothing_and_carry_no_access_values() {
+        for target in [
+            SetupTarget::OpenCode,
+            SetupTarget::Claude,
+            SetupTarget::Pi,
+            SetupTarget::Codex,
+            SetupTarget::All,
+        ] {
+            let prompter =
+                RecordingPrompter::answering(Some(AuthMode::Mandatory), Some(true), Some(true));
+
+            let dispatch = resolve_setup_dispatch(
+                SetupMode::NonInteractive(target),
+                &prompter,
+                &[],
+                &[],
+                PersistedSetupConfirmations::default(),
+                SetupAccessGate::default(),
+                false,
+            )
+            .unwrap();
+
+            assert!(prompter.calls.borrow().is_empty());
+            assert_eq!(
+                access_values(&dispatch),
+                (None, None, SetupLoginIntent::NotOffered)
+            );
+        }
+    }
+
+    fn reconfigure_dispatch(
+        prompter: &RecordingPrompter,
+        persisted: PersistedSetupConfirmations,
+        gate: SetupAccessGate,
+    ) -> SetupDispatch {
+        resolve_setup_dispatch(
+            SetupMode::Interactive,
+            prompter,
+            &[],
+            &[],
+            persisted,
+            gate,
+            true,
+        )
+        .expect("dispatch should resolve")
+    }
+
+    fn prompts_suppressed(dispatch: &SetupDispatch) -> bool {
+        match dispatch {
+            SetupDispatch::Proceed {
+                prompts_suppressed, ..
+            } => *prompts_suppressed,
+            SetupDispatch::Cancelled => panic!("dispatch was cancelled"),
+        }
+    }
+
+    fn persisted_answers(
+        agent_trace_auto_sync: bool,
+        attribution_hooks_enabled: bool,
+        auth_mode: AuthMode,
+        telemetry_enabled: bool,
+    ) -> PersistedSetupConfirmations {
+        PersistedSetupConfirmations {
+            agent_trace_auto_sync: Some(agent_trace_auto_sync),
+            attribution_hooks_enabled: Some(attribution_hooks_enabled),
+            auth_mode: Some(auth_mode),
+            telemetry_enabled: Some(telemetry_enabled),
+            global_config_invalid: false,
+        }
+    }
+
+    #[test]
+    fn reconfigure_asks_every_persisted_prompt_with_the_persisted_defaults() {
+        let prompter =
+            RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(true));
+
+        let dispatch = reconfigure_dispatch(
+            &prompter,
+            persisted_answers(false, true, AuthMode::Mandatory, true),
+            access_gate(None, false, true),
+        );
+
+        assert_eq!(
+            *prompter.calls.borrow(),
+            vec![
+                PromptCall::Targets,
+                PromptCall::Workflows,
+                PromptCall::AutoSync(false),
+                PromptCall::Attribution(true),
+                PromptCall::AuthMode(AuthMode::Mandatory),
+                PromptCall::Telemetry(true),
+                PromptCall::Login,
+            ]
+        );
+        assert_eq!(
+            access_values(&dispatch),
+            (
+                Some(AuthMode::Optional),
+                Some(false),
+                SetupLoginIntent::Requested
+            )
+        );
+        assert!(!prompts_suppressed(&dispatch));
+    }
+
+    #[test]
+    fn reconfigure_uses_a_persisted_global_disabled_as_the_auth_mode_cursor() {
+        let prompter =
+            RecordingPrompter::answering(Some(AuthMode::Disabled), Some(true), Some(true));
+
+        let dispatch = reconfigure_dispatch(
+            &prompter,
+            persisted_answers(true, false, AuthMode::Disabled, false),
+            access_gate(None, false, false),
+        );
+
+        assert_eq!(
+            *prompter.calls.borrow(),
+            vec![
+                PromptCall::Targets,
+                PromptCall::Workflows,
+                PromptCall::AutoSync(true),
+                PromptCall::Attribution(false),
+                PromptCall::AuthMode(AuthMode::Disabled),
+            ]
+        );
+        assert_eq!(
+            access_values(&dispatch),
+            (Some(AuthMode::Disabled), None, SetupLoginIntent::NotOffered)
+        );
+    }
+
+    #[test]
+    fn reconfigure_keeps_the_lock_and_invalid_global_gates() {
+        use AuthMode::Optional;
+        use PromptCall::{Attribution, AutoSync, Targets, Workflows};
+
+        let cases = [
+            (
+                "repository lock skips access prompts",
+                persisted_answers(true, true, Optional, true),
+                access_gate(Some(AuthPolicyConfigFile::Repository), false, false),
+            ),
+            (
+                "explicit lock skips access prompts",
+                persisted_answers(true, true, Optional, true),
+                access_gate(Some(AuthPolicyConfigFile::ConfigFlag), false, false),
+            ),
+            (
+                "invalid global skips mode and telemetry",
+                PersistedSetupConfirmations {
+                    agent_trace_auto_sync: Some(true),
+                    attribution_hooks_enabled: Some(true),
+                    global_config_invalid: true,
+                    ..PersistedSetupConfirmations::default()
+                },
+                access_gate(None, true, true),
+            ),
+        ];
+
+        for (name, persisted, gate) in cases {
+            let prompter =
+                RecordingPrompter::answering(Some(AuthMode::Disabled), Some(false), Some(true));
+
+            let dispatch = reconfigure_dispatch(&prompter, persisted, gate);
+
+            assert_eq!(
+                *prompter.calls.borrow(),
+                vec![Targets, Workflows, AutoSync(true), Attribution(true)],
+                "{name}"
+            );
+            assert_eq!(
+                access_values(&dispatch),
+                (None, None, SetupLoginIntent::NotOffered),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn reconfigure_from_a_global_mandatory_offers_login_for_optional() {
+        let global_mandatory = ResolvedAccessPolicy {
+            auth_mode: ResolvedValue {
+                value: AuthMode::Mandatory,
+                source: ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal),
+            },
+            telemetry_enabled: ResolvedValue {
+                value: false,
+                source: ValueSource::Default,
+            },
+            telemetry: TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled),
+            background_cloud_allowed: true,
+        };
+        let prompter =
+            RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(true));
+
+        let dispatch = reconfigure_dispatch(
+            &prompter,
+            persisted_answers(true, true, AuthMode::Mandatory, false),
+            SetupAccessGate::from_policy(&global_mandatory, true),
+        );
+
+        assert_eq!(
+            prompter.access_calls(),
+            vec![
+                PromptCall::AuthMode(AuthMode::Mandatory),
+                PromptCall::Telemetry(false),
+                PromptCall::Login,
+            ]
+        );
+        assert_eq!(
+            access_values(&dispatch),
+            (
+                Some(AuthMode::Optional),
+                Some(false),
+                SetupLoginIntent::Requested
+            )
+        );
+    }
+
+    #[test]
+    fn persisted_answers_mark_prompts_suppressed_only_without_reconfigure() {
+        let first_run = interactive_dispatch(
+            &RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(false)),
+            PersistedSetupConfirmations::default(),
+            SetupAccessGate::default(),
+        );
+        assert!(!prompts_suppressed(&first_run));
+
+        let suppressed_cases = [
+            PersistedSetupConfirmations {
+                agent_trace_auto_sync: Some(true),
+                ..PersistedSetupConfirmations::default()
+            },
+            PersistedSetupConfirmations {
+                attribution_hooks_enabled: Some(false),
+                ..PersistedSetupConfirmations::default()
+            },
+            persisted_access(Some(AuthMode::Disabled), None, false),
+            persisted_access(None, Some(false), false),
+        ];
+        for persisted in suppressed_cases {
+            let rerun = interactive_dispatch(
+                &RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(false)),
+                persisted,
+                SetupAccessGate::default(),
+            );
+            assert!(prompts_suppressed(&rerun), "{persisted:?}");
+        }
+
+        let locked = interactive_dispatch(
+            &RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(false)),
+            persisted_access(None, None, true),
+            access_gate(Some(AuthPolicyConfigFile::Repository), false, false),
+        );
+        assert!(!prompts_suppressed(&locked));
+
+        let reconfigured = reconfigure_dispatch(
+            &RecordingPrompter::answering(Some(AuthMode::Optional), Some(false), Some(false)),
+            persisted_answers(true, true, AuthMode::Optional, true),
+            SetupAccessGate::default(),
+        );
+        assert!(!prompts_suppressed(&reconfigured));
+    }
+
+    #[test]
+    fn reconfigure_request_rejects_every_non_interactive_combination() {
+        let reconfigure = |options: SetupCliOptions| {
+            resolve_setup_request(SetupCliOptions {
+                reconfigure: true,
+                ..options
+            })
+        };
+        let message = |flag: &str| {
+            format!(
+                "Option '--reconfigure' cannot be used with '{flag}'. Try: run 'sce setup --reconfigure' alone to change saved setup answers interactively."
+            )
+        };
+
+        let mut cases: Vec<(SetupCliOptions, &str)> = [
+            (SetupTarget::OpenCode, "--opencode"),
+            (SetupTarget::Claude, "--claude"),
+            (SetupTarget::Pi, "--pi"),
+            (SetupTarget::Codex, "--codex"),
+            (SetupTarget::All, "--all"),
+        ]
+        .into_iter()
+        .map(|(target, flag)| {
+            (
+                SetupCliOptions {
+                    target: Some(target),
+                    ..SetupCliOptions::default()
+                },
+                flag,
+            )
+        })
+        .collect();
+        cases.extend([
+            (
+                SetupCliOptions {
+                    non_interactive: true,
+                    ..SetupCliOptions::default()
+                },
+                "--non-interactive",
+            ),
+            (
+                SetupCliOptions {
+                    hooks: true,
+                    ..SetupCliOptions::default()
+                },
+                "--hooks",
+            ),
+            (
+                SetupCliOptions {
+                    hooks: true,
+                    repo_path: Some(PathBuf::from("repo")),
+                    ..SetupCliOptions::default()
+                },
+                "--hooks",
+            ),
+            (
+                SetupCliOptions {
+                    repo_path: Some(PathBuf::from("repo")),
+                    ..SetupCliOptions::default()
+                },
+                "--repo",
+            ),
+            (
+                SetupCliOptions {
+                    bootstrap_context: true,
+                    ..SetupCliOptions::default()
+                },
+                "--bootstrap-context",
+            ),
+        ]);
+
+        for (options, flag) in cases {
+            let error = reconfigure(options.clone())
+                .expect_err("reconfigure combination should be rejected");
+            assert_eq!(error.to_string(), message(flag), "{options:?}");
+        }
+
+        let request = reconfigure(SetupCliOptions::default()).expect("reconfigure alone is valid");
+        assert_eq!(request.config_mode, Some(SetupMode::Interactive));
+        assert!(request.reconfigure);
+        assert!(request.install_hooks);
+
+        let plain = resolve_setup_request(SetupCliOptions::default()).unwrap();
+        assert!(!plain.reconfigure);
+    }
+
+    #[test]
+    fn access_gate_locks_only_for_repository_or_explicit_disabled() {
+        let policy = |mode, source| ResolvedAccessPolicy {
+            auth_mode: ResolvedValue {
+                value: mode,
+                source,
+            },
+            telemetry_enabled: ResolvedValue {
+                value: false,
+                source: ValueSource::Default,
+            },
+            telemetry: TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled),
+            background_cloud_allowed: false,
+        };
+        let local = ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal);
+        let global = ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal);
+
+        let cases = [
+            (
+                policy(AuthMode::Disabled, local),
+                Some(AuthPolicyConfigFile::Repository),
+                false,
+            ),
+            (
+                policy(
+                    AuthMode::Disabled,
+                    ValueSource::ConfigFile(ConfigPathSource::Flag),
+                ),
+                Some(AuthPolicyConfigFile::ConfigFlag),
+                false,
+            ),
+            (
+                policy(
+                    AuthMode::Disabled,
+                    ValueSource::ConfigFile(ConfigPathSource::Env),
+                ),
+                Some(AuthPolicyConfigFile::ConfigEnv),
+                false,
+            ),
+            (policy(AuthMode::Disabled, global), None, false),
+            (policy(AuthMode::Mandatory, local), None, true),
+            (policy(AuthMode::Mandatory, global), None, false),
+            (
+                policy(AuthMode::Optional, ValueSource::Default),
+                None,
+                false,
+            ),
+        ];
+
+        for (policy, locked_by, mandatory) in cases {
+            let gate = SetupAccessGate::from_policy(&policy, true);
+
+            assert_eq!(
+                gate,
+                SetupAccessGate {
+                    auth_locked_by: locked_by,
+                    mandatory_locked: mandatory,
+                    auth_db_present: true,
+                }
+            );
+        }
+    }
 
     #[test]
     fn sce_info_assets_install_only_for_claude_and_exclude_development_files() {

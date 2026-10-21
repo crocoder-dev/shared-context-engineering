@@ -58,6 +58,12 @@ impl TelemetryProvisioningResult {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LoginReport {
+    pub(crate) rendered: String,
+    pub(crate) telemetry: TelemetryProvisioningResult,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthSubcommand {
     Login { format: AuthFormat },
@@ -149,16 +155,57 @@ where
     if !telemetry_enabled || destination_conflict {
         return Err(telemetry_headers_unavailable());
     }
-    let Some(working_dir) = working_dir.filter(|_| auth_db_probe()) else {
+    let Some(working_dir) = working_dir else {
         return Err(telemetry_headers_unavailable());
     };
-    let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
+    let credential = authorized_repository_credential_with(
+        working_dir,
+        auth_db_probe,
+        resolve_repository,
+        lookup,
+    )
+    .await;
+    render_telemetry_headers(Ok(credential))
+}
+
+pub(crate) async fn repository_telemetry_authorized(repository_root: &Path) -> bool {
+    authorized_repository_credential_with(
+        repository_root.to_path_buf(),
+        managed_telemetry::auth_db_present,
+        repository_id_for,
+        telemetry_credential_storage::load_repository_telemetry_credential,
+    )
+    .await
+    .is_some()
+}
+
+pub(crate) async fn authorized_repository_credential_with<P, R, L, Fut>(
+    working_dir: PathBuf,
+    auth_db_probe: P,
+    resolve_repository: R,
+    lookup: L,
+) -> Option<telemetry_credential_storage::TelemetryCredential>
+where
+    P: FnOnce() -> bool,
+    R: FnOnce(&Path) -> Option<String> + Send + 'static,
+    L: FnOnce(String) -> Fut + Send + 'static,
+    Fut: Future<
+            Output = Result<
+                Option<telemetry_credential_storage::TelemetryCredential>,
+                TokenStorageError,
+            >,
+        > + Send
+        + 'static,
+{
+    if !auth_db_probe() {
+        return None;
+    }
+    run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
         let repository_id = resolve_repository(&working_dir)?;
         lookup(repository_id).await.ok().flatten()
     })
     .await
-    .flatten();
-    render_telemetry_headers(Ok(credential))
+    .flatten()
 }
 
 pub(crate) fn render_telemetry_headers(
@@ -178,11 +225,18 @@ fn telemetry_headers_unavailable() -> CliError {
     CliError::runtime(anyhow!(TELEMETRY_HEADERS_UNAVAILABLE))
 }
 
-fn resolve_current_auth_config() -> Result<ResolvedAuthRuntimeConfig, CliError> {
-    let cwd = std::env::current_dir()
+fn current_auth_working_dir() -> Result<PathBuf, CliError> {
+    std::env::current_dir()
         .context("failed to determine current directory for auth config resolution")
-        .map_err(unexpected_auth_command_error)?;
-    config::resolve_auth_runtime_config(&cwd).map_err(unexpected_auth_command_error)
+        .map_err(unexpected_auth_command_error)
+}
+
+fn resolve_current_auth_config() -> Result<ResolvedAuthRuntimeConfig, CliError> {
+    resolve_auth_config_in(&current_auth_working_dir()?)
+}
+
+fn resolve_auth_config_in(working_dir: &Path) -> Result<ResolvedAuthRuntimeConfig, CliError> {
+    config::resolve_auth_runtime_config(working_dir).map_err(unexpected_auth_command_error)
 }
 
 fn ensure_auth_allowed(policy: &ResolvedAccessPolicy) -> Result<(), CliError> {
@@ -199,8 +253,18 @@ fn ensure_auth_allowed(policy: &ResolvedAccessPolicy) -> Result<(), CliError> {
 }
 
 pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
+    let working_dir = current_auth_working_dir()?;
+    run_login_in(&working_dir, format)
+        .await
+        .map(|report| report.rendered)
+}
+
+pub(crate) async fn run_login_in(
+    working_dir: &Path,
+    format: AuthFormat,
+) -> Result<LoginReport, CliError> {
     let client = reqwest::Client::new();
-    let auth_config = resolve_current_auth_config()?;
+    let auth_config = resolve_auth_config_in(working_dir)?;
     let client_id = auth_config.workos_client_id.value.unwrap_or_default();
     let control_plane = AuthenticatedControlPlaneClient::new(
         client.clone(),
@@ -221,15 +285,29 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
         |stored_tokens| async move {
             maybe_renew_stored_credentials(client, client_id, stored_tokens).await
         },
-        || async move { provision_telemetry_credential(control_plane).await },
+        || async move { provision_telemetry_credential(control_plane, working_dir).await },
         |format| async move {
             match format {
                 AuthFormat::Text => {
-                    run_text_login(client, client_id, control_plane, telemetry_enabled).await
+                    run_text_login(
+                        client,
+                        client_id,
+                        control_plane,
+                        working_dir,
+                        telemetry_enabled,
+                    )
+                    .await
                 }
                 AuthFormat::Json => {
-                    run_login_json(client, client_id, format, control_plane, telemetry_enabled)
-                        .await
+                    run_login_json(
+                        client,
+                        client_id,
+                        format,
+                        control_plane,
+                        working_dir,
+                        telemetry_enabled,
+                    )
+                    .await
                 }
             }
         },
@@ -244,7 +322,7 @@ async fn run_login_with<T, TF, R, P, D, RF, PF, DF>(
     renew: R,
     provision: P,
     device_login: D,
-) -> Result<String, CliError>
+) -> Result<LoginReport, CliError>
 where
     T: FnOnce() -> TF,
     TF: Future<Output = Result<Option<StoredTokens>, TokenStorageError>>,
@@ -253,7 +331,7 @@ where
     P: FnOnce() -> PF,
     PF: Future<Output = TelemetryProvisioningResult>,
     D: FnOnce(AuthFormat) -> DF,
-    DF: Future<Output = Result<String, CliError>>,
+    DF: Future<Output = Result<LoginReport, CliError>>,
 {
     ensure_auth_allowed(policy)?;
     let stored_tokens = load_tokens().await.map_err(login_storage_error)?;
@@ -370,20 +448,25 @@ async fn run_login_with_stored_credentials<R, P, D, RF, PF, DF>(
     renew: R,
     provision: P,
     device_login: D,
-) -> Result<String, CliError>
+) -> Result<LoginReport, CliError>
 where
     R: FnOnce(StoredTokens) -> RF,
     RF: Future<Output = Result<Option<StoredTokens>, CliError>>,
     P: FnOnce() -> PF,
     PF: Future<Output = TelemetryProvisioningResult>,
     D: FnOnce(AuthFormat) -> DF,
-    DF: Future<Output = Result<String, CliError>>,
+    DF: Future<Output = Result<LoginReport, CliError>>,
 {
     if let Some(stored_tokens) = stored_tokens {
         if let Some(renewed_tokens) = renew(stored_tokens).await? {
             let telemetry = provision().await;
-            return render_login_refresh_result_with_telemetry(&renewed_tokens, format, telemetry)
-                .map_err(unexpected_auth_command_error);
+            let rendered =
+                render_login_refresh_result_with_telemetry(&renewed_tokens, format, telemetry)
+                    .map_err(unexpected_auth_command_error)?;
+            return Ok(LoginReport {
+                rendered,
+                telemetry,
+            });
         }
     }
 
@@ -427,34 +510,47 @@ where
 
 async fn provision_telemetry_credential(
     client: &AuthenticatedControlPlaneClient,
+    working_dir: &Path,
 ) -> TelemetryProvisioningResult {
     if client.issue_and_save_telemetry_credential().await.is_err() {
         return TelemetryProvisioningResult::Unavailable;
     }
-    enroll_current_repository_if_unbound().await;
+    enroll_repository_if_unbound(working_dir).await;
     TelemetryProvisioningResult::Issued
 }
 
-async fn enroll_current_repository_if_unbound() {
-    let Some(repository_id) = std::env::current_dir()
-        .ok()
-        .and_then(|working_dir| repository_id_for(&working_dir))
-    else {
+async fn enroll_repository_if_unbound(working_dir: &Path) {
+    enroll_repository_if_unbound_with(working_dir, repository_id_for, |repository_id| {
+        telemetry_credential_storage::bind_repository_telemetry(
+            repository_id,
+            telemetry_credential_storage::RepositoryBindingMode::EnrollIfUnbound,
+        )
+    })
+    .await;
+}
+
+async fn enroll_repository_if_unbound_with<I, B, BF>(
+    working_dir: &Path,
+    repository_id_for: I,
+    bind: B,
+) where
+    I: FnOnce(&Path) -> Option<String>,
+    B: FnOnce(String) -> BF,
+    BF: Future<Output = Result<bool, TokenStorageError>>,
+{
+    let Some(repository_id) = repository_id_for(working_dir) else {
         return;
     };
-    let _ = telemetry_credential_storage::bind_repository_telemetry(
-        repository_id,
-        telemetry_credential_storage::RepositoryBindingMode::EnrollIfUnbound,
-    )
-    .await;
+    let _ = bind(repository_id).await;
 }
 
 async fn run_text_login(
     client: &reqwest::Client,
     client_id: &str,
     control_plane: &AuthenticatedControlPlaneClient,
+    working_dir: &Path,
     telemetry_enabled: bool,
-) -> Result<String, CliError> {
+) -> Result<LoginReport, CliError> {
     let authorization =
         auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
             .await
@@ -474,10 +570,10 @@ async fn run_text_login(
     let stored_tokens = save_new_session_tokens(&token).await?;
 
     let telemetry = provision_if_enabled(telemetry_enabled, || {
-        provision_telemetry_credential(control_plane)
+        provision_telemetry_credential(control_plane, working_dir)
     })
     .await;
-    render_login_result_with_telemetry(
+    let rendered = render_login_result_with_telemetry(
         &DeviceAuthFlowResult {
             authorization,
             stored_tokens,
@@ -485,7 +581,11 @@ async fn run_text_login(
         AuthFormat::Text,
         telemetry,
     )
-    .map_err(unexpected_auth_command_error)
+    .map_err(unexpected_auth_command_error)?;
+    Ok(LoginReport {
+        rendered,
+        telemetry,
+    })
 }
 
 async fn run_login_json(
@@ -493,8 +593,9 @@ async fn run_login_json(
     client_id: &str,
     format: AuthFormat,
     control_plane: &AuthenticatedControlPlaneClient,
+    working_dir: &Path,
     telemetry_enabled: bool,
-) -> Result<String, CliError> {
+) -> Result<LoginReport, CliError> {
     let authorization =
         auth::request_device_authorization(client, auth::WORKOS_DEFAULT_BASE_URL, client_id)
             .await
@@ -512,10 +613,10 @@ async fn run_login_json(
     let stored_tokens = save_new_session_tokens(&token).await?;
 
     let telemetry = provision_if_enabled(telemetry_enabled, || {
-        provision_telemetry_credential(control_plane)
+        provision_telemetry_credential(control_plane, working_dir)
     })
     .await;
-    render_login_result_with_telemetry(
+    let rendered = render_login_result_with_telemetry(
         &DeviceAuthFlowResult {
             authorization,
             stored_tokens,
@@ -523,7 +624,11 @@ async fn run_login_json(
         format,
         telemetry,
     )
-    .map_err(unexpected_auth_command_error)
+    .map_err(unexpected_auth_command_error)?;
+    Ok(LoginReport {
+        rendered,
+        telemetry,
+    })
 }
 
 fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Result<()> {
@@ -1043,6 +1148,83 @@ mod tests {
         assert_eq!(headers, r#"{"Authorization":"Bearer tok-scoped"}"#);
     }
 
+    #[tokio::test]
+    async fn repository_readiness_lookup_fails_closed_unless_repository_is_authorized() {
+        enum Lookup {
+            Authorized,
+            Unauthorized,
+            AccessFailure,
+            Hangs,
+        }
+
+        let cases = [
+            (
+                "authorized repository",
+                true,
+                Some("repo-a"),
+                Lookup::Authorized,
+                true,
+            ),
+            (
+                "auth.db absent",
+                false,
+                Some("repo-a"),
+                Lookup::Authorized,
+                false,
+            ),
+            (
+                "missing repository identity",
+                true,
+                None,
+                Lookup::Authorized,
+                false,
+            ),
+            (
+                "missing, expired, or foreign-bound credential",
+                true,
+                Some("repo-a"),
+                Lookup::Unauthorized,
+                false,
+            ),
+            (
+                "non-interactive access failure",
+                true,
+                Some("repo-a"),
+                Lookup::AccessFailure,
+                false,
+            ),
+            ("lookup timeout", true, Some("repo-a"), Lookup::Hangs, false),
+        ];
+
+        for (case, auth_db, repository, lookup, expected) in cases {
+            let started = std::time::Instant::now();
+            let credential = authorized_repository_credential_with(
+                PathBuf::from("/workspace/repo"),
+                || auth_db,
+                move |dir: &Path| {
+                    assert_eq!(dir, Path::new("/workspace/repo"));
+                    repository.map(str::to_string)
+                },
+                move |repository_id: String| async move {
+                    assert_eq!(repository_id, "repo-a");
+                    match lookup {
+                        Lookup::Authorized => Ok(Some(telemetry_credential("tok-scoped"))),
+                        Lookup::Unauthorized => Ok(None),
+                        Lookup::AccessFailure => Err(storage_failure()),
+                        Lookup::Hangs => std::future::pending().await,
+                    }
+                },
+            )
+            .await;
+
+            assert_eq!(credential.is_some(), expected, "{case}");
+            assert!(
+                started.elapsed() < CREDENTIAL_LOOKUP_DEADLINE * 2,
+                "{case}: lookup exceeded deadline"
+            );
+        }
+    }
+
     #[test]
     fn telemetry_headers_policy_follows_auth_and_invalid_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -1123,6 +1305,13 @@ mod tests {
         device_auth_result().stored_tokens
     }
 
+    fn device_login_report() -> LoginReport {
+        LoginReport {
+            rendered: "device-login-complete".to_string(),
+            telemetry: TelemetryProvisioningResult::Issued,
+        }
+    }
+
     #[tokio::test]
     async fn stored_credentials_are_provisioned_only_after_renewal_completes() {
         let original = stored_tokens();
@@ -1154,6 +1343,8 @@ mod tests {
             .expect("stored login should succeed");
 
             assert_eq!(*events.lock().unwrap(), ["renewal-complete", "provision"]);
+            assert_eq!(output.telemetry, TelemetryProvisioningResult::Issued);
+            let output = output.rendered;
             assert!(output.contains("\"renewed\": true"));
             assert!(output.contains("\"status\": \"issued\""));
         }
@@ -1166,12 +1357,12 @@ mod tests {
             None,
             |_stored| async { unreachable!("there are no stored credentials") },
             || async { unreachable!("device login owns provisioning") },
-            |_format| async { Ok("device-login-complete".to_string()) },
+            |_format| async { Ok(device_login_report()) },
         )
         .await
         .expect("device login should succeed");
 
-        assert_eq!(output, "device-login-complete");
+        assert_eq!(output, device_login_report());
     }
 
     #[test]
@@ -1365,9 +1556,10 @@ mod tests {
                         })
                     },
                     || async { TelemetryProvisioningResult::Issued },
-                    |_format| async { Ok("device-login-complete".to_string()) },
+                    |_format| async { Ok(device_login_report()) },
                 )
-                .await;
+                .await
+                .map(|report| report.rendered);
 
                 let reads = storage_reads.load(std::sync::atomic::Ordering::SeqCst);
                 match (mode, stored) {
@@ -1404,6 +1596,8 @@ mod tests {
             .await
             .expect("renewed login should succeed");
 
+            assert_eq!(output.telemetry, TelemetryProvisioningResult::Disabled);
+            let output = output.rendered;
             assert!(output.contains("\"status\": \"disabled\""));
             assert!(output.contains(TELEMETRY_PROVISIONING_DISABLED));
         }
@@ -1583,5 +1777,55 @@ mod tests {
             ["delete-workos", "delete-telemetry"]
         );
         assert!(output.contains("\"credentials_removed\": true"));
+    }
+
+    #[tokio::test]
+    async fn login_report_carries_issued_telemetry_when_policy_enables_it() {
+        for mode in [AuthMode::Optional, AuthMode::Mandatory] {
+            let report = run_login_with(
+                AuthFormat::Text,
+                &global_policy(mode, true),
+                || async { Ok(Some(stored_tokens())) },
+                |tokens| async move { Ok(Some(tokens)) },
+                || async { TelemetryProvisioningResult::Issued },
+                |_format| async { panic!("renewed credentials must not use device login") },
+            )
+            .await
+            .expect("renewed login should succeed");
+
+            assert_eq!(report.telemetry, TelemetryProvisioningResult::Issued);
+        }
+    }
+
+    #[tokio::test]
+    async fn repository_enrollment_uses_the_supplied_working_directory() {
+        let working_dir = Path::new("/tmp/sce-login-working-dir");
+        let looked_up = std::sync::Mutex::new(None);
+        let bound = std::sync::Mutex::new(None);
+        let looked_up = &looked_up;
+        let bound = &bound;
+
+        enroll_repository_if_unbound_with(
+            working_dir,
+            |dir| {
+                *looked_up.lock().unwrap() = Some(dir.to_path_buf());
+                Some("repo-id".to_string())
+            },
+            |repository_id| async move {
+                *bound.lock().unwrap() = Some(repository_id);
+                Ok(true)
+            },
+        )
+        .await;
+
+        assert_eq!(looked_up.lock().unwrap().as_deref(), Some(working_dir),);
+        assert_eq!(bound.lock().unwrap().as_deref(), Some("repo-id"));
+
+        enroll_repository_if_unbound_with(
+            working_dir,
+            |_dir| None,
+            |_repository_id| async { panic!("unresolved repository must not bind") },
+        )
+        .await;
     }
 }
