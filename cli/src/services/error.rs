@@ -57,6 +57,7 @@ pub enum UserError {
     AuthStorageUnavailable(AuthStorageFailure),
     LoginAuthStorageUnavailable(AuthStorageFailure),
     AuthDisabledByConfig(AuthPolicyConfigFile),
+    SetupLoginRequired,
     UnexpectedFailure,
 }
 
@@ -84,6 +85,7 @@ impl UserError {
             | Self::AuthStorageUnavailable(_)
             | Self::LoginAuthStorageUnavailable(_)
             | Self::AuthDisabledByConfig(_)
+            | Self::SetupLoginRequired
             | Self::UnexpectedFailure => FailureClass::Runtime,
         }
     }
@@ -97,6 +99,7 @@ impl UserError {
                 "auth.storage_unavailable"
             }
             Self::AuthDisabledByConfig(_) => "auth.disabled_by_config",
+            Self::SetupLoginRequired => "auth.setup_login_required",
             Self::UnexpectedFailure => "general.unexpected_failure",
         }
     }
@@ -123,6 +126,7 @@ impl UserError {
                 *failure,
             ),
             Self::AuthDisabledByConfig(file) => auth_disabled_by_config_message(*file),
+            Self::SetupLoginRequired => SETUP_LOGIN_REQUIRED_MESSAGE,
             Self::UnexpectedFailure => {
                 "An unexpected error occurred. Check the log files for more details."
             }
@@ -165,6 +169,10 @@ enum AuthStorageOperation {
     Command,
     Login,
 }
+
+const SETUP_LOGIN_REQUIRED_MESSAGE: &str = "Local SCE setup completed, but the SCE login required by `auth.mode: mandatory` did not succeed.
+
+To finish setup, run `sce auth login`, then rerun `sce setup`.";
 
 const MACOS_AUTH_STORAGE_UNAVAILABLE: &str = "Authentication storage is unavailable.
 
@@ -487,6 +495,33 @@ mod tests {
             );
             assert_eq!(error.to_string(), user_error.message());
         }
+    }
+
+    #[test]
+    fn setup_login_required_has_stable_runtime_catalog_mapping_and_keeps_its_source() {
+        let error = CliError::user_with_source(
+            UserError::SetupLoginRequired,
+            anyhow::anyhow!("device flow expired"),
+        );
+
+        assert_eq!(error.class(), FailureClass::Runtime);
+        assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+        assert_eq!(
+            UserError::SetupLoginRequired.key(),
+            "auth.setup_login_required"
+        );
+        assert_eq!(
+            error.to_string(),
+            "Local SCE setup completed, but the SCE login required by `auth.mode: mandatory` did not succeed.\n\nTo finish setup, run `sce auth login`, then rerun `sce setup`."
+        );
+        let CliError::User {
+            source: Some(source),
+            ..
+        } = &error
+        else {
+            panic!("expected a user error with a source");
+        };
+        assert_eq!(source.to_string(), "device flow expired");
     }
 
     #[test]

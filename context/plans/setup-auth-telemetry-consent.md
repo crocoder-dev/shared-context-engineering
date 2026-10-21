@@ -507,7 +507,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: user-visible. Interactive `sce setup` now writes `auth.mode` / `telemetry.enabled` to the global config before any repository write, fails with a fixed message when that write fails, and prints a new `SCE access` section. Affected areas: setup lifecycle and prompt docs (`context/sce/setup-repo-local-config-bootstrap.md`), access policy (`context/cli/access-policy.md`), and config precedence (`context/cli/config-precedence-contract.md`).
   - Context synchronization: synced
 
-- [ ] T06: `Run optional or mandatory login from interactive setup through auth login` (status:todo)
+- [x] T06: `Run optional or mandatory login from interactive setup through auth login` (status:done)
   - Task ID: T06
   - Scope: In:
     - In `setup/command.rs`, add a pure `setup_login_action(policy: &ResolvedAccessPolicy, intent: SetupLoginIntent) -> SetupLoginAction { Skip(SetupLoginSkip), Run { required: bool } }`.
@@ -527,7 +527,46 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - the Claude report omits the pending line only when `Issued`;
     - the setup output contains no token values.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error`
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/setup/command.rs`
+    - `cli/src/services/error.rs`
+  - Result:
+    - Added `SetupLoginSkip { AuthDisabled, NotOffered, Declined }`, `SetupLoginAction { Skip(SetupLoginSkip), Run { required } }`, and `SetupLoginStatus { Skipped, Authenticated(LoginReport), Failed(UserError) }` to `setup/command.rs`.
+    - Pure `setup_login_action(policy, intent)` decides from the re-resolved effective policy:
+      - effective `disabled` → `Skip(AuthDisabled)`
+      - effective `mandatory` → `Run { required: true }`, whatever the intent
+      - optional + `Requested` → `Run { required: false }`
+      - optional + `Declined` / `NotOffered` → the matching skip
+    - Generic `run_setup_login_step<L, LF>(action, login)` invokes the closure only for `Run`.
+      - A failed optional login becomes `Failed(UserError)`; an internal error maps to `UnexpectedFailure`.
+      - A failed required login returns `CliError::user_with_source(UserError::SetupLoginRequired, login_error)`.
+    - `SetupCommand::execute` (interactive runs only) re-resolves the policy once through `setup_access_report`, which now returns `(section, policy)`. It renders `SCE access:`, then runs the login step with `auth_command::run_login_in(&repository_root, AuthFormat::Text)` and pushes a login section before the Claude telemetry stage.
+    - Login section lines:
+      - `SCE login: skipped; SCE authentication is disabled by config.`
+      - `SCE login: not requested; run 'sce auth login' to log in or refresh credentials.`
+      - `SCE login: skipped; run 'sce auth login' to log in.`
+      - `SCE login: failed: <fixed UserError message>` followed by `Run 'sce auth login' to retry.`
+      - `LoginReport.rendered` on success
+    - `claude_telemetry_report` and `render_claude_telemetry_section` take `telemetry_issued`. `AUTH_PENDING_LINE` is dropped only when this run's login returned `TelemetryProvisioningResult::Issued`. Non-interactive runs pass `false`, so their output is unchanged.
+    - `UserError::SetupLoginRequired`: key `auth.setup_login_required`, runtime class, fixed message: "Local SCE setup completed, but the SCE login required by `auth.mode: mandatory` did not succeed.\n\nTo finish setup, run `sce auth login`, then rerun `sce setup`."
+  - Deviations and assumptions:
+    - The login outcome is its own output section, directly after `SCE access:`, rather than lines inside that section, because a successful login renders the multi-line `sce auth login` text.
+    - The disabled-skip and not-requested lines are new fixed strings; the Design specified only the declined and failed lines.
+    - A failed mandatory login returns the error, so the setup sections already rendered are not printed; the error message states that local setup completed.
+  - Verify outcomes:
+    - `setup::`: passed (92 tests). New `command::tests`:
+      - `setup_login_action_covers_every_effective_mode_and_intent` (global optional, mandatory, disabled, and default; repository `mandatory` over global optional; repository `disabled` over global mandatory; all three intents)
+      - `setup_login_step_never_invokes_login_when_skipped` (closure panics if called)
+      - `setup_login_step_reports_optional_failure_as_successful_setup`
+      - `setup_login_step_fails_mandatory_login_with_setup_login_required`
+      - `setup_login_step_includes_login_text_for_mandatory_and_accepted_optional_login`
+      - `setup_login_section_renders_exact_skip_lines_without_credentials` (real login text render with secret token values)
+      - `setup_claude_telemetry_omits_the_pending_line_only_when_setup_login_issued_a_credential`
+    - `error`: passed (53 tests), including `setup_login_required_has_stable_runtime_catalog_mapping_and_keeps_its_source`.
+    - Additional check: `clippy --all-targets -- --deny warnings` is clean.
+  - Context impact: user-visible. Interactive `sce setup` now runs `sce auth login` per the effective mode, prints an `SCE login` outcome section, exits with `auth.setup_login_required` when a mandatory login fails, and drops the Claude "authentication pending" line when this run's login issued a telemetry credential. Affected areas: `context/sce/setup-repo-local-config-bootstrap.md`, `context/cli/cli-command-surface.md`, `context/sce/telemetry-credential.md`, `context/sce/cli-error-code-taxonomy.md`, `context/cli/access-policy.md`.
+  - Context synchronization: synced
 
 - [ ] T07: `Add sce setup --reconfigure to revise persisted setup answers` (status:todo)
   - Task ID: T07
