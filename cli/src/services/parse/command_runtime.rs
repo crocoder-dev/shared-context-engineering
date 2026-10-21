@@ -292,6 +292,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             repo,
             bootstrap_context,
             workflow,
+            reconfigure,
         } => convert_setup_command(services::setup::SetupCliOptions {
             target: [
                 (opencode, services::setup::SetupTarget::OpenCode),
@@ -307,6 +308,7 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
             repo_path: repo,
             bootstrap_context,
             workflows: workflow,
+            reconfigure,
         }),
         cli_schema::Commands::Doctor { fix, format } => Ok(convert_doctor_command(fix, format)),
         cli_schema::Commands::Hooks { subcommand } => convert_hooks_subcommand(subcommand),
@@ -578,6 +580,46 @@ mod tests {
             RuntimeCommand::HelpText(command) => command.text,
             _ => panic!("expected a help command"),
         }
+    }
+
+    #[test]
+    fn setup_reconfigure_parses_to_interactive_reconfigure_request() {
+        let RuntimeCommand::Setup(command) = parse(&["sce", "setup", "--reconfigure"]) else {
+            panic!("expected setup command");
+        };
+
+        assert_eq!(
+            command.request.config_mode,
+            Some(services::setup::SetupMode::Interactive)
+        );
+        assert!(command.request.reconfigure);
+    }
+
+    #[test]
+    fn setup_reconfigure_with_a_target_fails_validation() {
+        let error = parse_runtime_command(
+            ["sce", "setup", "--claude", "--reconfigure"].map(String::from),
+            &CommandRegistry::default(),
+            None,
+        )
+        .err()
+        .expect("reconfigure with a target should fail");
+
+        assert_eq!(
+            error.to_string(),
+            "Option '--reconfigure' cannot be used with '--claude'. Try: run 'sce setup --reconfigure' alone to change saved setup answers interactively."
+        );
+    }
+
+    #[test]
+    fn setup_help_lists_the_reconfigure_flag() {
+        let help =
+            cli_schema::render_help_for_path(&["setup"]).expect("setup help should be renderable");
+
+        assert!(
+            help.contains("--reconfigure"),
+            "setup help should list --reconfigure, got: {help}"
+        );
     }
 
     #[test]

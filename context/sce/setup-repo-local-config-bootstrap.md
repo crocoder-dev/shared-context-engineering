@@ -18,16 +18,24 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
   Record SCE involvement in Git commits?
   (Adds SCE metadata to commits created or assisted by SCE.)
   ```
-  Both default to Yes, and the prompt seam carries each answer separately through setup dispatch so declining one does not change the other.
+  Both default to Yes, and the prompt seam carries each answer separately through setup dispatch so declining one does not change the other. Each is skipped when the repository config already holds its value (`agent_trace.auto_sync`, `policies.attribution_hooks.enabled`), unless [`--reconfigure`](#reconfigure) is passed.
 - Interactive setup then resolves SCE access choices in dispatch, after those two confirmations and before any file write:
-  - `SCE account mode for this machine` (`Select`; cursor on `optional`). It is skipped when the global user config already holds `auth.mode`, or when that config is invalid.
-  - `Share SCE telemetry?` (`Confirm`; default No). It is skipped when the global user config already holds `telemetry.enabled`, when that config is invalid, or when the selected or persisted mode is `disabled`.
-  - `Log in to SCE now?` (`Confirm`; default Yes). It is offered only when the prospective mode is `optional`, the effective mode is not `mandatory`, and either an access prompt was asked in this run or no `auth.db` file exists.
+  - `SCE account mode for this machine` (`Select`; cursor on `optional`). It is skipped when the global user config already holds `auth.mode` (unless `--reconfigure`), or when that config is invalid.
+  - `Share SCE telemetry?` (`Confirm`; default No). It is skipped when the global user config already holds `telemetry.enabled` (unless `--reconfigure`), when that config is invalid, or when the selected or persisted mode is `disabled`.
+  - `Log in to SCE now?` (`Confirm`; default Yes). It is offered only when the prospective mode is `optional`, no repository or explicit layer enforces `mandatory`, and either an access prompt was asked in this run or no `auth.db` file exists.
   - A repository or explicit (`--config` / `SCE_CONFIG_FILE`) `auth.mode: disabled` skips all three prompts. Cancelling any of them is the standard setup cancellation.
   - Inputs are read without credential access: the resolved access policy, the global user config file, and the presence of the `auth.db` file.
   - The answers are carried on the dispatch result (`auth_mode`, `telemetry_enabled`, and a `SetupLoginIntent` of `NotOffered | Declined | Requested`). Only answers given in this run are carried; a prompt suppressed by a persisted value carries `None`. The login intent feeds the [setup login step](#setup-login).
   - The answers are saved to the global user config before any repository write (see [Global access preferences](#global-access-preferences)).
   - Non-interactive, hooks-only, and context-only setup never read these inputs or prompt.
+
+### Reconfigure
+
+`sce setup --reconfigure` is interactive setup that asks every persisted answer again: auto-sync, attribution, account mode, and telemetry consent. Each prompt's default is the saved value (falling back to the first-run default), so a persisted global `disabled` puts the account-mode cursor on `disabled`. The repository/explicit `disabled` lock and the invalid-global gate still skip the access prompts. New answers go through the same writers as a first run.
+
+- It must be used alone (apart from `--workflow`). Combining it with a target flag, `--non-interactive`, `--hooks`, `--repo`, or `--bootstrap-context` fails request validation with `Option '--reconfigure' cannot be used with '<flag>'. Try: run 'sce setup --reconfigure' alone to change saved setup answers interactively.`
+- A global `mandatory` that `--reconfigure` changes to `optional` gets the login offer, because only a repository or explicit `mandatory` suppresses it.
+- A plain interactive run where a saved answer skipped a prompt adds `- Run 'sce setup --reconfigure' to change saved setup answers.` to the `SCE access` section.
 - The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit opt-ins for both setup-controlled behaviors: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}, "policies": {"attribution_hooks": {"enabled": true}}}` (where `<version>` is the CLI release version, with a trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite. A later interactive target-install write may merge the two answered behavior values, while non-interactive setup leaves existing behavior keys and omissions unchanged.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
@@ -55,6 +63,7 @@ Setup saves `auth.mode` and `telemetry.enabled` only to the global user config, 
   - The source wording matches `sce config show`, and the reason strings are the [access-policy reasons](../cli/access-policy.md#reporting). The effective lines come from re-resolution, so, for example, a repository `telemetry.enabled: false` still reports `disabled (reason: repository_opt_out)` after global consent.
   - When a repository or explicit file locks auth to `disabled`, the section adds the first line of the matching `auth.disabled_by_config` message, which names that file.
   - When the effective mode is `disabled` and an `auth.db` file exists, it adds `- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.`
+  - When a saved answer suppressed a prompt in this run, it ends with the [`--reconfigure`](#reconfigure) hint line.
 
 ## Setup login
 

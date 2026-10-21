@@ -199,6 +199,12 @@ pub enum Commands {
         /// Install an optional workflow by slug; repeat for several (default: none)
         #[arg(long = "workflow", value_name = "SLUG")]
         workflow: Vec<String>,
+
+        #[arg(
+            long,
+            help = "Ask every saved setup answer again, using the saved values as defaults (interactive only)"
+        )]
+        reconfigure: bool,
     },
 
     #[command(about = DOCTOR_CLAP_ABOUT, hide = !DOCTOR_SHOW_IN_TOP_LEVEL_HELP)]

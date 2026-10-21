@@ -164,7 +164,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 
 ## Setup-written behavior values
 
-Interactive setup is the only selection path for these two behavior values. After target selection, it persists the independent confirmation results at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled`; Enter accepts each Yes default, and `n` changes only that key. A non-interactive target run supplies no values, so it preserves both keys when present and preserves their omission when absent. Creating a missing repo-local config is the exception: setup bootstraps both values as explicit `true`.
+Interactive setup is the only selection path for these two behavior values. After target selection, it persists the independent confirmation results at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled`; Enter accepts each Yes default, and `n` changes only that key. A non-interactive target run supplies no values, so it preserves both keys when present and preserves their omission when absent. Creating a missing repo-local config is the exception: setup bootstraps both values as explicit `true`. A persisted value skips its prompt on later interactive runs; `sce setup --reconfigure` asks again with the persisted value as the default, and does the same for the setup-written global `auth.mode` and `telemetry.enabled`.
 
 These setup writes do not add a resolver layer. `agent_trace.auto_sync` remains config-file-only with global-before-local merge and omitted fallback `false`; attribution remains enabled by default, with `SCE_ATTRIBUTION_HOOKS_DISABLED` overriding `policies.attribution_hooks.enabled`. `SCE_DISABLED`, staged-diff AI-overlap evidence, and all other hook semantics remain owned by the hook runtime.
 

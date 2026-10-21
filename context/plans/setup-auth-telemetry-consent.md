@@ -208,23 +208,23 @@ Atomicity and recovery:
 
 ## Acceptance criteria
 
-- [ ] AC1: On a first interactive run with no global access keys, setup asks the existing four prompts unchanged, then the auth-mode `Select` (cursor on `optional`), telemetry consent (default No), and, under `optional`, the login offer (default Yes). Cancelling any prompt writes no file and prints `Setup cancelled. No files were changed.`
+- [x] AC1: On a first interactive run with no global access keys, setup asks the existing four prompts unchanged, then the auth-mode `Select` (cursor on `optional`), telemetry consent (default No), and, under `optional`, the login offer (default Yes). Cancelling any prompt writes no file and prints `Setup cancelled. No files were changed.`
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::` dispatch tests using a recording `FakePrompter` that assert the call order, the defaults passed, and the cancellation result at each new prompt.
-- [ ] AC2: Setup writes `auth.mode` and `telemetry.enabled` only to the global config. The repository `.sce/config.json` never gains `auth` or `telemetry` keys from setup. Unrelated global keys are preserved. A second identical run does not rewrite the file. Existing file mode is preserved, and a new file is `0o600`.
+- [x] AC2: Setup writes `auth.mode` and `telemetry.enabled` only to the global config. The repository `.sce/config.json` never gains `auth` or `telemetry` keys from setup. Unrelated global keys are preserved. A second identical run does not rewrite the file. Existing file mode is preserved, and a new file is `0o600`.
   - Validate: table-driven tests for `persist_global_access_preferences` (missing file, empty object, unrelated keys, explicit values, idempotent rerun, mode preservation) and an execute-level test asserting the bytes of the repository config.
-- [ ] AC3: An invalid, unreadable, or concurrently modified global config is never overwritten. An invalid one causes the access prompts to be skipped. A write failure aborts setup before any repository write and never reports consent.
+- [x] AC3: An invalid, unreadable, or concurrently modified global config is never overwritten. An invalid one causes the access prompts to be skipped. A write failure aborts setup before any repository write and never reports consent.
   - Validate: writer tests for invalid JSON, schema-invalid file, read-only directory, and a changed-bytes race (injected re-read), plus a dispatch test for the invalid-global gate.
-- [ ] AC4: A repository or explicit `auth.mode: disabled` skips all access prompts and login. A repository `telemetry.enabled: false` keeps telemetry disabled after the user consents. A repository `telemetry.enabled: true` never enables telemetry without global consent. A repository `mandatory` forces the login to be required.
+- [x] AC4: A repository or explicit `auth.mode: disabled` skips all access prompts and login. A repository `telemetry.enabled: false` keeps telemetry disabled after the user consents. A repository `telemetry.enabled: true` never enables telemetry without global consent. A repository `mandatory` forces the login to be required.
   - Validate: table-driven tests for the dispatch gate and the login-action decision built from `resolve_auth_runtime_config_with` over temp global, repository, and explicit files.
-- [ ] AC5: The login step is skipped under effective `disabled` without calling any credential-store or login closure. Under `optional` it runs only after the user accepts, and declining or failing leaves setup successful. Under `mandatory` it always runs, and failure exits nonzero with `auth.setup_login_required`. Telemetry is provisioned only when the re-resolved policy is `Enabled`.
+- [x] AC5: The login step is skipped under effective `disabled` without calling any credential-store or login closure. Under `optional` it runs only after the user accepts, and declining or failing leaves setup successful. Under `mandatory` it always runs, and failure exits nonzero with `auth.setup_login_required`. Telemetry is provisioned only when the re-resolved policy is `Enabled`.
   - Validate: `setup_login_action` table test and a generic execute-step test with login closures that panic when called. Use the existing `auth_command` provisioning tests to cover `Disabled` versus `Issued`.
-- [ ] AC6: On rerun, persisted global and repository answers suppress their prompts. `sce setup --reconfigure` asks all of them again, with the persisted values as defaults. `--reconfigure` combined with a target flag, `--non-interactive`, `--hooks`, `--repo`, or `--bootstrap-context` fails validation.
+- [x] AC6: On rerun, persisted global and repository answers suppress their prompts. `sce setup --reconfigure` asks all of them again, with the persisted values as defaults. `--reconfigure` combined with a target flag, `--non-interactive`, `--hooks`, `--repo`, or `--bootstrap-context` fails validation.
   - Validate: `resolve_setup_request` and `resolve_setup_dispatch` tests; a `cli_schema`/parse test for the flag.
-- [ ] AC7: Non-interactive target runs, `--hooks`, and `--bootstrap-context` produce byte-identical output to today. They ask no new prompts, write no access keys, and never invoke login or credential storage.
+- [x] AC7: Non-interactive target runs, `--hooks`, and `--bootstrap-context` produce byte-identical output to today. They ask no new prompts, write no access keys, and never invoke login or credential storage.
   - Validate: the existing setup command tests stay green, plus a dispatch test asserting `Proceed` carries no access values and `SetupLoginIntent::NotOffered` for every `SetupMode::NonInteractive` target.
-- [ ] AC8: The setup report states the effective auth mode, the effective telemetry state with its reason (from re-resolution, not from the saved value), and the actual login outcome, and contains no token or credential value. `sce auth login` output stays byte-identical.
+- [x] AC8: The setup report states the effective auth mode, the effective telemetry state with its reason (from re-resolution, not from the saved value), and the actual login outcome, and contains no token or credential value. `sce auth login` output stays byte-identical.
   - Validate: exact-output render tests for the `SCE access` section; the existing `auth_command` render tests stay green; a test asserting the login report text contains no `access_token` / `refresh_token` values.
-- [ ] AC9: The Claude-native telemetry report omits the "authentication pending" line when this setup run's login issued a telemetry credential, and keeps it otherwise.
+- [x] AC9: The Claude-native telemetry report omits the "authentication pending" line when this setup run's login issued a telemetry credential, and keeps it otherwise.
   - Validate: `render_claude_telemetry_section` tests in `cli/src/services/setup/command.rs`.
 
 ### Full validation
@@ -568,7 +568,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: user-visible. Interactive `sce setup` now runs `sce auth login` per the effective mode, prints an `SCE login` outcome section, exits with `auth.setup_login_required` when a mandatory login fails, and drops the Claude "authentication pending" line when this run's login issued a telemetry credential. Affected areas: `context/sce/setup-repo-local-config-bootstrap.md`, `context/cli/cli-command-surface.md`, `context/sce/telemetry-credential.md`, `context/sce/cli-error-code-taxonomy.md`, `context/cli/access-policy.md`.
   - Context synchronization: synced
 
-- [ ] T07: `Add sce setup --reconfigure to revise persisted setup answers` (status:todo)
+- [x] T07: `Add sce setup --reconfigure to revise persisted setup answers` (status:done)
   - Task ID: T07
   - Scope: In:
     - Add a `--reconfigure` flag in `cli/src/cli_schema.rs` `Commands::Setup`.
@@ -580,7 +580,41 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Dependencies: T04, T05
   - Done when: request-validation tests cover every rejected combination; dispatch tests prove that `--reconfigure` asks all four persisted prompts with the persisted defaults (including a persisted global `disabled` as the auth-mode cursor), and that a repository lock still skips the access prompts; setup help lists the flag.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`; `nix develop -c ./scripts/run-cli-cargo.sh run --manifest-path cli/Cargo.toml -- setup --help`
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/cli_schema.rs`
+    - `cli/src/services/parse/command_runtime.rs`
+    - `cli/src/services/command_registry.rs`
+    - `cli/src/services/setup/mod.rs`
+    - `cli/src/services/setup/command.rs`
+  - Result:
+    - `Commands::Setup` gains `--reconfigure` with help text `Ask every saved setup answer again, using the saved values as defaults (interactive only)`. It is mapped to `SetupCliOptions.reconfigure` and `SetupRequest.reconfigure`.
+    - `resolve_setup_request` checks `--reconfigure` conflicts first and rejects a target flag, `--non-interactive`, `--hooks`, `--repo`, or `--bootstrap-context` with the fixed message `Option '--reconfigure' cannot be used with '<flag>'. Try: run 'sce setup --reconfigure' alone to change saved setup answers interactively.` `--workflow` stays allowed.
+    - `resolve_setup_dispatch` takes a `reconfigure` flag. Under it, the auto-sync and attribution prompts use the persisted value as the default instead of being suppressed (`persisted_or_prompted`). The auth-mode and telemetry prompts use the persisted global value as their default, falling back to `optional` and `false`. The lock and invalid-global gates are unchanged.
+    - `SetupDispatch::Proceed` gains `prompts_suppressed`. It is true when, without `--reconfigure`, a persisted repository or global answer skipped a prompt. Lock and invalid-global skips do not count. `SetupAccessSave` carries it, and the `SCE access` section appends `- Run 'sce setup --reconfigure' to change saved setup answers.`
+    - `SetupAccessGate.effective_mandatory` is renamed `mandatory_locked`. It is set only when a non-global layer decides `mandatory`, which resolves T04's open note: reconfiguring a global `mandatory` to `optional` now offers login. Behavior without `--reconfigure` is unchanged, because a persisted global `mandatory` still makes the prospective mode `mandatory`.
+  - Deviations and assumptions:
+    - The hint is rendered as a `- ` list line inside the `SCE access` section, matching the section's other lines.
+    - `SetupCliOptions` carries `#[allow(clippy::struct_excessive_bools)]` because it mirrors the CLI flags.
+    - The flag's help text is set through `#[arg(help = …)]` rather than a doc comment.
+  - Verify outcomes:
+    - `setup`: passed (107 tests). New tests:
+      - `reconfigure_asks_every_persisted_prompt_with_the_persisted_defaults`
+      - `reconfigure_uses_a_persisted_global_disabled_as_the_auth_mode_cursor`
+      - `reconfigure_keeps_the_lock_and_invalid_global_gates` (repository lock, explicit lock, invalid global)
+      - `reconfigure_from_a_global_mandatory_offers_login_for_optional`
+      - `persisted_answers_mark_prompts_suppressed_only_without_reconfigure`
+      - `reconfigure_request_rejects_every_non_interactive_combination` (all five targets, `--non-interactive`, `--hooks`, `--hooks --repo`, `--repo`, `--bootstrap-context`)
+      - `setup_access_section_hints_reconfigure_when_saved_answers_suppressed_prompts` (exact output)
+      - `reconfigure_rewrites_saved_global_answers`
+      - `setup_reconfigure_parses_to_interactive_reconfigure_request`
+      - `setup_reconfigure_with_a_target_fails_validation`
+      - `setup_help_lists_the_reconfigure_flag`
+      - the existing gate test gains a global-`mandatory` case
+    - `setup --help`: passed; it lists `--reconfigure` with the help text above.
+    - Additional check: `clippy --all-targets -- --deny warnings` is clean.
+  - Context impact: user-visible. The new `sce setup --reconfigure` flag and its validation messages, re-asking saved answers with persisted defaults, and the `SCE access` reconfigure hint. Affected areas: `context/cli/cli-command-surface.md`, `context/sce/setup-repo-local-config-bootstrap.md`, `context/cli/config-precedence-contract.md`, `context/cli/access-policy.md`.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -588,3 +622,38 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - **Login offer default.** Default Yes treats pressing Enter as consent to a possible Keychain dialog. Default No is the more conservative choice on privacy, but leaves users who enabled auto-sync unauthenticated. Which one should ship?
 - **`--reconfigure` scope.** The plan has it re-ask the two existing repository behavior answers as well, because they are currently impossible to change through setup and a flag named "reconfigure" that skipped them would be confusing. The smaller alternative is to re-ask only the auth-mode and telemetry prompts.
 - **Unattended consent.** Without new flags, CI or provisioning scripts can grant consent only by writing the global config file. Is that acceptable, or does a follow-up need a non-interactive `--telemetry`/`--auth-mode` contract?
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-21
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed: `sce-cli-tests`, `sce-cli-clippy`, `sce-cli-fmt`)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` -> exit 0 (107 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command` -> exit 0 (21 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml parse` -> exit 0 (51 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml error` -> exit 101 (52 passed, 1 failed: `app::tests::managed_export_marks_failed_output_and_exports_final_error_log`, outside this plan's scope; it passed on 3 reruns in isolation and inside `nix flake check`)
+- `nix run .#pkl-check-generated` -> not run (no schema or Pkl inputs changed, as the plan states)
+
+### Success-criteria verification
+
+- [x] AC1: First-run prompt order, defaults, and cancellation -> `first_interactive_run_asks_access_prompts_after_existing_prompts_with_defaults`, `cancelling_any_access_prompt_cancels_setup`, `new_prompt_labels_and_defaults_are_fixed`, `auth_mode_default_cursor_points_at_the_default_row` passed
+- [x] AC2: Global-only writes, key preservation, idempotence, file modes -> `access_preferences_writer_sets_only_requested_keys`, `access_preferences_writer_is_idempotent_on_rerun`, `access_preferences_writer_preserves_existing_mode_and_creates_private_file`, `access_preferences_writer_without_answers_never_creates_file`, `interactive_setup_saves_access_answers_only_to_the_global_config`, `interactive_setup_rerun_leaves_the_global_config_bytes_unchanged` passed
+- [x] AC3: Invalid, unreadable, or raced global config is never overwritten; write failure aborts setup -> `access_preferences_writer_refuses_invalid_files_without_touching_them`, `access_preferences_writer_detects_concurrent_modification_before_rename`, `access_preferences_writer_reports_io_error_for_read_only_directory`, `interactive_setup_skips_access_writes_when_the_global_config_is_invalid`, `interactive_setup_aborts_before_repository_writes_when_the_global_config_is_read_only` passed
+- [x] AC4: Repository and explicit locks, opt-out, and mandatory -> `access_gate_locks_only_for_repository_or_explicit_disabled`, `access_mode_and_telemetry_prompts_follow_persisted_values_locks_and_selected_mode`, `setup_access_section_reports_repository_opt_out_after_global_consent`, `setup_claude_telemetry_policy_follows_layered_config` passed
+- [x] AC5: Login action per effective mode; mandatory failure maps to `auth.setup_login_required` -> `setup_login_action_covers_every_effective_mode_and_intent`, `setup_login_step_never_invokes_login_when_skipped`, `setup_login_step_reports_optional_failure_as_successful_setup`, `setup_login_step_fails_mandatory_login_with_setup_login_required`, `setup_login_required_has_stable_runtime_catalog_mapping_and_keeps_its_source`, and the `auth_command` provisioning tests passed
+- [x] AC6: Rerun suppression and `--reconfigure` validation -> `persisted_answers_mark_prompts_suppressed_only_without_reconfigure`, `reconfigure_asks_every_persisted_prompt_with_the_persisted_defaults`, `reconfigure_keeps_the_lock_and_invalid_global_gates`, `reconfigure_request_rejects_every_non_interactive_combination`, `setup_reconfigure_parses_to_interactive_reconfigure_request`, `setup_reconfigure_with_a_target_fails_validation`, `setup_help_lists_the_reconfigure_flag` passed
+- [x] AC7: Non-interactive, hooks, and context-only runs are unchanged -> `non_interactive_targets_prompt_nothing_and_carry_no_access_values` and the existing setup command tests passed (107/107)
+- [x] AC8: Report states the effective policy and login outcome without secrets; `sce auth login` output unchanged -> `setup_access_section_renders_exact_lines`, `setup_login_section_renders_exact_skip_lines_without_credentials` (asserts no access or refresh token values), `setup_login_step_includes_login_text_for_mandatory_and_accepted_optional_login`, and the `auth_command` render tests passed
+- [x] AC9: The Claude "authentication pending" line follows this run's login -> `setup_claude_telemetry_omits_the_pending_line_only_when_setup_login_issued_a_credential`, `claude_telemetry_report_marks_authentication_pending_without_helper_name` passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- `app::tests::managed_export_marks_failed_output_and_exports_final_error_log` failed once in a local run and passed on 3 reruns and in `nix flake check`. It looks like a timing-dependent OTLP capture flake outside this plan's scope.
+- The plan's open questions (global versus repository auth mode, the login-offer default, `--reconfigure` scope, unattended consent) are product decisions and are still open.
