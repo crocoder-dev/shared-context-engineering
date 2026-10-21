@@ -296,7 +296,7 @@ The header helper follows the same policy gate and destination tripwire. It then
   - Context impact: localized. Telemetry readiness lookups no longer migrate an outdated or schemaless `auth.db`. They report `credential_unavailable` (`Unusable`) instead, and a later interactive open still migrates. This affects `context/sce/auth-db.md` (concurrency and schema readiness), and `shared-turso-db.md`/`glossary.md` (the new non-migrating encrypted existing-DB open).
   - Context synchronization: synced
 
-- [ ] T03: `Gate runtime, doctor and header helper on auth.db instead of the marker` (status:todo)
+- [x] T03: `Gate runtime, doctor and header helper on auth.db instead of the marker` (status:done)
   - Task ID: T03
   - Scope: In — remove every marker read. Out — marker writes and clears in login and logout, and deleting the module (both in T04).
   - Files and functions:
@@ -321,7 +321,26 @@ The header helper follows the same policy gate and destination tripwire. It then
     - A new `legacy_readiness_marker_is_ignored` table test with marker cases (absent, valid, expired, malformed) crossed with credential cases (valid, none). It asserts the doctor label matches the credential case only, and that the marker bytes are unchanged.
     - The existing 32-process concurrent hook-span test and the 32-process missing-DB helper test pass without seeding the marker.
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry`, `... telemetry_headers`, `... doctor`, and `... multiprocess` pass.
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/managed_telemetry.rs`
+    - `cli/src/services/doctor/render.rs`
+    - `cli/src/services/doctor/managed_telemetry.rs`
+    - `cli/src/services/auth_command/mod.rs`
+    - `cli/src/services/telemetry_readiness.rs`
+    - `cli/src/services/auth_db/multiprocess_tests.rs`
+    - `cli/src/app/doctor_reconciliation_cli_tests.rs`
+  - Result: `RuntimeTelemetry::resolve_when_ready` is renamed to `resolve_when_enabled` and loses its `ready` probe: once the policy is enabled, the typed lookup runs directly. A missing `auth.db` classifies as `Missing` → `not_configured` without key resolution. `inspect_health_with(enabled, auth_db_present, lookup, now)` loses the readiness parameter and its `NotConfigured`/`Expired` short-circuits. It probes `auth_db_present` only when the policy is disabled, and otherwise runs the typed lookup under `CREDENTIAL_LOOKUP_DEADLINE`. The new `managed_telemetry::auth_db_present()` (`auth_db_path().is_ok_and(|p| p.is_file())`) replaces `readiness_hint_present`. `ManagedTelemetryHealth::DisabledByConfig { auth_db_present }` replaces `readiness_hint_present` in doctor rendering and JSON tests; the note text is unchanged. In `telemetry_headers_with`, `ready_probe` becomes `auth_db_probe`, wired to `auth_db_present`; the order stays policy → tripwire → probe → repository → lookup. The now-unused `current_unix_seconds` was removed from `auth_command/mod.rs`. `telemetry_readiness.rs` keeps only `mark_ready`, `clear`, and their private helpers. `ReadinessState`, `is_ready`, `state`, `state_at`, `is_ready_at`, and the module's tests are deleted.
+  - Verify:
+    - New `valid_credential_without_readiness_marker_resolves_managed_telemetry_and_headers`: seed, bind, remove the marker, then a `hook-resolve` child running `RuntimeTelemetry::resolve_when_enabled` reports `credential_valid` (`Managed`, or `exporter_init_failed`, which is reached only after a `Valid` lookup; the Nix build sandbox has no platform certificates for the rustls client), doctor reports `healthy`, and the helper serves the bearer for the bound repository: passed.
+    - New `legacy_readiness_marker_is_ignored`: markers absent, valid, expired, and malformed, crossed with a valid credential (`healthy`/`credential_valid`) and a deleted telemetry row (`not_configured`/`not_configured`). Marker bytes are unchanged afterwards: passed.
+    - `doctor_telemetry_health_classifies_real_auth_db_states_without_mutating_them` now varies credential state: valid → `healthy`; wrong or missing key → `database_error`; expired row → `credential_expired`; deleted row → `not_configured`. The `auth.db` bytes are unchanged by each health check: passed. `claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential` no longer asserts the marker exists: passed.
+    - The header table test renames `not ready` to `no auth db` and asserts that the repository is never resolved when the probe fails: passed.
+    - The 32-process missing-DB helper test and the hook-entry span test pass without the marker. The hook-entry span test never seeded it.
+    - `managed_telemetry` (42), `telemetry_headers` (11), `doctor` (35), `multiprocess` (23), `telemetry_credential` (27), `stalled` (10), and `auth_command` (20) all passed. `clippy --all-targets -D warnings` is clean.
+  - Deviation: `resolve_when_ready` was renamed to `resolve_when_enabled` because it no longer takes a readiness probe. The multiprocess tests write a legacy marker through a `LEGACY_READINESS_MARKER = "telemetry-ready.json"` fixture constant, which AC7's `rg` pattern will match. T04 or final validation must accept or exclude that test fixture. The AC2 test cannot drop it. The hook-resolve child counts `exporter_init_failed` as a valid credential, because exporter construction depends on the environment (the Nix check sandbox cannot build the rustls client), while T03 concerns only the readiness decision. `nix flake check` passes.
+  - Context impact: localized. When the policy is enabled, the runtime, doctor, and header helper no longer read `telemetry-ready.json`. Readiness comes only from the `auth.db` typed lookup, and the helper checks only whether `auth.db` exists. Doctor's `OPT_IN_NOTE` now keys off whether `auth.db` exists. This affects `context/sce/telemetry-credential.md` (Runtime use, Doctor health check, Hidden header helper), `context/cli/access-policy.md` (managed telemetry, doctor, and helper enforcement), and `context/sce/cli-observability-contract.md` (the startup paragraph). Login and logout still write and clear the marker until T04.
+  - Context synchronization: synced
 
 - [ ] T04: `Remove readiness marker writes from login and logout and delete the module` (status:todo)
   - Task ID: T04

@@ -17,7 +17,7 @@ use crate::services::error::{AuthStorageFailure, CliError, UserError};
 use crate::services::managed_telemetry::claude_helper::{
     repository_id_for, visible_destination_conflict,
 };
-use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
+use crate::services::managed_telemetry::{self, run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{label, prompt_label, prompt_value, value};
 use crate::services::telemetry_credential_storage;
@@ -115,7 +115,7 @@ async fn run_telemetry_headers() -> Result<String, CliError> {
         working_dir,
         telemetry_enabled,
         visible_destination_conflict(|key| std::env::var(key).ok()),
-        || telemetry_readiness::is_ready(current_unix_seconds()),
+        managed_telemetry::auth_db_present,
         repository_id_for,
         telemetry_credential_storage::load_repository_telemetry_credential,
     )
@@ -131,7 +131,7 @@ pub(crate) async fn telemetry_headers_with<P, R, L, Fut>(
     working_dir: Option<PathBuf>,
     telemetry_enabled: bool,
     destination_conflict: bool,
-    ready_probe: P,
+    auth_db_probe: P,
     resolve_repository: R,
     lookup: L,
 ) -> Result<String, CliError>
@@ -150,7 +150,7 @@ where
     if !telemetry_enabled || destination_conflict {
         return Err(telemetry_headers_unavailable());
     }
-    let Some(working_dir) = working_dir.filter(|_| ready_probe()) else {
+    let Some(working_dir) = working_dir.filter(|_| auth_db_probe()) else {
         return Err(telemetry_headers_unavailable());
     };
     let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
@@ -465,12 +465,6 @@ where
     }
     let _ = clear();
     TelemetryProvisioningResult::Unavailable
-}
-
-fn current_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 async fn enroll_current_repository_if_unbound() {
@@ -1006,7 +1000,7 @@ mod tests {
                 Some("repo-a"),
             ),
             (
-                "not ready",
+                "no auth db",
                 working_dir.clone(),
                 true,
                 false,
@@ -1031,7 +1025,7 @@ mod tests {
                 None,
             ),
         ];
-        for (case, dir, telemetry_enabled, conflict, ready, repository) in cases {
+        for (case, dir, telemetry_enabled, conflict, auth_db, repository) in cases {
             let probed = Arc::new(AtomicBool::new(false));
             let resolved = Arc::new(AtomicBool::new(false));
             let looked_up = Arc::new(AtomicBool::new(false));
@@ -1043,7 +1037,7 @@ mod tests {
                     let probed = Arc::clone(&probed);
                     move || {
                         probed.store(true, Ordering::SeqCst);
-                        ready
+                        auth_db
                     }
                 },
                 {
@@ -1066,7 +1060,9 @@ mod tests {
             assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE, "{case}");
             assert!(!looked_up.load(Ordering::SeqCst), "{case}: lookup ran");
             if !telemetry_enabled {
-                assert!(!probed.load(Ordering::SeqCst), "{case}: readiness probed");
+                assert!(!probed.load(Ordering::SeqCst), "{case}: auth.db probed");
+            }
+            if !telemetry_enabled || !auth_db {
                 assert!(
                     !resolved.load(Ordering::SeqCst),
                     "{case}: repository resolved"
