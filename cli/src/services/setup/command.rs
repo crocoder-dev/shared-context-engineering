@@ -11,7 +11,7 @@ use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
 use crate::services::setup::access_preferences::{
-    persist_global_access_preferences, read_global_access_preferences,
+    persist_global_access_preferences, read_global_access_preferences, GlobalAccessPreferences,
     GlobalAccessPreferencesError, GlobalWriteOutcome,
 };
 use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
@@ -111,7 +111,19 @@ impl SetupCommand {
             .map_err(unexpected_failure)?;
             sections.push(setup_message);
 
-            if let Some((access_save, auth_db_present)) = &interactive_access {
+            let render_claude_telemetry = async |action| {
+                claude_telemetry_report(
+                    &repository_root,
+                    action,
+                    claude_telemetry_selected,
+                    authorization_check,
+                )
+                .await
+            };
+
+            let deferred_telemetry_action = if let Some((access_save, auth_db_present)) =
+                &interactive_access
+            {
                 let (access_section, policy) = setup_access_report(
                     &repository_root,
                     access_save,
@@ -120,17 +132,27 @@ impl SetupCommand {
                 )?;
                 sections.push(access_section);
 
+                let (removal_action, deferred_action) =
+                    split_pre_login_removal(claude_telemetry_action(
+                        read_global_preferences(&access_save.global_config_path),
+                        policy.telemetry_enabled(),
+                        claude_telemetry_selected,
+                        true,
+                    ));
+                sections.extend(render_claude_telemetry(removal_action).await);
+
                 let login_status =
                     run_setup_login_step(setup_login_action(&policy, login_intent), || {
                         auth_command::run_login_in(&repository_root, AuthFormat::Text)
                     })
                     .await?;
                 sections.push(render_setup_login_section(&login_status));
-            }
+                deferred_action
+            } else {
+                non_interactive_claude_telemetry_action(&repository_root, claude_telemetry_selected)
+            };
 
-            if claude_telemetry_selected {
-                sections.push(claude_telemetry_report(&repository_root, authorization_check).await);
-            }
+            sections.extend(render_claude_telemetry(deferred_telemetry_action).await);
         }
 
         Ok(sections.join("\n\n"))
@@ -507,21 +529,134 @@ impl RepositoryAuthorizationCheck {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClaudeTelemetryAction {
+    Install,
+    Remove,
+    SkipDisabled,
+}
+
+fn global_consent_withdrawn(global: GlobalAccessPreferences) -> bool {
+    matches!(
+        global,
+        GlobalAccessPreferences::Valid {
+            telemetry_enabled: Some(false),
+            ..
+        } | GlobalAccessPreferences::Valid {
+            auth_mode: Some(AuthMode::Disabled),
+            ..
+        }
+    )
+}
+
+fn claude_telemetry_action(
+    global: GlobalAccessPreferences,
+    effective_enabled: bool,
+    claude_selected: bool,
+    interactive: bool,
+) -> Option<ClaudeTelemetryAction> {
+    if global_consent_withdrawn(global) && (interactive || claude_selected) {
+        return Some(ClaudeTelemetryAction::Remove);
+    }
+    if !claude_selected {
+        return None;
+    }
+    if effective_enabled {
+        Some(ClaudeTelemetryAction::Install)
+    } else {
+        Some(ClaudeTelemetryAction::SkipDisabled)
+    }
+}
+
+fn split_pre_login_removal(
+    action: Option<ClaudeTelemetryAction>,
+) -> (Option<ClaudeTelemetryAction>, Option<ClaudeTelemetryAction>) {
+    match action {
+        Some(ClaudeTelemetryAction::Remove) => (action, None),
+        _ => (None, action),
+    }
+}
+
+fn non_interactive_claude_telemetry_action(
+    repository_root: &Path,
+    claude_selected: bool,
+) -> Option<ClaudeTelemetryAction> {
+    if !claude_selected {
+        return None;
+    }
+    let global = config::resolver::resolve_default_global_config_path()
+        .map_or(GlobalAccessPreferences::Invalid, |path| {
+            read_global_preferences(&path)
+        });
+    claude_telemetry_action(
+        global,
+        effective_telemetry_enabled(repository_root),
+        claude_selected,
+        false,
+    )
+}
+
+fn read_global_preferences(global_config_path: &Path) -> GlobalAccessPreferences {
+    read_global_access_preferences(global_config_path).unwrap_or(GlobalAccessPreferences::Invalid)
+}
+
+fn effective_telemetry_enabled(repository_root: &Path) -> bool {
+    config::resolve_auth_runtime_config(repository_root)
+        .is_ok_and(|config| config.access_policy.telemetry_enabled())
+}
+
 async fn claude_telemetry_report(
     repository_root: &std::path::Path,
+    action: Option<ClaudeTelemetryAction>,
+    claude_selected: bool,
     authorization_check: RepositoryAuthorizationCheck,
-) -> String {
-    let telemetry_enabled = config::resolve_auth_runtime_config(repository_root)
-        .is_ok_and(|config| config.access_policy.telemetry_enabled());
-
-    render_claude_telemetry_section(
-        telemetry_enabled,
+) -> Option<String> {
+    render_claude_telemetry_action(
+        action?,
+        claude_selected,
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
         authorization_check,
         || auth_command::repository_telemetry_authorized(repository_root),
     )
     .await
+}
+
+async fn render_claude_telemetry_action<A, AF>(
+    action: ClaudeTelemetryAction,
+    claude_selected: bool,
+    settings_path: Option<&std::path::Path>,
+    managed_settings_path: &std::path::Path,
+    authorization_check: RepositoryAuthorizationCheck,
+    repository_authorized: A,
+) -> Option<String>
+where
+    A: FnOnce() -> AF,
+    AF: Future<Output = bool>,
+{
+    use setup::claude_telemetry::{
+        format_claude_telemetry_removal_report, remove_claude_telemetry,
+    };
+
+    match action {
+        ClaudeTelemetryAction::Remove => match settings_path {
+            Some(settings_path) => format_claude_telemetry_removal_report(
+                &remove_claude_telemetry(settings_path, managed_settings_path),
+                claude_selected,
+            ),
+            None => claude_selected.then(|| CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE.to_string()),
+        },
+        ClaudeTelemetryAction::Install | ClaudeTelemetryAction::SkipDisabled => Some(
+            render_claude_telemetry_section(
+                action == ClaudeTelemetryAction::Install,
+                settings_path,
+                managed_settings_path,
+                authorization_check,
+                repository_authorized,
+            )
+            .await,
+        ),
+    }
 }
 
 async fn render_claude_telemetry_section<A, AF>(
@@ -1050,6 +1185,288 @@ mod tests {
                 run_claude_telemetry_stage(*mode, dispatch.as_ref(), true, dir.path()).is_none()
             );
             assert_untouched(dir.path());
+        }
+    }
+
+    const SCE_GLOBAL_CONSENT: &str = r#"{"telemetry":{"enabled":true}}"#;
+    const SCE_GLOBAL_WITHDRAWAL: &str = r#"{"telemetry":{"enabled":false}}"#;
+    const SCE_GLOBAL_AUTH_DISABLED: &str = r#"{"auth":{"mode":"disabled"}}"#;
+    const UNRELATED_CLAUDE_SETTINGS: &str = r#"{"env":{"FOO":"bar"},"model":"opus"}"#;
+
+    fn removed_line(settings: &Path) -> String {
+        format!(
+            "Claude telemetry: removed SCE-managed telemetry settings from user-level Claude settings '{}' because the global SCE config disables telemetry.",
+            settings.display()
+        )
+    }
+
+    fn authorization_must_not_run() -> std::future::Ready<bool> {
+        panic!("repository authorization must not run");
+    }
+
+    fn run_claude_telemetry_action(
+        action: ClaudeTelemetryAction,
+        claude_selected: bool,
+        settings: &Path,
+        authorization_check: RepositoryAuthorizationCheck,
+    ) -> Option<String> {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(render_claude_telemetry_action(
+                action,
+                claude_selected,
+                Some(settings),
+                &settings.with_file_name("managed.json"),
+                authorization_check,
+                authorization_must_not_run,
+            ))
+    }
+
+    fn install_sce_claude_settings(settings: &Path) -> Vec<u8> {
+        fs::write(settings, UNRELATED_CLAUDE_SETTINGS).unwrap();
+        run_claude_telemetry_action(
+            ClaudeTelemetryAction::Install,
+            true,
+            settings,
+            RepositoryAuthorizationCheck::Skip,
+        );
+        assert_installed(settings.parent().unwrap());
+        fs::read(settings).unwrap()
+    }
+
+    #[test]
+    fn claude_telemetry_action_follows_global_withdrawal_only() {
+        use ClaudeTelemetryAction::{Install, Remove, SkipDisabled};
+
+        let valid = |auth_mode, telemetry_enabled| GlobalAccessPreferences::Valid {
+            auth_mode,
+            telemetry_enabled,
+        };
+        let withdrawn = [
+            valid(None, Some(false)),
+            valid(Some(AuthMode::Disabled), None),
+            valid(Some(AuthMode::Disabled), Some(true)),
+            valid(Some(AuthMode::Optional), Some(false)),
+        ];
+        let not_withdrawn = [
+            valid(None, Some(true)),
+            valid(Some(AuthMode::Optional), Some(true)),
+            valid(Some(AuthMode::Mandatory), None),
+            valid(None, None),
+            GlobalAccessPreferences::Missing,
+            GlobalAccessPreferences::Invalid,
+        ];
+        let modes = [(true, true), (true, false), (false, true), (false, false)];
+
+        for global in withdrawn {
+            for (claude_selected, interactive) in modes {
+                assert_eq!(
+                    claude_telemetry_action(global, false, claude_selected, interactive),
+                    (claude_selected || interactive).then_some(Remove),
+                    "{global:?} claude_selected={claude_selected} interactive={interactive}"
+                );
+            }
+        }
+        for global in not_withdrawn {
+            for repository_opt_out in [false, true] {
+                for (claude_selected, interactive) in modes {
+                    let expected = match (claude_selected, repository_opt_out) {
+                        (false, _) => None,
+                        (true, false) => Some(Install),
+                        (true, true) => Some(SkipDisabled),
+                    };
+                    assert_eq!(
+                        claude_telemetry_action(
+                            global,
+                            !repository_opt_out,
+                            claude_selected,
+                            interactive
+                        ),
+                        expected,
+                        "{global:?} repository_opt_out={repository_opt_out} claude_selected={claude_selected} interactive={interactive}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn setup_claude_telemetry_consent_cycle_is_idempotent() {
+        let fixture = AccessFixture::new();
+        let settings = fixture.global.with_file_name("settings.json");
+        fs::write(&settings, UNRELATED_CLAUDE_SETTINGS).unwrap();
+        let run = |global_json: &str, interactive: bool| {
+            fs::write(&fixture.global, global_json).unwrap();
+            let action = claude_telemetry_action(
+                read_global_preferences(&fixture.global),
+                fixture.policy().telemetry_enabled(),
+                true,
+                interactive,
+            )
+            .unwrap();
+            run_claude_telemetry_action(
+                action,
+                true,
+                &settings,
+                RepositoryAuthorizationCheck::for_mode(Some(if interactive {
+                    SetupMode::Interactive
+                } else {
+                    SetupMode::NonInteractive(SetupTarget::Claude)
+                })),
+            )
+            .unwrap()
+        };
+        let modified = || fs::metadata(&settings).unwrap().modified().unwrap();
+
+        assert_eq!(run(SCE_GLOBAL_CONSENT, false), CLAUDE_NOT_CHECKED_LINE);
+        let installed = fs::read(&settings).unwrap();
+
+        assert_eq!(run(SCE_GLOBAL_WITHDRAWAL, true), removed_line(&settings));
+        let removed = fs::read(&settings).unwrap();
+        let parsed: Value = serde_json::from_slice(&removed).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::from_str::<Value>(UNRELATED_CLAUDE_SETTINGS).unwrap()
+        );
+        let removed_at = modified();
+
+        assert_eq!(
+            run(SCE_GLOBAL_WITHDRAWAL, false),
+            CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE
+        );
+        assert_eq!(fs::read(&settings).unwrap(), removed);
+        assert_eq!(modified(), removed_at);
+
+        assert_eq!(run(SCE_GLOBAL_CONSENT, false), CLAUDE_NOT_CHECKED_LINE);
+        assert_eq!(fs::read(&settings).unwrap(), installed);
+
+        assert_eq!(
+            run(SCE_GLOBAL_AUTH_DISABLED, false),
+            removed_line(&settings)
+        );
+        assert_eq!(fs::read(&settings).unwrap(), removed);
+    }
+
+    #[test]
+    fn setup_claude_telemetry_repository_opt_out_preserves_user_settings() {
+        let fixture = AccessFixture::new();
+        fs::write(&fixture.global, SCE_GLOBAL_CONSENT).unwrap();
+        let settings = fixture.global.with_file_name("settings.json");
+        let installed = install_sce_claude_settings(&settings);
+        let explicit = fixture.global.with_file_name("explicit.json");
+        fs::write(&explicit, SCE_GLOBAL_WITHDRAWAL).unwrap();
+        let explicit_policy = |root: &Path| {
+            config::resolver::resolve_auth_runtime_config_with(
+                root,
+                |key| (key == "SCE_CONFIG_FILE").then(|| explicit.display().to_string()),
+                |path| fs::read_to_string(path).map_err(anyhow::Error::from),
+                Path::exists,
+                || Ok(fixture.global.clone()),
+            )
+            .unwrap()
+            .access_policy
+        };
+
+        let cases = [
+            (
+                "repository A telemetry opt-out",
+                Some(SCE_GLOBAL_WITHDRAWAL),
+                false,
+            ),
+            (
+                "repository A auth disabled",
+                Some(SCE_GLOBAL_AUTH_DISABLED),
+                false,
+            ),
+            ("explicit layer telemetry opt-out", None, true),
+            ("repository B without opt-out", None, false),
+        ];
+        for (name, repository_json, explicit_layer) in cases {
+            match repository_json {
+                Some(json) => fixture.write_repo_config(json),
+                None => {
+                    let _ = fs::remove_file(fixture.repo.join(".sce").join("config.json"));
+                }
+            }
+            let policy = if explicit_layer {
+                explicit_policy(&fixture.repo)
+            } else {
+                fixture.policy()
+            };
+            let opted_out = repository_json.is_some() || explicit_layer;
+            assert_eq!(!policy.telemetry_enabled(), opted_out, "{name}");
+
+            for (claude_selected, interactive) in
+                [(true, true), (true, false), (false, true), (false, false)]
+            {
+                let action = claude_telemetry_action(
+                    read_global_preferences(&fixture.global),
+                    policy.telemetry_enabled(),
+                    claude_selected,
+                    interactive,
+                );
+                let expected = claude_selected.then_some(if opted_out {
+                    ClaudeTelemetryAction::SkipDisabled
+                } else {
+                    ClaudeTelemetryAction::Install
+                });
+                assert_eq!(action, expected, "{name}");
+                if let Some(action) = action {
+                    let report = run_claude_telemetry_action(
+                        action,
+                        claude_selected,
+                        &settings,
+                        RepositoryAuthorizationCheck::Skip,
+                    );
+                    if opted_out {
+                        assert_eq!(
+                            report.as_deref(),
+                            Some(CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE),
+                            "{name}"
+                        );
+                    }
+                }
+                assert_eq!(fs::read(&settings).unwrap(), installed, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn setup_claude_telemetry_removal_never_checks_authorization() {
+        for (mode, claude_selected) in [
+            (SetupMode::Interactive, true),
+            (SetupMode::Interactive, false),
+            (SetupMode::NonInteractive(SetupTarget::Claude), true),
+            (SetupMode::NonInteractive(SetupTarget::All), true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.json");
+            install_sce_claude_settings(&settings);
+
+            let action = claude_telemetry_action(
+                GlobalAccessPreferences::Valid {
+                    auth_mode: None,
+                    telemetry_enabled: Some(false),
+                },
+                false,
+                claude_selected,
+                mode == SetupMode::Interactive,
+            );
+            assert_eq!(action, Some(ClaudeTelemetryAction::Remove), "{mode:?}");
+
+            let report = run_claude_telemetry_action(
+                ClaudeTelemetryAction::Remove,
+                claude_selected,
+                &settings,
+                RepositoryAuthorizationCheck::for_mode(Some(mode)),
+            );
+            assert_eq!(report, Some(removed_line(&settings)), "{mode:?}");
+            assert_eq!(
+                fs::read_to_string(&settings).unwrap(),
+                "{\n  \"env\": {\n    \"FOO\": \"bar\"\n  },\n  \"model\": \"opus\"\n}\n",
+                "{mode:?}"
+            );
         }
     }
 
