@@ -110,7 +110,7 @@ Each string is a `WARNING_*` constant in `resolver.rs`. The skipped file's own e
   - `- auth.mode: <mode> (source: …[, config_source: …])` (the effective mode and its deciding layer)
   - `- telemetry.enabled: <bool> (source: …[, config_source: …])` (the configured merged value)
   - `- telemetry.effective: enabled`, or `- telemetry.effective: disabled (reason: <reason>)`
-  - only when disabled: `- telemetry.note: Claude Code telemetry settings written by earlier sce setup runs are not changed by telemetry.enabled.`
+  - only when disabled: `- telemetry.note: Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.`
 - **JSON:** `result.resolved.auth.mode` and `result.resolved.telemetry.enabled` use the usual `{value, source, config_source}` shape. `result.resolved.telemetry.effective` is `{state, reason}`, where `reason` is `null` when the state is enabled. `result.resolved.telemetry.note` is the fixed note string, or `null` when enabled.
 - **Reason strings** (`TelemetryDisabledReason::as_str`): `not_enabled`, `user_opt_out`, `no_user_consent`, `repository_opt_out`, `auth_disabled`, `invalid_config`.
 - **Warnings:** the contradiction warnings appear in `show` warnings after any `Skipped invalid config: …` entries. In `validate` they appear in `warnings` / `Validation warnings`. `validate` adds no policy fields.
