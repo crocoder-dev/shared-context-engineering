@@ -29,7 +29,7 @@ use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::telemetry_credential_storage::{
     bind_repository_telemetry, load_repository_telemetry_credential, load_telemetry_credential,
     save_telemetry_credential, test_access_token, RepositoryBindingMode, TelemetryCredential,
-    TelemetryIdentity,
+    TelemetryCredentialLookup, TelemetryIdentity,
 };
 
 const CHILD_TEST: &str = "services::auth_db::multiprocess_tests::auth_db_child_process";
@@ -1051,6 +1051,7 @@ async fn auth_db_child_process() {
             let credential = load_telemetry_credential()
                 .await
                 .expect("credential lookup succeeds")
+                .into_valid()
                 .expect("credential present");
             println!("{TOKEN_PREFIX}{}", credential.token);
         }
@@ -1067,7 +1068,7 @@ async fn auth_db_child_process() {
                 load_telemetry_credential()
                     .await
                     .expect("missing auth DB is not an error"),
-                None
+                TelemetryCredentialLookup::Missing
             );
             assert!(!auth_db_path().expect("auth DB path").exists());
         }
@@ -1134,7 +1135,7 @@ async fn run_binding_child(role: &str) {
                 load_telemetry_credential()
                     .await
                     .expect("missing auth DB is not an error"),
-                None
+                TelemetryCredentialLookup::Missing
             );
         }
         "bind" => {
