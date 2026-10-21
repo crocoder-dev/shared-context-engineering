@@ -254,10 +254,6 @@ pub fn auth_db_path() -> anyhow::Result<PathBuf> {
     Ok(sce_state_dir()?.join("auth.db"))
 }
 
-pub fn telemetry_readiness_path() -> anyhow::Result<PathBuf> {
-    Ok(sce_state_dir()?.join("telemetry-ready.json"))
-}
-
 pub fn agent_trace_db_path_for_repository(repository_id: &str) -> anyhow::Result<PathBuf> {
     let state_root = resolve_sce_default_locations()?
         .roots()

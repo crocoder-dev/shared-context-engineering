@@ -560,6 +560,35 @@ fn valid_credential_without_readiness_marker_resolves_managed_telemetry_and_head
 }
 
 #[test]
+fn logout_then_lookup_reports_not_configured() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+    assert_eq!(telemetry_health(&sandbox, TEST_SECRET), "healthy");
+
+    let logout = run_cli(
+        &sandbox,
+        sandbox.dir.path(),
+        &["sce", "auth", "logout", "--format", "json"],
+        None,
+    );
+    assert!(logout.success, "{}{}", logout.stdout, logout.stderr);
+    assert!(
+        logout.stdout.contains("\"credentials_removed\": true"),
+        "{}",
+        logout.stdout
+    );
+
+    assert!(sandbox.sce_state_dir().join("auth.db").is_file());
+    assert_eq!(telemetry_health(&sandbox, TEST_SECRET), "not_configured");
+    assert_eq!(hook_telemetry(&sandbox), "not_configured");
+    assert!(!sandbox
+        .sce_state_dir()
+        .join(LEGACY_READINESS_MARKER)
+        .exists());
+}
+
+#[test]
 fn legacy_readiness_marker_is_ignored() {
     let _fan_out = serialize_fan_out();
     for (credential_case, delete_credential, expected_health, expected_hook) in [
@@ -1366,7 +1395,6 @@ async fn seed() {
     })
     .await
     .expect("telemetry credential seeds");
-    crate::services::telemetry_readiness::mark_ready(FAR_FUTURE).expect("readiness seeds");
 }
 
 fn writer_rows() -> Vec<String> {

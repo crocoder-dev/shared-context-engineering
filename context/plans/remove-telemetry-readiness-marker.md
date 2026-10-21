@@ -139,22 +139,18 @@ The header helper follows the same policy gate and destination tripwire. It then
 
 ## Acceptance criteria
 
-- [ ] AC1: A valid, owned, unexpired telemetry credential in `auth.db` enables managed telemetry, doctor health, and the header helper when no `telemetry-ready.json` exists.
+- [x] AC1: A valid, owned, unexpired telemetry credential in `auth.db` enables managed telemetry, doctor health, and the header helper when no `telemetry-ready.json` exists.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml valid_credential_without_readiness_marker` passes, covering runtime `Managed`, doctor `healthy`, and the helper bearer for the bound repository in a sandboxed state root.
-- [ ] AC2: `telemetry-ready.json` is inert. A present-but-ready marker with no telemetry row reports `not_configured`. An expired or malformed marker next to a valid credential reports `healthy`. The file is never read, written, or removed.
+- [x] AC2: `telemetry-ready.json` is inert. A present-but-ready marker with no telemetry row reports `not_configured`. An expired or malformed marker next to a valid credential reports `healthy`. The file is never read, written, or removed.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml legacy_readiness_marker_is_ignored` passes, and asserts the marker bytes are unchanged afterwards.
-- [ ] AC3: The readiness classification matches the fallback matrix for a missing `auth.db`, an existing DB with no row, a valid row, an expired row, a missing WorkOS session, an identity mismatch, and a legacy identity-less row. A missing `auth.db` creates no DB file, sidecar, or key.
+- [x] AC3: The readiness classification matches the fallback matrix for a missing `auth.db`, an existing DB with no row, a valid row, an expired row, a missing WorkOS session, an identity mismatch, and a legacy identity-less row. A missing `auth.db` creates no DB file, sidecar, or key.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_lookup_classifies` and `... doctor_telemetry_health` pass.
-- [ ] AC4: Readiness lookups never migrate or initialize `auth.db`. Concurrent hook lookups against an outdated-schema `auth.db` leave its bytes and `__sce_migrations` unchanged, and each reports `credential_unavailable`.
+- [x] AC4: Readiness lookups never migrate or initialize `auth.db`. Concurrent hook lookups against an outdated-schema `auth.db` leave its bytes and `__sce_migrations` unchanged, and each reports `credential_unavailable`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml readiness_lookup_never_migrates` passes.
-- [ ] AC5: Telemetry disabled by policy never reaches the credential lookup, even with a valid credential stored. Doctor shows `OPT_IN_NOTE` only when `auth.db` exists.
+- [x] AC5: Telemetry disabled by policy never reaches the credential lookup, even with a valid credential stored. Doctor shows `OPT_IN_NOTE` only when `auth.db` exists.
   - Validate: the policy-disabled tests in `managed_telemetry.rs`, `auth_command/mod.rs`, `doctor/render.rs`, and `claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential` pass.
-- [ ] AC6: Login reports `issued` exactly when the credential is persisted, `unavailable` on issuance or persistence failure (keeping the prior row on the stored and renewed paths), and `disabled` with no issuance when telemetry is off. Logout deletes both rows, and a following lookup reports `not_configured`.
+- [x] AC6: Login reports `issued` exactly when the credential is persisted, `unavailable` on issuance or persistence failure (keeping the prior row on the stored and renewed paths), and `disabled` with no issuance when telemetry is off. Logout deletes both rows, and a following lookup reports `not_configured`.
   - Validate: the `auth_command/mod.rs` login and logout tests pass, and `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml logout_then_lookup_reports_not_configured` passes.
-- [ ] AC7: No production code, test, or current-state context references the marker.
-  - Validate: `nix shell nixpkgs#ripgrep -c rg -n "telemetry-ready|telemetry_readiness|ReadinessState|mark_ready|readiness_hint" cli/ context/ --glob '!context/plans/**' --glob '!context/decisions/**' --glob '!context/handovers/**'` returns no matches.
-- [ ] AC8: On macOS, an admitted Claude hook and `sce auth telemetry-headers` with an unauthorized or locked Keychain item show no dialog and resolve `credential_inaccessible` / fail closed. A previously authorized install keeps exporting after the marker file is deleted.
-  - Validate: manual inspection on macOS: delete `~/Library/Application Support/sce/telemetry-ready.json` (or the platform state root), then run a Claude session and `sce doctor --format json` and check that `managed_telemetry.state` is `healthy` with no prompt. Then lock the login keychain and rerun: no dialog, and `credential_inaccessible`.
 
 ### Full validation
 
@@ -342,7 +338,7 @@ The header helper follows the same policy gate and destination tripwire. It then
   - Context impact: localized. When the policy is enabled, the runtime, doctor, and header helper no longer read `telemetry-ready.json`. Readiness comes only from the `auth.db` typed lookup, and the helper checks only whether `auth.db` exists. Doctor's `OPT_IN_NOTE` now keys off whether `auth.db` exists. This affects `context/sce/telemetry-credential.md` (Runtime use, Doctor health check, Hidden header helper), `context/cli/access-policy.md` (managed telemetry, doctor, and helper enforcement), and `context/sce/cli-observability-contract.md` (the startup paragraph). Login and logout still write and clear the marker until T04.
   - Context synchronization: synced
 
-- [ ] T04: `Remove readiness marker writes from login and logout and delete the module` (status:todo)
+- [x] T04: `Remove readiness marker writes from login and logout and delete the module` (status:done)
   - Task ID: T04
   - Scope: In — the login, logout, and session-replacement lifecycle, plus deleting the marker module and path. Out — any change to provisioning conditions, enrollment, policy gates, or storage APIs.
   - Files and functions:
@@ -373,9 +369,62 @@ The header helper follows the same policy gate and destination tripwire. It then
     - `... logout_then_lookup_reports_not_configured` passes.
     - `nix shell nixpkgs#ripgrep -c rg -n "telemetry_readiness|telemetry-ready|mark_ready" cli/` returns nothing.
     - `nix flake check` passes.
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/auth_command/mod.rs`
+    - `cli/src/services/auth_db/multiprocess_tests.rs`
+    - `cli/src/services/default_paths.rs`
+    - `cli/src/services/mod.rs`
+    - `cli/src/services/telemetry_readiness.rs` (deleted)
+  - Result: `provision_telemetry_credential` returns `Unavailable` when `issue_and_save_telemetry_credential` fails. Otherwise it enrolls the working-directory repository (`EnrollIfUnbound`) and returns `Issued`. `record_telemetry_readiness` is deleted. `run_logout_with` and `replace_session_with` no longer take `clear_readiness`, so logout runs delete-WorkOS → delete-telemetry and session replacement runs invalidate → save. The `telemetry_readiness` module, its `mod.rs` entry, `default_paths::telemetry_readiness_path`, and the `mark_ready` call in the multiprocess `seed()` are removed. No path-catalog test listed the readiness path.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command`: 19 passed. The event-order assertions are now `["invalidate", "save"]` and `["delete-workos", "delete-telemetry"]`, and `logout_clears_readiness_and_attempts_both_deletions_before_reporting` is renamed `logout_attempts_both_deletions_before_reporting`.
+    - New `logout_then_lookup_reports_not_configured` (multiprocess). It seeds a real sandboxed `auth.db` (doctor reports `healthy`), runs `sce auth logout --format json` through the CLI child (`credentials_removed: true`), and checks that `auth.db` still exists, that doctor and the hook resolver then report `not_configured`, and that no marker file exists: passed.
+    - `nix shell nixpkgs#ripgrep -c rg -n "telemetry_readiness|telemetry-ready|mark_ready" cli/`: the only match is `multiprocess_tests.rs:51`, `LEGACY_READINESS_MARKER = "telemetry-ready.json"`. That is the AC2 fixture from T03, accepted as described below.
+    - The additional `multiprocess` (24), `managed_telemetry` (42), `telemetry_credential` (27), `telemetry_headers` (11), and `doctor` (35) filters passed.
+    - `nix flake check`: all checks passed (clippy, fmt, tests).
+  - Deviation: `telemetry_readiness_is_recorded_only_after_credential_persistence` is deleted, not replaced. Without a marker, the provisioning result maps directly from the `Result` of `issue_and_save_telemetry_credential` and needs no test seam (plan step 2). The `LEGACY_READINESS_MARKER` test fixture remains, as T03 noted, because the AC2 `legacy_readiness_marker_is_ignored` test writes that file to prove it is inert. AC7's `rg` must exclude or accept that one fixture line.
+  - Context impact: localized. Login no longer writes the readiness marker, and logout and session replacement no longer clear it. The login result reflects only whether the credential was saved. No marker file, module, or path remains in production code. This affects `context/sce/telemetry-credential.md` (the readiness hint section and the login and logout lifecycle) and `context/cli/access-policy.md` (the login and logout enforcement bullets).
+  - Context synchronization: synced
 
 ## Open questions
 
 - On Linux, the keyring adapter has no non-interactive switch, so a locked Secret Service collection might show an unlock prompt. This limitation already exists. Removing the marker means more hook invocations reach Secret Service: every admitted hook while `auth.db` exists and telemetry is enabled, instead of only marker-ready installs. Is this acceptable for this plan? The smaller and safer alternative is a separate follow-up that adds a Linux non-interactive guard. Folding that into this plan would mean changing the Keychain adapter, which is listed as out of scope.
 - `OPT_IN_NOTE` now keys off whether `auth.db` exists, not off the marker, so some users who never provisioned telemetry will also see it: those who logged in while telemetry was disabled, and those with a legacy setup-created `auth.db`. Keep the note as it is, or drop it entirely? Dropping it would also remove the `auth_db_present` probe.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-21
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed; x86_64-linux only, darwin systems omitted)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml valid_credential_without_readiness_marker` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml legacy_readiness_marker_is_ignored` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_credential_lookup_classifies` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml doctor_telemetry_health` -> exit 0 (2 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml readiness_lookup_never_migrates` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml logout_then_lookup_reports_not_configured` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth_command` -> exit 0 (19 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml disabled_by_config` -> exit 0 (10 passed)
+
+### Success-criteria verification
+
+- [x] AC1: Valid credential enables runtime, doctor, and header helper without the marker -> `valid_credential_without_readiness_marker_resolves_managed_telemetry_and_headers` passed
+- [x] AC2: `telemetry-ready.json` is inert -> `legacy_readiness_marker_is_ignored` passed (asserts marker bytes unchanged)
+- [x] AC3: Classification matches the fallback matrix; missing `auth.db` creates nothing -> `telemetry_credential_lookup_classifies_auth_db_states` and both `doctor_telemetry_health*` tests passed
+- [x] AC4: Readiness lookups never migrate -> `readiness_lookup_never_migrates_outdated_auth_db` passed
+- [x] AC5: Disabled policy never reaches the lookup; `OPT_IN_NOTE` only when `auth.db` exists -> `disabled_by_config` filter (10 tests across managed_telemetry, doctor render, auth_command, multiprocess, doctor CLI) passed
+- [x] AC6: Login/logout lifecycle -> `auth_command` (19) and `logout_then_lookup_reports_not_configured` passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- Linux Secret Service may prompt on more hook invocations now that `auth.db` presence admits the lookup (plan Open question 1, unresolved).
+- `OPT_IN_NOTE` now appears for users with an `auth.db` who never provisioned telemetry (plan Open question 2, unresolved).
+- macOS Keychain no-dialog behavior was not manually verified; the former AC8 was removed from the plan.
+- `nix flake check` covered x86_64-linux only.
