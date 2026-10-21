@@ -394,7 +394,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: internal (crate-private prompt seam additions; no user-visible behavior change until T04 wires dispatch)
   - Context synchronization: synced
 
-- [ ] T04: `Resolve access-policy choices and login intent in setup dispatch` (status:todo)
+- [x] T04: `Resolve access-policy choices and login intent in setup dispatch` (status:done)
   - Task ID: T04
   - Scope: In:
     - In `cli/src/services/setup/mod.rs`, extend `PersistedSetupConfirmations` with `auth_mode: Option<AuthMode>`, `telemetry_enabled: Option<bool>`, and `global_config_invalid: bool`.
@@ -418,7 +418,35 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - every non-interactive target, which prompts nothing and returns `NotOffered`;
     - a telemetry default of `false` whatever the Claude target selection or `auth_db_present` value.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::`
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/setup/mod.rs`
+    - `cli/src/services/setup/command.rs`
+    - `cli/src/services/setup/prompt.rs`
+  - Result:
+    - `PersistedSetupConfirmations` gains `auth_mode`, `telemetry_enabled`, and `global_config_invalid`, filled from `GlobalAccessPreferences` by `with_global_access_preferences`. The repository reader leaves them at their defaults.
+    - Added `SetupAccessGate { auth_locked_by, effective_mandatory, auth_db_present }` with `from_policy(&ResolvedAccessPolicy, auth_db_present)`. `auth_locked_by` keeps only `Repository`, `ConfigFlag`, and `ConfigEnv` sources of an effective `disabled`.
+    - Added `SetupLoginIntent { NotOffered, Declined, Requested }`. `SetupDispatch::Proceed` carries `auth_mode`, `telemetry_enabled`, and `login_intent`.
+    - `resolve_setup_dispatch` takes the gate. A private `resolve_setup_access_choices` applies prompts 5–7 after the existing four, using the Design gates. Cancelling returns `Cancelled`. Non-interactive dispatch returns `None`, `None`, `NotOffered`.
+    - `SetupCommand::execute` builds the gate and the global preferences only for `SetupMode::Interactive`, via `resolve_auth_runtime_config`, `resolve_default_global_config_path` + `read_global_access_preferences`, and `managed_telemetry::auth_db_present()`. Non-interactive runs use a default gate and read nothing new. The new `Proceed` fields are not yet persisted.
+    - Removed T03's temporary `#[allow(dead_code)]` allowances from the trait methods in `mod.rs` and the prompt functions in `prompt.rs`.
+  - Deviations and assumptions:
+    - `Proceed` carries only values answered in this run. A prompt suppressed by a persisted value yields `None`, so T05 writes only explicit new answers.
+    - The prospective mode for the prompt 6/7 gates is chosen in this order: the selected answer, then the persisted global value, then the effective mode (`mandatory` when `effective_mandatory`, otherwise `optional`).
+    - `effective_mandatory` is computed before the global write. T07 must account for it when `--reconfigure` changes a global `mandatory`.
+    - T01's module-level `#[allow(dead_code)]` on `access_preferences` stays for T05, because the writer is still unused.
+  - Verify outcomes:
+    - `setup::`: passed (78 tests). These include the new `setup::tests` dispatch tests with a recording prompter:
+      - first-run order and defaults
+      - mode and telemetry gates (persisted, selected and persisted `disabled`, repository and explicit lock, invalid global)
+      - login gates (`auth_db_present`, prompts asked this run, selected and effective `mandatory`)
+      - cancellation at prompts 5, 6, and 7
+      - every non-interactive target returning `NotOffered`
+      - a telemetry default of `false`
+      - the `SetupAccessGate::from_policy` lock sources
+    - Additional check: `clippy --all-targets -- --deny warnings` is clean.
+  - Context impact: internal, interim. Interactive setup now asks prompts 5–7, but their answers are not persisted or acted on until T05/T06. The report output is unchanged, and non-interactive, hooks-only, and context-only behavior is unchanged. Durable context for the prompt sequence belongs with T05–T07 per the plan's Context sync list.
+  - Context synchronization: synced
 
 - [ ] T05: `Persist global access preferences in setup and report the effective policy` (status:todo)
   - Task ID: T05

@@ -141,12 +141,10 @@ pub(super) fn auth_mode_prompt_default_index(default: AuthMode) -> usize {
         .unwrap_or(0)
 }
 
-#[allow(dead_code)]
 pub(super) fn auth_mode_prompt_title() -> String {
     prompt_label(AUTH_MODE_PROMPT_TITLE)
 }
 
-#[allow(dead_code)]
 pub(super) fn prompt_auth_mode(default: AuthMode) -> Result<Option<AuthMode>> {
     let selection = Select::new(&auth_mode_prompt_title(), auth_mode_prompt_rows())
         .with_starting_cursor(auth_mode_prompt_default_index(default))
@@ -155,12 +153,10 @@ pub(super) fn prompt_auth_mode(default: AuthMode) -> Result<Option<AuthMode>> {
     interactive_prompt_result(selection.map(|row| row.0))
 }
 
-#[allow(dead_code)]
 pub(super) fn prompt_telemetry_consent(default: bool) -> Result<Option<bool>> {
     prompt_confirmation(TELEMETRY_CONSENT_PROMPT_LABEL, default)
 }
 
-#[allow(dead_code)]
 pub(super) fn prompt_login() -> Result<Option<bool>> {
     prompt_confirmation(LOGIN_PROMPT_LABEL, LOGIN_PROMPT_DEFAULT)
 }

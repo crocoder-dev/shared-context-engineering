@@ -19,6 +19,14 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
   (Adds SCE metadata to commits created or assisted by SCE.)
   ```
   Both default to Yes, and the prompt seam carries each answer separately through setup dispatch so declining one does not change the other.
+- Interactive setup then resolves SCE access choices in dispatch, after those two confirmations and before any file write:
+  - `SCE account mode for this machine` (`Select`; cursor on `optional`). It is skipped when the global user config already holds `auth.mode`, or when that config is invalid.
+  - `Share SCE telemetry?` (`Confirm`; default No). It is skipped when the global user config already holds `telemetry.enabled`, when that config is invalid, or when the selected or persisted mode is `disabled`.
+  - `Log in to SCE now?` (`Confirm`; default Yes). It is offered only when the prospective mode is `optional`, the effective mode is not `mandatory`, and either an access prompt was asked in this run or no `auth.db` file exists.
+  - A repository or explicit (`--config` / `SCE_CONFIG_FILE`) `auth.mode: disabled` skips all three prompts. Cancelling any of them is the standard setup cancellation.
+  - Inputs are read without credential access: the resolved access policy, the global user config file, and the presence of the `auth.db` file.
+  - The answers are carried on the dispatch result (`auth_mode`, `telemetry_enabled`, and a `SetupLoginIntent` of `NotOffered | Declined | Requested`). They are not yet written to the global config or acted on by a login step.
+  - Non-interactive, hooks-only, and context-only setup never read these inputs or prompt.
 - The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit opt-ins for both setup-controlled behaviors: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}, "policies": {"attribution_hooks": {"enabled": true}}}` (where `<version>` is the CLI release version, with a trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite. A later interactive target-install write may merge the two answered behavior values, while non-interactive setup leaves existing behavior keys and omissions unchanged.
 - The parent `.sce/` directory is created via `fs::create_dir_all` if missing.
