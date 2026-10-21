@@ -9,7 +9,7 @@ use crate::services::auth_db::AuthDb;
 use crate::services::db::encryption_key::{
     CredentialAccess, CredentialAccessDenied, CredentialAccessUnavailable,
 };
-use crate::services::db::DatabaseLocked;
+use crate::services::db::{DatabaseLocked, ExistingDbOpen};
 use crate::services::default_paths::auth_db_path;
 use crate::services::error::AuthStorageFailure;
 
@@ -49,6 +49,29 @@ pub(crate) async fn open_existing_auth_db(
     };
     let _ = AUTH_DB.set(db);
     Ok(AUTH_DB.get())
+}
+
+pub(crate) async fn open_existing_current_auth_db(
+    access: CredentialAccess,
+) -> Result<ExistingDbOpen<&'static AuthDb>, TokenStorageError> {
+    if let Some(db) = AUTH_DB.get() {
+        return Ok(ExistingDbOpen::Open(db));
+    }
+    let db_path =
+        auth_db_path().map_err(|error| TokenStorageError::PathResolution(error.to_string()))?;
+    match AuthDb::open_existing_current_at(db_path, access)
+        .await
+        .map_err(|error| open_error(&error))?
+    {
+        ExistingDbOpen::Missing => Ok(ExistingDbOpen::Missing),
+        ExistingDbOpen::SchemaNotCurrent => Ok(ExistingDbOpen::SchemaNotCurrent),
+        ExistingDbOpen::Open(db) => {
+            let _ = AUTH_DB.set(db);
+            Ok(AUTH_DB
+                .get()
+                .map_or(ExistingDbOpen::Missing, ExistingDbOpen::Open))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -46,6 +46,7 @@ const TOKEN_PREFIX: &str = "SCE_AUTH_DB_CHILD_TOKEN=";
 const HEALTH_PREFIX: &str = "SCE_AUTH_DB_CHILD_TELEMETRY_HEALTH=";
 const CONCURRENT_PROCESSES: usize = 32;
 const CONCURRENT_MIGRATORS: usize = 4;
+const CONCURRENT_LOOKUPS: usize = 8;
 const CHILD_KILL_AFTER: Duration = Duration::from_mins(1);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FAR_FUTURE: u64 = 4_102_444_800;
@@ -508,6 +509,31 @@ fn concurrent_migration_of_schemaless_db_applies_each_migration_once() {
         wait_success("init", child);
     }
     sandbox.run("verify-schema");
+}
+
+#[test]
+fn readiness_lookup_never_migrates_outdated_auth_db() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.run("create-outdated");
+    let auth_db = sandbox.sce_state_dir().join("auth.db");
+    let before = std::fs::read(&auth_db).expect("outdated auth DB");
+
+    let lookups = (0..CONCURRENT_LOOKUPS)
+        .map(|_| {
+            sandbox
+                .command("lookup-outdated")
+                .spawn()
+                .expect("spawn lookup")
+        })
+        .collect::<Vec<_>>();
+    for child in lookups {
+        wait_success("lookup-outdated", child);
+    }
+
+    assert_eq!(std::fs::read(&auth_db).expect("auth DB"), before);
+    sandbox.run("verify-outdated");
+    sandbox.run("lookup-then-migrate");
 }
 
 #[test]
@@ -1084,6 +1110,9 @@ async fn auth_db_child_process() {
             assert!(path.parent().expect("auth DB parent").is_dir());
             assert_eq!(std::fs::read(&path).ok(), before);
         }
+        "create-outdated" | "lookup-outdated" | "verify-outdated" | "lookup-then-migrate" => {
+            run_outdated_schema_child(&role).await;
+        }
         "create-schemaless" => {
             let db = EncryptedTursoDb::<SchemalessAuthDbSpec>::new()
                 .await
@@ -1293,6 +1322,47 @@ async fn applied_migrations<M: DbSpec>(db: &EncryptedTursoDb<M>) -> Vec<String> 
     })
     .await
     .expect("migration ids")
+}
+
+async fn run_outdated_schema_child(role: &str) {
+    match role {
+        "create-outdated" | "verify-outdated" => {
+            let db = EncryptedTursoDb::<PreBindingAuthDbSpec>::new()
+                .await
+                .expect("pre-binding schema opens");
+            assert_eq!(applied_migrations(&db).await.len(), PRE_BINDING_MIGRATIONS);
+        }
+        "lookup-outdated" => assert_outdated_lookups_are_unusable().await,
+        "lookup-then-migrate" => {
+            assert_outdated_lookups_are_unusable().await;
+            let db = crate::services::token_storage::open_or_create_auth_db()
+                .await
+                .expect("interactive open migrates outdated auth DB");
+            assert_eq!(applied_migrations(db).await.len(), expected_migrations());
+            assert_eq!(
+                load_telemetry_credential()
+                    .await
+                    .expect("lookup after migration"),
+                TelemetryCredentialLookup::Missing
+            );
+        }
+        other => panic!("unknown outdated-schema child role: {other}"),
+    }
+}
+
+async fn assert_outdated_lookups_are_unusable() {
+    assert_eq!(
+        load_telemetry_credential()
+            .await
+            .expect("outdated auth DB lookup is not an error"),
+        TelemetryCredentialLookup::Unusable
+    );
+    assert_eq!(
+        load_repository_telemetry_credential(HEADERS_REPOSITORY.to_string())
+            .await
+            .expect("outdated auth DB repository lookup is not an error"),
+        None
+    );
 }
 
 async fn upgrade_outdated_schema() {

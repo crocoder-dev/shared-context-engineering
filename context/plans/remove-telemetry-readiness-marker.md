@@ -260,7 +260,7 @@ The header helper follows the same policy gate and destination tripwire. It then
   - Context impact: localized. When the marker is ready, an expired stored row now reports `credential_expired`, and a missing telemetry row now reports `not_configured`; both previously reported `credential_unavailable`. All other reasons are unchanged. The marker-free current-state context is rewritten when T03 removes the gate.
   - Context synchronization: synced
 
-- [ ] T02: `Open auth.db for telemetry lookups without running migrations` (status:todo)
+- [x] T02: `Open auth.db for telemetry lookups without running migrations` (status:done)
   - Task ID: T02
   - Scope: In — a non-migrating encrypted existing-DB open used only by the two non-interactive telemetry lookups. Out — `load_tokens`, `delete_*`, `bind_repository_telemetry`, `sce sync`, and every interactive path, which all keep migrating.
   - Files and functions:
@@ -280,7 +280,21 @@ The header helper follows the same policy gate and destination tripwire. It then
     - A new `readiness_lookup_never_migrates_outdated_auth_db` multiprocess test in `auth_db/multiprocess_tests.rs`: seed a DB at an older migration, run 8 concurrent `load_telemetry_credential` children, then assert the file and `__sce_migrations` are unchanged and every child reports the unusable classification.
     - Extend the existing `current_schema_reader_succeeds_while_writer_holds_begin_immediate`-style test, or keep it unchanged if it already covers the current-schema path.
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml multiprocess` passes.
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/db/mod.rs`
+    - `cli/src/services/token_storage.rs`
+    - `cli/src/services/telemetry_credential_storage.rs`
+    - `cli/src/services/auth_db/multiprocess_tests.rs`
+  - Result: Added `ExistingDbOpen<T> { Missing, SchemaNotCurrent, Open(T) }` and `EncryptedTursoDb::open_existing_current_at`. That open shares a new `connect_with_retry` step with `open_locked`. It keeps `open_lock_file(.., false)` before key resolution, but replaces `ensure_migrations_current` with the read-only `has_pending_migrations`. On pending migrations it drops the connection and returns `SchemaNotCurrent`. `token_storage::open_existing_current_auth_db` reuses a cached `AUTH_DB` and caches only an `Open` handle. Error typing is unchanged through `open_error`. `load_telemetry_credential` maps `SchemaNotCurrent` to `Unusable`, and `load_repository_telemetry_credential` maps it to `None`. `load_tokens`, `save_tokens`, `bind_repository_telemetry`, `delete_*`, and interactive opens still go through the migrating paths.
+  - Verify:
+    - New `readiness_lookup_never_migrates_outdated_auth_db`: a pre-binding (3-migration) `auth.db` and 8 concurrent `lookup-outdated` children, each asserting `Unusable` and a repository lookup of `None`. Afterwards the `auth.db` bytes are unchanged and `__sce_migrations` still has 3 rows. A `lookup-then-migrate` child gets `Unusable` and then migrates through `open_or_create_auth_db` to the full migration set in the same process: passed.
+    - `current_schema_reader_performs_no_migration_write_under_held_write_lock` already covers the current-schema path under a held `BEGIN IMMEDIATE`; kept unchanged: passed.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml multiprocess`: 21 passed.
+    - The additional `telemetry_credential` (27), `managed_telemetry` (42), and `stalled` (10) filters passed, and `clippy --all-targets -D warnings` is clean.
+  - Deviation: the new child roles are dispatched through a `run_outdated_schema_child` helper, so `auth_db_child_process` stays within clippy's `too_many_lines` limit.
+  - Context impact: localized. Telemetry readiness lookups no longer migrate an outdated or schemaless `auth.db`. They report `credential_unavailable` (`Unusable`) instead, and a later interactive open still migrates. This affects `context/sce/auth-db.md` (concurrency and schema readiness), and `shared-turso-db.md`/`glossary.md` (the new non-migrating encrypted existing-DB open).
+  - Context synchronization: synced
 
 - [ ] T03: `Gate runtime, doctor and header helper on auth.db instead of the marker` (status:todo)
   - Task ID: T03
