@@ -18,7 +18,6 @@ const RECONCILIATION_DETAIL_PREFIX: &str = "Snapshot ref reconciliation";
 
 const AUTH_DB_TEST_SECRET: &str = "doctor-cli-test-secret";
 const UNREADABLE_AUTH_DB: &[u8] = b"not an encrypted auth database";
-const FAR_FUTURE_READINESS: &[u8] = br#"{"expires_at_unix_seconds":4102444800}"#;
 
 const TELEMETRY_ENABLED_CONFIG: &str = r#"{"telemetry":{"enabled":true}}"#;
 const TELEMETRY_OPT_IN_NOTE: &str = "Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the global SCE config to resume it.";
@@ -644,7 +643,6 @@ async fn doctor_on_fresh_state_reports_unconfigured_telemetry_without_a_warning(
     let warnings = global_state_warnings(&report);
     assert!(warnings.is_empty(), "{warnings:#?}");
     assert!(!auth_dir.join("auth.db").exists());
-    assert!(!auth_dir.join("telemetry-ready.json").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -653,9 +651,7 @@ async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_e
     let auth_dir = sandbox.state_root().join("sce");
     std::fs::create_dir_all(&auth_dir).expect("auth dir");
     let auth_db = auth_dir.join("auth.db");
-    let readiness = auth_dir.join("telemetry-ready.json");
     std::fs::write(&auth_db, UNREADABLE_AUTH_DB).expect("auth DB");
-    std::fs::write(&readiness, FAR_FUTURE_READINESS).expect("readiness");
     let config = sandbox.telemetry_enabled_config();
     let env = [
         (AUTH_DB_ENCRYPTION_KEY_ENV, AUTH_DB_TEST_SECRET),
@@ -698,10 +694,6 @@ async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_e
     assert_eq!(
         std::fs::read(&auth_db).expect("auth DB kept"),
         UNREADABLE_AUTH_DB
-    );
-    assert_eq!(
-        std::fs::read(&readiness).expect("readiness kept"),
-        FAR_FUTURE_READINESS
     );
     assert!(!fix.stdout.contains(AUTH_DB_TEST_SECRET));
     assert!(!fix.stderr.contains(AUTH_DB_TEST_SECRET));
@@ -766,9 +758,7 @@ async fn doctor_with_telemetry_disabled_by_config_never_reads_the_auth_db() {
 
     std::fs::create_dir_all(&auth_dir).expect("auth dir");
     let auth_db = auth_dir.join("auth.db");
-    let readiness = auth_dir.join("telemetry-ready.json");
     std::fs::write(&auth_db, UNREADABLE_AUTH_DB).expect("auth DB");
-    std::fs::write(&readiness, FAR_FUTURE_READINESS).expect("readiness");
 
     let report = sandbox
         .run_with_env(&["doctor", "--format", "json"], &env)
@@ -797,9 +787,5 @@ async fn doctor_with_telemetry_disabled_by_config_never_reads_the_auth_db() {
     assert_eq!(
         std::fs::read(&auth_db).expect("auth DB kept"),
         UNREADABLE_AUTH_DB
-    );
-    assert_eq!(
-        std::fs::read(&readiness).expect("readiness kept"),
-        FAR_FUTURE_READINESS
     );
 }

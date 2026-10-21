@@ -10,11 +10,10 @@ use crate::services::error::CliError;
 use crate::services::observability::traits::{Logger, NoopTelemetry, Telemetry};
 use trace_export::{ManagedSpanKind, ManagedTraceTelemetry};
 
-use crate::services::default_paths::telemetry_readiness_path;
+use crate::services::default_paths::auth_db_path;
 use crate::services::telemetry_credential_storage::{
     load_telemetry_credential, TelemetryCredential, TelemetryCredentialLookup,
 };
-use crate::services::telemetry_readiness::{self, ReadinessState};
 use crate::services::token_storage::TokenStorageError;
 
 pub const MANAGED_OTLP_ENDPOINT: &str = "https://otel.crocoderlab.dev";
@@ -236,60 +235,45 @@ where
 pub(crate) enum ManagedTelemetryHealth {
     Healthy,
     Disabled(TelemetryFallbackReason),
-    DisabledByConfig { readiness_hint_present: bool },
+    DisabledByConfig { auth_db_present: bool },
 }
 
 pub(crate) async fn inspect_health(telemetry_enabled: bool) -> ManagedTelemetryHealth {
-    let now = now_unix_seconds();
     inspect_health_with(
         telemetry_enabled,
-        || telemetry_readiness::state(now),
-        readiness_hint_present,
+        auth_db_present,
         load_telemetry_credential(),
-        now,
+        now_unix_seconds(),
     )
     .await
 }
 
-fn readiness_hint_present() -> bool {
-    telemetry_readiness_path().is_ok_and(|path| path.is_file())
+pub(crate) fn auth_db_present() -> bool {
+    auth_db_path().is_ok_and(|path| path.is_file())
 }
 
-pub(crate) async fn inspect_health_with<R, H, Fut>(
+pub(crate) async fn inspect_health_with<P, Fut>(
     telemetry_enabled: bool,
-    readiness: R,
-    hint_present: H,
+    auth_db_present: P,
     lookup: Fut,
     now_unix_seconds: u64,
 ) -> ManagedTelemetryHealth
 where
-    R: FnOnce() -> anyhow::Result<ReadinessState>,
-    H: FnOnce() -> bool,
+    P: FnOnce() -> bool,
     Fut: Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
 {
     if !telemetry_enabled {
         return ManagedTelemetryHealth::DisabledByConfig {
-            readiness_hint_present: hint_present(),
+            auth_db_present: auth_db_present(),
         };
     }
-    let Ok(readiness) = readiness() else {
-        return ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::PathResolutionError);
-    };
-    match readiness {
-        ReadinessState::NotConfigured => {
-            ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::NotConfigured)
-        }
-        ReadinessState::Expired => {
-            ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialExpired)
-        }
-        ReadinessState::Ready => match load_credential_within_deadline(lookup).await {
-            Err(fallback) => ManagedTelemetryHealth::Disabled(fallback.reason),
-            Ok(credential) => match select_mode(Some(credential), now_unix_seconds) {
-                ManagedTelemetryMode::Managed { .. } => ManagedTelemetryHealth::Healthy,
-                ManagedTelemetryMode::Noop => {
-                    ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialExpired)
-                }
-            },
+    match load_credential_within_deadline(lookup).await {
+        Err(fallback) => ManagedTelemetryHealth::Disabled(fallback.reason),
+        Ok(credential) => match select_mode(Some(credential), now_unix_seconds) {
+            ManagedTelemetryMode::Managed { .. } => ManagedTelemetryHealth::Healthy,
+            ManagedTelemetryMode::Noop => {
+                ManagedTelemetryHealth::Disabled(TelemetryFallbackReason::CredentialExpired)
+            }
         },
     }
 }
@@ -314,27 +298,21 @@ impl RuntimeTelemetry {
         let Some(span_kind) = span_kind else {
             return Self::Noop(NoopTelemetry);
         };
-        let (telemetry, fallback) = Self::resolve_when_ready(
-            telemetry_enabled,
-            || telemetry_readiness::is_ready(now_unix_seconds()),
-            load_telemetry_credential(),
-            span_kind,
-        )
-        .await;
+        let (telemetry, fallback) =
+            Self::resolve_when_enabled(telemetry_enabled, load_telemetry_credential(), span_kind)
+                .await;
         if let Some(fallback) = fallback {
             fallback.log(logger);
         }
         telemetry
     }
 
-    pub(crate) async fn resolve_when_ready<R, Fut>(
+    pub(crate) async fn resolve_when_enabled<Fut>(
         telemetry_enabled: bool,
-        ready: R,
         lookup: Fut,
         span_kind: ManagedSpanKind,
     ) -> (Self, Option<TelemetryFallback>)
     where
-        R: FnOnce() -> bool,
         Fut: Future<Output = Result<TelemetryCredentialLookup, TokenStorageError>> + Send + 'static,
     {
         if !telemetry_enabled {
@@ -342,14 +320,6 @@ impl RuntimeTelemetry {
                 Self::Noop(NoopTelemetry),
                 Some(TelemetryFallback::new(
                     TelemetryFallbackReason::DisabledByConfig,
-                )),
-            );
-        }
-        if !ready() {
-            return (
-                Self::Noop(NoopTelemetry),
-                Some(TelemetryFallback::new(
-                    TelemetryFallbackReason::NotConfigured,
                 )),
             );
         }
@@ -476,13 +446,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_hook_without_readiness_never_looks_up_credentials() {
+    async fn claude_hook_without_auth_db_resolves_not_configured() {
         let looked_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = looked_up.clone();
 
-        let (telemetry, fallback) = RuntimeTelemetry::resolve_when_ready(
+        let (telemetry, fallback) = RuntimeTelemetry::resolve_when_enabled(
             true,
-            || false,
             async move {
                 flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 Ok(TelemetryCredentialLookup::Missing)
@@ -492,10 +461,10 @@ mod tests {
         .await;
 
         assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
-        let fallback = fallback.expect("disabled telemetry is diagnosed");
+        let fallback = fallback.expect("missing credential is diagnosed");
         assert_eq!(fallback.reason, TelemetryFallbackReason::NotConfigured);
         assert!(!fallback.reason.is_failure());
-        assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(looked_up.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     fn forbidden_lookup() -> Result<TelemetryCredentialLookup, TokenStorageError> {
@@ -503,11 +472,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_disabled_by_config_never_probes_readiness_or_looks_up_credentials() {
+    async fn telemetry_disabled_by_config_never_looks_up_credentials() {
         for span_kind in [ManagedSpanKind::Command, ManagedSpanKind::ClaudeHook] {
-            let (telemetry, fallback) = RuntimeTelemetry::resolve_when_ready(
+            let (telemetry, fallback) = RuntimeTelemetry::resolve_when_enabled(
                 false,
-                || panic!("readiness must not be probed when telemetry is disabled by config"),
                 async { forbidden_lookup() },
                 span_kind,
             )
@@ -523,20 +491,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_disabled_by_config_never_probes_readiness_or_looks_up_credentials() {
-        for hint in [false, true] {
-            let health = inspect_health_with(
-                false,
-                || panic!("readiness must not be probed when telemetry is disabled by config"),
-                || hint,
-                async { forbidden_lookup() },
-                NOW,
-            )
-            .await;
+    async fn health_disabled_by_config_never_looks_up_credentials() {
+        for present in [false, true] {
+            let health =
+                inspect_health_with(false, || present, async { forbidden_lookup() }, NOW).await;
             assert_eq!(
                 health,
                 ManagedTelemetryHealth::DisabledByConfig {
-                    readiness_hint_present: hint
+                    auth_db_present: present
                 }
             );
         }
@@ -544,9 +506,8 @@ mod tests {
 
     #[tokio::test]
     async fn claude_hook_with_inaccessible_credential_store_skips_quietly() {
-        let (telemetry, fallback) = RuntimeTelemetry::resolve_when_ready(
+        let (telemetry, fallback) = RuntimeTelemetry::resolve_when_enabled(
             true,
-            || true,
             async { Err(TokenStorageError::CredentialAccessUnavailable) },
             ManagedSpanKind::ClaudeHook,
         )
@@ -643,28 +604,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn health_without_readiness_or_with_expired_readiness_never_looks_up_credentials() {
-        for (readiness, reason) in [
-            (
-                ReadinessState::NotConfigured,
-                TelemetryFallbackReason::NotConfigured,
-            ),
-            (
-                ReadinessState::Expired,
-                TelemetryFallbackReason::CredentialExpired,
-            ),
-        ] {
-            let (looked_up, lookup) = tracked_lookup(Ok(TelemetryCredentialLookup::Valid(
-                credential("bao-token", NOW + 60),
-            )));
-            let health = inspect_health_with(true, || Ok(readiness), || false, lookup, NOW).await;
-            assert_eq!(health, ManagedTelemetryHealth::Disabled(reason));
-            assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
-        }
-    }
-
-    #[tokio::test]
-    async fn health_with_readiness_classifies_lookup_outcomes() {
+    async fn health_classifies_lookup_outcomes() {
         let cases: Vec<(
             Result<TelemetryCredentialLookup, TokenStorageError>,
             ManagedTelemetryHealth,
@@ -710,9 +650,13 @@ mod tests {
         ];
         for (result, expected) in cases {
             let (looked_up, lookup) = tracked_lookup(result);
-            let health =
-                inspect_health_with(true, || Ok(ReadinessState::Ready), || false, lookup, NOW)
-                    .await;
+            let health = inspect_health_with(
+                true,
+                || panic!("auth.db presence must not be probed when telemetry is enabled"),
+                lookup,
+                NOW,
+            )
+            .await;
             assert_eq!(health, expected);
             assert!(looked_up.load(std::sync::atomic::Ordering::SeqCst));
         }
@@ -723,7 +667,6 @@ mod tests {
         let started = std::time::Instant::now();
         let health = inspect_health_with(
             true,
-            || Ok(ReadinessState::Ready),
             || false,
             std::future::pending::<Result<TelemetryCredentialLookup, TokenStorageError>>(),
             NOW,

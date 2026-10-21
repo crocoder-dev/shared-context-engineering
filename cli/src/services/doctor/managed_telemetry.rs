@@ -233,10 +233,8 @@ mod tests {
 
     #[test]
     fn telemetry_disabled_by_config_reports_no_problem_and_a_stable_json_state() {
-        for readiness_hint_present in [false, true] {
-            let health = ManagedTelemetryHealth::DisabledByConfig {
-                readiness_hint_present,
-            };
+        for auth_db_present in [false, true] {
+            let health = ManagedTelemetryHealth::DisabledByConfig { auth_db_present };
             assert_eq!(problem(health), None);
             assert_eq!(
                 json(health),

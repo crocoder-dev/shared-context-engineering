@@ -314,15 +314,10 @@ fn managed_telemetry_node(health: ManagedTelemetryHealth) -> DoctorDisplayNode {
             DoctorDisplayStatus::Pass,
             Vec::new(),
         ),
-        (
-            ManagedTelemetryHealth::DisabledByConfig {
-                readiness_hint_present,
-            },
-            None,
-        ) => top_level_node(
+        (ManagedTelemetryHealth::DisabledByConfig { auth_db_present }, None) => top_level_node(
             "Managed telemetry (disabled by config)",
             DoctorDisplayStatus::Pass,
-            if readiness_hint_present {
+            if auth_db_present {
                 vec![DoctorDisplayDetail::Note(managed_telemetry::OPT_IN_NOTE)]
             } else {
                 Vec::new()
@@ -1315,16 +1310,16 @@ mod managed_telemetry_render_tests {
     }
 
     #[test]
-    fn telemetry_disabled_by_config_renders_pass_row_with_opt_in_line_only_for_ready_hint() {
+    fn telemetry_disabled_by_config_renders_pass_row_with_opt_in_line_only_when_auth_db_exists() {
         assert_eq!(
             rendered(ManagedTelemetryHealth::DisabledByConfig {
-                readiness_hint_present: false
+                auth_db_present: false
             }),
             ["  [PASS] Managed telemetry (disabled by config)"]
         );
         assert_eq!(
             rendered(ManagedTelemetryHealth::DisabledByConfig {
-                readiness_hint_present: true
+                auth_db_present: true
             }),
             [
                 "  [PASS] Managed telemetry (disabled by config)",
