@@ -21,7 +21,6 @@ use crate::services::managed_telemetry::{self, run_with_deadline, CREDENTIAL_LOO
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{label, prompt_label, prompt_value, value};
 use crate::services::telemetry_credential_storage;
-use crate::services::telemetry_readiness;
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
 pub const NAME: &str = "auth";
@@ -272,25 +271,21 @@ where
 pub async fn run_logout(format: AuthFormat) -> Result<String, CliError> {
     run_logout_with(
         format,
-        telemetry_readiness::clear,
         token_storage::delete_tokens(),
         telemetry_credential_storage::delete_telemetry_credential(),
     )
     .await
 }
 
-async fn run_logout_with<C, W, T>(
+async fn run_logout_with<W, T>(
     format: AuthFormat,
-    clear_readiness: C,
     delete_workos: W,
     delete_telemetry: T,
 ) -> Result<String, CliError>
 where
-    C: FnOnce() -> Result<()>,
     W: Future<Output = Result<bool, TokenStorageError>>,
     T: Future<Output = Result<bool, TokenStorageError>>,
 {
-    clear_readiness().map_err(unexpected_auth_command_error)?;
     let workos_result = delete_workos.await;
     let telemetry_result = delete_telemetry.await;
     let workos_deleted = workos_result.map_err(auth_storage_error)?;
@@ -397,25 +392,21 @@ where
 
 async fn save_new_session_tokens(token: &auth::TokenResponse) -> Result<StoredTokens, CliError> {
     replace_session_with(
-        telemetry_readiness::clear,
         telemetry_credential_storage::delete_telemetry_credential(),
         || token_storage::save_tokens(token, CredentialAccess::Interactive),
     )
     .await
 }
 
-async fn replace_session_with<C, D, S, SF>(
-    clear_readiness: C,
+async fn replace_session_with<D, S, SF>(
     invalidate_telemetry: D,
     save_session: S,
 ) -> Result<StoredTokens, CliError>
 where
-    C: FnOnce() -> Result<()>,
     D: Future<Output = Result<bool, TokenStorageError>>,
     S: FnOnce() -> SF,
     SF: Future<Output = Result<StoredTokens, TokenStorageError>>,
 {
-    clear_readiness().map_err(unexpected_auth_command_error)?;
     invalidate_telemetry.await.map_err(login_storage_error)?;
     save_session().await.map_err(login_storage_error)
 }
@@ -437,34 +428,11 @@ where
 async fn provision_telemetry_credential(
     client: &AuthenticatedControlPlaneClient,
 ) -> TelemetryProvisioningResult {
-    let provisioned = client.issue_and_save_telemetry_credential().await;
-    let result = record_telemetry_readiness(
-        provisioned.as_ref().ok(),
-        telemetry_readiness::mark_ready,
-        telemetry_readiness::clear,
-    );
-    if result == TelemetryProvisioningResult::Issued {
-        enroll_current_repository_if_unbound().await;
+    if client.issue_and_save_telemetry_credential().await.is_err() {
+        return TelemetryProvisioningResult::Unavailable;
     }
-    result
-}
-
-fn record_telemetry_readiness<M, C>(
-    provisioned: Option<&telemetry_credential_storage::TelemetryCredential>,
-    mark_ready: M,
-    clear: C,
-) -> TelemetryProvisioningResult
-where
-    M: FnOnce(u64) -> Result<()>,
-    C: FnOnce() -> Result<()>,
-{
-    let recorded = provisioned
-        .is_some_and(|credential| mark_ready(credential.expires_at_unix_seconds).is_ok());
-    if recorded {
-        return TelemetryProvisioningResult::Issued;
-    }
-    let _ = clear();
-    TelemetryProvisioningResult::Unavailable
+    enroll_current_repository_if_unbound().await;
+    TelemetryProvisioningResult::Issued
 }
 
 async fn enroll_current_repository_if_unbound() {
@@ -860,10 +828,6 @@ mod tests {
     async fn new_session_invalidates_previous_telemetry_credential_before_saving() {
         let order = std::sync::Mutex::new(Vec::new());
         let saved = replace_session_with(
-            || {
-                order.lock().unwrap().push("clear");
-                Ok(())
-            },
             async {
                 order.lock().unwrap().push("invalidate");
                 Ok(true)
@@ -876,17 +840,13 @@ mod tests {
         .await
         .expect("replacement should succeed");
         assert_eq!(saved, stored_tokens());
-        assert_eq!(*order.lock().unwrap(), ["clear", "invalidate", "save"]);
+        assert_eq!(*order.lock().unwrap(), ["invalidate", "save"]);
 
         let save_called = std::sync::atomic::AtomicBool::new(false);
-        let failed = replace_session_with(
-            || Ok(()),
-            async { Err(storage_failure()) },
-            || async {
-                save_called.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(stored_tokens())
-            },
-        )
+        let failed = replace_session_with(async { Err(storage_failure()) }, || async {
+            save_called.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(stored_tokens())
+        })
         .await;
         assert!(!save_called.load(std::sync::atomic::Ordering::SeqCst));
         assert_login_storage_guidance(
@@ -894,11 +854,9 @@ mod tests {
             AuthStorageFailure::Database,
         );
 
-        let failed = replace_session_with(
-            || Ok(()),
-            async { Ok(true) },
-            || async { Err(TokenStorageError::CredentialAccessUnavailable) },
-        )
+        let failed = replace_session_with(async { Ok(true) }, || async {
+            Err(TokenStorageError::CredentialAccessUnavailable)
+        })
         .await;
         assert_login_storage_guidance(
             &failed.expect_err("save failure fails login"),
@@ -965,7 +923,6 @@ mod tests {
     async fn logout_storage_failure_keeps_command_storage_guidance() {
         let error = run_logout_with(
             AuthFormat::Json,
-            || Ok(()),
             async { Err(TokenStorageError::CredentialAccessUnavailable) },
             async { Ok(false) },
         )
@@ -1265,7 +1222,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn logout_clears_readiness_and_attempts_both_deletions_before_reporting() {
+    async fn logout_attempts_both_deletions_before_reporting() {
         use AuthStorageFailure::{CredentialAccess, DatabaseLocked};
 
         fn deletion(result: Result<bool, AuthStorageFailure>) -> Result<bool, TokenStorageError> {
@@ -1288,10 +1245,6 @@ mod tests {
             let events = std::sync::Mutex::new(Vec::new());
             let result = run_logout_with(
                 AuthFormat::Json,
-                || {
-                    events.lock().unwrap().push("clear-readiness");
-                    Ok(())
-                },
                 async {
                     events.lock().unwrap().push("delete-workos");
                     deletion(workos)
@@ -1305,7 +1258,7 @@ mod tests {
 
             assert_eq!(
                 *events.lock().unwrap(),
-                ["clear-readiness", "delete-workos", "delete-telemetry"],
+                ["delete-workos", "delete-telemetry"],
                 "{workos:?} {telemetry:?}"
             );
             match (result, expected) {
@@ -1318,56 +1271,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn telemetry_readiness_is_recorded_only_after_credential_persistence() {
-        let credential = telemetry_credential("tok-ready");
-        let marked = std::cell::Cell::new(None);
-        let cleared = std::cell::Cell::new(false);
-
-        let issued = record_telemetry_readiness(
-            Some(&credential),
-            |expires_at| {
-                marked.set(Some(expires_at));
-                Ok(())
-            },
-            || {
-                cleared.set(true);
-                Ok(())
-            },
-        );
-        assert_eq!(issued, TelemetryProvisioningResult::Issued);
-        assert_eq!(marked.get(), Some(credential.expires_at_unix_seconds));
-        assert!(!cleared.get());
-
-        marked.set(None);
-        let failed = record_telemetry_readiness(
-            None,
-            |expires_at| {
-                marked.set(Some(expires_at));
-                Ok(())
-            },
-            || {
-                cleared.set(true);
-                Ok(())
-            },
-        );
-        assert_eq!(failed, TelemetryProvisioningResult::Unavailable);
-        assert_eq!(marked.get(), None);
-        assert!(cleared.get());
-
-        cleared.set(false);
-        let unrecorded = record_telemetry_readiness(
-            Some(&credential),
-            |_| Err(anyhow!("read-only state directory")),
-            || {
-                cleared.set(true);
-                Ok(())
-            },
-        );
-        assert_eq!(unrecorded, TelemetryProvisioningResult::Unavailable);
-        assert!(cleared.get());
     }
 
     fn access_policy(mode: AuthMode, source: ValueSource, telemetry: bool) -> ResolvedAccessPolicy {
@@ -1663,10 +1566,6 @@ mod tests {
         let events = std::sync::Mutex::new(Vec::new());
         let output = run_logout_with(
             AuthFormat::Json,
-            || {
-                events.lock().unwrap().push("clear-readiness");
-                Ok(())
-            },
             async {
                 events.lock().unwrap().push("delete-workos");
                 Ok(true)
@@ -1681,7 +1580,7 @@ mod tests {
 
         assert_eq!(
             *events.lock().unwrap(),
-            ["clear-readiness", "delete-workos", "delete-telemetry"]
+            ["delete-workos", "delete-telemetry"]
         );
         assert!(output.contains("\"credentials_removed\": true"));
     }
