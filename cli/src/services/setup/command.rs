@@ -14,10 +14,9 @@ use crate::services::setup::access_preferences::{
     persist_global_access_preferences, read_global_access_preferences,
     GlobalAccessPreferencesError, GlobalWriteOutcome,
 };
+use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
 use crate::services::{config, managed_telemetry, setup};
 
-const CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE: &str =
-    "Claude telemetry: skipped; SCE telemetry is disabled by config.";
 const SCE_ACCESS_HEADING: &str = "SCE access:";
 const SAVED_ACCESS_SCOPE: &str = "applies to all repositories on this machine";
 const AUTH_LOGOUT_HINT_LINE: &str =
