@@ -572,6 +572,7 @@ mod tests {
     #[tokio::test]
     async fn sync_rejects_disabled_auth_before_storage_or_credential_access() {
         let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir(dir.path().join(".git")).expect("repository marker");
         std::fs::create_dir_all(dir.path().join(".sce")).expect("config dir");
         std::fs::write(
             dir.path().join(".sce").join("config.json"),

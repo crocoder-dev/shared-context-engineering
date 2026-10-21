@@ -1093,6 +1093,7 @@ mod tests {
     #[test]
     fn telemetry_headers_policy_follows_auth_and_invalid_config() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
         let global = dir.path().join("global.json");
         let local_dir = dir.path().join(".sce");
         std::fs::create_dir_all(&local_dir).unwrap();

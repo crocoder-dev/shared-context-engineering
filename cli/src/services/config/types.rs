@@ -119,15 +119,15 @@ impl AuthMode {
 pub(crate) enum PolicyLayer {
     User,
     Repository,
+    Explicit,
 }
 
 impl PolicyLayer {
     pub(crate) const fn from_config_path_source(source: ConfigPathSource) -> Self {
         match source {
-            ConfigPathSource::Flag
-            | ConfigPathSource::Env
-            | ConfigPathSource::DefaultDiscoveredGlobal => Self::User,
+            ConfigPathSource::DefaultDiscoveredGlobal => Self::User,
             ConfigPathSource::DefaultDiscoveredLocal => Self::Repository,
+            ConfigPathSource::Flag | ConfigPathSource::Env => Self::Explicit,
         }
     }
 }
