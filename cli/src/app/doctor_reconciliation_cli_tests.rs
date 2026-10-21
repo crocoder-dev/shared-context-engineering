@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use super::run_with_dependency_check_and_streams;
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::db::encryption_key::AUTH_DB_ENCRYPTION_KEY_ENV;
 use crate::services::default_paths::agent_trace_db_path_for_repository_at;
 use crate::services::repository_identity::resolve::resolve_repository_identity;
 
@@ -14,6 +15,10 @@ const CHILD_TEST: &str = "app::doctor_reconciliation_cli_tests::doctor_reconcili
 const STATE_FILE: &str = "ref-maintenance.json";
 const LOCK_FILE: &str = "mutation-cursor.lock";
 const RECONCILIATION_DETAIL_PREFIX: &str = "Snapshot ref reconciliation";
+
+const AUTH_DB_TEST_SECRET: &str = "doctor-cli-test-secret";
+const UNREADABLE_AUTH_DB: &[u8] = b"not an encrypted auth database";
+const FAR_FUTURE_READINESS: &[u8] = br#"{"expires_at_unix_seconds":4102444800}"#;
 
 const EXIT_SUCCESS: &str = "success";
 const EXIT_FAILURE: &str = "failure";
@@ -138,6 +143,10 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> CliRun {
+        self.run_with_env(args, &[])
+    }
+
+    fn run_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> CliRun {
         let out = self.dir.path().join(format!("out-{}", args.join("-")));
         std::fs::create_dir_all(&out).expect("out dir");
         let output = Command::new(std::env::current_exe().expect("current exe"))
@@ -151,6 +160,8 @@ impl Sandbox {
             .env("XDG_CACHE_HOME", self.dir.path().join("cache"))
             .env("NO_COLOR", "1")
             .env_remove("SCE_CONFIG_FILE")
+            .env_remove(AUTH_DB_ENCRYPTION_KEY_ENV)
+            .envs(envs.iter().copied())
             .output()
             .expect("child runs");
         assert!(
@@ -593,4 +604,89 @@ async fn doctor_fix_recovers_from_every_initial_maintenance_state_condition() {
             "{label}: the rewritten state is readable"
         );
     }
+}
+
+fn global_state_warnings(report: &Value) -> Vec<Value> {
+    report["problems"]
+        .as_array()
+        .expect("problems array")
+        .iter()
+        .filter(|problem| problem["category"] == "global_state" && problem["severity"] == "warning")
+        .cloned()
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_on_fresh_state_reports_unconfigured_telemetry_without_a_warning() {
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    let auth_dir = sandbox.state_root().join("sce");
+
+    let report = sandbox
+        .run_with_env(
+            &["doctor", "--format", "json"],
+            &[(AUTH_DB_ENCRYPTION_KEY_ENV, "")],
+        )
+        .json();
+
+    assert_eq!(report["managed_telemetry"]["state"], "not_configured");
+    let warnings = global_state_warnings(&report);
+    assert!(warnings.is_empty(), "{warnings:#?}");
+    assert!(!auth_dir.join("auth.db").exists());
+    assert!(!auth_dir.join("telemetry-ready.json").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_effects() {
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    let auth_dir = sandbox.state_root().join("sce");
+    std::fs::create_dir_all(&auth_dir).expect("auth dir");
+    let auth_db = auth_dir.join("auth.db");
+    let readiness = auth_dir.join("telemetry-ready.json");
+    std::fs::write(&auth_db, UNREADABLE_AUTH_DB).expect("auth DB");
+    std::fs::write(&readiness, FAR_FUTURE_READINESS).expect("readiness");
+    let env = [(AUTH_DB_ENCRYPTION_KEY_ENV, AUTH_DB_TEST_SECRET)];
+
+    let fix = sandbox.run_with_env(&["doctor", "--fix", "--format", "json"], &env);
+    let report = fix.json();
+
+    assert_eq!(
+        report["managed_telemetry"],
+        serde_json::json!({
+            "state": "disabled",
+            "reason": "database_error",
+            "kind": "managed_telemetry_database_error",
+            "severity": "warning",
+            "next_action": "manual_steps",
+        }),
+        "{}",
+        fix.stdout
+    );
+    let warnings = global_state_warnings(&report);
+    assert_eq!(warnings.len(), 1, "{}", fix.stdout);
+    assert_eq!(warnings[0]["fixability"], "manual_only");
+    assert_eq!(warnings[0]["remediation"]["next_action"], "manual_steps");
+    let summary = warnings[0]["summary"].as_str().expect("summary");
+    let fixes = report["fix_results"]
+        .as_array()
+        .expect("fix_results array")
+        .iter()
+        .filter(|entry| {
+            entry["category"] == "global_state"
+                && entry["detail"]
+                    .as_str()
+                    .is_some_and(|detail| detail.starts_with(summary))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(fixes.len(), 1, "{}", fix.stdout);
+    assert_eq!(fixes[0]["outcome"], "manual");
+    assert_eq!(
+        std::fs::read(&auth_db).expect("auth DB kept"),
+        UNREADABLE_AUTH_DB
+    );
+    assert_eq!(
+        std::fs::read(&readiness).expect("readiness kept"),
+        FAR_FUTURE_READINESS
+    );
+    assert!(!fix.stdout.contains(AUTH_DB_TEST_SECRET));
+    assert!(!fix.stderr.contains(AUTH_DB_TEST_SECRET));
 }

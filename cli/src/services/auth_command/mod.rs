@@ -12,7 +12,8 @@ use crate::services::agent_trace_sync::control_plane::{
 };
 use crate::services::auth::{self, AuthError, DeviceAuthFlowResult};
 use crate::services::config;
-use crate::services::error::{CliError, UserError};
+use crate::services::db::encryption_key::CredentialAccess;
+use crate::services::error::{AuthStorageFailure, CliError, UserError};
 use crate::services::managed_telemetry::claude_helper::{
     repository_id_for, visible_destination_conflict,
 };
@@ -20,6 +21,7 @@ use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DE
 use crate::services::output_format::OutputFormat;
 use crate::services::style::{label, prompt_label, prompt_value, value};
 use crate::services::telemetry_credential_storage;
+use crate::services::telemetry_readiness;
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
 
 pub const NAME: &str = "auth";
@@ -106,6 +108,7 @@ async fn run_telemetry_headers() -> Result<String, CliError> {
     telemetry_headers_with(
         std::env::current_dir().ok(),
         visible_destination_conflict(|key| std::env::var(key).ok()),
+        telemetry_readiness::is_ready(current_unix_seconds()),
         repository_id_for,
         telemetry_credential_storage::load_repository_telemetry_credential,
     )
@@ -115,6 +118,7 @@ async fn run_telemetry_headers() -> Result<String, CliError> {
 pub(crate) async fn telemetry_headers_with<R, L, Fut>(
     working_dir: Option<PathBuf>,
     destination_conflict: bool,
+    ready: bool,
     resolve_repository: R,
     lookup: L,
 ) -> Result<String, CliError>
@@ -129,7 +133,7 @@ where
         > + Send
         + 'static,
 {
-    let Some(working_dir) = working_dir.filter(|_| !destination_conflict) else {
+    let Some(working_dir) = working_dir.filter(|_| ready && !destination_conflict) else {
         return Err(telemetry_headers_unavailable());
     };
     let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
@@ -171,10 +175,11 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
         auth_config.control_plane_base_url.value.unwrap_or_default(),
         auth::WORKOS_DEFAULT_BASE_URL,
         client_id.clone(),
+        CredentialAccess::Interactive,
     );
-    let stored_tokens = token_storage::load_tokens()
+    let stored_tokens = token_storage::load_tokens(CredentialAccess::Interactive)
         .await
-        .map_err(auth_storage_error)?;
+        .map_err(login_storage_error)?;
 
     let client = &client;
     let control_plane = &control_plane;
@@ -199,21 +204,25 @@ pub async fn run_login(format: AuthFormat) -> Result<String, CliError> {
 pub async fn run_logout(format: AuthFormat) -> Result<String, CliError> {
     run_logout_with(
         format,
+        telemetry_readiness::clear,
         token_storage::delete_tokens(),
         telemetry_credential_storage::delete_telemetry_credential(),
     )
     .await
 }
 
-async fn run_logout_with<W, T>(
+async fn run_logout_with<C, W, T>(
     format: AuthFormat,
+    clear_readiness: C,
     delete_workos: W,
     delete_telemetry: T,
 ) -> Result<String, CliError>
 where
+    C: FnOnce() -> Result<()>,
     W: Future<Output = Result<bool, TokenStorageError>>,
     T: Future<Output = Result<bool, TokenStorageError>>,
 {
+    clear_readiness().map_err(unexpected_auth_command_error)?;
     let workos_result = delete_workos.await;
     let telemetry_result = delete_telemetry.await;
     let workos_deleted = workos_result.map_err(auth_storage_error)?;
@@ -223,7 +232,7 @@ where
 }
 
 pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
-    if token_storage::load_tokens()
+    if token_storage::load_tokens(CredentialAccess::Interactive)
         .await
         .map_err(auth_storage_error)?
         .is_none()
@@ -241,6 +250,7 @@ pub async fn run_whoami(format: AuthFormat) -> Result<String, CliError> {
         auth_config.control_plane_base_url.value.unwrap_or_default(),
         auth::WORKOS_DEFAULT_BASE_URL,
         auth_config.workos_client_id.value.unwrap_or_default(),
+        CredentialAccess::Interactive,
     );
     let profile = client
         .me()
@@ -263,9 +273,9 @@ async fn maybe_renew_stored_credentials(
     )
     .await
     {
-        Ok(token) => token_storage::save_tokens(&token)
+        Ok(token) => token_storage::save_tokens(&token, CredentialAccess::Interactive)
             .await
-            .map_err(auth_storage_error)
+            .map_err(login_storage_error)
             .map(Some),
         Err(_) => Ok(None),
     }
@@ -299,35 +309,66 @@ where
 
 async fn save_new_session_tokens(token: &auth::TokenResponse) -> Result<StoredTokens, CliError> {
     replace_session_with(
+        telemetry_readiness::clear,
         telemetry_credential_storage::delete_telemetry_credential(),
-        || token_storage::save_tokens(token),
+        || token_storage::save_tokens(token, CredentialAccess::Interactive),
     )
     .await
 }
 
-async fn replace_session_with<D, S, SF>(
+async fn replace_session_with<C, D, S, SF>(
+    clear_readiness: C,
     invalidate_telemetry: D,
     save_session: S,
 ) -> Result<StoredTokens, CliError>
 where
+    C: FnOnce() -> Result<()>,
     D: Future<Output = Result<bool, TokenStorageError>>,
     S: FnOnce() -> SF,
     SF: Future<Output = Result<StoredTokens, TokenStorageError>>,
 {
-    invalidate_telemetry.await.map_err(auth_storage_error)?;
-    save_session().await.map_err(auth_storage_error)
+    clear_readiness().map_err(unexpected_auth_command_error)?;
+    invalidate_telemetry.await.map_err(login_storage_error)?;
+    save_session().await.map_err(login_storage_error)
 }
 
 async fn provision_telemetry_credential(
     client: &AuthenticatedControlPlaneClient,
 ) -> TelemetryProvisioningResult {
-    match client.issue_and_save_telemetry_credential().await {
-        Ok(_) => {
-            enroll_current_repository_if_unbound().await;
-            TelemetryProvisioningResult::Issued
-        }
-        Err(_) => TelemetryProvisioningResult::Unavailable,
+    let provisioned = client.issue_and_save_telemetry_credential().await;
+    let result = record_telemetry_readiness(
+        provisioned.as_ref().ok(),
+        telemetry_readiness::mark_ready,
+        telemetry_readiness::clear,
+    );
+    if result == TelemetryProvisioningResult::Issued {
+        enroll_current_repository_if_unbound().await;
     }
+    result
+}
+
+fn record_telemetry_readiness<M, C>(
+    provisioned: Option<&telemetry_credential_storage::TelemetryCredential>,
+    mark_ready: M,
+    clear: C,
+) -> TelemetryProvisioningResult
+where
+    M: FnOnce(u64) -> Result<()>,
+    C: FnOnce() -> Result<()>,
+{
+    let recorded = provisioned
+        .is_some_and(|credential| mark_ready(credential.expires_at_unix_seconds).is_ok());
+    if recorded {
+        return TelemetryProvisioningResult::Issued;
+    }
+    let _ = clear();
+    TelemetryProvisioningResult::Unavailable
+}
+
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
 async fn enroll_current_repository_if_unbound() {
@@ -443,7 +484,8 @@ fn write_login_prompt(authorization: &auth::DeviceAuthorizationResponse) -> Resu
 
 fn map_login_error(error: AuthError) -> CliError {
     let user_error = match &error {
-        AuthError::Io(_) | AuthError::Storage(_) => UserError::AuthStorageUnavailable,
+        AuthError::Io(_) => UserError::LoginAuthStorageUnavailable(AuthStorageFailure::Database),
+        AuthError::Storage(storage) => UserError::LoginAuthStorageUnavailable(storage.failure()),
         _ => UserError::UnexpectedFailure,
     };
     CliError::user_with_source(user_error, error)
@@ -646,8 +688,8 @@ fn render_whoami_result(profile: &MeResponse, format: AuthFormat) -> Result<Stri
 fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
     let user_error = if error.is_authentication_failure() {
         UserError::NotAuthenticated
-    } else if error.is_storage_failure() {
-        UserError::AuthStorageUnavailable
+    } else if let Some(failure) = error.storage_failure() {
+        UserError::AuthStorageUnavailable(failure)
     } else {
         UserError::UnexpectedFailure
     };
@@ -659,7 +701,14 @@ fn map_whoami_control_plane_error(error: &ControlPlaneError) -> CliError {
 }
 
 fn auth_storage_error(error: TokenStorageError) -> CliError {
-    CliError::user_with_source(UserError::AuthStorageUnavailable, error)
+    CliError::user_with_source(UserError::AuthStorageUnavailable(error.failure()), error)
+}
+
+fn login_storage_error(error: TokenStorageError) -> CliError {
+    CliError::user_with_source(
+        UserError::LoginAuthStorageUnavailable(error.failure()),
+        error,
+    )
 }
 
 fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
@@ -668,8 +717,6 @@ fn unexpected_auth_command_error(error: anyhow::Error) -> CliError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
     use super::*;
 
     fn storage_failure() -> TokenStorageError {
@@ -704,6 +751,10 @@ mod tests {
     async fn new_session_invalidates_previous_telemetry_credential_before_saving() {
         let order = std::sync::Mutex::new(Vec::new());
         let saved = replace_session_with(
+            || {
+                order.lock().unwrap().push("clear");
+                Ok(())
+            },
             async {
                 order.lock().unwrap().push("invalidate");
                 Ok(true)
@@ -716,16 +767,112 @@ mod tests {
         .await
         .expect("replacement should succeed");
         assert_eq!(saved, stored_tokens());
-        assert_eq!(*order.lock().unwrap(), ["invalidate", "save"]);
+        assert_eq!(*order.lock().unwrap(), ["clear", "invalidate", "save"]);
 
         let save_called = std::sync::atomic::AtomicBool::new(false);
-        let failed = replace_session_with(async { Err(storage_failure()) }, || async {
-            save_called.store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok(stored_tokens())
-        })
+        let failed = replace_session_with(
+            || Ok(()),
+            async { Err(storage_failure()) },
+            || async {
+                save_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(stored_tokens())
+            },
+        )
         .await;
-        assert!(failed.is_err());
         assert!(!save_called.load(std::sync::atomic::Ordering::SeqCst));
+        assert_login_storage_guidance(
+            &failed.expect_err("invalidation failure fails login"),
+            AuthStorageFailure::Database,
+        );
+
+        let failed = replace_session_with(
+            || Ok(()),
+            async { Ok(true) },
+            || async { Err(TokenStorageError::CredentialAccessUnavailable) },
+        )
+        .await;
+        assert_login_storage_guidance(
+            &failed.expect_err("save failure fails login"),
+            AuthStorageFailure::CredentialAccess,
+        );
+    }
+
+    fn assert_login_storage_guidance(error: &CliError, failure: AuthStorageFailure) {
+        let CliError::User {
+            error: user_error, ..
+        } = error
+        else {
+            panic!("expected a user-facing storage error");
+        };
+        assert_eq!(*user_error, UserError::LoginAuthStorageUnavailable(failure));
+        assert_eq!(user_error.key(), "auth.storage_unavailable");
+        assert_eq!(error.class().exit_code(), 4);
+        let message = error
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(!message.contains("Retry the original command"));
+        let keychain_guidance = message.contains("encryption key");
+        assert_eq!(
+            keychain_guidance,
+            failure == AuthStorageFailure::CredentialAccess
+        );
+        if keychain_guidance {
+            assert!(message.contains("Running login again does not help until"));
+            assert!(!message.contains("Run `sce auth login` in an interactive terminal."));
+        }
+    }
+
+    #[test]
+    fn login_device_flow_storage_failure_uses_noncircular_guidance() {
+        for (storage, failure) in [
+            (
+                TokenStorageError::CredentialAccessUnavailable,
+                AuthStorageFailure::CredentialAccess,
+            ),
+            (
+                TokenStorageError::DatabaseLocked("busy".to_string()),
+                AuthStorageFailure::DatabaseLocked,
+            ),
+            (
+                TokenStorageError::Database("corrupt".to_string()),
+                AuthStorageFailure::Database,
+            ),
+        ] {
+            assert_login_storage_guidance(&map_login_error(AuthError::Storage(storage)), failure);
+        }
+        assert_login_storage_guidance(
+            &map_login_error(AuthError::Io(std::io::Error::other("io"))),
+            AuthStorageFailure::Database,
+        );
+        let CliError::User { error, .. } = map_login_error(AuthError::MissingClientId) else {
+            panic!("expected a user-facing error");
+        };
+        assert_eq!(error, UserError::UnexpectedFailure);
+    }
+
+    #[tokio::test]
+    async fn logout_storage_failure_keeps_command_storage_guidance() {
+        let error = run_logout_with(
+            AuthFormat::Json,
+            || Ok(()),
+            async { Err(TokenStorageError::CredentialAccessUnavailable) },
+            async { Ok(false) },
+        )
+        .await
+        .expect_err("storage failure fails logout");
+        let CliError::User {
+            error: user_error, ..
+        } = &error
+        else {
+            panic!("expected a user-facing storage error");
+        };
+        assert_eq!(
+            *user_error,
+            UserError::AuthStorageUnavailable(AuthStorageFailure::CredentialAccess)
+        );
+        assert!(error.to_string().contains("sce auth login"));
     }
 
     #[tokio::test]
@@ -739,6 +886,17 @@ mod tests {
         };
         let working_dir = Some(PathBuf::from("/workspace/repo"));
 
+        let error = telemetry_headers_with(
+            working_dir.clone(),
+            false,
+            false,
+            |_: &Path| Some("repo-a".to_string()),
+            lookup(std::sync::Arc::clone(&lookup_called)),
+        )
+        .await
+        .expect_err("helper must fail closed without telemetry readiness");
+        assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE);
+
         for (dir, conflict, repository) in [
             (working_dir.clone(), true, Some("repo-a")),
             (None, false, Some("repo-a")),
@@ -747,6 +905,7 @@ mod tests {
             let error = telemetry_headers_with(
                 dir,
                 conflict,
+                true,
                 move |_: &Path| repository.map(str::to_string),
                 lookup(std::sync::Arc::clone(&lookup_called)),
             )
@@ -759,6 +918,7 @@ mod tests {
         let headers = telemetry_headers_with(
             working_dir,
             false,
+            true,
             |dir: &Path| (dir == Path::new("/workspace/repo")).then(|| "repo-a".to_string()),
             |repository_id: String| async move {
                 assert_eq!(repository_id, "repo-a");
@@ -809,55 +969,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn valid_stored_credentials_are_provisioned_after_workos_persistence() {
-        let provision_calls = AtomicBool::new(false);
-        let tokens = stored_tokens();
-        let output = run_login_with_stored_credentials(
-            AuthFormat::Json,
-            Some(tokens.clone()),
-            |stored| async move {
-                assert_eq!(stored, tokens);
-                Ok(Some(stored))
-            },
-            || async {
-                provision_calls.store(true, Ordering::SeqCst);
-                TelemetryProvisioningResult::Issued
-            },
-            |_format| async { panic!("valid stored credentials must not use device login") },
-        )
-        .await
-        .expect("valid stored login should succeed");
-
-        assert!(provision_calls.load(Ordering::SeqCst));
-        assert!(output.contains("\"renewed\": true"));
-        assert!(output.contains("\"status\": \"issued\""));
-    }
-
-    #[tokio::test]
-    async fn renewed_stored_credentials_are_provisioned_after_workos_persistence() {
-        let provision_calls = AtomicBool::new(false);
+    async fn stored_credentials_are_provisioned_only_after_renewal_completes() {
         let original = stored_tokens();
         let renewed = StoredTokens {
             access_token: "renewed-access".to_string(),
             refresh_token: "renewed-refresh".to_string(),
             ..original.clone()
         };
-        let output = run_login_with_stored_credentials(
-            AuthFormat::Json,
-            Some(original),
-            |_stored| async move { Ok(Some(renewed)) },
-            || async {
-                provision_calls.store(true, Ordering::SeqCst);
-                TelemetryProvisioningResult::Issued
-            },
-            |_format| async { panic!("renewed stored credentials must not use device login") },
-        )
-        .await
-        .expect("renewed stored login should succeed");
+        for returned in [original.clone(), renewed] {
+            let events = std::sync::Mutex::new(Vec::new());
+            let events = &events;
+            let expected_stored = original.clone();
+            let output = run_login_with_stored_credentials(
+                AuthFormat::Json,
+                Some(original.clone()),
+                |stored| async move {
+                    assert_eq!(stored, expected_stored);
+                    tokio::task::yield_now().await;
+                    events.lock().unwrap().push("renewal-complete");
+                    Ok(Some(returned))
+                },
+                || async move {
+                    events.lock().unwrap().push("provision");
+                    TelemetryProvisioningResult::Issued
+                },
+                |_format| async { panic!("stored credentials must not use device login") },
+            )
+            .await
+            .expect("stored login should succeed");
 
-        assert!(provision_calls.load(Ordering::SeqCst));
-        assert!(output.contains("\"renewed\": true"));
-        assert!(output.contains("\"status\": \"issued\""));
+            assert_eq!(*events.lock().unwrap(), ["renewal-complete", "provision"]);
+            assert!(output.contains("\"renewed\": true"));
+            assert!(output.contains("\"status\": \"issued\""));
+        }
     }
 
     #[tokio::test]
@@ -923,38 +1067,108 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn telemetry_credential_logout_reports_removal_when_only_telemetry_deleted() {
-        let output = run_logout_with(AuthFormat::Json, async { Ok(false) }, async { Ok(true) })
-            .await
-            .expect("logout should succeed");
-        assert!(output.contains("\"credentials_removed\": true"));
+    async fn logout_clears_readiness_and_attempts_both_deletions_before_reporting() {
+        use AuthStorageFailure::{CredentialAccess, DatabaseLocked};
+
+        fn deletion(result: Result<bool, AuthStorageFailure>) -> Result<bool, TokenStorageError> {
+            result.map_err(|failure| match failure {
+                CredentialAccess => TokenStorageError::CredentialAccessUnavailable,
+                _ => TokenStorageError::DatabaseLocked("busy".to_string()),
+            })
+        }
+
+        for (workos, telemetry, expected) in [
+            (Ok(false), Ok(true), Ok(())),
+            (Ok(true), Err(DatabaseLocked), Err(DatabaseLocked)),
+            (Err(CredentialAccess), Ok(true), Err(CredentialAccess)),
+            (
+                Err(CredentialAccess),
+                Err(DatabaseLocked),
+                Err(CredentialAccess),
+            ),
+        ] {
+            let events = std::sync::Mutex::new(Vec::new());
+            let result = run_logout_with(
+                AuthFormat::Json,
+                || {
+                    events.lock().unwrap().push("clear-readiness");
+                    Ok(())
+                },
+                async {
+                    events.lock().unwrap().push("delete-workos");
+                    deletion(workos)
+                },
+                async {
+                    events.lock().unwrap().push("delete-telemetry");
+                    deletion(telemetry)
+                },
+            )
+            .await;
+
+            assert_eq!(
+                *events.lock().unwrap(),
+                ["clear-readiness", "delete-workos", "delete-telemetry"],
+                "{workos:?} {telemetry:?}"
+            );
+            match (result, expected) {
+                (Ok(output), Ok(())) => assert!(output.contains("\"credentials_removed\": true")),
+                (Err(CliError::User { error, .. }), Err(failure)) => {
+                    assert_eq!(error, UserError::AuthStorageUnavailable(failure));
+                }
+                (result, expected) => {
+                    panic!("{workos:?} {telemetry:?}: {result:?} != {expected:?}")
+                }
+            }
+        }
     }
 
-    #[tokio::test]
-    async fn telemetry_credential_logout_attempts_both_deletions_on_telemetry_failure() {
-        let workos_called = AtomicBool::new(false);
-        let result = run_logout_with(
-            AuthFormat::Json,
-            async {
-                workos_called.store(true, Ordering::SeqCst);
-                Ok(true)
+    #[test]
+    fn telemetry_readiness_is_recorded_only_after_credential_persistence() {
+        let credential = telemetry_credential("tok-ready");
+        let marked = std::cell::Cell::new(None);
+        let cleared = std::cell::Cell::new(false);
+
+        let issued = record_telemetry_readiness(
+            Some(&credential),
+            |expires_at| {
+                marked.set(Some(expires_at));
+                Ok(())
             },
-            async { Err(storage_failure()) },
-        )
-        .await;
-        assert!(result.is_err());
-        assert!(workos_called.load(Ordering::SeqCst));
-    }
+            || {
+                cleared.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(issued, TelemetryProvisioningResult::Issued);
+        assert_eq!(marked.get(), Some(credential.expires_at_unix_seconds));
+        assert!(!cleared.get());
 
-    #[tokio::test]
-    async fn telemetry_credential_logout_deletes_telemetry_on_workos_failure() {
-        let telemetry_called = AtomicBool::new(false);
-        let result = run_logout_with(AuthFormat::Json, async { Err(storage_failure()) }, async {
-            telemetry_called.store(true, Ordering::SeqCst);
-            Ok(true)
-        })
-        .await;
-        assert!(result.is_err());
-        assert!(telemetry_called.load(Ordering::SeqCst));
+        marked.set(None);
+        let failed = record_telemetry_readiness(
+            None,
+            |expires_at| {
+                marked.set(Some(expires_at));
+                Ok(())
+            },
+            || {
+                cleared.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(failed, TelemetryProvisioningResult::Unavailable);
+        assert_eq!(marked.get(), None);
+        assert!(cleared.get());
+
+        cleared.set(false);
+        let unrecorded = record_telemetry_readiness(
+            Some(&credential),
+            |_| Err(anyhow!("read-only state directory")),
+            || {
+                cleared.set(true);
+                Ok(())
+            },
+        );
+        assert_eq!(unrecorded, TelemetryProvisioningResult::Unavailable);
+        assert!(cleared.get());
     }
 }

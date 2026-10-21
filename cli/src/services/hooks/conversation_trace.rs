@@ -70,10 +70,14 @@ pub(crate) async fn run_conversation_trace_subcommand<
     repository_root: &Path,
     logger: Option<&L>,
 ) -> String {
+    crate::services::managed_telemetry::trace_export::record_claude_hook_command(
+        crate::services::managed_telemetry::trace_export::ClaudeHookCommand::ConversationTrace,
+    );
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
         Err(error) => return log_conversation_trace_fail_open(&error, logger, None),
     };
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
     let session_id = conversation_trace_fail_open_session_id(&stdin_payload);
 
     match run_conversation_trace_subcommand_from_payload(

@@ -6,23 +6,49 @@ use serde::{Deserialize, Serialize};
 
 use crate::services::auth::TokenResponse;
 use crate::services::auth_db::AuthDb;
+use crate::services::db::encryption_key::{
+    CredentialAccess, CredentialAccessDenied, CredentialAccessUnavailable,
+};
+use crate::services::db::DatabaseLocked;
+use crate::services::default_paths::auth_db_path;
+use crate::services::error::AuthStorageFailure;
 
-/// Constant row ID for the single token row in `auth_credentials`.
 const DEFAULT_TOKEN_ROW_ID: i64 = 1;
 
-/// Lazy singleton for the encrypted auth database.
-///
-/// Stores `Result` so initialization failures are preserved across calls.
-static AUTH_DB: OnceCell<Result<AuthDb, String>> = OnceCell::const_new();
+static AUTH_DB: OnceCell<AuthDb> = OnceCell::const_new();
 
-pub(crate) async fn get_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
-    let result = AUTH_DB
-        .get_or_init(async || AuthDb::new().await.map_err(|e| e.to_string()))
-        .await;
-    match result {
-        Ok(db) => Ok(db),
-        Err(msg) => Err(TokenStorageError::Database(msg.clone())),
+fn open_error(error: &anyhow::Error) -> TokenStorageError {
+    if error.is::<CredentialAccessUnavailable>() || error.is::<CredentialAccessDenied>() {
+        TokenStorageError::CredentialAccessUnavailable
+    } else if error.is::<DatabaseLocked>() {
+        TokenStorageError::DatabaseLocked(error.to_string())
+    } else {
+        TokenStorageError::Database(error.to_string())
     }
+}
+
+pub(crate) async fn open_or_create_auth_db() -> Result<&'static AuthDb, TokenStorageError> {
+    AUTH_DB
+        .get_or_try_init(async || AuthDb::new().await.map_err(|error| open_error(&error)))
+        .await
+}
+
+pub(crate) async fn open_existing_auth_db(
+    access: CredentialAccess,
+) -> Result<Option<&'static AuthDb>, TokenStorageError> {
+    if let Some(db) = AUTH_DB.get() {
+        return Ok(Some(db));
+    }
+    let db_path =
+        auth_db_path().map_err(|error| TokenStorageError::PathResolution(error.to_string()))?;
+    let Some(db) = AuthDb::open_existing_at(db_path, access)
+        .await
+        .map_err(|error| open_error(&error))?
+    else {
+        return Ok(None);
+    };
+    let _ = AUTH_DB.set(db);
+    Ok(AUTH_DB.get())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -53,6 +79,18 @@ impl StoredTokens {
 pub enum TokenStorageError {
     PathResolution(String),
     Database(String),
+    DatabaseLocked(String),
+    CredentialAccessUnavailable,
+}
+
+impl TokenStorageError {
+    pub fn failure(&self) -> AuthStorageFailure {
+        match self {
+            Self::CredentialAccessUnavailable => AuthStorageFailure::CredentialAccess,
+            Self::DatabaseLocked(_) => AuthStorageFailure::DatabaseLocked,
+            Self::PathResolution(_) | Self::Database(_) => AuthStorageFailure::Database,
+        }
+    }
 }
 
 impl fmt::Display for TokenStorageError {
@@ -66,14 +104,30 @@ impl fmt::Display for TokenStorageError {
                 f,
                 "Token storage database error: {reason}. Try: ensure the OS credential store is available and the auth database is accessible."
             ),
+            Self::DatabaseLocked(reason) => write!(
+                f,
+                "Token storage database is locked: {reason}. Try: wait for other SCE processes to exit and retry."
+            ),
+            Self::CredentialAccessUnavailable => write!(
+                f,
+                "Token storage requires credential store authorization. Try: run 'sce auth login' to authorize access."
+            ),
         }
     }
 }
 
 impl std::error::Error for TokenStorageError {}
 
-pub async fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenStorageError> {
-    let db = get_auth_db().await?;
+pub async fn save_tokens(
+    token: &TokenResponse,
+    access: CredentialAccess,
+) -> Result<StoredTokens, TokenStorageError> {
+    let db = match access {
+        CredentialAccess::Interactive => open_or_create_auth_db().await?,
+        CredentialAccess::NonInteractive => open_existing_auth_db(access)
+            .await?
+            .ok_or(TokenStorageError::CredentialAccessUnavailable)?,
+    };
     let stored = StoredTokens::from_token_response(token)?;
 
     let expires_in = i64::try_from(stored.expires_in).map_err(|error| {
@@ -109,8 +163,12 @@ pub async fn save_tokens(token: &TokenResponse) -> Result<StoredTokens, TokenSto
     Ok(stored)
 }
 
-pub async fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
-    let db = get_auth_db().await?;
+pub async fn load_tokens(
+    access: CredentialAccess,
+) -> Result<Option<StoredTokens>, TokenStorageError> {
+    let Some(db) = open_existing_auth_db(access).await? else {
+        return Ok(None);
+    };
 
     let sql = "SELECT access_token, token_type, expires_in, refresh_token, scope, \
         stored_at_unix_seconds FROM auth_credentials WHERE id = ?1";
@@ -150,7 +208,9 @@ pub async fn load_tokens() -> Result<Option<StoredTokens>, TokenStorageError> {
 }
 
 pub async fn delete_tokens() -> Result<bool, TokenStorageError> {
-    let db = get_auth_db().await?;
+    let Some(db) = open_existing_auth_db(CredentialAccess::Interactive).await? else {
+        return Ok(false);
+    };
 
     let affected = db
         .execute(

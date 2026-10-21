@@ -25,6 +25,8 @@ use crate::services::agent_trace_sync::{
 };
 use crate::services::auth;
 use crate::services::config;
+use crate::services::db::encryption_key::CredentialAccess;
+use crate::services::error::AuthStorageFailure;
 use crate::services::sync::progress::ProgressReporter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,11 +138,11 @@ impl TraceSyncError {
     /// True when the failure came from local credential storage, whether it
     /// surfaced during the initial state request or a stream batch/refresh
     /// path.
-    pub fn is_storage_failure(&self) -> bool {
+    pub fn storage_failure(&self) -> Option<AuthStorageFailure> {
         match self {
-            Self::ControlPlane(error) => error.is_storage_failure(),
-            Self::Stream { source, .. } => source.is_storage_failure(),
-            Self::Runtime(_) => false,
+            Self::ControlPlane(error) => error.storage_failure(),
+            Self::Stream { source, .. } => source.storage_failure(),
+            Self::Runtime(_) => None,
         }
     }
 }
@@ -189,6 +191,7 @@ where
         auth_config.control_plane_base_url.value.unwrap_or_default(),
         auth::WORKOS_DEFAULT_BASE_URL,
         auth_config.workos_client_id.value.unwrap_or_default(),
+        CredentialAccess::NonInteractive,
     );
 
     let result = run_sync_against_without_progress(
@@ -510,7 +513,7 @@ fn is_stream_terminal(error: &ControlPlaneError) -> bool {
             | ControlPlaneError::AuthenticationFailed(_)
             | ControlPlaneError::BadRequest(_)
             | ControlPlaneError::Forbidden(_)
-            | ControlPlaneError::Storage(_)
+            | ControlPlaneError::Storage(..)
             | ControlPlaneError::Protocol { .. }
     )
 }
@@ -547,6 +550,7 @@ mod tests {
     };
     use crate::services::agent_trace_sync::StreamSyncError;
     use crate::services::auth::TokenResponse;
+    use crate::services::db::encryption_key::CredentialAccess;
     use crate::services::sync::progress::NoopProgressReporter;
     use crate::services::token_storage::StoredTokens;
 
@@ -627,6 +631,7 @@ mod tests {
             "http://127.0.0.1:1",
             "http://127.0.0.1:1",
             "client",
+            CredentialAccess::NonInteractive,
         );
         let mut reporter = NoopProgressReporter;
         let progress = Rc::new(RefCell::new(&mut reporter));
@@ -704,6 +709,7 @@ mod tests {
             "http://127.0.0.1:1",
             "http://127.0.0.1:1",
             "client",
+            CredentialAccess::NonInteractive,
         )
     }
 

@@ -1,5 +1,3 @@
-use std::future::Future;
-
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
@@ -7,12 +5,6 @@ use crate::services::error::{CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
-use crate::services::managed_telemetry::claude_helper::repository_id_for;
-use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
-use crate::services::telemetry_credential_storage::{
-    bind_repository_telemetry, RepositoryBindingMode,
-};
-use crate::services::token_storage::TokenStorageError;
 use crate::services::{config, setup};
 
 pub struct SetupCommand {
@@ -108,7 +100,7 @@ impl SetupCommand {
             sections.push(setup_message);
 
             if claude_telemetry_selected {
-                sections.push(claude_telemetry_report(&repository_root).await);
+                sections.push(claude_telemetry_report());
             }
         }
 
@@ -124,31 +116,17 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
     )
 }
 
-async fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
-    let repository_id = repository_id_for(repository_root);
+fn claude_telemetry_report() -> String {
     render_claude_telemetry_section(
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
-        async move {
-            match repository_id {
-                Some(repository_id) => {
-                    bind_repository_telemetry(repository_id, RepositoryBindingMode::Enroll).await
-                }
-                None => Ok(false),
-            }
-        },
     )
-    .await
 }
 
-async fn render_claude_telemetry_section<Fut>(
+fn render_claude_telemetry_section(
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
-    repository_enrollment: Fut,
-) -> String
-where
-    Fut: Future<Output = Result<bool, TokenStorageError>> + Send + 'static,
-{
+) -> String {
     use setup::claude_telemetry::{
         format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
     };
@@ -158,11 +136,7 @@ where
             .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
-    let authentication_pending = installed == ClaudeTelemetryInstallOutcome::Configured
-        && !run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, repository_enrollment)
-            .await
-            .and_then(Result::ok)
-            .unwrap_or(false);
+    let authentication_pending = installed == ClaudeTelemetryInstallOutcome::Configured;
 
     format_claude_telemetry_report(&installed, authentication_pending)
 }
@@ -275,80 +249,36 @@ mod tests {
 
     fn run_claude_telemetry_stage(dispatch: Option<&SetupDispatch>, root: &Path) -> Option<String> {
         dispatch_targets_claude(dispatch).then(|| {
-            block_on_current_thread(render_claude_telemetry_section(
+            render_claude_telemetry_section(
                 Some(&root.join("settings.json")),
                 &root.join("managed.json"),
-                std::future::ready(Ok(false)),
-            ))
+            )
         })
     }
 
-    fn block_on_current_thread<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(future)
-    }
-
-    #[tokio::test]
-    async fn setup_claude_telemetry_skips_repository_enrollment_when_install_is_skipped() {
+    #[test]
+    fn setup_claude_telemetry_reports_skip_without_repository_enrollment() {
         let dir = tempfile::tempdir().unwrap();
         let settings = dir.path().join("settings.json");
         fs::write(&settings, r#"{"otelHeadersHelper":"my-helper"}"#).unwrap();
-        let looked_up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = looked_up.clone();
 
-        let report = render_claude_telemetry_section(
-            Some(&settings),
-            &dir.path().join("managed.json"),
-            async move {
-                flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                Ok(false)
-            },
-        )
-        .await;
+        let report =
+            render_claude_telemetry_section(Some(&settings), &dir.path().join("managed.json"));
 
         assert!(report.contains("skipped"));
-        assert!(!looked_up.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!report.contains("authentication pending"));
     }
 
-    #[tokio::test]
-    async fn setup_claude_telemetry_reports_pending_when_repository_enrollment_stalls() {
+    #[test]
+    fn setup_claude_telemetry_defers_repository_enrollment_to_auth_login() {
         let dir = tempfile::tempdir().unwrap();
-        let started = std::time::Instant::now();
 
         let report = render_claude_telemetry_section(
             Some(&dir.path().join("settings.json")),
             &dir.path().join("managed.json"),
-            std::future::pending(),
-        )
-        .await;
+        );
 
         assert!(report.contains("authentication pending"));
-        assert!(started.elapsed() < std::time::Duration::from_secs(5));
-    }
-
-    #[tokio::test]
-    async fn setup_claude_telemetry_reports_ready_only_when_repository_is_enrolled() {
-        for (enrolled, pending) in [(Ok(true), false), (Ok(false), true), (Err(storage()), true)] {
-            let dir = tempfile::tempdir().unwrap();
-            let report = render_claude_telemetry_section(
-                Some(&dir.path().join("settings.json")),
-                &dir.path().join("managed.json"),
-                std::future::ready(enrolled),
-            )
-            .await;
-            assert_eq!(
-                report.contains("authentication pending"),
-                pending,
-                "{report}"
-            );
-        }
-    }
-
-    fn storage() -> TokenStorageError {
-        TokenStorageError::Database("unavailable".to_string())
     }
 
     fn assert_installed(root: &Path) {

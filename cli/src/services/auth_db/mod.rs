@@ -35,3 +35,6 @@ impl DbSpec for AuthDbSpec {
 pub type AuthDb = EncryptedTursoDb<AuthDbSpec>;
 
 pub mod lifecycle;
+
+#[cfg(test)]
+mod multiprocess_tests;

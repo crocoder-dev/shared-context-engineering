@@ -6,6 +6,7 @@ use std::time::Duration;
 use crate::services;
 use services::app_support::{self, RunOutcome};
 use services::error::CliError;
+use services::managed_telemetry::trace_export::ManagedSpanKind;
 use services::managed_telemetry::RuntimeTelemetry;
 use services::observability::traits::{
     Logger as LoggerTrait, NoopTelemetry, Telemetry as TelemetryTrait,
@@ -15,6 +16,9 @@ const MIN_WORKER_THREADS: usize = 2;
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const REPEATED_COMMAND_DISPATCH_ERROR: &str =
     "Command lifecycle telemetry attempted to execute command dispatch more than once";
+const CLAUDE_ONLY_HOOK_SUBCOMMANDS: [&str; 2] = ["claude-mutation-scope", "claude-model-state"];
+const SHARED_CLAUDE_HOOK_SUBCOMMANDS: [&str; 2] = ["diff-trace", "conversation-trace"];
+const CLAUDE_HOOK_CALLER_MARKERS: [&str; 2] = ["CLAUDECODE", "CLAUDE_PROJECT_DIR"];
 
 struct StartupContext {
     observability_config: services::config::ResolvedObservabilityRuntimeConfig,
@@ -275,7 +279,7 @@ where
     StderrW: Write,
 {
     let args = args.into_iter().collect::<Vec<_>>();
-    let managed_allowed = !is_hook_invocation(&args);
+    let span_kind = managed_span_kind(&args, is_claude_hook_caller());
     let startup = perform_dependency_check(dependency_check)
         .and_then(|()| build_startup_context())
         .and_then(initialize_runtime);
@@ -293,24 +297,36 @@ where
             );
         }
     };
-    runtime.telemetry = RuntimeTelemetry::resolve(managed_allowed).await;
+    runtime.telemetry = RuntimeTelemetry::resolve(span_kind, &runtime.logger).await;
     let rendered = run_command_lifecycle(args, &runtime, stdout, stderr).await;
     runtime.telemetry.shutdown().await;
     app_support::exit_code_for(&rendered)
 }
 
-fn is_hook_invocation(args: &[String]) -> bool {
+fn managed_span_kind(args: &[String], claude_hook_caller: bool) -> Option<ManagedSpanKind> {
     let mut words = args
         .iter()
         .skip(1)
         .map(String::as_str)
         .filter(|arg| !arg.starts_with('-'));
-    match (words.next(), words.next()) {
-        (Some(first), _) if first == services::hooks::NAME => true,
-        (Some("policy"), Some("bash")) => true,
-        (Some(first), Some("telemetry-headers")) if first == services::auth_command::NAME => true,
-        _ => false,
-    }
+    let claude_hook = match (words.next(), words.next()) {
+        (Some(first), Some(subcommand)) if first == services::hooks::NAME => {
+            CLAUDE_ONLY_HOOK_SUBCOMMANDS.contains(&subcommand)
+                || (claude_hook_caller && SHARED_CLAUDE_HOOK_SUBCOMMANDS.contains(&subcommand))
+        }
+        (Some(first), _) if first == services::hooks::NAME => false,
+        (Some(first), _) if first == services::setup::NAME => false,
+        (Some(first), Some("bash")) if first == services::bash_policy::NAME => claude_hook_caller,
+        (Some(first), Some("telemetry-headers")) if first == services::auth_command::NAME => false,
+        _ => return Some(ManagedSpanKind::Command),
+    };
+    claude_hook.then_some(ManagedSpanKind::ClaudeHook)
+}
+
+fn is_claude_hook_caller() -> bool {
+    CLAUDE_HOOK_CALLER_MARKERS
+        .iter()
+        .all(|marker| std::env::var_os(marker).is_some())
 }
 
 fn perform_dependency_check<F: FnOnce() -> anyhow::Result<()>>(
@@ -924,10 +940,24 @@ pub(crate) mod tests {
         }
         let runtime = build_runtime().unwrap();
         runtime.block_on(async {
-            let keychain = RuntimeTelemetry::resolve_with(stalled_keychain_lookup()).await;
+            let (keychain, fallback) =
+                RuntimeTelemetry::resolve_with(stalled_keychain_lookup(), ManagedSpanKind::Command)
+                    .await;
             assert!(matches!(keychain, RuntimeTelemetry::Noop(_)));
-            let database = RuntimeTelemetry::resolve_with(stalled_blocking_database_lookup()).await;
+            assert_eq!(
+                fallback.map(|fallback| fallback.reason),
+                Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
+            );
+            let (database, fallback) = RuntimeTelemetry::resolve_with(
+                stalled_blocking_database_lookup(),
+                ManagedSpanKind::ClaudeHook,
+            )
+            .await;
             assert!(matches!(database, RuntimeTelemetry::Noop(_)));
+            assert_eq!(
+                fallback.map(|fallback| fallback.reason),
+                Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
+            );
         });
         finish_runtime(runtime);
     }
@@ -951,6 +981,7 @@ pub(crate) mod tests {
         let result = runtime.block_on(services::auth_command::telemetry_headers_with(
             Some(repo.path().to_path_buf()),
             false,
+            true,
             |_: &std::path::Path| Some("repository-a".to_string()),
             |_: String| stalled_keychain_lookup(),
         ));
@@ -1073,24 +1104,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn hook_invocations_never_resolve_managed_telemetry() {
-        let hook = ["sce", "hooks", "pre-commit"].map(String::from);
-        let flagged_hook = ["sce", "--verbose", "hooks", "pre-commit"].map(String::from);
-        let other = ["sce", "config", "show"].map(String::from);
-        let policy = ["sce", "policy", "bash"].map(String::from);
-        let headers = ["sce", "auth", "telemetry-headers"].map(String::from);
-        let auth_login = ["sce", "auth", "login"].map(String::from);
-        assert!(is_hook_invocation(&policy));
-        assert!(is_hook_invocation(&headers));
-        assert!(!is_hook_invocation(&auth_login));
-        assert!(is_hook_invocation(&hook));
-        assert!(is_hook_invocation(&flagged_hook));
-        assert!(!is_hook_invocation(&other));
+    fn only_claude_hook_invocations_are_admitted_to_managed_hook_telemetry() {
+        const HOOK: Option<ManagedSpanKind> = Some(ManagedSpanKind::ClaudeHook);
+        const COMMAND: Option<ManagedSpanKind> = Some(ManagedSpanKind::Command);
+        let cases: [(&[&str], bool, Option<ManagedSpanKind>); 20] = [
+            (&["sce", "hooks", "claude-mutation-scope"], false, HOOK),
+            (&["sce", "hooks", "claude-model-state"], false, HOOK),
+            (&["sce", "hooks", "diff-trace"], true, HOOK),
+            (&["sce", "hooks", "diff-trace"], false, None),
+            (&["sce", "hooks", "conversation-trace"], true, HOOK),
+            (&["sce", "hooks", "conversation-trace"], false, None),
+            (&["sce", "policy", "bash"], true, HOOK),
+            (&["sce", "policy", "bash"], false, None),
+            (&["sce", "hooks", "pre-commit"], true, None),
+            (&["sce", "--verbose", "hooks", "codex"], true, None),
+            (&["sce", "hooks", "codex-mutation-scope"], true, None),
+            (&["sce", "hooks", "opencode-mutation-scope"], true, None),
+            (&["sce", "hooks", "pi-mutation-scope"], true, None),
+            (&["sce", "hooks"], true, None),
+            (&["sce", "auth", "telemetry-headers"], true, None),
+            (&["sce", "setup"], true, None),
+            (&["sce", "setup", "--claude"], true, None),
+            (&["sce", "auth", "login"], true, COMMAND),
+            (&["sce", "config", "show"], false, COMMAND),
+            (&["sce", "doctor"], true, COMMAND),
+        ];
+        for (args, claude_caller, expected) in cases {
+            let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
+            assert_eq!(
+                managed_span_kind(&args, claude_caller),
+                expected,
+                "{args:?} claude_caller={claude_caller}"
+            );
+        }
     }
 
     #[tokio::test]
     async fn disallowed_managed_telemetry_resolves_to_noop_without_credential_lookup() {
-        let telemetry = RuntimeTelemetry::resolve(false).await;
+        let telemetry =
+            RuntimeTelemetry::resolve(None, &services::observability::traits::NoopLogger).await;
         assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
     }
 }

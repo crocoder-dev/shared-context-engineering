@@ -8,6 +8,7 @@ use std::{
     fs,
     marker::PhantomData,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Context, Result};
@@ -29,13 +30,19 @@ const ENCRYPTION_CIPHER_AEGIS256: &str = "aegis256";
 const CONNECTION_OPEN_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(3, 1_000, 25, 200);
 const CONNECTION_OPEN_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 const QUERY_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(5, 200, 25, 100);
+const MIGRATION_RETRY_POLICY: RetryPolicy = RetryPolicy::builtin(10, 1_000, 25, 200);
 const QUERY_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 const AGENT_TRACE_DB_BUSY_TIMEOUT_MS: u64 = 1_000;
+const AUTH_DB_BUSY_TIMEOUT_MS: u64 = 1_000;
+const MIGRATIONS_TABLE_EXISTS_SQL: &str =
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__sce_migrations' LIMIT 1";
+const SELECT_APPLIED_MIGRATIONS_SQL: &str = "SELECT id FROM __sce_migrations";
 const AGENT_TRACE_DB_CONTENTION_DEADLINE_MS: u64 = 2_250;
 const AGENT_TRACE_DB_WRITE_CONTENTION_MAX_ATTEMPTS: u32 = 2;
 const AGENT_TRACE_DB_WRITE_CONTENTION_BACKOFF_CAP_MS: u64 = 100;
 
 pub mod encryption_key;
+mod open_lock;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DatabaseKind {
@@ -316,6 +323,42 @@ fn is_retryable_turso_error(error: &turso::Error) -> bool {
     matches!(error, turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DatabaseLocked {
+    db_name: &'static str,
+}
+
+impl std::fmt::Display for DatabaseLocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} database is locked by another process", self.db_name)
+    }
+}
+
+impl std::error::Error for DatabaseLocked {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TursoBusy;
+
+impl std::fmt::Display for TursoBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "database is busy")
+    }
+}
+
+impl std::error::Error for TursoBusy {}
+
+fn turso_open_error(error: &turso::Error, message: String) -> anyhow::Error {
+    if is_retryable_turso_error(error) {
+        anyhow::Error::new(TursoBusy).context(message)
+    } else {
+        anyhow::Error::msg(message)
+    }
+}
+
+fn is_database_lock_conflict(error: &anyhow::Error) -> bool {
+    error.is::<open_lock::SharedLockConflict>() || error.is::<TursoBusy>()
+}
+
 enum WriteAttemptFailure {
     Retryable(anyhow::Error),
     Deterministic(anyhow::Error),
@@ -532,6 +575,99 @@ impl<M: DbSpec> TursoConnectionCore<M> {
     async fn run_migrations(&self) -> Result<()> {
         run_embedded_migrations(&self.conn, M::db_name(), M::migrations()).await
     }
+
+    async fn has_pending_migrations(&self) -> Result<bool> {
+        let db_name = M::db_name();
+        let mut tables = self
+            .conn
+            .query(MIGRATIONS_TABLE_EXISTS_SQL, ())
+            .await
+            .map_err(|e| anyhow::anyhow!("{db_name} migration readiness query failed: {e}"))?;
+        let table_exists = tables
+            .next()
+            .await
+            .map_err(|e| anyhow::anyhow!("{db_name} migration readiness row fetch failed: {e}"))?
+            .is_some();
+        drop(tables);
+        if !table_exists {
+            return Ok(true);
+        }
+
+        let mut rows = self
+            .conn
+            .query(SELECT_APPLIED_MIGRATIONS_SQL, ())
+            .await
+            .map_err(|e| anyhow::anyhow!("{db_name} applied migration query failed: {e}"))?;
+        let mut applied = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .await
+            .map_err(|e| anyhow::anyhow!("{db_name} applied migration row fetch failed: {e}"))?
+        {
+            applied.push(
+                row.get::<String>(0)
+                    .map_err(|e| anyhow::anyhow!("{db_name} applied migration id invalid: {e}"))?,
+            );
+        }
+
+        Ok(M::migrations()
+            .iter()
+            .any(|(id, _)| !applied.iter().any(|applied_id| applied_id == id)))
+    }
+
+    async fn run_migrations_serialized(&mut self) -> std::result::Result<(), WriteAttemptFailure> {
+        let db_name = M::db_name();
+        let tx = turso::transaction::Transaction::new(
+            &mut self.conn,
+            turso::transaction::TransactionBehavior::Immediate,
+        )
+        .await
+        .map_err(|e| classify_turso_error(db_name, "failed to begin migration transaction", &e))?;
+
+        match run_embedded_migrations(&tx, db_name, M::migrations()).await {
+            Ok(()) => tx.commit().await.map_err(|e| {
+                classify_turso_error(db_name, "failed to commit migration transaction", &e)
+            }),
+            Err(error) => {
+                let _ = tx.rollback().await;
+                Err(WriteAttemptFailure::Deterministic(error))
+            }
+        }
+    }
+
+    async fn ensure_migrations_current(&mut self) -> Result<()> {
+        if !self.has_pending_migrations().await? {
+            return Ok(());
+        }
+
+        let db_name = M::db_name();
+        let operation_name = format!("migrate {db_name} database");
+        run_with_retry_elapsed(
+            MIGRATION_RETRY_POLICY,
+            &operation_name,
+            QUERY_RETRY_HINT,
+            MigrationAttempt(self),
+        )
+        .await??;
+
+        if self.has_pending_migrations().await? {
+            anyhow::bail!("{db_name} schema is incomplete after running migrations");
+        }
+
+        Ok(())
+    }
+}
+
+struct MigrationAttempt<'a, M: DbSpec>(&'a mut TursoConnectionCore<M>);
+
+impl<M: DbSpec> RetryOperation<Result<()>> for MigrationAttempt<'_, M> {
+    async fn run(&mut self, _attempt: u32) -> Result<Result<()>> {
+        match self.0.run_migrations_serialized().await {
+            Ok(()) => Ok(Ok(())),
+            Err(WriteAttemptFailure::Retryable(error)) => Err(error),
+            Err(WriteAttemptFailure::Deterministic(error)) => Ok(Err(error)),
+        }
+    }
 }
 
 fn resolve_connection_open_retry_policy<M: DbSpec>() -> RetryPolicy {
@@ -566,20 +702,6 @@ fn resolve_query_retry_policy<M: DbSpec>() -> RetryPolicy {
     QUERY_RETRY_POLICY
 }
 
-/// Resolve the Turso busy timeout applied to every connection opened for `M`.
-///
-/// Multiprocess WAL provides cross-process correctness and locking; it does
-/// not wait for a contended lock. The busy timeout is Turso's own wait policy
-/// for a `Busy` result: while another process holds the write lock, Turso
-/// sleeps in short phases until the lock clears or the timeout elapses, and
-/// only then returns `Busy`. Because `Transaction::new(.., Immediate)`
-/// runs `BEGIN IMMEDIATE` through `Connection::execute` on the same connection,
-/// the wait also covers writer-lock acquisition. The timeout is connection-wide.
-///
-/// Only the Agent Trace DB has a busy timeout, taken from
-/// `policies.database_retry.agent_trace_db.busy_timeout_ms` when configured;
-/// every other database resolves to zero, which leaves Turso's busy handler
-/// unset.
 fn resolve_busy_timeout<M: DbSpec>() -> std::time::Duration {
     busy_timeout_from_config::<M>(crate::services::config::get_database_retry_config())
 }
@@ -587,6 +709,9 @@ fn resolve_busy_timeout<M: DbSpec>() -> std::time::Duration {
 fn busy_timeout_from_config<M: DbSpec>(
     config: Option<&DatabaseRetryConfig>,
 ) -> std::time::Duration {
+    if M::KIND == DatabaseKind::Auth {
+        return std::time::Duration::from_millis(AUTH_DB_BUSY_TIMEOUT_MS);
+    }
     agent_trace_db_millis::<M>(
         config,
         |db| db.busy_timeout_ms,
@@ -788,16 +913,27 @@ fn apply_busy_timeout(
         .map_err(|e| anyhow::anyhow!("failed to set {db_name} database busy timeout: {e}"))
 }
 
+async fn resolve_encryption_key(
+    db_path: &Path,
+    db_name: &str,
+    access: encryption_key::CredentialAccess,
+) -> Result<String> {
+    let key_path = db_path.to_path_buf();
+    let key_name = db_name.to_owned();
+    tokio::task::spawn_blocking(move || {
+        encryption_key::get_or_create_encryption_key(&key_path, &key_name, access)
+    })
+    .await
+    .context("encryption-key resolution worker failed")?
+}
+
 pub struct TursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
 }
 
-/// Generic encrypted Turso database adapter.
-///
-/// Mirrors the structural seams of [`TursoDb`] while reserving encrypted local
-/// database initialization for services that require at-rest encryption.
 pub struct EncryptedTursoDb<M: DbSpec> {
     core: TursoConnectionCore<M>,
+    _open_lock: fs::File,
 }
 
 impl<M: DbSpec> TursoDb<M> {
@@ -1266,68 +1402,122 @@ impl<M: DbSpec> TursoDb<M> {
 }
 
 impl<M: DbSpec> EncryptedTursoDb<M> {
-    /// Open or create the encrypted database at the spec-provided canonical
-    /// path.
-    ///
-    /// This constructor is the encrypted counterpart to [`TursoDb::new`] and
-    /// uses a strict encrypted local-builder path.
     pub async fn new() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
-        let key_path = db_path.clone();
-        let key_name = db_name.to_owned();
-        let encryption_key = tokio::task::spawn_blocking(move || {
-            encryption_key::get_or_create_encryption_key(&key_path, &key_name)
-        })
-        .await
-        .context("encryption-key resolution worker failed")??;
-
+        let encryption_key = resolve_encryption_key(
+            &db_path,
+            db_name,
+            encryption_key::CredentialAccess::Interactive,
+        )
+        .await?;
         ensure_db_parent_dir(db_name, &db_path)?;
+        let open_lock = open_lock::open_lock_file(&db_path, true)?
+            .ok_or_else(|| anyhow::anyhow!("failed to create {db_name} database file"))?;
+        Box::pin(Self::open_locked(db_path, encryption_key, open_lock)).await
+    }
 
+    pub async fn open_existing_at(
+        db_path: impl AsRef<Path>,
+        access: encryption_key::CredentialAccess,
+    ) -> Result<Option<Self>> {
+        let db_path = db_path.as_ref().to_path_buf();
+        let Some(open_lock) = open_lock::open_lock_file(&db_path, false)? else {
+            return Ok(None);
+        };
+        let encryption_key = resolve_encryption_key(&db_path, M::db_name(), access).await?;
+        Box::pin(Self::open_locked(db_path, encryption_key, open_lock))
+            .await
+            .map(Some)
+    }
+
+    async fn open_locked(
+        db_path: PathBuf,
+        encryption_key: String,
+        open_lock: fs::File,
+    ) -> Result<Self> {
+        let db_name = M::db_name();
         let retry_policy = resolve_connection_open_retry_policy::<M>();
+        let busy_timeout = resolve_busy_timeout::<M>();
         let operation_name = format!("open encrypted {db_name} database connection");
+
+        let last_attempt_locked = AtomicBool::new(false);
 
         let conn = run_with_retry_elapsed(
             retry_policy,
             &operation_name,
             CONNECTION_OPEN_RETRY_HINT,
             |_| async {
-                    let path_str = db_path.to_str().ok_or_else(|| {
-                        anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
-                    })?;
-
-                    let encryption_opts = turso::EncryptionOpts {
-                        hexkey: encryption_key.clone(),
-                        cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
-                    };
-
-                    let db = turso::Builder::new_local(path_str)
-                        .experimental_encryption(true)
-                        .with_encryption(encryption_opts)
-                        .build()
-                        .await
-                        .map_err(|e| {
-                            anyhow::anyhow!(
-                                "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
-                                db_path.display()
-                            )
-                        })?;
-
-                    db.connect().map_err(|e| {
-                        anyhow::anyhow!("failed to connect to encrypted {db_name} database: {e}")
-                    })
+                let attempt =
+                    Self::connect_locked(&db_path, &encryption_key, &open_lock, busy_timeout).await;
+                last_attempt_locked.store(
+                    attempt.as_ref().is_err_and(is_database_lock_conflict),
+                    Ordering::Relaxed,
+                );
+                attempt
             },
-        ).await?;
+        )
+        .await
+        .map_err(|error| {
+            if last_attempt_locked.load(Ordering::Relaxed) {
+                anyhow::Error::new(DatabaseLocked { db_name }).context(format!("{error:#}"))
+            } else {
+                error
+            }
+        })?;
 
-        let db = Self {
+        let mut db = Self {
             core: TursoConnectionCore::new(conn),
+            _open_lock: open_lock,
         };
 
-        db.run_migrations()
+        db.core
+            .ensure_migrations_current()
             .await
             .with_context(|| format!("failed to run {db_name} migrations"))?;
 
         Ok(db)
+    }
+
+    async fn connect_locked(
+        db_path: &Path,
+        encryption_key: &str,
+        open_lock: &fs::File,
+        busy_timeout: std::time::Duration,
+    ) -> Result<turso::Connection> {
+        let db_name = M::db_name();
+        open_lock::lock_shared(open_lock, db_name, db_path)?;
+        let _cold_open = open_lock::lock_cold_open(db_path, db_name).await?;
+        let path_str = db_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!("invalid UTF-8 in database path: {}", db_path.display())
+        })?;
+
+        let encryption_opts = turso::EncryptionOpts {
+            hexkey: encryption_key.to_owned(),
+            cipher: ENCRYPTION_CIPHER_AEGIS256.to_string(),
+        };
+
+        let db = turso::Builder::new_local(path_str)
+            .experimental_multiprocess_wal(true)
+            .experimental_encryption(true)
+            .with_encryption(encryption_opts)
+            .build()
+            .await
+            .map_err(|e| {
+                turso_open_error(&e, format!(
+                    "failed to open encrypted {db_name} database at {} with cipher {ENCRYPTION_CIPHER_AEGIS256}. Try: verify the credential store encryption key is valid and that local Turso encryption support is available: {e}",
+                    db_path.display()
+                ))
+            })?;
+
+        let conn = db.connect().map_err(|e| {
+            turso_open_error(
+                &e,
+                format!("failed to connect to encrypted {db_name} database: {e}"),
+            )
+        })?;
+        apply_busy_timeout(&conn, db_name, busy_timeout)?;
+        Ok(conn)
     }
 
     /// Execute a SQL statement that does not return rows.
@@ -1417,16 +1607,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
 
         Ok(results)
     }
-
-    /// Run all embedded migrations in order.
-    ///
-    /// Applied migration IDs are recorded in `__sce_migrations` so later
-    /// initializations apply only migrations that were not already recorded.
-    /// Existing databases without migration metadata are brought forward by
-    /// re-applying the current idempotent migration set and recording each ID.
-    pub async fn run_migrations(&self) -> Result<()> {
-        self.core.run_migrations().await
-    }
 }
 
 #[cfg(test)]
@@ -1458,7 +1638,10 @@ mod database_kind_tests {
             busy_timeout_from_config::<LocalDbSpec>(None),
             Duration::ZERO
         );
-        assert_eq!(busy_timeout_from_config::<AuthDbSpec>(None), Duration::ZERO);
+        assert_eq!(
+            busy_timeout_from_config::<AuthDbSpec>(None),
+            Duration::from_secs(1)
+        );
         assert_eq!(
             busy_timeout_from_config::<RepositoryAgentTraceDbSpec>(None),
             Duration::from_secs(1)

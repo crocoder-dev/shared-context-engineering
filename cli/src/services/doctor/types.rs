@@ -278,6 +278,11 @@ pub(super) enum DoctorDisplayDetail {
         detail: Option<String>,
         remediation: Option<String>,
     },
+    ManagedTelemetry {
+        reason: &'static str,
+        summary: String,
+        remediation: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -464,6 +469,7 @@ pub(crate) enum ProblemKind {
     MutationScopeHealthRecovering,
     MutationScopeHealthBlocked,
     MutationScopeHealthInvalid,
+    ManagedTelemetryUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

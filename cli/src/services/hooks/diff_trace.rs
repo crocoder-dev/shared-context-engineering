@@ -67,10 +67,14 @@ pub(crate) async fn run_diff_trace_subcommand<L: crate::services::observability:
     repository_root: &Path,
     logger: Option<&L>,
 ) -> String {
+    crate::services::managed_telemetry::trace_export::record_claude_hook_command(
+        crate::services::managed_telemetry::trace_export::ClaudeHookCommand::DiffTrace,
+    );
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
         Err(error) => return log_diff_trace_fail_open(&error, logger, None),
     };
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
     let session_id = diff_trace_fail_open_session_id(&stdin_payload);
 
     match run_diff_trace_subcommand_from_payload(repository_root, &stdin_payload, logger).await {

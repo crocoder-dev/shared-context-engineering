@@ -29,6 +29,9 @@ pub(super) async fn run_claude_model_state_subcommand<
     repository_root: &Path,
     logger: Option<&L>,
 ) -> String {
+    crate::services::managed_telemetry::trace_export::record_claude_hook_command(
+        crate::services::managed_telemetry::trace_export::ClaudeHookCommand::ClaudeModelState,
+    );
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
         Err(error) => {
@@ -36,6 +39,7 @@ pub(super) async fn run_claude_model_state_subcommand<
             return String::new();
         }
     };
+    crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
     let session_id = fail_open_session_id(&stdin_payload);
 
     let observed_at_ms = match current_unix_time_ms() {

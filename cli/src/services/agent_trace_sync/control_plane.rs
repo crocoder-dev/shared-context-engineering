@@ -11,6 +11,8 @@ use crate::services::agent_trace_export::{
     self, AgentTraceAgentTraceExportRow, AgentTraceMessageExportRow, AgentTracePartExportRow,
 };
 use crate::services::auth::{self, AuthError, TokenResponse};
+use crate::services::db::encryption_key::CredentialAccess;
+use crate::services::error::AuthStorageFailure;
 use crate::services::resilience::{run_with_retry, RetryPolicy};
 use crate::services::telemetry_credential_storage::{self, TelemetryCredential, TelemetryIdentity};
 use crate::services::token_storage::{self, StoredTokens, TokenStorageError};
@@ -107,7 +109,7 @@ pub enum ControlPlaneError {
     Conflict(String),
     ServerError(String),
     InvalidResponse(String),
-    Storage(String),
+    Storage(AuthStorageFailure, String),
     Protocol { status: StatusCode, message: String },
 }
 
@@ -136,7 +138,7 @@ impl fmt::Display for ControlPlaneError {
             Self::InvalidResponse(reason) => {
                 write!(f, "Control-plane returned an unexpected response: {reason}")
             }
-            Self::Storage(reason) => write!(f, "Local credential storage error: {reason}"),
+            Self::Storage(_, reason) => write!(f, "Local credential storage error: {reason}"),
             Self::Protocol { status, message } => write!(
                 f,
                 "Control-plane rejected the request ({status}): {message}"
@@ -155,14 +157,17 @@ impl ControlPlaneError {
         )
     }
 
-    pub fn is_storage_failure(&self) -> bool {
-        matches!(self, Self::Storage(_))
+    pub fn storage_failure(&self) -> Option<AuthStorageFailure> {
+        match self {
+            Self::Storage(failure, _) => Some(*failure),
+            _ => None,
+        }
     }
 }
 
 impl From<TokenStorageError> for ControlPlaneError {
     fn from(value: TokenStorageError) -> Self {
-        Self::Storage(value.to_string())
+        Self::Storage(value.failure(), value.to_string())
     }
 }
 
@@ -171,7 +176,7 @@ impl From<AuthError> for ControlPlaneError {
         match value {
             AuthError::Unauthorized(reason) => Self::AuthenticationFailed(reason),
             AuthError::RequestFailed(error) => Self::Transport(error.to_string()),
-            AuthError::Storage(error) => Self::Storage(error.to_string()),
+            AuthError::Storage(error) => Self::Storage(error.failure(), error.to_string()),
             other => Self::AuthenticationFailed(other.to_string()),
         }
     }
@@ -197,15 +202,17 @@ pub trait CredentialStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<StoredTokens, ControlPlaneError>> + Send;
 }
 
-pub struct SystemCredentialStore;
+pub struct SystemCredentialStore {
+    access: CredentialAccess,
+}
 
 impl CredentialStore for SystemCredentialStore {
     async fn load(&self) -> Result<Option<StoredTokens>, ControlPlaneError> {
-        Ok(token_storage::load_tokens().await?)
+        Ok(token_storage::load_tokens(self.access).await?)
     }
 
     async fn save(&self, token: &TokenResponse) -> Result<StoredTokens, ControlPlaneError> {
-        Ok(token_storage::save_tokens(token).await?)
+        Ok(token_storage::save_tokens(token, self.access).await?)
     }
 }
 
@@ -300,13 +307,14 @@ impl AuthenticatedControlPlaneClient {
         base_url: impl Into<String>,
         workos_api_base_url: impl Into<String>,
         workos_client_id: impl Into<String>,
+        access: CredentialAccess,
     ) -> Self {
         Self::with_credential_store(
             http,
             base_url,
             workos_api_base_url,
             workos_client_id,
-            SystemCredentialStore,
+            SystemCredentialStore { access },
         )
     }
 }
@@ -445,9 +453,9 @@ impl<S: CredentialStore> AuthenticatedControlPlaneClient<S> {
         Fut: Future<Output = Result<(), TokenStorageError>>,
     {
         let credential = self.issue_telemetry_credential().await?;
-        save(credential.clone())
-            .await
-            .map_err(|_| ControlPlaneError::Storage(TELEMETRY_STORAGE_MESSAGE.to_string()))?;
+        save(credential.clone()).await.map_err(|error| {
+            ControlPlaneError::Storage(error.failure(), TELEMETRY_STORAGE_MESSAGE.to_string())
+        })?;
         Ok(credential)
     }
 
@@ -1259,7 +1267,7 @@ mod tests {
                 &unauthorized,
                 ControlPlaneError::AuthenticationFailed(_)
                     | ControlPlaneError::Transport(_)
-                    | ControlPlaneError::Storage(_)
+                    | ControlPlaneError::Storage(..)
             ),
             "{unauthorized:?}"
         );

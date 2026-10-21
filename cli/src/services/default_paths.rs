@@ -250,21 +250,14 @@ pub fn local_db_path() -> anyhow::Result<PathBuf> {
     Ok(sce_state_dir()?.join("local.db"))
 }
 
-/// Returns the canonical path to the encrypted auth Turso database file.
-///
-/// The path is `<state_root>/sce/auth.db`, where `state_root` comes
-/// from the shared default-path catalog (`XDG_STATE_HOME` or platform
-/// equivalent).
 pub fn auth_db_path() -> anyhow::Result<PathBuf> {
     Ok(sce_state_dir()?.join("auth.db"))
 }
 
-/// Returns the canonical repository-scoped Agent Trace Turso database file path.
-///
-/// The path is `<state_root>/sce/repos/<repository_id>/agent-trace.db`, where
-/// `state_root` comes from the shared default-path catalog (`XDG_STATE_HOME` or
-/// platform equivalent) and `repository_id` is the stable repository identity
-/// hash from `services::repository_identity`.
+pub fn telemetry_readiness_path() -> anyhow::Result<PathBuf> {
+    Ok(sce_state_dir()?.join("telemetry-ready.json"))
+}
+
 pub fn agent_trace_db_path_for_repository(repository_id: &str) -> anyhow::Result<PathBuf> {
     let state_root = resolve_sce_default_locations()?
         .roots()
