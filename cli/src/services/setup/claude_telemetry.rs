@@ -180,7 +180,6 @@ pub(crate) struct ClaudeTelemetryRemovalReport {
     pub(crate) managed_configures_telemetry: bool,
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn remove_claude_telemetry(
     settings_path: &Path,
     managed_settings_path: &Path,
@@ -279,7 +278,6 @@ fn is_read_only(metadata: &fs::Metadata) -> bool {
     metadata.permissions().readonly()
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn format_claude_telemetry_removal_report(
     report: &ClaudeTelemetryRemovalReport,
     claude_selected: bool,

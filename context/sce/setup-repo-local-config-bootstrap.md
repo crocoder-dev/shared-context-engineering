@@ -67,7 +67,7 @@ Setup saves `auth.mode` and `telemetry.enabled` only to the global user config, 
 
 ## Setup login
 
-Interactive setup runs login after the `SCE access` section and before the Claude telemetry stage. It never runs for non-interactive, hooks-only, or context-only setup. The action is decided by `setup_login_action` (`cli/src/services/setup/command.rs`) from the same re-resolved effective policy the `SCE access` section reports, plus the dispatch's `SetupLoginIntent`, not from the prompt answer alone:
+Interactive setup runs login after the `SCE access` section and before the Claude telemetry install stage. When the global user config records a telemetry withdrawal, the [Claude telemetry removal](telemetry-credential.md#claude-native-telemetry) runs and reports between the `SCE access` section and login, whatever the target, so a failed mandatory login cannot skip it. Login never runs for non-interactive, hooks-only, or context-only setup. The login action is decided by `setup_login_action` (`cli/src/services/setup/command.rs`) from the same re-resolved effective policy the `SCE access` section reports, plus the dispatch's `SetupLoginIntent`, not from the prompt answer alone:
 
 | Effective `auth.mode` | Login intent | Action |
 |---|---|---|

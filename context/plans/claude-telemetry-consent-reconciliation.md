@@ -365,7 +365,7 @@ Ordering and consent:
   - Context impact: none. These are internal filesystem helpers with no production callers yet, so user-visible behavior is unchanged until T03 wires the removal into setup.
   - Context synchronization: synced
 
-- [ ] T03: `Trigger Claude telemetry removal on global consent withdrawal in setup` (status:todo)
+- [x] T03: `Trigger Claude telemetry removal on global consent withdrawal in setup` (status:done)
   - Task ID: T03
   - Scope:
     - In: `setup/command.rs`:
@@ -386,7 +386,12 @@ Ordering and consent:
     - Removal happens before a possible mandatory-login failure.
     - The existing `setup_claude_telemetry_*` and PR #339 tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_telemetry_action`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup_claude_telemetry`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup_repository_authorization_is_checked_only_for_interactive_setup -- --exact`. Expected: nonzero test counts and all passing.
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed: `cli/src/services/setup/command.rs`, `cli/src/services/setup/claude_telemetry.rs`
+  - Result: Added `ClaudeTelemetryAction { Install, Remove, SkipDisabled }`, `global_consent_withdrawn`, and `claude_telemetry_action(global, effective_enabled, claude_selected, interactive)`. `Remove` applies when the global user config is `Valid` with `telemetry_enabled: Some(false)` or `auth_mode: Some(Disabled)` and the run is interactive or Claude is selected. Otherwise the action is `Install`/`SkipDisabled` when Claude is selected, else `None`. In interactive runs, `execute` re-reads the global config through `read_global_preferences(&access_save.global_config_path)` (a read error maps to `Invalid`) and uses the access-section policy for `effective_enabled`. `split_pre_login_removal` renders a `Remove` immediately after `SCE access` and before `run_setup_login_step`. `Install`/`SkipDisabled` keep their position after login. In non-interactive runs, `non_interactive_claude_telemetry_action` reads the global config only when Claude is selected, and a path or read error maps to `Invalid`. The stage keeps its existing position. The new `render_claude_telemetry_action` routes `Remove` to `remove_claude_telemetry` + `format_claude_telemetry_removal_report` (with no settings path, `NotInstalled` semantics apply) and routes `Install`/`SkipDisabled` to the unchanged `render_claude_telemetry_section`. `claude_telemetry_report` now takes `Option<ClaudeTelemetryAction>` and `claude_selected`, and the effective-policy computation moved to `effective_telemetry_enabled`. T02's `expect(dead_code)` attributes were removed from `claude_telemetry.rs`. Added the 4 planned tests. Deviation: to stay under `clippy::too_many_lines`, `execute` uses an async closure for the Claude report call plus the two small helpers above. The pre-login placement is verified by inspecting the `execute` order, because `execute` runs a real login and has no unit-test seam.
+  - Verify outcomes: `claude_telemetry_action` → 1 passed, 0 failed (passed); `setup_claude_telemetry` → 8 passed, 0 failed (4 existing + 4 new) (passed); `services::setup::command::tests::setup_repository_authorization_is_checked_only_for_interactive_setup -- --exact` → 1 passed (passed; the bare name matches 0 tests under `--exact`, so the full path was used). Extra: `claude_telemetry_removal` → 7 passed; `claude_telemetry_install` → 8 passed; `setup` → 119 passed; `run-cli-cargo.sh clippy --all-targets -- -D warnings` clean (all passed).
+  - Context impact: important. This is a user-visible behavior change: `sce setup` now removes SCE-owned Claude settings on global withdrawal, and in interactive runs that output appears before `SCE login`. Affected context: `context/sce/telemetry-credential.md` (Claude-native telemetry), `context/cli/access-policy.md` (Enforcement/coverage limit), `context/sce/setup-repo-local-config-bootstrap.md` (stage ordering).
+  - Context synchronization: synced
 
 - [ ] T04: `Update config show telemetry note for Claude settings reconciliation` (status:todo)
   - Task ID: T04
