@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::services::config::AuthMode;
 use crate::services::style::{label, success, value};
 use crate::services::{default_paths, default_paths::RepoPaths};
 
@@ -915,8 +916,14 @@ pub trait SetupTargetPrompter {
         defaults: &[ConcreteSetupTarget],
     ) -> Result<Option<Vec<ConcreteSetupTarget>>>;
     fn prompt_optional_workflows(&self, defaults: &[String]) -> Result<Option<Vec<String>>>;
-    fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>>;
-    fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>>;
+    fn prompt_agent_trace_auto_sync(&self, default: bool) -> Result<Option<bool>>;
+    fn prompt_attribution_hooks_enabled(&self, default: bool) -> Result<Option<bool>>;
+    #[allow(dead_code)]
+    fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>>;
+    #[allow(dead_code)]
+    fn prompt_telemetry_consent(&self, default: bool) -> Result<Option<bool>>;
+    #[allow(dead_code)]
+    fn prompt_login(&self) -> Result<Option<bool>>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -934,12 +941,24 @@ impl SetupTargetPrompter for InquireSetupTargetPrompter {
         prompt::prompt_optional_workflows(defaults)
     }
 
-    fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>> {
-        prompt::prompt_agent_trace_auto_sync()
+    fn prompt_agent_trace_auto_sync(&self, default: bool) -> Result<Option<bool>> {
+        prompt::prompt_agent_trace_auto_sync(default)
     }
 
-    fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>> {
-        prompt::prompt_attribution_hooks_enabled()
+    fn prompt_attribution_hooks_enabled(&self, default: bool) -> Result<Option<bool>> {
+        prompt::prompt_attribution_hooks_enabled(default)
+    }
+
+    fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>> {
+        prompt::prompt_auth_mode(default)
+    }
+
+    fn prompt_telemetry_consent(&self, default: bool) -> Result<Option<bool>> {
+        prompt::prompt_telemetry_consent(default)
+    }
+
+    fn prompt_login(&self) -> Result<Option<bool>> {
+        prompt::prompt_login()
     }
 }
 
@@ -982,7 +1001,7 @@ where
 
             let Some(agent_trace_auto_sync) =
                 persisted_confirmations.agent_trace_auto_sync.map_or_else(
-                    || prompter.prompt_agent_trace_auto_sync(),
+                    || prompter.prompt_agent_trace_auto_sync(true),
                     |value| Ok(Some(value)),
                 )?
             else {
@@ -992,7 +1011,7 @@ where
             let Some(attribution_hooks_enabled) = persisted_confirmations
                 .attribution_hooks_enabled
                 .map_or_else(
-                    || prompter.prompt_attribution_hooks_enabled(),
+                    || prompter.prompt_attribution_hooks_enabled(true),
                     |value| Ok(Some(value)),
                 )?
             else {

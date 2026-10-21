@@ -363,7 +363,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: internal (crate-private login API seam for setup; no user-visible CLI behavior or output change until T06 wires it in)
   - Context synchronization: synced
 
-- [ ] T03: `Add auth-mode, telemetry-consent, and login-offer prompts to the setup prompt seam` (status:todo)
+- [x] T03: `Add auth-mode, telemetry-consent, and login-offer prompts to the setup prompt seam` (status:done)
   - Task ID: T03
   - Scope: In:
     - In `cli/src/services/setup/prompt.rs`, add `prompt_auth_mode(default: AuthMode)` using `inquire::Select` with the three fixed rows and the cursor on the default, `prompt_telemetry_consent(default: bool)`, and `prompt_login()` (default Yes) with the fixed labels from Design.
@@ -375,7 +375,24 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Dependencies: T01 (`AuthMode` re-export)
   - Done when: the new prompt functions exist with exact label constants and defaults, the auth-mode row mapping is covered by a pure test (row index ↔ `AuthMode`, default cursor), and existing prompt behavior and wording are unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup::`
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed:
+    - `cli/src/services/setup/prompt.rs`
+    - `cli/src/services/setup/mod.rs`
+    - `cli/src/services/setup/command.rs`
+  - Result:
+    - `prompt.rs` adds `prompt_auth_mode(default: AuthMode)` (`inquire::Select` over `AUTH_MODE_PROMPT_ROWS` = Optional, Mandatory, Disabled, with `with_starting_cursor(auth_mode_prompt_default_index(default))` and title `prompt_label("SCE account mode for this machine")`), `prompt_telemetry_consent(default: bool)`, and `prompt_login()` (`LOGIN_PROMPT_DEFAULT = true`). Every row label and confirm label is a fixed constant matching Design.
+    - `prompt_agent_trace_auto_sync` and `prompt_attribution_hooks_enabled` take `default: bool`. Their wording is unchanged, and `resolve_setup_dispatch` passes `true`.
+    - Cancel/Interrupt → `Ok(None)` and `NotTTY` → the existing fixed bail now go through one shared `interactive_prompt_result` helper, used by both `Confirm` and `Select`.
+    - `SetupTargetPrompter` and `InquireSetupTargetPrompter` gain `prompt_auth_mode`, `prompt_telemetry_consent`, and `prompt_login`. The test `FakePrompter` in `setup/command.rs` implements them.
+  - Deviations and assumptions:
+    - The new trait methods and prompt functions have no callers until T04, so they carry temporary dead-code allowances.
+  - Temporary dead-code allowances for T04 to remove when it wires dispatch: `#[allow(dead_code)]` on the trait methods `prompt_auth_mode`, `prompt_telemetry_consent`, and `prompt_login` in `cli/src/services/setup/mod.rs`, and on `auth_mode_prompt_title`, `prompt_auth_mode`, `prompt_telemetry_consent`, and `prompt_login` in `cli/src/services/setup/prompt.rs`.
+  - Verify outcomes:
+    - `setup::`: passed (71 tests). This includes the new `prompt::tests` (row index ↔ `AuthMode` order and labels, the default cursor for every mode, fixed telemetry/login/title labels, and Cancel/Interrupt/NotTTY mapping).
+    - Additional check: `clippy --all-targets -- --deny warnings` is clean.
+  - Context impact: internal (crate-private prompt seam additions; no user-visible behavior change until T04 wires dispatch)
+  - Context synchronization: synced
 
 - [ ] T04: `Resolve access-policy choices and login intent in setup dispatch` (status:todo)
   - Task ID: T04

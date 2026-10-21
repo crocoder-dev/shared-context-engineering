@@ -217,6 +217,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::services::config::AuthMode;
     use crate::services::setup::{
         resolve_setup_dispatch, resolve_setup_request, ConcreteSetupTarget,
         PersistedSetupConfirmations, SetupCliOptions, SetupDispatch, SetupMode, SetupTarget,
@@ -239,11 +240,23 @@ mod tests {
             Ok(Some(Vec::new()))
         }
 
-        fn prompt_agent_trace_auto_sync(&self) -> Result<Option<bool>> {
+        fn prompt_agent_trace_auto_sync(&self, _default: bool) -> Result<Option<bool>> {
             Ok(Some(false))
         }
 
-        fn prompt_attribution_hooks_enabled(&self) -> Result<Option<bool>> {
+        fn prompt_attribution_hooks_enabled(&self, _default: bool) -> Result<Option<bool>> {
+            Ok(Some(false))
+        }
+
+        fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>> {
+            Ok(Some(default))
+        }
+
+        fn prompt_telemetry_consent(&self, _default: bool) -> Result<Option<bool>> {
+            Ok(Some(false))
+        }
+
+        fn prompt_login(&self) -> Result<Option<bool>> {
             Ok(Some(false))
         }
     }
