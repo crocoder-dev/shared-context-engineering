@@ -5,9 +5,9 @@ use super::{
     MANAGED_OTLP_TRACES_ENDPOINT,
 };
 use crate::services::config;
+use crate::services::default_paths::enclosing_repository_root;
 use crate::services::repository_identity::resolve::resolve_repository_identity;
 
-const GIT_DIR_NAME: &str = ".git";
 const DESTINATION_ENVS: [(&str, &str); 5] = [
     ("OTEL_EXPORTER_OTLP_ENDPOINT", MANAGED_OTLP_ENDPOINT),
     (
@@ -39,9 +39,7 @@ where
 }
 
 pub fn repository_id_for(working_dir: &Path) -> Option<String> {
-    let root = working_dir
-        .ancestors()
-        .find(|dir| dir.join(GIT_DIR_NAME).exists())?;
+    let root = enclosing_repository_root(working_dir)?;
     let storage_config = config::resolve_agent_trace_storage_runtime_config(root).ok()?;
     resolve_repository_identity(
         root,

@@ -187,7 +187,7 @@ Repository binding, credential identity (`sub`, `workspace_id`), expiry checks, 
   - `logout` keeps interactive access in every mode, so one Keychain dialog per explicit logout remains possible. This is intended.
   - Non-interactive Keychain semantics stay unchanged.
 - **Startup cost on hook paths:** the policy comes from the config resolution `build_startup_context` already performs. No additional file reads.
-- **cwd-based local discovery:** Claude hooks and the headers helper resolve `<cwd>/.sce/config.json`. A launch from a subdirectory misses the repository layer, which can only *restrict*, so the failure mode is fail-open toward the user's global consent. This matches the existing config contract and is listed as an open question.
+- **cwd-based local discovery:** Claude hooks and the headers helper resolve `<cwd>/.sce/config.json`. A launch from a subdirectory misses the repository layer, which can only *restrict*, so the failure mode is fail-open toward the user's global consent. This matches the existing config contract and is listed as an open question. *Resolved after T08:* repository discovery is now Git-root relative, and an explicit config file no longer replaces the global layer (see the amended [ADR](../decisions/2026-10-20-consent-gated-access-policy-precedence.md)).
 - **Mixed versions:** older binaries reject configs that carry the new keys (see Migration).
 
 ### Out of scope, with future interfaces
@@ -457,7 +457,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - Existing logged-in users silently lose managed SCE export on upgrade, because a missing `telemetry.enabled` means disabled. Doctor and login now say so, but nothing prompts the user. Is that acceptable, or should the release ship with the future setup consent question? Inferring consent from an existing `telemetry-ready.json` was rejected because it makes hidden state decide consent.
 - `mandatory` changes very little today. Cloud commands already require credentials, and hooks must never block, so the only enforced difference is a nonzero unauthenticated `whoami`. It is kept so the future setup and auto-login work has a stable mode to build on. If no near-term consumer exists, shipping only `disabled | optional` would be the smaller version.
 - Telemetry opt-out does not stop Claude-native export from settings written by earlier setups, and those settings are user-level, shared across repositories. Should a follow-up plan for SCE-owned Claude settings reconciliation be scheduled now, so the opt-out can eventually be described as complete?
-- Repository-layer discovery uses `<cwd>/.sce/config.json`. A Claude hook or headers helper launched from a subdirectory sees only the user layer, so a repository opt-out can be missed there. Fixing this means Git-root-relative discovery for every config consumer, which is broader than this plan.
+- ~~Repository-layer discovery uses `<cwd>/.sce/config.json`.~~ Resolved: the shared resolver now discovers `.sce/config.json` at the enclosing Git worktree root for every consumer, and `--config` / `SCE_CONFIG_FILE` are loaded on top of the global and repository layers instead of replacing them, so neither path can bypass a global or repository opt-out. See [access policy](../cli/access-policy.md).
 
 ## Validation Report
 
@@ -501,4 +501,4 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 - The manual macOS check (locked login Keychain, no Keychain dialog, no `sce.hook` spans, at most one logout prompt) was not run; macOS Keychain behavior is unverified on real hardware.
 - Flake checks ran only for x86_64-linux; darwin and aarch64-linux systems were omitted.
-- Open questions in this plan (silent loss of managed export on upgrade, minimal `mandatory` semantics, legacy Claude-native settings, `<cwd>`-relative repository discovery) remain unresolved product decisions.
+- Open questions in this plan (silent loss of managed export on upgrade, minimal `mandatory` semantics, legacy Claude-native settings) remain unresolved product decisions. The `<cwd>`-relative repository discovery question is resolved: discovery is now Git-root relative.

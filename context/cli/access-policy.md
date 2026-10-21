@@ -10,9 +10,11 @@ Status: the resolver computes and exposes the policy, and `sce config show` / `v
 
 - **Auth mode** (`AuthMode`): `disabled | optional | mandatory`. Omitted means `optional`.
 - **Policy layer** (`PolicyLayer`): how a config file is classified for access policy.
-  - **User layer:** a `DefaultDiscoveredGlobal` file, or the single explicit file (`Flag` / `Env`).
-  - **Repository layer:** a `DefaultDiscoveredLocal` file (`<cwd>/.sce/config.json`).
-  - Neither key has an environment-variable or CLI-flag layer.
+  - **User layer:** the `DefaultDiscoveredGlobal` file.
+  - **Repository layer:** the `DefaultDiscoveredLocal` file, `.sce/config.json` at the enclosing Git worktree root (see [Repository discovery](#repository-discovery)).
+  - **Explicit layer:** the single file selected with `--config` (`Flag`) or `SCE_CONFIG_FILE` (`Env`). It is loaded in addition to the discovered files, never instead of them.
+  - **User side:** the user layer and the explicit layer together. Only the user side can grant telemetry consent.
+  - Neither key has an environment-variable or CLI-flag layer of its own.
 - **Effective access policy** (`ResolvedAccessPolicy`), with these fields:
   - `auth_mode`: the effective mode, with the deciding layer as its source.
   - `telemetry_enabled`: the configured merged value with its provenance.
@@ -20,20 +22,34 @@ Status: the resolver computes and exposes the policy, and `sce config show` / `v
   - `background_cloud_allowed`.
 - **Degraded:** at least one default-discovered file was skipped as invalid.
 
+## Repository discovery
+
+`resolve_config_paths` locates the repository layer at `enclosing_repository_root_with(cwd, path_exists)` (`cli/src/services/default_paths.rs`): the nearest ancestor of the working directory, inclusive, that contains a `.git` entry (directory or file). That is the worktree root for ordinary repositories, linked worktrees, and submodules; in a nested repository it is the innermost repository. Outside a Git repository it falls back to the working directory. The walk only probes the filesystem, so no Git subprocess runs on hook paths. `GIT_DIR` / `GIT_WORK_TREE` are not consulted. `repository_id_for` (the headers helper's repository identity) uses the same helper, so policy and repository identity always describe the same root.
+
+Every consumer goes through this one resolver, so running from the repository root or any subdirectory yields the same effective policy: startup and managed telemetry, `sce auth login` / `whoami`, `sce auth telemetry-headers`, `sce sync`, post-commit auto-sync, `sce doctor`, and `sce config show` / `validate`.
+
+## Explicit config files
+
+`--config` / `SCE_CONFIG_FILE` select one explicit file. The loaded paths are, in order: the global file (if present), the repository file (if present), then the explicit file.
+
+- **Ordinary keys** (logging, Agent Trace, `otel`, `policies`, `integrations`, `workos_client_id`, `control_plane_base_url`) come only from the explicit file, as before. The discovered files contribute nothing to them.
+- **Access-policy keys** (`auth.mode`, `telemetry.enabled`) are read from every loaded layer. The explicit layer can add a restriction or grant user-side consent, but cannot lift a global or repository restriction.
+- An invalid explicit file stays fatal. An invalid discovered file is skipped and degrades the policy exactly as without an explicit file, so an unreadable global opt-out can never be bypassed by `--config`.
+
 ## Resolution
 
-`resolve_runtime_config_with` records each parsed layer's `auth_mode` / `telemetry_enabled` into a user or a repository `AccessPolicyLayer` during the merge loop. It then calls the pure `resolve_access_policy(user, repository, degraded)` (`cli/src/services/config/resolver.rs`).
+`resolve_runtime_config_with` records each parsed layer's `auth_mode` / `telemetry_enabled` into a user, repository, or explicit `AccessPolicyLayer` during the merge loop. It then calls the pure `resolve_access_policy(user, repository, explicit, degraded)` (`cli/src/services/config/resolver.rs`).
 
 ```mermaid
 flowchart TD
   D{degraded?} -- yes --> I[Disabled InvalidConfig]
   D -- no --> A{effective auth disabled?}
   A -- yes --> AD[Disabled AuthDisabled]
-  A -- no --> U0{user false?}
+  A -- no --> U0{user or explicit false?}
   U0 -- yes --> UO[Disabled UserOptOut]
   U0 -- no --> R0{repository false?}
   R0 -- yes --> RO[Disabled RepositoryOptOut]
-  R0 -- no --> U1{user true?}
+  R0 -- no --> U1{user or explicit true?}
   U1 -- yes --> E[Enabled]
   U1 -- no --> R1{repository true?}
   R1 -- yes --> NC[Disabled NoUserConsent]
@@ -41,9 +57,9 @@ flowchart TD
 ```
 
 - **Auth mode:** the most restrictive layer wins (`disabled > mandatory > optional`).
-  - The source is the deciding layer. When both layers carry the same mode, the repository layer is the source.
-  - When neither layer sets it, the result is `optional` with `source: default`.
-- **`telemetry_enabled` value:** the repository value if set, otherwise the user value, otherwise `false` with `source: default`. This is the configured value, not the effective state.
+  - The source is the deciding layer. Layers are compared in the order user, repository, explicit; on a tie the later layer is the source.
+  - When no layer sets it, the result is `optional` with `source: default`.
+- **`telemetry_enabled` value:** the explicit value if set, otherwise the repository value, otherwise the user value, otherwise `false` with `source: default`. This is the configured value (ordinary override order), not the effective state.
 - **`background_cloud_allowed`:** `!auth_disabled && !degraded`.
 - **Helpers:**
   - `telemetry_enabled()` is true only for `Enabled`.
@@ -52,19 +68,35 @@ flowchart TD
   - `auth_disabled_config_file()` returns the `AuthPolicyConfigFile` of the deciding layer when the mode is `disabled`, otherwise `None`. Every `auth.disabled_by_config` rejection uses it.
 - **Explicit config files:** an invalid explicit config file stays fatal, so it never produces a degraded policy.
 
+### Precedence examples
+
+| Global | Repository | Explicit | Effective |
+|---|---|---|---|
+| `telemetry.enabled: false` | absent | `telemetry.enabled: true` | telemetry disabled (`user_opt_out`) |
+| `auth.mode: disabled` | absent | `auth.mode: optional` | auth `disabled` (source global), telemetry `auth_disabled` |
+| `telemetry.enabled: true` | `telemetry.enabled: false` | `telemetry.enabled: true` | telemetry disabled (`repository_opt_out`) |
+| `auth.mode: optional` | `auth.mode: disabled` | `auth.mode: mandatory` | auth `disabled` (source repository) |
+| `telemetry.enabled: false` | `telemetry.enabled: true` | `telemetry.enabled: true` | telemetry disabled (`user_opt_out`) |
+| absent | absent | `auth.mode: mandatory`, `telemetry.enabled: true` | auth `mandatory` (source explicit), telemetry enabled |
+| invalid | absent | `telemetry.enabled: true` | telemetry disabled (`invalid_config`), no background cloud |
+
 ## Contradiction warnings
 
 The resolver appends these fixed strings to `validation_warnings`, after the bash-policy redundancy warnings, in this order:
 
-1. Repository `telemetry.enabled: true` without a user-layer `true`:
+1. Repository `telemetry.enabled: true` without a user-side `true`:
    `telemetry.enabled is true in the repository config but not in the user config; SCE telemetry stays disabled until the user config sets telemetry.enabled to true.`
 2. Any layer has `telemetry.enabled: true` while the effective auth is `disabled`:
    `telemetry.enabled is true but auth.mode resolves to disabled; SCE telemetry is disabled.`
 3. `agent_trace.auto_sync` resolves `true` while the effective auth is `disabled`:
    `agent_trace.auto_sync is true but auth.mode resolves to disabled; post-commit auto-sync is skipped.`
-4. Repository `mandatory` while the user layer is `disabled`:
+4. Repository `mandatory` while the user or explicit layer is `disabled`:
    `auth.mode is mandatory in the repository config but disabled in the user config; auth.mode resolves to disabled.`
-5. Degraded:
+5. Explicit `auth.mode` less restrictive than the effective mode:
+   `auth.mode in the explicitly selected config is less restrictive than the global or repository config; the most restrictive auth.mode applies.`
+6. Explicit `telemetry.enabled: true` while the global or repository layer is `false`:
+   `telemetry.enabled is true in the explicitly selected config but false in the global or repository config; SCE telemetry is disabled.`
+7. Degraded:
    `A discovered config file was skipped as invalid; SCE telemetry and background cloud operations are disabled.`
 
 Each string is a `WARNING_*` constant in `resolver.rs`. The skipped file's own error still appears in `validation_errors`.

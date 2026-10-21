@@ -74,6 +74,12 @@ const HEADERS_UNAVAILABLE: &str = "Telemetry credential is unavailable.";
 const STDIN_SECRET: &str = "SECRET_STDIN_VALUE";
 const TELEMETRY_FALLBACK_EVENT: &str = "event_id=sce.telemetry.fallback";
 const FALLBACK_REASON_PREFIX: &str = "reason=";
+const CLI_ARGS_ENV: &str = "SCE_AUTH_DB_TEST_CLI_ARGS";
+const CLI_SUCCESS_PREFIX: &str = "SCE_AUTH_DB_CHILD_CLI_SUCCESS=";
+const AUTH_DISABLED_BY_REPOSITORY: &str =
+    "Authentication is disabled by `auth.mode: disabled` in the repository SCE config";
+const AUTH_DISABLED_BY_GLOBAL: &str =
+    "Authentication is disabled by `auth.mode: disabled` in the global SCE config";
 const FAIL_OPEN_HOOK_COMMANDS: [ClaudeHookCommand; 3] = [
     ClaudeHookCommand::DiffTrace,
     ClaudeHookCommand::ConversationTrace,
@@ -172,6 +178,20 @@ impl Sandbox {
             root.join("state")
         };
         state_root.join("sce")
+    }
+
+    fn global_config_file(&self) -> PathBuf {
+        let root = self.dir.path();
+        let config_root = if cfg!(target_os = "macos") {
+            root.join("Library").join("Application Support")
+        } else {
+            root.join("config")
+        };
+        config_root.join("sce").join("config.json")
+    }
+
+    fn write_global_config(&self, config: &serde_json::Value) {
+        write_config_file(&self.global_config_file(), config);
     }
 
     fn auth_db_files(&self) -> Vec<String> {
@@ -548,7 +568,7 @@ fn concurrent_telemetry_headers_on_missing_auth_db_fail_closed_without_creating_
 
     let config = headers_policy_config(&sandbox, true);
     let helpers = (0..CONCURRENT_PROCESSES)
-        .map(|_| spawn_headers(&sandbox, &repository, &config))
+        .map(|_| spawn_headers(&sandbox, &repository, Some(&config)))
         .collect::<Vec<_>>();
     for helper in helpers {
         assert_headers_unavailable(helper);
@@ -577,13 +597,14 @@ fn telemetry_headers_serve_only_the_bound_repository() {
 
     let enabled = headers_policy_config(&sandbox, true);
     let disabled = headers_policy_config(&sandbox, false);
-    let output = spawn_headers(&sandbox, &bound, &enabled)
-        .wait_with_output()
-        .expect("bound headers output");
-    assert!(output.status.success(), "bound headers failed");
-    assert!(String::from_utf8_lossy(&output.stdout).contains(HEADERS_AUTHORIZATION));
-    assert_headers_unavailable(spawn_headers(&sandbox, &unbound, &enabled));
-    assert_headers_unavailable(spawn_headers(&sandbox, &bound, &disabled));
+    assert_headers_served(spawn_headers(&sandbox, &bound, Some(&enabled)));
+    assert_headers_unavailable(spawn_headers(&sandbox, &unbound, Some(&enabled)));
+    assert_headers_unavailable(spawn_headers(&sandbox, &bound, Some(&disabled)));
+}
+
+fn write_config_file(path: &Path, config: &serde_json::Value) {
+    std::fs::create_dir_all(path.parent().expect("config parent")).expect("config dir");
+    std::fs::write(path, config.to_string()).expect("config file");
 }
 
 fn headers_policy_config(sandbox: &Sandbox, telemetry_enabled: bool) -> PathBuf {
@@ -599,12 +620,23 @@ fn headers_policy_config(sandbox: &Sandbox, telemetry_enabled: bool) -> PathBuf 
     config
 }
 
-fn spawn_headers(sandbox: &Sandbox, repository: &Path, config: &Path) -> Child {
+fn spawn_headers(sandbox: &Sandbox, repository: &Path, config: Option<&Path>) -> Child {
     let mut helper = sandbox.command("headers");
-    helper
-        .current_dir(repository)
-        .env("SCE_CONFIG_FILE", config);
+    helper.current_dir(repository);
+    if let Some(config) = config {
+        helper.env("SCE_CONFIG_FILE", config);
+    }
     helper.spawn().expect("spawn headers")
+}
+
+fn assert_headers_served(helper: Child) {
+    let output = helper.wait_with_output().expect("headers output");
+    assert!(output.status.success(), "headers child failed");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(HEADERS_AUTHORIZATION),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn assert_headers_unavailable(helper: Child) {
@@ -627,23 +659,34 @@ fn policy_hook_fallback_reasons(sandbox: &Sandbox, telemetry_enabled: bool) -> V
         serde_json::json!({ "telemetry": { "enabled": telemetry_enabled } }).to_string(),
     )
     .expect("policy config");
-    let log_dir = root.join(format!("logs-{telemetry_enabled}"));
+    hook_fallback_reasons(
+        sandbox,
+        &work,
+        Some(&config),
+        &format!("logs-{telemetry_enabled}"),
+    )
+}
+
+fn hook_fallback_reasons(
+    sandbox: &Sandbox,
+    working_dir: &Path,
+    explicit_config: Option<&Path>,
+    log_label: &str,
+) -> Vec<String> {
+    let log_dir = sandbox.dir.path().join(log_label);
     std::fs::create_dir_all(&log_dir).expect("log dir");
-    wait_success(
-        "policy-hook",
-        sandbox
-            .command("policy-hook")
-            .current_dir(&work)
-            .env(AUTH_DB_ENCRYPTION_KEY_ENV, "")
-            .env("SCE_CONFIG_FILE", &config)
-            .env("SCE_LOG_LEVEL", "debug")
-            .env("SCE_LOG_FORMAT", "text")
-            .env("SCE_LOG_DIR", &log_dir)
-            .env("CLAUDECODE", "1")
-            .env("CLAUDE_PROJECT_DIR", &work)
-            .spawn()
-            .expect("spawn policy hook"),
-    );
+    let mut hook = sandbox.command("policy-hook");
+    hook.current_dir(working_dir)
+        .env(AUTH_DB_ENCRYPTION_KEY_ENV, "")
+        .env("SCE_LOG_LEVEL", "debug")
+        .env("SCE_LOG_FORMAT", "text")
+        .env("SCE_LOG_DIR", &log_dir)
+        .env("CLAUDECODE", "1")
+        .env("CLAUDE_PROJECT_DIR", working_dir);
+    if let Some(config) = explicit_config {
+        hook.env("SCE_CONFIG_FILE", config);
+    }
+    wait_success("policy-hook", hook.spawn().expect("spawn policy hook"));
     let mut reasons = Vec::new();
     for entry in std::fs::read_dir(&log_dir).expect("log entries") {
         let log = std::fs::read_to_string(entry.expect("log entry").path()).expect("log file");
@@ -658,6 +701,165 @@ fn policy_hook_fallback_reasons(sandbox: &Sandbox, telemetry_enabled: bool) -> V
         );
     }
     reasons
+}
+
+struct CliRun {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_cli(
+    sandbox: &Sandbox,
+    working_dir: &Path,
+    args: &[&str],
+    explicit_config: Option<&Path>,
+) -> CliRun {
+    let mut command = sandbox.command("cli");
+    command
+        .current_dir(working_dir)
+        .env(CLI_ARGS_ENV, args.join("\n"));
+    if let Some(config) = explicit_config {
+        command.env("SCE_CONFIG_FILE", config);
+    }
+    let output = command
+        .spawn()
+        .expect("spawn cli")
+        .wait_with_output()
+        .expect("cli output");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "cli child failed: {stderr}");
+    CliRun {
+        success: stdout.contains(&format!("{CLI_SUCCESS_PREFIX}true")),
+        stdout,
+        stderr,
+    }
+}
+
+fn bound_repository(sandbox: &Sandbox) -> PathBuf {
+    let repository = git_repository_with_remote(
+        sandbox.dir.path(),
+        HEADERS_REPOSITORY,
+        "https://github.com/acme/bound-repo",
+    );
+    sandbox.seed();
+    let mut bind = sandbox.command("bind");
+    bind.current_dir(&repository);
+    wait_success("bind", bind.spawn().expect("spawn bind"));
+    repository
+}
+
+#[test]
+fn cli_launched_from_a_repository_subdirectory_honors_repository_policy() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.write_global_config(&serde_json::json!({
+        "auth": { "mode": "optional" },
+        "telemetry": { "enabled": true },
+    }));
+    let repository = bound_repository(&sandbox);
+    let nested = repository.join("src").join("module");
+    let repository_config = repository.join(".sce").join("config.json");
+
+    assert_headers_served(spawn_headers(&sandbox, &nested, None));
+    assert_eq!(
+        hook_fallback_reasons(&sandbox, &nested, None, "logs-consented"),
+        ["database_error"]
+    );
+
+    write_config_file(
+        &repository_config,
+        &serde_json::json!({ "telemetry": { "enabled": false } }),
+    );
+    assert_headers_unavailable(spawn_headers(&sandbox, &nested, None));
+    assert_eq!(
+        hook_fallback_reasons(&sandbox, &nested, None, "logs-repository-opt-out"),
+        ["disabled_by_config"]
+    );
+
+    write_config_file(
+        &repository_config,
+        &serde_json::json!({ "auth": { "mode": "disabled" } }),
+    );
+    let sync = run_cli(
+        &sandbox,
+        &nested,
+        &["sce", "sync", "--format", "json"],
+        None,
+    );
+    assert!(!sync.success, "{}", sync.stdout);
+    assert!(
+        sync.stderr.contains(AUTH_DISABLED_BY_REPOSITORY),
+        "{}",
+        sync.stderr
+    );
+    assert_headers_unavailable(spawn_headers(&sandbox, &nested, None));
+}
+
+#[test]
+fn explicit_config_cannot_enable_access_the_global_config_forbids() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    let repository = bound_repository(&sandbox);
+    let explicit = sandbox.dir.path().join("explicit-config.json");
+    write_config_file(
+        &explicit,
+        &serde_json::json!({
+            "auth": { "mode": "optional" },
+            "telemetry": { "enabled": true },
+        }),
+    );
+    assert_headers_served(spawn_headers(&sandbox, &repository, Some(&explicit)));
+
+    sandbox.write_global_config(&serde_json::json!({
+        "auth": { "mode": "disabled" },
+        "telemetry": { "enabled": false },
+    }));
+    assert_headers_unavailable(spawn_headers(&sandbox, &repository, Some(&explicit)));
+    assert_eq!(
+        hook_fallback_reasons(&sandbox, &repository, Some(&explicit), "logs-explicit"),
+        ["disabled_by_config"]
+    );
+    let sync = run_cli(
+        &sandbox,
+        &repository,
+        &["sce", "sync", "--format", "json"],
+        Some(&explicit),
+    );
+    assert!(!sync.success, "{}", sync.stdout);
+    assert!(
+        sync.stderr.contains(AUTH_DISABLED_BY_GLOBAL),
+        "{}",
+        sync.stderr
+    );
+
+    let show = run_cli(
+        &sandbox,
+        &repository,
+        &[
+            "sce",
+            "config",
+            "show",
+            "--config",
+            explicit.to_str().expect("utf-8 path"),
+            "--format",
+            "json",
+        ],
+        None,
+    );
+    assert!(show.success, "{}", show.stderr);
+    for expected in [
+        r#""state": "disabled""#,
+        r#""reason": "auth_disabled""#,
+        r#""config_source": "default_discovered_global""#,
+    ] {
+        assert!(
+            show.stdout.contains(expected),
+            "{expected}: {}",
+            show.stdout
+        );
+    }
 }
 
 #[test]
@@ -942,6 +1144,15 @@ async fn run_binding_child(role: &str) {
                 bind_repository_telemetry(repository_id, RepositoryBindingMode::Enroll)
                     .await
                     .expect("binding succeeds")
+            );
+        }
+        "cli" => {
+            let args = std::env::var(CLI_ARGS_ENV).expect("cli args");
+            let code = Box::pin(crate::app::run(args.split('\n').map(String::from))).await;
+            println!();
+            println!(
+                "{CLI_SUCCESS_PREFIX}{}",
+                code == std::process::ExitCode::SUCCESS
             );
         }
         "headers" => {

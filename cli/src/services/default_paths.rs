@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(crate) use roots::{resolve_sce_default_locations, resolve_state_data_root};
 
@@ -297,6 +297,19 @@ pub fn observability_log_dir() -> anyhow::Result<PathBuf> {
     Ok(sce_state_dir()?.join("logs"))
 }
 
+pub(crate) fn enclosing_repository_root(start: &Path) -> Option<&Path> {
+    enclosing_repository_root_with(start, Path::exists)
+}
+
+pub(crate) fn enclosing_repository_root_with(
+    start: &Path,
+    git_entry_exists: impl Fn(&Path) -> bool,
+) -> Option<&Path> {
+    start
+        .ancestors()
+        .find(|dir| git_entry_exists(&dir.join(repo_dir::GIT)))
+}
+
 fn sce_state_dir() -> anyhow::Result<PathBuf> {
     Ok(resolve_sce_default_locations()?
         .roots()
@@ -310,6 +323,7 @@ pub(crate) mod repo_dir {
     pub const CLAUDE: &str = ".claude";
     pub const PI: &str = ".pi";
     pub const CODEX: &str = ".codex";
+    pub const GIT: &str = ".git";
 }
 
 pub(crate) mod repo_file {

@@ -369,6 +369,7 @@ mod tests {
     #[test]
     fn setup_claude_telemetry_policy_follows_layered_config() {
         let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
         let global = dir.path().join("global.json");
         let local_dir = dir.path().join(".sce");
         fs::create_dir_all(&local_dir).unwrap();
