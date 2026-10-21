@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
-use crate::services::auth_command::{self, AuthFormat, LoginReport, TelemetryProvisioningResult};
+use crate::services::auth_command::{self, AuthFormat, LoginReport};
 use crate::services::config::{AuthMode, ResolvedAccessPolicy, ValueSource};
 use crate::services::error::{AuthPolicyConfigFile, CliError, UserError};
 use crate::services::lifecycle::{
@@ -23,6 +23,8 @@ const SAVED_ACCESS_SCOPE: &str = "applies to all repositories on this machine";
 const AUTH_LOGOUT_HINT_LINE: &str =
     "- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.";
 const GLOBAL_ACCESS_WRITE_REMEDIATION: &str = "No repository files were changed. Run 'sce config validate' to check the file, then rerun 'sce setup'.";
+const GLOBAL_ACCESS_SYMLINK_REMEDIATION: &str =
+    "No repository files were changed. Rerun 'sce setup' after updating the config source.";
 const SETUP_LOGIN_DISABLED_LINE: &str =
     "SCE login: skipped; SCE authentication is disabled by config.";
 const SETUP_LOGIN_NOT_REQUESTED_LINE: &str =
@@ -109,7 +111,6 @@ impl SetupCommand {
             .map_err(unexpected_failure)?;
             sections.push(setup_message);
 
-            let mut telemetry_issued = false;
             if let Some((access_save, auth_db_present)) = &interactive_access {
                 let (access_section, policy) = setup_access_report(
                     &repository_root,
@@ -124,12 +125,11 @@ impl SetupCommand {
                         auth_command::run_login_in(&repository_root, AuthFormat::Text)
                     })
                     .await?;
-                telemetry_issued = login_status.telemetry_issued();
                 sections.push(render_setup_login_section(&login_status));
             }
 
             if claude_telemetry_selected {
-                sections.push(claude_telemetry_report(&repository_root, telemetry_issued));
+                sections.push(claude_telemetry_report(&repository_root).await);
             }
         }
 
@@ -306,8 +306,12 @@ fn global_access_write_failure(
     global_config_path: &Path,
     source: &GlobalAccessPreferencesError,
 ) -> CliError {
+    let remediation = match source {
+        GlobalAccessPreferencesError::SymlinkManaged { .. } => GLOBAL_ACCESS_SYMLINK_REMEDIATION,
+        _ => GLOBAL_ACCESS_WRITE_REMEDIATION,
+    };
     CliError::runtime(anyhow::anyhow!(
-        "Failed to save SCE access preferences to the global SCE config '{}'.\n{source}\n{GLOBAL_ACCESS_WRITE_REMEDIATION}",
+        "Failed to save SCE access preferences to the global SCE config '{}'.\n{source}\n{remediation}",
         global_config_path.display()
     ))
 }
@@ -345,18 +349,6 @@ enum SetupLoginStatus {
     Skipped(SetupLoginSkip),
     Authenticated(LoginReport),
     Failed(UserError),
-}
-
-impl SetupLoginStatus {
-    fn telemetry_issued(&self) -> bool {
-        matches!(
-            self,
-            Self::Authenticated(LoginReport {
-                telemetry: TelemetryProvisioningResult::Issued,
-                ..
-            })
-        )
-    }
 }
 
 fn setup_login_action(
@@ -500,24 +492,29 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
     )
 }
 
-fn claude_telemetry_report(repository_root: &std::path::Path, telemetry_issued: bool) -> String {
+async fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
     let telemetry_enabled = config::resolve_auth_runtime_config(repository_root)
         .is_ok_and(|config| config.access_policy.telemetry_enabled());
 
     render_claude_telemetry_section(
         telemetry_enabled,
-        telemetry_issued,
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
+        || auth_command::repository_telemetry_authorized(repository_root),
     )
+    .await
 }
 
-fn render_claude_telemetry_section(
+async fn render_claude_telemetry_section<A, AF>(
     telemetry_enabled: bool,
-    telemetry_issued: bool,
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
-) -> String {
+    repository_authorized: A,
+) -> String
+where
+    A: FnOnce() -> AF,
+    AF: Future<Output = bool>,
+{
     use setup::claude_telemetry::{
         format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
     };
@@ -531,10 +528,10 @@ fn render_claude_telemetry_section(
             .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
-    let authentication_pending =
-        installed == ClaudeTelemetryInstallOutcome::Configured && !telemetry_issued;
+    let repository_ready =
+        installed == ClaudeTelemetryInstallOutcome::Configured && repository_authorized().await;
 
-    format_claude_telemetry_report(&installed, authentication_pending)
+    format_claude_telemetry_report(&installed, repository_ready)
 }
 
 fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
@@ -601,6 +598,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+    use crate::services::auth_command::TelemetryProvisioningResult;
     use crate::services::config::AuthMode;
     use crate::services::setup::{
         resolve_setup_dispatch, resolve_setup_request, ConcreteSetupTarget,
@@ -678,79 +676,99 @@ mod tests {
         .expect("dispatch should resolve")
     }
 
+    fn render_claude_telemetry(
+        telemetry_enabled: bool,
+        settings_path: &Path,
+        managed_settings_path: &Path,
+        repository_authorized: Option<bool>,
+    ) -> String {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(render_claude_telemetry_section(
+                telemetry_enabled,
+                Some(settings_path),
+                managed_settings_path,
+                || async move { repository_authorized.expect("readiness lookup must not run") },
+            ))
+    }
+
     fn run_claude_telemetry_stage(
         dispatch: Option<&SetupDispatch>,
         telemetry_enabled: bool,
         root: &Path,
     ) -> Option<String> {
         dispatch_targets_claude(dispatch).then(|| {
-            render_claude_telemetry_section(
+            render_claude_telemetry(
                 telemetry_enabled,
-                false,
-                Some(&root.join("settings.json")),
+                &root.join("settings.json"),
                 &root.join("managed.json"),
+                telemetry_enabled.then_some(false),
             )
         })
     }
 
-    #[test]
-    fn setup_claude_telemetry_reports_skip_without_repository_enrollment() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = dir.path().join("settings.json");
-        fs::write(&settings, r#"{"otelHeadersHelper":"my-helper"}"#).unwrap();
-
-        let report = render_claude_telemetry_section(
-            true,
-            false,
-            Some(&settings),
-            &dir.path().join("managed.json"),
-        );
-
-        assert!(report.contains("skipped"));
-        assert!(!report.contains("authentication pending"));
-    }
+    const CLAUDE_CONFIGURED_LINE: &str =
+        "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
+    const CLAUDE_NOT_READY_LINE: &str = "Claude telemetry: not ready for this repository; no valid SCE telemetry credential is authorized for it, so Claude will not export. Run 'sce auth login' in this repository with the SCE account it is enrolled under.";
 
     #[test]
-    fn setup_claude_telemetry_defers_repository_enrollment_to_auth_login() {
-        let dir = tempfile::tempdir().unwrap();
-
-        let report = render_claude_telemetry_section(
-            true,
-            false,
-            Some(&dir.path().join("settings.json")),
-            &dir.path().join("managed.json"),
-        );
-
-        assert!(report.contains("authentication pending"));
-    }
-
-    #[test]
-    fn setup_claude_telemetry_omits_the_pending_line_only_when_setup_login_issued_a_credential() {
-        for (login_status, pending) in [
-            (login_success(TelemetryProvisioningResult::Issued), false),
+    fn setup_claude_telemetry_readiness_follows_repository_authorization() {
+        let configured_not_ready = format!("{CLAUDE_CONFIGURED_LINE}\n{CLAUDE_NOT_READY_LINE}");
+        let cases = [
             (
-                login_success(TelemetryProvisioningResult::Unavailable),
+                "authorized repository",
                 true,
+                None,
+                Some(true),
+                CLAUDE_CONFIGURED_LINE,
             ),
-            (login_success(TelemetryProvisioningResult::Disabled), true),
-            (SetupLoginStatus::Skipped(SetupLoginSkip::Declined), true),
-            (SetupLoginStatus::Failed(UserError::UnexpectedFailure), true),
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-
-            let report = render_claude_telemetry_section(
+            (
+                "credential unavailable or repository unauthorized",
                 true,
-                login_status.telemetry_issued(),
-                Some(&dir.path().join("settings.json")),
+                None,
+                Some(false),
+                configured_not_ready.as_str(),
+            ),
+            (
+                "telemetry disabled skips lookup",
+                false,
+                None,
+                None,
+                CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE,
+            ),
+            (
+                "settings conflict skips lookup",
+                true,
+                Some(r#"{"otelHeadersHelper":"my-helper"}"#),
+                None,
+                "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.",
+            ),
+            (
+                "invalid settings skip lookup",
+                true,
+                Some("{not json"),
+                None,
+                "Claude telemetry: skipped; existing Claude settings could not be parsed and were left unchanged.",
+            ),
+        ];
+
+        for (name, telemetry_enabled, existing, authorized, expected) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.json");
+            if let Some(existing) = existing {
+                fs::write(&settings, existing).unwrap();
+            }
+
+            let report = render_claude_telemetry(
+                telemetry_enabled,
+                &settings,
                 &dir.path().join("managed.json"),
+                authorized,
             );
 
-            assert!(report.starts_with("Claude telemetry: configured"));
-            assert_eq!(
-                report.contains("authentication pending"),
-                pending,
-                "{login_status:?}"
-            );
+            assert_eq!(report, expected, "{name}");
+            assert!(!report.contains("Bearer"), "{name}");
         }
     }
 
@@ -809,7 +827,7 @@ mod tests {
         let report = run_claude_telemetry_stage(Some(&dispatch), true, dir.path()).unwrap();
         assert_eq!(
             report,
-            "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.\nClaude telemetry: authentication pending for this repository; run 'sce auth login' in this repository to start exporting."
+            format!("{CLAUDE_CONFIGURED_LINE}\n{CLAUDE_NOT_READY_LINE}")
         );
         assert_installed(dir.path());
         let parsed: Value =
@@ -1093,6 +1111,29 @@ mod tests {
         assert!(message.ends_with(GLOBAL_ACCESS_WRITE_REMEDIATION));
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
         assert!(!fixture.global.exists());
+        assert!(!fixture.repo.join("context").exists());
+        assert!(!fixture.repo.join(".sce").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_setup_aborts_before_repository_writes_when_the_global_config_is_a_symlink() {
+        let fixture = AccessFixture::new();
+        let target = fixture.global.with_file_name("managed.json");
+        let original = b"{\"log_level\": \"info\"}\n";
+        fs::write(&target, original).unwrap();
+        std::os::unix::fs::symlink(&target, &fixture.global).unwrap();
+
+        let error = fixture
+            .prepare(&FakePrompter::answering(AuthMode::Optional, true))
+            .expect_err("symlinked global config should abort setup");
+
+        let message = error.to_string();
+        assert!(message.contains("is a symlink and was left unchanged"));
+        assert!(message.ends_with(GLOBAL_ACCESS_SYMLINK_REMEDIATION));
+        assert!(!message.contains("sce config validate"));
+        assert_eq!(fs::read_link(&fixture.global).unwrap(), target);
+        assert_eq!(fs::read(&target).unwrap(), original);
         assert!(!fixture.repo.join("context").exists());
         assert!(!fixture.repo.join(".sce").exists());
     }
@@ -1436,7 +1477,6 @@ mod tests {
             })
             .unwrap();
             assert_eq!(status, login_success(TelemetryProvisioningResult::Issued));
-            assert!(status.telemetry_issued());
             assert_eq!(render_setup_login_section(&status), LOGIN_RENDERED);
         }
     }

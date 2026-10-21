@@ -177,7 +177,7 @@ No new non-interactive consent or mode flags are added. Unattended consent must 
    - under optional, run login if the user accepted;
    - under mandatory, run login.
    Login reads the policy written in step 4, so provisioning sees the new consent.
-9. Claude-native telemetry stage (existing gate). The "authentication pending" line is shown unless step 8 returned `TelemetryProvisioningResult::Issued`.
+9. Claude-native telemetry stage (existing gate). The "not ready for this repository" line is shown unless the repository has a valid, unexpired credential bound to the credential's identity (PR #339 review fix; this replaces the earlier `TelemetryProvisioningResult::Issued` gate).
 10. Report: an `SCE access` section with the saved values (or "unchanged"), the effective auth mode and telemetry state with reason from step 8's resolution, and the login outcome from the actual login result.
 
 Why this order:
@@ -224,8 +224,8 @@ Atomicity and recovery:
   - Validate: the existing setup command tests stay green, plus a dispatch test asserting `Proceed` carries no access values and `SetupLoginIntent::NotOffered` for every `SetupMode::NonInteractive` target.
 - [x] AC8: The setup report states the effective auth mode, the effective telemetry state with its reason (from re-resolution, not from the saved value), and the actual login outcome, and contains no token or credential value. `sce auth login` output stays byte-identical.
   - Validate: exact-output render tests for the `SCE access` section; the existing `auth_command` render tests stay green; a test asserting the login report text contains no `access_token` / `refresh_token` values.
-- [x] AC9: The Claude-native telemetry report omits the "authentication pending" line when this setup run's login issued a telemetry credential, and keeps it otherwise.
-  - Validate: `render_claude_telemetry_section` tests in `cli/src/services/setup/command.rs`.
+- [x] AC9: The Claude-native telemetry report omits the "not ready" line only when the repository is locally authorized (valid credential bound to this repository's identity), whether or not this run issued a credential. (Revised by the PR #339 review fix.)
+  - Validate: `render_claude_telemetry_section` tests in `cli/src/services/setup/command.rs`, `repository_readiness_lookup_fails_closed_unless_repository_is_authorized`, `repository_readiness_follows_binding_rather_than_credential_issuance`.
 
 ### Full validation
 
@@ -647,11 +647,14 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - [x] AC6: Rerun suppression and `--reconfigure` validation -> `persisted_answers_mark_prompts_suppressed_only_without_reconfigure`, `reconfigure_asks_every_persisted_prompt_with_the_persisted_defaults`, `reconfigure_keeps_the_lock_and_invalid_global_gates`, `reconfigure_request_rejects_every_non_interactive_combination`, `setup_reconfigure_parses_to_interactive_reconfigure_request`, `setup_reconfigure_with_a_target_fails_validation`, `setup_help_lists_the_reconfigure_flag` passed
 - [x] AC7: Non-interactive, hooks, and context-only runs are unchanged -> `non_interactive_targets_prompt_nothing_and_carry_no_access_values` and the existing setup command tests passed (107/107)
 - [x] AC8: Report states the effective policy and login outcome without secrets; `sce auth login` output unchanged -> `setup_access_section_renders_exact_lines`, `setup_login_section_renders_exact_skip_lines_without_credentials` (asserts no access or refresh token values), `setup_login_step_includes_login_text_for_mandatory_and_accepted_optional_login`, and the `auth_command` render tests passed
-- [x] AC9: The Claude "authentication pending" line follows this run's login -> `setup_claude_telemetry_omits_the_pending_line_only_when_setup_login_issued_a_credential`, `claude_telemetry_report_marks_authentication_pending_without_helper_name` passed
+- [x] AC9: The Claude readiness line follows repository authorization (revised by the PR #339 review fix) -> `setup_claude_telemetry_readiness_follows_repository_authorization`, `claude_telemetry_report_marks_unready_repository_without_helper_name`, `repository_readiness_lookup_fails_closed_unless_repository_is_authorized`, `repository_readiness_follows_binding_rather_than_credential_issuance` passed
 
 ### Failed checks and follow-ups
 
-- None.
+- PR #339 review fixes (2026-10-21):
+  - P1: the global config writer now refuses to replace a symlink-managed file (`GlobalAccessPreferencesError::SymlinkManaged`). Tests: `access_preferences_writer_refuses_to_replace_symlinked_global_config`, `access_preferences_writer_leaves_symlinked_global_config_alone_when_unchanged`, `interactive_setup_aborts_before_repository_writes_when_the_global_config_is_a_symlink`.
+  - P2: Claude readiness now checks the repository-scoped credential binding instead of `TelemetryProvisioningResult::Issued` (AC9 revised).
+  - Not addressed: the second P2 finding (optional login suppression when `auth.db` exists).
 
 ### Residual risks
 

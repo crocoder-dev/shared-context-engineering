@@ -155,16 +155,57 @@ where
     if !telemetry_enabled || destination_conflict {
         return Err(telemetry_headers_unavailable());
     }
-    let Some(working_dir) = working_dir.filter(|_| auth_db_probe()) else {
+    let Some(working_dir) = working_dir else {
         return Err(telemetry_headers_unavailable());
     };
-    let credential = run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
+    let credential = authorized_repository_credential_with(
+        working_dir,
+        auth_db_probe,
+        resolve_repository,
+        lookup,
+    )
+    .await;
+    render_telemetry_headers(Ok(credential))
+}
+
+pub(crate) async fn repository_telemetry_authorized(repository_root: &Path) -> bool {
+    authorized_repository_credential_with(
+        repository_root.to_path_buf(),
+        managed_telemetry::auth_db_present,
+        repository_id_for,
+        telemetry_credential_storage::load_repository_telemetry_credential,
+    )
+    .await
+    .is_some()
+}
+
+pub(crate) async fn authorized_repository_credential_with<P, R, L, Fut>(
+    working_dir: PathBuf,
+    auth_db_probe: P,
+    resolve_repository: R,
+    lookup: L,
+) -> Option<telemetry_credential_storage::TelemetryCredential>
+where
+    P: FnOnce() -> bool,
+    R: FnOnce(&Path) -> Option<String> + Send + 'static,
+    L: FnOnce(String) -> Fut + Send + 'static,
+    Fut: Future<
+            Output = Result<
+                Option<telemetry_credential_storage::TelemetryCredential>,
+                TokenStorageError,
+            >,
+        > + Send
+        + 'static,
+{
+    if !auth_db_probe() {
+        return None;
+    }
+    run_with_deadline(CREDENTIAL_LOOKUP_DEADLINE, async move {
         let repository_id = resolve_repository(&working_dir)?;
         lookup(repository_id).await.ok().flatten()
     })
     .await
-    .flatten();
-    render_telemetry_headers(Ok(credential))
+    .flatten()
 }
 
 pub(crate) fn render_telemetry_headers(
@@ -1105,6 +1146,83 @@ mod tests {
         .await
         .expect("authorized repository should render");
         assert_eq!(headers, r#"{"Authorization":"Bearer tok-scoped"}"#);
+    }
+
+    #[tokio::test]
+    async fn repository_readiness_lookup_fails_closed_unless_repository_is_authorized() {
+        enum Lookup {
+            Authorized,
+            Unauthorized,
+            AccessFailure,
+            Hangs,
+        }
+
+        let cases = [
+            (
+                "authorized repository",
+                true,
+                Some("repo-a"),
+                Lookup::Authorized,
+                true,
+            ),
+            (
+                "auth.db absent",
+                false,
+                Some("repo-a"),
+                Lookup::Authorized,
+                false,
+            ),
+            (
+                "missing repository identity",
+                true,
+                None,
+                Lookup::Authorized,
+                false,
+            ),
+            (
+                "missing, expired, or foreign-bound credential",
+                true,
+                Some("repo-a"),
+                Lookup::Unauthorized,
+                false,
+            ),
+            (
+                "non-interactive access failure",
+                true,
+                Some("repo-a"),
+                Lookup::AccessFailure,
+                false,
+            ),
+            ("lookup timeout", true, Some("repo-a"), Lookup::Hangs, false),
+        ];
+
+        for (case, auth_db, repository, lookup, expected) in cases {
+            let started = std::time::Instant::now();
+            let credential = authorized_repository_credential_with(
+                PathBuf::from("/workspace/repo"),
+                || auth_db,
+                move |dir: &Path| {
+                    assert_eq!(dir, Path::new("/workspace/repo"));
+                    repository.map(str::to_string)
+                },
+                move |repository_id: String| async move {
+                    assert_eq!(repository_id, "repo-a");
+                    match lookup {
+                        Lookup::Authorized => Ok(Some(telemetry_credential("tok-scoped"))),
+                        Lookup::Unauthorized => Ok(None),
+                        Lookup::AccessFailure => Err(storage_failure()),
+                        Lookup::Hangs => std::future::pending().await,
+                    }
+                },
+            )
+            .await;
+
+            assert_eq!(credential.is_some(), expected, "{case}");
+            assert!(
+                started.elapsed() < CREDENTIAL_LOOKUP_DEADLINE * 2,
+                "{case}: lookup exceeded deadline"
+            );
+        }
     }
 
     #[test]

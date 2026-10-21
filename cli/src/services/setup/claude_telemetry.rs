@@ -19,8 +19,8 @@ const MACOS_MANAGED_SETTINGS_PATH: &str =
 
 const CONFIGURED_LINE: &str =
     "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
-const AUTH_PENDING_LINE: &str =
-    "Claude telemetry: authentication pending for this repository; run 'sce auth login' in this repository to start exporting.";
+const NOT_READY_LINE: &str =
+    "Claude telemetry: not ready for this repository; no valid SCE telemetry credential is authorized for it, so Claude will not export. Run 'sce auth login' in this repository with the SCE account it is enrolled under.";
 const SKIPPED_HELPER_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.";
 const SKIPPED_DISABLED_LINE: &str =
@@ -92,13 +92,13 @@ pub(crate) fn install_claude_telemetry(
 
 pub(crate) fn format_claude_telemetry_report(
     outcome: &ClaudeTelemetryInstallOutcome,
-    authentication_pending: bool,
+    repository_ready: bool,
 ) -> String {
     match outcome {
-        ClaudeTelemetryInstallOutcome::Configured if authentication_pending => {
-            format!("{CONFIGURED_LINE}\n{AUTH_PENDING_LINE}")
+        ClaudeTelemetryInstallOutcome::Configured if repository_ready => {
+            CONFIGURED_LINE.to_string()
         }
-        ClaudeTelemetryInstallOutcome::Configured => CONFIGURED_LINE.to_string(),
+        ClaudeTelemetryInstallOutcome::Configured => format!("{CONFIGURED_LINE}\n{NOT_READY_LINE}"),
         ClaudeTelemetryInstallOutcome::SkippedConflict(reason) => {
             skipped_conflict_line(*reason).to_string()
         }
@@ -277,14 +277,14 @@ mod tests {
     }
 
     #[test]
-    fn claude_telemetry_report_marks_authentication_pending_without_helper_name() {
+    fn claude_telemetry_report_marks_unready_repository_without_helper_name() {
         let pending =
-            format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, true);
-        let ready =
             format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, false);
+        let ready =
+            format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, true);
 
-        assert!(pending.contains("authentication pending"));
-        assert!(!ready.contains("authentication pending"));
+        assert!(pending.contains("not ready for this repository"));
+        assert_eq!(ready, CONFIGURED_LINE);
         assert!(!pending.contains("telemetry-headers"));
     }
 }
