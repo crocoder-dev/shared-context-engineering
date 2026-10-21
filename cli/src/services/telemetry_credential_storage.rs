@@ -6,9 +6,9 @@ use base64::Engine;
 use serde::Deserialize;
 
 use crate::services::db::encryption_key::CredentialAccess;
-use crate::services::db::{DbSpec, EncryptedTursoDb};
+use crate::services::db::{DbSpec, EncryptedTursoDb, ExistingDbOpen};
 use crate::services::token_storage::{
-    open_existing_auth_db, open_or_create_auth_db, TokenStorageError,
+    open_existing_auth_db, open_existing_current_auth_db, open_or_create_auth_db, TokenStorageError,
 };
 
 const TELEMETRY_CREDENTIAL_ROW_ID: i64 = 1;
@@ -67,12 +67,59 @@ impl fmt::Debug for TelemetryCredential {
     }
 }
 
-impl TelemetryCredential {
-    fn is_valid_at(&self, now_unix_seconds: u64) -> bool {
-        !self.token.trim().is_empty()
-            && !self.accessor.trim().is_empty()
-            && self.identity.is_complete()
-            && self.expires_at_unix_seconds > now_unix_seconds
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TelemetryCredentialLookup {
+    Missing,
+    Expired,
+    Unusable,
+    Valid(TelemetryCredential),
+}
+
+impl TelemetryCredentialLookup {
+    pub fn into_valid(self) -> Option<TelemetryCredential> {
+        match self {
+            Self::Valid(credential) => Some(credential),
+            Self::Missing | Self::Expired | Self::Unusable => None,
+        }
+    }
+}
+
+struct StoredTelemetryCredential {
+    token: String,
+    accessor: String,
+    expires_at: i64,
+    identity: TelemetryIdentity,
+    session_access_token: Option<String>,
+}
+
+impl StoredTelemetryCredential {
+    fn classify(self, now_unix_seconds: u64) -> TelemetryCredentialLookup {
+        let Ok(expires_at_unix_seconds) = u64::try_from(self.expires_at) else {
+            return TelemetryCredentialLookup::Unusable;
+        };
+        if self.token.trim().is_empty()
+            || self.accessor.trim().is_empty()
+            || !self.identity.is_complete()
+        {
+            return TelemetryCredentialLookup::Unusable;
+        }
+        let owned = self
+            .session_access_token
+            .as_deref()
+            .and_then(TelemetryIdentity::from_access_token)
+            .is_some_and(|session_identity| session_identity == self.identity);
+        if !owned {
+            return TelemetryCredentialLookup::Unusable;
+        }
+        if expires_at_unix_seconds <= now_unix_seconds {
+            return TelemetryCredentialLookup::Expired;
+        }
+        TelemetryCredentialLookup::Valid(TelemetryCredential {
+            token: self.token,
+            accessor: self.accessor,
+            expires_at_unix_seconds,
+            identity: self.identity,
+        })
     }
 }
 
@@ -89,20 +136,23 @@ pub async fn save_telemetry_credential(
     save_with(open_or_create_auth_db().await?, credential).await
 }
 
-pub async fn load_telemetry_credential() -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let Some(db) = open_existing_auth_db(CredentialAccess::NonInteractive).await? else {
-        return Ok(None);
-    };
-    load_with(db, current_unix_timestamp_seconds()?).await
+pub async fn load_telemetry_credential() -> Result<TelemetryCredentialLookup, TokenStorageError> {
+    match open_existing_current_auth_db(CredentialAccess::NonInteractive).await? {
+        ExistingDbOpen::Missing => Ok(TelemetryCredentialLookup::Missing),
+        ExistingDbOpen::SchemaNotCurrent => Ok(TelemetryCredentialLookup::Unusable),
+        ExistingDbOpen::Open(db) => load_with(db, current_unix_timestamp_seconds()?).await,
+    }
 }
 
 pub async fn load_repository_telemetry_credential(
     repository_id: String,
 ) -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let Some(db) = open_existing_auth_db(CredentialAccess::NonInteractive).await? else {
-        return Ok(None);
-    };
-    load_for_repository_with(db, current_unix_timestamp_seconds()?, &repository_id).await
+    match open_existing_current_auth_db(CredentialAccess::NonInteractive).await? {
+        ExistingDbOpen::Missing | ExistingDbOpen::SchemaNotCurrent => Ok(None),
+        ExistingDbOpen::Open(db) => {
+            load_for_repository_with(db, current_unix_timestamp_seconds()?, &repository_id).await
+        }
+    }
 }
 
 pub async fn bind_repository_telemetry(
@@ -167,37 +217,25 @@ async fn save_with<M: DbSpec>(
 async fn load_with<M: DbSpec>(
     db: &EncryptedTursoDb<M>,
     now_unix_seconds: u64,
-) -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let rows: Vec<Option<(TelemetryCredential, String)>> = db
+) -> Result<TelemetryCredentialLookup, TokenStorageError> {
+    let rows: Vec<StoredTelemetryCredential> = db
         .query_map(
             "SELECT t.token, t.accessor, t.expires_at_unix_seconds, t.user_id, t.workspace_id, \
              a.access_token \
-             FROM telemetry_credentials t JOIN auth_credentials a ON a.id = ?2 \
+             FROM telemetry_credentials t LEFT JOIN auth_credentials a ON a.id = ?2 \
              WHERE t.id = ?1",
             (TELEMETRY_CREDENTIAL_ROW_ID, WORKOS_SESSION_ROW_ID),
             |row| {
-                let token: String = row.get(0)?;
-                let accessor: String = row.get(1)?;
-                let expires_at: i64 = row.get(2)?;
-                let user_id: String = row.get(3)?;
-                let workspace_id: String = row.get(4)?;
-                let session_access_token: String = row.get(5)?;
-                Ok(u64::try_from(expires_at)
-                    .ok()
-                    .map(|expires_at_unix_seconds| {
-                        (
-                            TelemetryCredential {
-                                token,
-                                accessor,
-                                expires_at_unix_seconds,
-                                identity: TelemetryIdentity {
-                                    user_id,
-                                    workspace_id,
-                                },
-                            },
-                            session_access_token,
-                        )
-                    }))
+                Ok(StoredTelemetryCredential {
+                    token: row.get(0)?,
+                    accessor: row.get(1)?,
+                    expires_at: row.get(2)?,
+                    identity: TelemetryIdentity {
+                        user_id: row.get(3)?,
+                        workspace_id: row.get(4)?,
+                    },
+                    session_access_token: row.get(5)?,
+                })
             },
         )
         .await
@@ -206,13 +244,9 @@ async fn load_with<M: DbSpec>(
     Ok(rows
         .into_iter()
         .next()
-        .flatten()
-        .filter(|(credential, session_access_token)| {
-            credential.is_valid_at(now_unix_seconds)
-                && TelemetryIdentity::from_access_token(session_access_token).as_ref()
-                    == Some(&credential.identity)
-        })
-        .map(|(credential, _)| credential))
+        .map_or(TelemetryCredentialLookup::Missing, |stored| {
+            stored.classify(now_unix_seconds)
+        }))
 }
 
 async fn load_for_repository_with<M: DbSpec>(
@@ -220,7 +254,7 @@ async fn load_for_repository_with<M: DbSpec>(
     now_unix_seconds: u64,
     repository_id: &str,
 ) -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let Some(credential) = load_with(db, now_unix_seconds).await? else {
+    let Some(credential) = load_with(db, now_unix_seconds).await?.into_valid() else {
         return Ok(None);
     };
     let authorized = repository_bound_to(db, repository_id, &credential.identity).await?;
@@ -260,7 +294,7 @@ async fn bind_repository_with<M: DbSpec>(
     if repository_id.trim().is_empty() {
         return Ok(false);
     }
-    let Some(credential) = load_with(db, now_unix_seconds).await? else {
+    let Some(credential) = load_with(db, now_unix_seconds).await?.into_valid() else {
         return Ok(false);
     };
     let sql = match mode {
@@ -472,66 +506,106 @@ mod tests {
         let loaded = load_with(&reopened, now())
             .await
             .expect("load should succeed");
-        assert_eq!(loaded, Some(saved));
+        assert_eq!(loaded, TelemetryCredentialLookup::Valid(saved));
     }
 
-    #[tokio::test]
-    async fn telemetry_credential_storage_does_not_return_expired_record() {
-        let (_guard, db) = open_db().await;
-        save_with(&db, &credential("tok-expired", now() - 10))
-            .await
-            .expect("save should succeed");
-
-        assert_eq!(
-            load_with(&db, now()).await.expect("load should succeed"),
-            None
-        );
-    }
-
-    #[tokio::test]
-    async fn telemetry_credential_storage_does_not_return_corrupt_record() {
-        let (_guard, db) = open_db().await;
+    async fn insert_raw_credential(db: &TestDb, token: &str, user_id: &str, expires_at: i64) {
         db.execute(
             "INSERT OR REPLACE INTO telemetry_credentials \
-             (id, token, accessor, expires_at_unix_seconds, stored_at_unix_seconds) \
-             VALUES (1, '', 'acc', ?1, 0)",
-            (i64::try_from(FAR_FUTURE).expect("fits"),),
+             (id, token, accessor, expires_at_unix_seconds, stored_at_unix_seconds, user_id, workspace_id) \
+             VALUES (1, ?1, 'acc', ?2, 0, ?3, ?4)",
+            (
+                token,
+                expires_at,
+                user_id,
+                if user_id.is_empty() { "" } else { WORKSPACE_A },
+            ),
         )
         .await
-        .expect("empty token row should insert");
-        assert_eq!(
-            load_with(&db, now()).await.expect("load should succeed"),
-            None
-        );
+        .expect("raw telemetry row should insert");
+    }
 
-        db.execute(
-            "INSERT OR REPLACE INTO telemetry_credentials \
-             (id, token, accessor, expires_at_unix_seconds, stored_at_unix_seconds) \
-             VALUES (1, 'tok', 'acc', -5, 0)",
-            (),
-        )
-        .await
-        .expect("negative expiry row should insert");
-        assert_eq!(
-            load_with(&db, now()).await.expect("load should succeed"),
-            None
-        );
+    #[derive(Clone, Copy, Debug)]
+    enum StoredState {
+        NoRow,
+        Valid,
+        Expired,
+        NoWorkosSession,
+        IdentityMismatch,
+        LegacyIdentityless,
+        EmptyToken,
+        NegativeExpiry,
     }
 
     #[tokio::test]
-    async fn telemetry_credential_is_rejected_without_owning_workos_session() {
+    async fn telemetry_credential_lookup_classifies_auth_db_states() {
+        let far_future = i64::try_from(FAR_FUTURE).expect("fits");
         let (_guard, db) = open_db().await;
-        save_with(&db, &credential("tok-orphan", FAR_FUTURE))
-            .await
-            .expect("save should succeed");
-        db.execute("DELETE FROM auth_credentials", ())
-            .await
-            .expect("workos row should be cleared");
-
-        assert_eq!(
-            load_with(&db, now()).await.expect("load should succeed"),
-            None
-        );
+        for (state, expected) in [
+            (StoredState::NoRow, TelemetryCredentialLookup::Missing),
+            (
+                StoredState::Valid,
+                TelemetryCredentialLookup::Valid(credential("tok-valid", FAR_FUTURE)),
+            ),
+            (StoredState::Expired, TelemetryCredentialLookup::Expired),
+            (
+                StoredState::NoWorkosSession,
+                TelemetryCredentialLookup::Unusable,
+            ),
+            (
+                StoredState::IdentityMismatch,
+                TelemetryCredentialLookup::Unusable,
+            ),
+            (
+                StoredState::LegacyIdentityless,
+                TelemetryCredentialLookup::Unusable,
+            ),
+            (StoredState::EmptyToken, TelemetryCredentialLookup::Unusable),
+            (
+                StoredState::NegativeExpiry,
+                TelemetryCredentialLookup::Unusable,
+            ),
+        ] {
+            delete_with(&db).await.expect("delete should succeed");
+            seed_session(&db, USER_A, WORKSPACE_A).await;
+            match state {
+                StoredState::NoRow => {}
+                StoredState::Valid => save_with(&db, &credential("tok-valid", FAR_FUTURE))
+                    .await
+                    .expect("save should succeed"),
+                StoredState::Expired => save_with(&db, &credential("tok-expired", now() - 10))
+                    .await
+                    .expect("save should succeed"),
+                StoredState::NoWorkosSession => {
+                    save_with(&db, &credential("tok-orphan", FAR_FUTURE))
+                        .await
+                        .expect("save should succeed");
+                    db.execute("DELETE FROM auth_credentials", ())
+                        .await
+                        .expect("workos row should be cleared");
+                }
+                StoredState::IdentityMismatch => {
+                    save_with(&db, &credential("tok-a", FAR_FUTURE))
+                        .await
+                        .expect("save should succeed");
+                    seed_session(&db, USER_B, WORKSPACE_A).await;
+                }
+                StoredState::LegacyIdentityless => {
+                    insert_raw_credential(&db, "tok-legacy", "", far_future).await;
+                }
+                StoredState::EmptyToken => {
+                    insert_raw_credential(&db, "", USER_A, far_future).await;
+                }
+                StoredState::NegativeExpiry => {
+                    insert_raw_credential(&db, "tok", USER_A, -5).await;
+                }
+            }
+            assert_eq!(
+                load_with(&db, now()).await.expect("load should succeed"),
+                expected,
+                "{state:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -564,15 +638,23 @@ mod tests {
         save_with(&db, &credential("tok-first", FAR_FUTURE))
             .await
             .expect("save should succeed");
-        let first = render_telemetry_headers(load_with(&db, now()).await)
-            .expect("stored credential should render");
+        let first = render_telemetry_headers(
+            load_with(&db, now())
+                .await
+                .map(TelemetryCredentialLookup::into_valid),
+        )
+        .expect("stored credential should render");
         assert_eq!(first, r#"{"Authorization":"Bearer tok-first"}"#);
 
         save_with(&db, &credential("tok-second", FAR_FUTURE))
             .await
             .expect("replacement save should succeed");
-        let second = render_telemetry_headers(load_with(&db, now()).await)
-            .expect("replacement should render");
+        let second = render_telemetry_headers(
+            load_with(&db, now())
+                .await
+                .map(TelemetryCredentialLookup::into_valid),
+        )
+        .expect("replacement should render");
         assert_eq!(second, r#"{"Authorization":"Bearer tok-second"}"#);
     }
 
@@ -581,14 +663,22 @@ mod tests {
         use crate::services::auth_command::render_telemetry_headers;
 
         let (_guard, db) = open_db().await;
-        let missing = render_telemetry_headers(load_with(&db, now()).await)
-            .expect_err("missing credential should fail");
+        let missing = render_telemetry_headers(
+            load_with(&db, now())
+                .await
+                .map(TelemetryCredentialLookup::into_valid),
+        )
+        .expect_err("missing credential should fail");
 
         save_with(&db, &credential("tok-expired", now() - 10))
             .await
             .expect("save should succeed");
-        let expired = render_telemetry_headers(load_with(&db, now()).await)
-            .expect_err("expired credential should fail");
+        let expired = render_telemetry_headers(
+            load_with(&db, now())
+                .await
+                .map(TelemetryCredentialLookup::into_valid),
+        )
+        .expect_err("expired credential should fail");
 
         db.execute(
             "INSERT OR REPLACE INTO telemetry_credentials \
@@ -598,8 +688,12 @@ mod tests {
         )
         .await
         .expect("malformed row should insert");
-        let malformed = render_telemetry_headers(load_with(&db, now()).await)
-            .expect_err("malformed credential should fail");
+        let malformed = render_telemetry_headers(
+            load_with(&db, now())
+                .await
+                .map(TelemetryCredentialLookup::into_valid),
+        )
+        .expect_err("malformed credential should fail");
 
         for error in [missing, expired, malformed] {
             assert_eq!(error.class().exit_code(), 4);
@@ -667,6 +761,7 @@ mod tests {
         let loaded = load_with(&db, now())
             .await
             .expect("load should succeed")
+            .into_valid()
             .expect("one valid record should exist");
         assert!(loaded.token.starts_with("tok-"));
         assert_eq!(loaded.accessor, format!("accessor-{}", loaded.token));
@@ -700,7 +795,7 @@ mod tests {
             seed_session(&db, user_id, workspace_id).await;
             assert_eq!(
                 load_with(&db, now()).await.expect("load should succeed"),
-                None
+                TelemetryCredentialLookup::Unusable
             );
         }
 
@@ -709,6 +804,7 @@ mod tests {
             load_with(&db, now())
                 .await
                 .expect("load should succeed")
+                .into_valid()
                 .map(|credential| credential.token),
             Some("tok-a".to_string())
         );
@@ -728,7 +824,7 @@ mod tests {
 
         assert_eq!(
             load_with(&db, now()).await.expect("load should succeed"),
-            None
+            TelemetryCredentialLookup::Unusable
         );
         assert!(
             !bind_repository_with(&db, now(), REPOSITORY_A, RepositoryBindingMode::Enroll)
@@ -869,7 +965,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             load_with(&db, now()).await.expect("load should succeed"),
-            None
+            TelemetryCredentialLookup::Missing
         );
     }
 

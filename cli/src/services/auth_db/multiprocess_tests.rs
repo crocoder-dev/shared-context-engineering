@@ -23,13 +23,15 @@ use crate::services::managed_telemetry::claude_helper::tests::git_repository_wit
 use crate::services::managed_telemetry::trace_export::tests::{
     capture_requests_until, loopback_hook_telemetry, trace_spans,
 };
-use crate::services::managed_telemetry::trace_export::ClaudeHookCommand;
-use crate::services::managed_telemetry::{inspect_health, ManagedTelemetryHealth};
+use crate::services::managed_telemetry::trace_export::{ClaudeHookCommand, ManagedSpanKind};
+use crate::services::managed_telemetry::{
+    inspect_health, ManagedTelemetryHealth, RuntimeTelemetry, TelemetryFallbackReason,
+};
 use crate::services::observability::traits::{NoopLogger, Telemetry};
 use crate::services::telemetry_credential_storage::{
-    bind_repository_telemetry, load_repository_telemetry_credential, load_telemetry_credential,
-    save_telemetry_credential, test_access_token, RepositoryBindingMode, TelemetryCredential,
-    TelemetryIdentity,
+    bind_repository_telemetry, delete_telemetry_credential, load_repository_telemetry_credential,
+    load_telemetry_credential, save_telemetry_credential, test_access_token, RepositoryBindingMode,
+    TelemetryCredential, TelemetryCredentialLookup, TelemetryIdentity,
 };
 
 const CHILD_TEST: &str = "services::auth_db::multiprocess_tests::auth_db_child_process";
@@ -44,8 +46,18 @@ const WORKSPACE_ID: &str = "workspace_mp";
 const READY: &str = "SCE_AUTH_DB_CHILD_READY";
 const TOKEN_PREFIX: &str = "SCE_AUTH_DB_CHILD_TOKEN=";
 const HEALTH_PREFIX: &str = "SCE_AUTH_DB_CHILD_TELEMETRY_HEALTH=";
+const HOOK_TELEMETRY_PREFIX: &str = "SCE_AUTH_DB_CHILD_HOOK_TELEMETRY=";
+const HOOK_CREDENTIAL_VALID: &str = "credential_valid";
+const LEGACY_READINESS_MARKER: &str = "telemetry-ready.json";
+const LEGACY_READINESS_MARKER_CASES: [(&str, Option<&[u8]>); 4] = [
+    ("absent", None),
+    ("valid", Some(br#"{"expires_at_unix_seconds":4102444800}"#)),
+    ("expired", Some(br#"{"expires_at_unix_seconds":1}"#)),
+    ("malformed", Some(b"not json")),
+];
 const CONCURRENT_PROCESSES: usize = 32;
 const CONCURRENT_MIGRATORS: usize = 4;
+const CONCURRENT_LOOKUPS: usize = 8;
 const CHILD_KILL_AFTER: Duration = Duration::from_mins(1);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FAR_FUTURE: u64 = 4_102_444_800;
@@ -463,6 +475,27 @@ fn telemetry_health(sandbox: &Sandbox, secret: &str) -> String {
     health.into_iter().next().expect("one health line")
 }
 
+fn hook_telemetry(sandbox: &Sandbox) -> String {
+    let stdout = sandbox.run("hook-resolve");
+    let resolved = prefixed_lines(&stdout, HOOK_TELEMETRY_PREFIX);
+    assert_eq!(resolved.len(), 1, "{stdout}");
+    resolved
+        .into_iter()
+        .next()
+        .expect("one hook telemetry line")
+}
+
+fn write_legacy_readiness_marker(sandbox: &Sandbox, marker: Option<&[u8]>) -> PathBuf {
+    let path = sandbox.sce_state_dir().join(LEGACY_READINESS_MARKER);
+    match marker {
+        Some(bytes) => std::fs::write(&path, bytes).expect("legacy marker"),
+        None => {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    path
+}
+
 #[test]
 fn doctor_telemetry_health_on_fresh_state_resolves_no_key_and_creates_no_auth_db() {
     let _fan_out = serialize_fan_out();
@@ -476,23 +509,113 @@ fn doctor_telemetry_health_classifies_real_auth_db_states_without_mutating_them(
     let _fan_out = serialize_fan_out();
     let sandbox = Sandbox::new();
     sandbox.seed();
-    let state = sandbox.sce_state_dir();
-    let auth_db = std::fs::read(state.join("auth.db")).expect("seeded auth DB");
-    let readiness = state.join("telemetry-ready.json");
+    let auth_db = sandbox.sce_state_dir().join("auth.db");
+    for (case, mutation, secret, expected) in [
+        ("valid", None, TEST_SECRET, "healthy"),
+        ("wrong key", None, WRONG_SECRET, "database_error"),
+        ("missing key", None, "", "database_error"),
+        (
+            "expired",
+            Some("seed-expired-credential"),
+            TEST_SECRET,
+            "credential_expired",
+        ),
+        (
+            "no telemetry row",
+            Some("delete-telemetry-credential"),
+            TEST_SECRET,
+            "not_configured",
+        ),
+    ] {
+        if let Some(role) = mutation {
+            sandbox.run(role);
+        }
+        let before = std::fs::read(&auth_db).expect("auth DB");
+        assert_eq!(telemetry_health(&sandbox, secret), expected, "{case}");
+        assert_eq!(std::fs::read(&auth_db).expect("auth DB"), before, "{case}");
+    }
+}
 
+#[test]
+fn valid_credential_without_readiness_marker_resolves_managed_telemetry_and_headers() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    let bound = git_repository_with_remote(
+        sandbox.dir.path(),
+        HEADERS_REPOSITORY,
+        "https://github.com/acme/bound-repo",
+    );
+    sandbox.seed();
+    let mut bind = sandbox.command("bind");
+    bind.current_dir(&bound);
+    wait_success("bind", bind.spawn().expect("spawn bind"));
+    let marker = write_legacy_readiness_marker(&sandbox, None);
+    assert!(!marker.exists());
+
+    assert_eq!(hook_telemetry(&sandbox), HOOK_CREDENTIAL_VALID);
     assert_eq!(telemetry_health(&sandbox, TEST_SECRET), "healthy");
-    assert_eq!(telemetry_health(&sandbox, WRONG_SECRET), "database_error");
-    assert_eq!(telemetry_health(&sandbox, ""), "database_error");
-    assert_eq!(
-        std::fs::read(state.join("auth.db")).expect("auth DB"),
-        auth_db
+    let enabled = headers_policy_config(&sandbox, true);
+    assert_headers_served(spawn_headers(&sandbox, &bound, Some(&enabled)));
+    assert!(!marker.exists());
+}
+
+#[test]
+fn logout_then_lookup_reports_not_configured() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.seed();
+    assert_eq!(telemetry_health(&sandbox, TEST_SECRET), "healthy");
+
+    let logout = run_cli(
+        &sandbox,
+        sandbox.dir.path(),
+        &["sce", "auth", "logout", "--format", "json"],
+        None,
+    );
+    assert!(logout.success, "{}{}", logout.stdout, logout.stderr);
+    assert!(
+        logout.stdout.contains("\"credentials_removed\": true"),
+        "{}",
+        logout.stdout
     );
 
-    std::fs::write(&readiness, br#"{"expires_at_unix_seconds":1}"#).expect("expire readiness");
-    assert_eq!(telemetry_health(&sandbox, ""), "credential_expired");
-    std::fs::remove_file(&readiness).expect("remove readiness");
-    assert_eq!(telemetry_health(&sandbox, ""), "not_configured");
-    assert_eq!(read_token(&sandbox.run("read")), Some(TOKEN));
+    assert!(sandbox.sce_state_dir().join("auth.db").is_file());
+    assert_eq!(telemetry_health(&sandbox, TEST_SECRET), "not_configured");
+    assert_eq!(hook_telemetry(&sandbox), "not_configured");
+    assert!(!sandbox
+        .sce_state_dir()
+        .join(LEGACY_READINESS_MARKER)
+        .exists());
+}
+
+#[test]
+fn legacy_readiness_marker_is_ignored() {
+    let _fan_out = serialize_fan_out();
+    for (credential_case, delete_credential, expected_health, expected_hook) in [
+        ("valid credential", false, "healthy", HOOK_CREDENTIAL_VALID),
+        ("no credential", true, "not_configured", "not_configured"),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.seed();
+        if delete_credential {
+            sandbox.run("delete-telemetry-credential");
+        }
+        for (marker_case, marker) in LEGACY_READINESS_MARKER_CASES {
+            let case = format!("{credential_case}, {marker_case} marker");
+            let path = write_legacy_readiness_marker(&sandbox, marker);
+            assert_eq!(
+                telemetry_health(&sandbox, TEST_SECRET),
+                expected_health,
+                "{case}"
+            );
+            assert_eq!(hook_telemetry(&sandbox), expected_hook, "{case}");
+            assert_eq!(
+                std::fs::read(&path).ok().as_deref(),
+                marker,
+                "{case}: marker bytes changed"
+            );
+        }
+    }
 }
 
 #[test]
@@ -508,6 +631,31 @@ fn concurrent_migration_of_schemaless_db_applies_each_migration_once() {
         wait_success("init", child);
     }
     sandbox.run("verify-schema");
+}
+
+#[test]
+fn readiness_lookup_never_migrates_outdated_auth_db() {
+    let _fan_out = serialize_fan_out();
+    let sandbox = Sandbox::new();
+    sandbox.run("create-outdated");
+    let auth_db = sandbox.sce_state_dir().join("auth.db");
+    let before = std::fs::read(&auth_db).expect("outdated auth DB");
+
+    let lookups = (0..CONCURRENT_LOOKUPS)
+        .map(|_| {
+            sandbox
+                .command("lookup-outdated")
+                .spawn()
+                .expect("spawn lookup")
+        })
+        .collect::<Vec<_>>();
+    for child in lookups {
+        wait_success("lookup-outdated", child);
+    }
+
+    assert_eq!(std::fs::read(&auth_db).expect("auth DB"), before);
+    sandbox.run("verify-outdated");
+    sandbox.run("lookup-then-migrate");
 }
 
 #[test]
@@ -869,7 +1017,6 @@ fn claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential()
     sandbox.seed();
     let state = sandbox.sce_state_dir();
     let auth_db = std::fs::read(state.join("auth.db")).expect("seeded auth DB");
-    assert!(state.join("telemetry-ready.json").is_file());
 
     assert_eq!(
         policy_hook_fallback_reasons(&sandbox, false),
@@ -1051,6 +1198,7 @@ async fn auth_db_child_process() {
             let credential = load_telemetry_credential()
                 .await
                 .expect("credential lookup succeeds")
+                .into_valid()
                 .expect("credential present");
             println!("{TOKEN_PREFIX}{}", credential.token);
         }
@@ -1067,7 +1215,7 @@ async fn auth_db_child_process() {
                 load_telemetry_credential()
                     .await
                     .expect("missing auth DB is not an error"),
-                None
+                TelemetryCredentialLookup::Missing
             );
             assert!(!auth_db_path().expect("auth DB path").exists());
         }
@@ -1082,6 +1230,9 @@ async fn auth_db_child_process() {
                 .expect("setup needs no auth DB key");
             assert!(path.parent().expect("auth DB parent").is_dir());
             assert_eq!(std::fs::read(&path).ok(), before);
+        }
+        "create-outdated" | "lookup-outdated" | "verify-outdated" | "lookup-then-migrate" => {
+            run_outdated_schema_child(&role).await;
         }
         "create-schemaless" => {
             let db = EncryptedTursoDb::<SchemalessAuthDbSpec>::new()
@@ -1134,8 +1285,44 @@ async fn run_binding_child(role: &str) {
                 load_telemetry_credential()
                     .await
                     .expect("missing auth DB is not an error"),
-                None
+                TelemetryCredentialLookup::Missing
             );
+        }
+        "hook-resolve" => {
+            let (telemetry, fallback) = RuntimeTelemetry::resolve_when_enabled(
+                true,
+                load_telemetry_credential(),
+                ManagedSpanKind::ClaudeHook,
+            )
+            .await;
+            let label = match (&telemetry, fallback) {
+                (RuntimeTelemetry::Managed(_), None) => HOOK_CREDENTIAL_VALID,
+                (_, Some(fallback))
+                    if fallback.reason == TelemetryFallbackReason::ExporterInitFailed =>
+                {
+                    HOOK_CREDENTIAL_VALID
+                }
+                (_, Some(fallback)) => fallback.reason.as_str(),
+                (RuntimeTelemetry::Noop(_), None) => "noop",
+            };
+            telemetry.shutdown().await;
+            println!("{HOOK_TELEMETRY_PREFIX}{label}");
+        }
+        "seed-expired-credential" => save_telemetry_credential(&TelemetryCredential {
+            token: TOKEN.to_string(),
+            accessor: "accessor-multiprocess".to_string(),
+            expires_at_unix_seconds: 1,
+            identity: TelemetryIdentity {
+                user_id: USER_ID.to_string(),
+                workspace_id: WORKSPACE_ID.to_string(),
+            },
+        })
+        .await
+        .expect("expired telemetry credential seeds"),
+        "delete-telemetry-credential" => {
+            assert!(delete_telemetry_credential()
+                .await
+                .expect("telemetry credential deletes"));
         }
         "bind" => {
             let repository_id = repository_id_for(&std::env::current_dir().expect("cwd"))
@@ -1208,7 +1395,6 @@ async fn seed() {
     })
     .await
     .expect("telemetry credential seeds");
-    crate::services::telemetry_readiness::mark_ready(FAR_FUTURE).expect("readiness seeds");
 }
 
 fn writer_rows() -> Vec<String> {
@@ -1292,6 +1478,47 @@ async fn applied_migrations<M: DbSpec>(db: &EncryptedTursoDb<M>) -> Vec<String> 
     })
     .await
     .expect("migration ids")
+}
+
+async fn run_outdated_schema_child(role: &str) {
+    match role {
+        "create-outdated" | "verify-outdated" => {
+            let db = EncryptedTursoDb::<PreBindingAuthDbSpec>::new()
+                .await
+                .expect("pre-binding schema opens");
+            assert_eq!(applied_migrations(&db).await.len(), PRE_BINDING_MIGRATIONS);
+        }
+        "lookup-outdated" => assert_outdated_lookups_are_unusable().await,
+        "lookup-then-migrate" => {
+            assert_outdated_lookups_are_unusable().await;
+            let db = crate::services::token_storage::open_or_create_auth_db()
+                .await
+                .expect("interactive open migrates outdated auth DB");
+            assert_eq!(applied_migrations(db).await.len(), expected_migrations());
+            assert_eq!(
+                load_telemetry_credential()
+                    .await
+                    .expect("lookup after migration"),
+                TelemetryCredentialLookup::Missing
+            );
+        }
+        other => panic!("unknown outdated-schema child role: {other}"),
+    }
+}
+
+async fn assert_outdated_lookups_are_unusable() {
+    assert_eq!(
+        load_telemetry_credential()
+            .await
+            .expect("outdated auth DB lookup is not an error"),
+        TelemetryCredentialLookup::Unusable
+    );
+    assert_eq!(
+        load_repository_telemetry_credential(HEADERS_REPOSITORY.to_string())
+            .await
+            .expect("outdated auth DB repository lookup is not an error"),
+        None
+    );
 }
 
 async fn upgrade_outdated_schema() {
