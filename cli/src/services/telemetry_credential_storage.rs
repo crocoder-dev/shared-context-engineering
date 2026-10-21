@@ -6,9 +6,9 @@ use base64::Engine;
 use serde::Deserialize;
 
 use crate::services::db::encryption_key::CredentialAccess;
-use crate::services::db::{DbSpec, EncryptedTursoDb};
+use crate::services::db::{DbSpec, EncryptedTursoDb, ExistingDbOpen};
 use crate::services::token_storage::{
-    open_existing_auth_db, open_or_create_auth_db, TokenStorageError,
+    open_existing_auth_db, open_existing_current_auth_db, open_or_create_auth_db, TokenStorageError,
 };
 
 const TELEMETRY_CREDENTIAL_ROW_ID: i64 = 1;
@@ -137,19 +137,22 @@ pub async fn save_telemetry_credential(
 }
 
 pub async fn load_telemetry_credential() -> Result<TelemetryCredentialLookup, TokenStorageError> {
-    let Some(db) = open_existing_auth_db(CredentialAccess::NonInteractive).await? else {
-        return Ok(TelemetryCredentialLookup::Missing);
-    };
-    load_with(db, current_unix_timestamp_seconds()?).await
+    match open_existing_current_auth_db(CredentialAccess::NonInteractive).await? {
+        ExistingDbOpen::Missing => Ok(TelemetryCredentialLookup::Missing),
+        ExistingDbOpen::SchemaNotCurrent => Ok(TelemetryCredentialLookup::Unusable),
+        ExistingDbOpen::Open(db) => load_with(db, current_unix_timestamp_seconds()?).await,
+    }
 }
 
 pub async fn load_repository_telemetry_credential(
     repository_id: String,
 ) -> Result<Option<TelemetryCredential>, TokenStorageError> {
-    let Some(db) = open_existing_auth_db(CredentialAccess::NonInteractive).await? else {
-        return Ok(None);
-    };
-    load_for_repository_with(db, current_unix_timestamp_seconds()?, &repository_id).await
+    match open_existing_current_auth_db(CredentialAccess::NonInteractive).await? {
+        ExistingDbOpen::Missing | ExistingDbOpen::SchemaNotCurrent => Ok(None),
+        ExistingDbOpen::Open(db) => {
+            load_for_repository_with(db, current_unix_timestamp_seconds()?, &repository_id).await
+        }
+    }
 }
 
 pub async fn bind_repository_telemetry(

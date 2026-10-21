@@ -936,6 +936,12 @@ pub struct EncryptedTursoDb<M: DbSpec> {
     _open_lock: fs::File,
 }
 
+pub enum ExistingDbOpen<T> {
+    Missing,
+    SchemaNotCurrent,
+    Open(T),
+}
+
 impl<M: DbSpec> TursoDb<M> {
     /// Open or create the database at the spec-provided canonical path.
     ///
@@ -1431,9 +1437,57 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             .map(Some)
     }
 
+    pub async fn open_existing_current_at(
+        db_path: impl AsRef<Path>,
+        access: encryption_key::CredentialAccess,
+    ) -> Result<ExistingDbOpen<Self>> {
+        let db_name = M::db_name();
+        let db_path = db_path.as_ref();
+        let Some(open_lock) = open_lock::open_lock_file(db_path, false)? else {
+            return Ok(ExistingDbOpen::Missing);
+        };
+        let encryption_key = resolve_encryption_key(db_path, db_name, access).await?;
+        let db = Box::pin(Self::connect_with_retry(
+            db_path,
+            &encryption_key,
+            open_lock,
+        ))
+        .await?;
+        if db
+            .core
+            .has_pending_migrations()
+            .await
+            .with_context(|| format!("failed to check {db_name} schema readiness"))?
+        {
+            return Ok(ExistingDbOpen::SchemaNotCurrent);
+        }
+        Ok(ExistingDbOpen::Open(db))
+    }
+
     async fn open_locked(
         db_path: PathBuf,
         encryption_key: String,
+        open_lock: fs::File,
+    ) -> Result<Self> {
+        let db_name = M::db_name();
+        let mut db = Box::pin(Self::connect_with_retry(
+            &db_path,
+            &encryption_key,
+            open_lock,
+        ))
+        .await?;
+
+        db.core
+            .ensure_migrations_current()
+            .await
+            .with_context(|| format!("failed to run {db_name} migrations"))?;
+
+        Ok(db)
+    }
+
+    async fn connect_with_retry(
+        db_path: &Path,
+        encryption_key: &str,
         open_lock: fs::File,
     ) -> Result<Self> {
         let db_name = M::db_name();
@@ -1449,7 +1503,7 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             CONNECTION_OPEN_RETRY_HINT,
             |_| async {
                 let attempt =
-                    Self::connect_locked(&db_path, &encryption_key, &open_lock, busy_timeout).await;
+                    Self::connect_locked(db_path, encryption_key, &open_lock, busy_timeout).await;
                 last_attempt_locked.store(
                     attempt.as_ref().is_err_and(is_database_lock_conflict),
                     Ordering::Relaxed,
@@ -1466,17 +1520,10 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
             }
         })?;
 
-        let mut db = Self {
+        Ok(Self {
             core: TursoConnectionCore::new(conn),
             _open_lock: open_lock,
-        };
-
-        db.core
-            .ensure_migrations_current()
-            .await
-            .with_context(|| format!("failed to run {db_name} migrations"))?;
-
-        Ok(db)
+        })
     }
 
     async fn connect_locked(
