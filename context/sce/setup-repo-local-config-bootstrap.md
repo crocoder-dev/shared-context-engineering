@@ -25,7 +25,8 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
   - `Log in to SCE now?` (`Confirm`; default Yes). It is offered only when the prospective mode is `optional`, the effective mode is not `mandatory`, and either an access prompt was asked in this run or no `auth.db` file exists.
   - A repository or explicit (`--config` / `SCE_CONFIG_FILE`) `auth.mode: disabled` skips all three prompts. Cancelling any of them is the standard setup cancellation.
   - Inputs are read without credential access: the resolved access policy, the global user config file, and the presence of the `auth.db` file.
-  - The answers are carried on the dispatch result (`auth_mode`, `telemetry_enabled`, and a `SetupLoginIntent` of `NotOffered | Declined | Requested`). They are not yet written to the global config or acted on by a login step.
+  - The answers are carried on the dispatch result (`auth_mode`, `telemetry_enabled`, and a `SetupLoginIntent` of `NotOffered | Declined | Requested`). Only answers given in this run are carried; a prompt suppressed by a persisted value carries `None`. The login intent is not yet acted on by a login step.
+  - The answers are saved to the global user config before any repository write (see [Global access preferences](#global-access-preferences)).
   - Non-interactive, hooks-only, and context-only setup never read these inputs or prompt.
 - The bootstrap writes the canonical JSON payload with the versioned schema declaration and explicit opt-ins for both setup-controlled behaviors: `{"$schema": "https://sce.crocoder.dev/v<version>/config.json", "agent_trace": {"auto_sync": true}, "policies": {"attribution_hooks": {"enabled": true}}}` (where `<version>` is the CLI release version, with a trailing newline).
 - If `.sce/config.json` already exists, the bootstrap step returns `Ok(())` immediately and leaves the file untouched — no merge, no reformat, no overwrite. A later interactive target-install write may merge the two answered behavior values, while non-interactive setup leaves existing behavior keys and omissions unchanged.
@@ -33,6 +34,27 @@ Task `setup-repo-gate-and-local-config-bootstrap` T02, `turso-local-db-sync` T04
 - The setup flow also bootstraps the canonical local DB through `LocalDbLifecycle::setup` and the Agent Trace DB through `AgentTraceDbLifecycle::setup`; both use the shared `TursoDb<M: DbSpec>` adapter.
 - After both repository preflights (`ensure_git_repository` and the effective named-remote URL check), setup consumes the shared resolver's degraded result for an invalid default-discovered repo-local `.sce/config.json`; the file remains untouched and the run continues through prompts, context baseline bootstrap, lifecycle providers, hooks, and target assets. An absent config continues through the normal bootstrap path, while explicit config selections remain fatal.
 - Config/DB bootstrap runs after those preflights and after context baseline bootstrap, before config/hooks dispatch, so it applies to all normal setup modes: config-only, hooks-only, combined, and interactive. If the repo-local config is invalid, target and optional-workflow persistence is skipped rather than rewriting it.
+
+## Global access preferences
+
+Setup saves `auth.mode` and `telemetry.enabled` only to the global user config, never to the repository `.sce/config.json` or an explicit config file ([ADR](../decisions/2026-10-21-setup-writes-access-answers-to-user-layer-only.md)). This applies to interactive runs only; non-interactive, hooks-only, and context-only runs never write access keys and print no `SCE access` section.
+
+- **Order:** the write runs right after dispatch and before `bootstrap_context_baseline`, so it is setup's first write. Cancelling a prompt still writes nothing.
+- **Writer:** `persist_global_access_preferences` (`cli/src/services/setup/access_preferences.rs`). It writes explicit answers only, preserves unrelated keys, validates the result with `parse_file_config`, and skips the write when the values are already current. The write is a sibling temp file plus a rename, keeping the existing mode (`0o600` for a new file). It is refused when the file's bytes changed after the first read.
+- **Invalid global config:** when the file is already invalid at read time, the access prompts are skipped and nothing is written; the file stays byte-identical.
+- **Write failure** (unwritable, became invalid, or concurrently modified): setup exits with a runtime error (`SCE-ERR-RUNTIME`) before `context/` or `.sce/` is touched. The error is three fixed lines: `Failed to save SCE access preferences to the global SCE config '<path>'.`, then the writer's error, then `No repository files were changed. Run 'sce config validate' to check the file, then rerun 'sce setup'.`
+- **Report:** after the target install, setup re-resolves the policy for the repository root and prints an `SCE access:` section between the install section and the Claude telemetry stage:
+  ```
+  SCE access:
+  - auth.mode: <mode> (saved to global SCE config '<path>'; applies to all repositories on this machine)
+  - telemetry.enabled: <bool> (saved to global SCE config '<path>'; applies to all repositories on this machine)
+  - effective auth.mode: <mode> (source: <source>[, config_source: <config_source>])
+  - effective telemetry: enabled | disabled (reason: <reason>)
+  ```
+  - When nothing was written, the two saved lines are replaced by `- saved access preferences: unchanged (global SCE config '<path>')`.
+  - The source wording matches `sce config show`, and the reason strings are the [access-policy reasons](../cli/access-policy.md#reporting). The effective lines come from re-resolution, so, for example, a repository `telemetry.enabled: false` still reports `disabled (reason: repository_opt_out)` after global consent.
+  - When a repository or explicit file locks auth to `disabled`, the section adds the first line of the matching `auth.disabled_by_config` message, which names that file.
+  - When the effective mode is `disabled` and an `auth.db` file exists, it adds `- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.`
 
 ## Context baseline bootstrap
 
