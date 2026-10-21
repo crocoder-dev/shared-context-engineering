@@ -177,7 +177,7 @@ No new non-interactive consent or mode flags are added. Unattended consent must 
    - under optional, run login if the user accepted;
    - under mandatory, run login.
    Login reads the policy written in step 4, so provisioning sees the new consent.
-9. Claude-native telemetry stage (existing gate). The "not ready for this repository" line is shown unless the repository has a valid, unexpired credential bound to the credential's identity (PR #339 review fix; this replaces the earlier `TelemetryProvisioningResult::Issued` gate).
+9. Claude-native telemetry stage (existing gate). The "not ready for this repository" line is shown unless the repository has a valid, unexpired credential bound to the credential's identity (PR #339 review fix; this replaces the earlier `TelemetryProvisioningResult::Issued` gate). Non-interactive and target-flag runs skip the authorization check entirely and report `Claude telemetry: configured; repository authorization was not checked during non-interactive setup.`, so they never open `auth.db` or the OS credential store (PR #339 review fix).
 10. Report: an `SCE access` section with the saved values (or "unchanged"), the effective auth mode and telemetry state with reason from step 8's resolution, and the login outcome from the actual login result.
 
 Why this order:
@@ -224,7 +224,7 @@ Atomicity and recovery:
   - Validate: the existing setup command tests stay green, plus a dispatch test asserting `Proceed` carries no access values and `SetupLoginIntent::NotOffered` for every `SetupMode::NonInteractive` target.
 - [x] AC8: The setup report states the effective auth mode, the effective telemetry state with its reason (from re-resolution, not from the saved value), and the actual login outcome, and contains no token or credential value. `sce auth login` output stays byte-identical.
   - Validate: exact-output render tests for the `SCE access` section; the existing `auth_command` render tests stay green; a test asserting the login report text contains no `access_token` / `refresh_token` values.
-- [x] AC9: The Claude-native telemetry report omits the "not ready" line only when the repository is locally authorized (valid credential bound to this repository's identity), whether or not this run issued a credential. (Revised by the PR #339 review fix.)
+- [x] AC9: The Claude-native telemetry report omits the "not ready" line only when the repository is locally authorized (valid credential bound to this repository's identity), whether or not this run issued a credential. The check runs only during interactive setup; non-interactive and target-flag runs report authorization as not checked and never access authentication storage. (Revised by the PR #339 review fixes.)
   - Validate: `render_claude_telemetry_section` tests in `cli/src/services/setup/command.rs`, `repository_readiness_lookup_fails_closed_unless_repository_is_authorized`, `repository_readiness_follows_binding_rather_than_credential_issuance`.
 
 ### Full validation
@@ -654,6 +654,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - PR #339 review fixes (2026-10-21):
   - P1: the global config writer now refuses to replace a symlink-managed file (`GlobalAccessPreferencesError::SymlinkManaged`). Tests: `access_preferences_writer_refuses_to_replace_symlinked_global_config`, `access_preferences_writer_leaves_symlinked_global_config_alone_when_unchanged`, `interactive_setup_aborts_before_repository_writes_when_the_global_config_is_a_symlink`.
   - P2: Claude readiness now checks the repository-scoped credential binding instead of `TelemetryProvisioningResult::Issued` (AC9 revised).
+  - P2: non-interactive and target-flag setup no longer calls `repository_telemetry_authorized`; `RepositoryAuthorizationCheck::for_mode` gates the lookup on `SetupMode::Interactive` and the report uses `RepositoryAuthorization::NotChecked`. Tests: `setup_claude_telemetry_readiness_follows_repository_authorization` (panicking lookup for non-interactive, disabled, and conflict cases in both modes), `setup_repository_authorization_is_checked_only_for_interactive_setup`, `setup_claude_telemetry_installs_when_claude_is_selected`, `setup_claude_telemetry_leaves_settings_untouched_when_claude_is_not_installed`.
   - Not addressed: the second P2 finding (optional login suppression when `auth.db` exists).
 
 ### Residual risks

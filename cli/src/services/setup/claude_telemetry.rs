@@ -21,6 +21,8 @@ const CONFIGURED_LINE: &str =
     "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
 const NOT_READY_LINE: &str =
     "Claude telemetry: not ready for this repository; no valid SCE telemetry credential is authorized for it, so Claude will not export. Run 'sce auth login' in this repository with the SCE account it is enrolled under.";
+const NOT_CHECKED_LINE: &str =
+    "Claude telemetry: configured; repository authorization was not checked during non-interactive setup.";
 const SKIPPED_HELPER_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.";
 const SKIPPED_DISABLED_LINE: &str =
@@ -90,15 +92,25 @@ pub(crate) fn install_claude_telemetry(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RepositoryAuthorization {
+    Authorized,
+    Unauthorized,
+    NotChecked,
+}
+
 pub(crate) fn format_claude_telemetry_report(
     outcome: &ClaudeTelemetryInstallOutcome,
-    repository_ready: bool,
+    authorization: RepositoryAuthorization,
 ) -> String {
     match outcome {
-        ClaudeTelemetryInstallOutcome::Configured if repository_ready => {
-            CONFIGURED_LINE.to_string()
-        }
-        ClaudeTelemetryInstallOutcome::Configured => format!("{CONFIGURED_LINE}\n{NOT_READY_LINE}"),
+        ClaudeTelemetryInstallOutcome::Configured => match authorization {
+            RepositoryAuthorization::Authorized => CONFIGURED_LINE.to_string(),
+            RepositoryAuthorization::Unauthorized => {
+                format!("{CONFIGURED_LINE}\n{NOT_READY_LINE}")
+            }
+            RepositoryAuthorization::NotChecked => NOT_CHECKED_LINE.to_string(),
+        },
         ClaudeTelemetryInstallOutcome::SkippedConflict(reason) => {
             skipped_conflict_line(*reason).to_string()
         }
@@ -271,20 +283,27 @@ mod tests {
             )
         );
         assert_eq!(fs::read(&settings).unwrap(), original);
-        let report = format_claude_telemetry_report(&outcome, false);
+        let report =
+            format_claude_telemetry_report(&outcome, RepositoryAuthorization::Unauthorized);
         assert!(report.contains("explicitly disable telemetry"));
         assert!(!report.contains("configured"));
     }
 
     #[test]
     fn claude_telemetry_report_marks_unready_repository_without_helper_name() {
-        let pending =
-            format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, false);
-        let ready =
-            format_claude_telemetry_report(&ClaudeTelemetryInstallOutcome::Configured, true);
+        let report = |authorization| {
+            format_claude_telemetry_report(
+                &ClaudeTelemetryInstallOutcome::Configured,
+                authorization,
+            )
+        };
+        let pending = report(RepositoryAuthorization::Unauthorized);
+        let not_checked = report(RepositoryAuthorization::NotChecked);
 
         assert!(pending.contains("not ready for this repository"));
-        assert_eq!(ready, CONFIGURED_LINE);
+        assert_eq!(report(RepositoryAuthorization::Authorized), CONFIGURED_LINE);
+        assert_eq!(not_checked, NOT_CHECKED_LINE);
+        assert!(!not_checked.contains("not ready"));
         assert!(!pending.contains("telemetry-headers"));
     }
 }

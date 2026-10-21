@@ -59,6 +59,7 @@ impl SetupCommand {
         };
 
         let claude_telemetry_selected = dispatch_targets_claude(setup_dispatch.as_ref());
+        let authorization_check = RepositoryAuthorizationCheck::for_mode(self.request.config_mode);
 
         let mut sections = Vec::new();
 
@@ -129,7 +130,7 @@ impl SetupCommand {
             }
 
             if claude_telemetry_selected {
-                sections.push(claude_telemetry_report(&repository_root).await);
+                sections.push(claude_telemetry_report(&repository_root, authorization_check).await);
             }
         }
 
@@ -492,7 +493,25 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
     )
 }
 
-async fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RepositoryAuthorizationCheck {
+    Verify,
+    Skip,
+}
+
+impl RepositoryAuthorizationCheck {
+    fn for_mode(config_mode: Option<setup::SetupMode>) -> Self {
+        match config_mode {
+            Some(setup::SetupMode::Interactive) => Self::Verify,
+            Some(setup::SetupMode::NonInteractive(_)) | None => Self::Skip,
+        }
+    }
+}
+
+async fn claude_telemetry_report(
+    repository_root: &std::path::Path,
+    authorization_check: RepositoryAuthorizationCheck,
+) -> String {
     let telemetry_enabled = config::resolve_auth_runtime_config(repository_root)
         .is_ok_and(|config| config.access_policy.telemetry_enabled());
 
@@ -500,6 +519,7 @@ async fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
         telemetry_enabled,
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
+        authorization_check,
         || auth_command::repository_telemetry_authorized(repository_root),
     )
     .await
@@ -509,6 +529,7 @@ async fn render_claude_telemetry_section<A, AF>(
     telemetry_enabled: bool,
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
+    authorization_check: RepositoryAuthorizationCheck,
     repository_authorized: A,
 ) -> String
 where
@@ -517,6 +538,7 @@ where
 {
     use setup::claude_telemetry::{
         format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
+        RepositoryAuthorization,
     };
 
     if !telemetry_enabled {
@@ -528,10 +550,18 @@ where
             .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
         None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
     };
-    let repository_ready =
-        installed == ClaudeTelemetryInstallOutcome::Configured && repository_authorized().await;
+    let authorization = match (&installed, authorization_check) {
+        (ClaudeTelemetryInstallOutcome::Configured, RepositoryAuthorizationCheck::Verify) => {
+            if repository_authorized().await {
+                RepositoryAuthorization::Authorized
+            } else {
+                RepositoryAuthorization::Unauthorized
+            }
+        }
+        _ => RepositoryAuthorization::NotChecked,
+    };
 
-    format_claude_telemetry_report(&installed, repository_ready)
+    format_claude_telemetry_report(&installed, authorization)
 }
 
 fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
@@ -680,96 +710,190 @@ mod tests {
         telemetry_enabled: bool,
         settings_path: &Path,
         managed_settings_path: &Path,
+        authorization_check: RepositoryAuthorizationCheck,
         repository_authorized: Option<bool>,
-    ) -> String {
-        tokio::runtime::Builder::new_current_thread()
+    ) -> (String, bool) {
+        let looked_up = std::cell::Cell::new(false);
+        let report = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
             .block_on(render_claude_telemetry_section(
                 telemetry_enabled,
                 Some(settings_path),
                 managed_settings_path,
-                || async move { repository_authorized.expect("readiness lookup must not run") },
-            ))
+                authorization_check,
+                || {
+                    looked_up.set(true);
+                    async move {
+                        repository_authorized.expect("repository authorization lookup must not run")
+                    }
+                },
+            ));
+        (report, looked_up.get())
     }
 
     fn run_claude_telemetry_stage(
+        request_mode: Option<SetupMode>,
         dispatch: Option<&SetupDispatch>,
         telemetry_enabled: bool,
         root: &Path,
     ) -> Option<String> {
+        let authorization_check = RepositoryAuthorizationCheck::for_mode(request_mode);
+        let authorized =
+            (authorization_check == RepositoryAuthorizationCheck::Verify).then_some(false);
         dispatch_targets_claude(dispatch).then(|| {
             render_claude_telemetry(
                 telemetry_enabled,
                 &root.join("settings.json"),
                 &root.join("managed.json"),
-                telemetry_enabled.then_some(false),
+                authorization_check,
+                authorized,
             )
+            .0
         })
     }
 
     const CLAUDE_CONFIGURED_LINE: &str =
         "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
     const CLAUDE_NOT_READY_LINE: &str = "Claude telemetry: not ready for this repository; no valid SCE telemetry credential is authorized for it, so Claude will not export. Run 'sce auth login' in this repository with the SCE account it is enrolled under.";
+    const CLAUDE_NOT_CHECKED_LINE: &str = "Claude telemetry: configured; repository authorization was not checked during non-interactive setup.";
 
     #[test]
     fn setup_claude_telemetry_readiness_follows_repository_authorization() {
+        use RepositoryAuthorizationCheck::{Skip, Verify};
+
         let configured_not_ready = format!("{CLAUDE_CONFIGURED_LINE}\n{CLAUDE_NOT_READY_LINE}");
+        let conflict = Some(r#"{"otelHeadersHelper":"my-helper"}"#);
+        let conflict_line = "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.";
+        let invalid_line = "Claude telemetry: skipped; existing Claude settings could not be parsed and were left unchanged.";
         let cases = [
             (
-                "authorized repository",
+                "interactive authorized",
+                Verify,
                 true,
                 None,
                 Some(true),
                 CLAUDE_CONFIGURED_LINE,
             ),
             (
-                "credential unavailable or repository unauthorized",
+                "interactive unauthorized",
+                Verify,
                 true,
                 None,
                 Some(false),
                 configured_not_ready.as_str(),
             ),
             (
-                "telemetry disabled skips lookup",
+                "non-interactive not checked",
+                Skip,
+                true,
+                None,
+                None,
+                CLAUDE_NOT_CHECKED_LINE,
+            ),
+            (
+                "interactive telemetry disabled",
+                Verify,
                 false,
                 None,
                 None,
                 CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE,
             ),
             (
-                "settings conflict skips lookup",
-                true,
-                Some(r#"{"otelHeadersHelper":"my-helper"}"#),
+                "non-interactive telemetry disabled",
+                Skip,
+                false,
                 None,
-                "Claude telemetry: skipped; existing Claude settings define a different otelHeadersHelper.",
+                None,
+                CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE,
             ),
             (
-                "invalid settings skip lookup",
+                "interactive settings conflict",
+                Verify,
+                true,
+                conflict,
+                None,
+                conflict_line,
+            ),
+            (
+                "non-interactive settings conflict",
+                Skip,
+                true,
+                conflict,
+                None,
+                conflict_line,
+            ),
+            (
+                "interactive invalid settings",
+                Verify,
                 true,
                 Some("{not json"),
                 None,
-                "Claude telemetry: skipped; existing Claude settings could not be parsed and were left unchanged.",
+                invalid_line,
+            ),
+            (
+                "non-interactive invalid settings",
+                Skip,
+                true,
+                Some("{not json"),
+                None,
+                invalid_line,
             ),
         ];
 
-        for (name, telemetry_enabled, existing, authorized, expected) in cases {
+        for (name, check, telemetry_enabled, existing, authorized, expected) in cases {
             let dir = tempfile::tempdir().unwrap();
             let settings = dir.path().join("settings.json");
             if let Some(existing) = existing {
                 fs::write(&settings, existing).unwrap();
             }
 
-            let report = render_claude_telemetry(
+            let (report, looked_up) = render_claude_telemetry(
                 telemetry_enabled,
                 &settings,
                 &dir.path().join("managed.json"),
+                check,
                 authorized,
             );
 
             assert_eq!(report, expected, "{name}");
+            assert_eq!(looked_up, authorized.is_some(), "{name}");
             assert!(!report.contains("Bearer"), "{name}");
         }
+    }
+
+    #[test]
+    fn setup_repository_authorization_is_checked_only_for_interactive_setup() {
+        let request_mode = |target, non_interactive| {
+            resolve_setup_request(SetupCliOptions {
+                target,
+                non_interactive,
+                ..SetupCliOptions::default()
+            })
+            .unwrap()
+            .config_mode
+        };
+
+        assert_eq!(
+            RepositoryAuthorizationCheck::for_mode(request_mode(None, false)),
+            RepositoryAuthorizationCheck::Verify
+        );
+        for target in [SetupTarget::Claude, SetupTarget::All] {
+            for non_interactive in [true, false] {
+                assert_eq!(
+                    RepositoryAuthorizationCheck::for_mode(request_mode(
+                        Some(target),
+                        non_interactive
+                    )),
+                    RepositoryAuthorizationCheck::Skip,
+                    "{target:?} non_interactive={non_interactive}"
+                );
+            }
+        }
+        assert_eq!(
+            RepositoryAuthorizationCheck::for_mode(None),
+            RepositoryAuthorizationCheck::Skip
+        );
     }
 
     fn assert_installed(root: &Path) {
@@ -789,25 +913,44 @@ mod tests {
             SetupMode::Interactive,
             Some(vec![ConcreteSetupTarget::Claude]),
         );
-        for dispatch in [
-            dispatch_for(SetupMode::NonInteractive(SetupTarget::Claude), None),
-            dispatch_for(SetupMode::NonInteractive(SetupTarget::All), None),
-            interactive,
+        let configured_not_ready = format!("{CLAUDE_CONFIGURED_LINE}\n{CLAUDE_NOT_READY_LINE}");
+        for (mode, dispatch, expected) in [
+            (
+                SetupMode::NonInteractive(SetupTarget::Claude),
+                dispatch_for(SetupMode::NonInteractive(SetupTarget::Claude), None),
+                CLAUDE_NOT_CHECKED_LINE,
+            ),
+            (
+                SetupMode::NonInteractive(SetupTarget::All),
+                dispatch_for(SetupMode::NonInteractive(SetupTarget::All), None),
+                CLAUDE_NOT_CHECKED_LINE,
+            ),
+            (
+                SetupMode::Interactive,
+                interactive,
+                configured_not_ready.as_str(),
+            ),
         ] {
             let dir = tempfile::tempdir().unwrap();
 
-            assert!(run_claude_telemetry_stage(Some(&dispatch), true, dir.path()).is_some());
+            assert_eq!(
+                run_claude_telemetry_stage(Some(mode), Some(&dispatch), true, dir.path())
+                    .as_deref(),
+                Some(expected),
+                "{mode:?}"
+            );
             assert_installed(dir.path());
         }
     }
 
     #[test]
     fn setup_claude_telemetry_skips_install_when_telemetry_is_disabled_by_config() {
+        let mode = Some(SetupMode::NonInteractive(SetupTarget::Claude));
         let dispatch = dispatch_for(SetupMode::NonInteractive(SetupTarget::Claude), None);
 
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(
-            run_claude_telemetry_stage(Some(&dispatch), false, dir.path()).as_deref(),
+            run_claude_telemetry_stage(mode, Some(&dispatch), false, dir.path()).as_deref(),
             Some(CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE)
         );
         assert_untouched(dir.path());
@@ -816,7 +959,7 @@ mod tests {
         let existing = br#"{"env":{"FOO":"bar"},"model":"opus"}"#;
         fs::write(dir.path().join("settings.json"), existing).unwrap();
         assert_eq!(
-            run_claude_telemetry_stage(Some(&dispatch), false, dir.path()).as_deref(),
+            run_claude_telemetry_stage(mode, Some(&dispatch), false, dir.path()).as_deref(),
             Some("Claude telemetry: skipped; SCE telemetry is disabled by config.")
         );
         assert_eq!(
@@ -824,11 +967,8 @@ mod tests {
             existing
         );
 
-        let report = run_claude_telemetry_stage(Some(&dispatch), true, dir.path()).unwrap();
-        assert_eq!(
-            report,
-            format!("{CLAUDE_CONFIGURED_LINE}\n{CLAUDE_NOT_READY_LINE}")
-        );
+        let report = run_claude_telemetry_stage(mode, Some(&dispatch), true, dir.path()).unwrap();
+        assert_eq!(report, CLAUDE_NOT_CHECKED_LINE);
         assert_installed(dir.path());
         let parsed: Value =
             serde_json::from_slice(&fs::read(dir.path().join("settings.json")).unwrap()).unwrap();
@@ -894,18 +1034,22 @@ mod tests {
         assert_eq!(hooks_only.config_mode, None);
         assert!(bootstrap.context_only);
 
+        let opencode = SetupMode::NonInteractive(SetupTarget::OpenCode);
         let dispatches = [
-            Some(dispatch_for(
-                SetupMode::NonInteractive(SetupTarget::OpenCode),
-                None,
-            )),
-            Some(dispatch_for(SetupMode::Interactive, None)),
-            None,
+            (Some(opencode), Some(dispatch_for(opencode, None))),
+            (
+                Some(SetupMode::Interactive),
+                Some(dispatch_for(SetupMode::Interactive, None)),
+            ),
+            (hooks_only.config_mode, None),
+            (bootstrap.config_mode, None),
         ];
-        for dispatch in &dispatches {
+        for (mode, dispatch) in &dispatches {
             let dir = tempfile::tempdir().unwrap();
 
-            assert!(run_claude_telemetry_stage(dispatch.as_ref(), true, dir.path()).is_none());
+            assert!(
+                run_claude_telemetry_stage(*mode, dispatch.as_ref(), true, dir.path()).is_none()
+            );
             assert_untouched(dir.path());
         }
     }
