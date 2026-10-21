@@ -116,6 +116,13 @@ client. The command change does not alter those semantics.
 
 ## Error classification
 
+Before resolving storage or building the control-plane client, sync resolves
+the [effective access policy](access-policy.md#enforcement) for the repository
+root. Under `auth.mode: disabled` it returns `TraceSyncError::AuthDisabled`,
+which `classify_sync_error` maps first to
+`CliError::User { error: UserError::AuthDisabledByConfig, .. }`
+(`auth.disabled_by_config`), so no credential-store access happens.
+
 `cli/src/services/sync/command.rs`'s `classify_sync_error` maps the command's
 terminal `TraceSyncError` into the typed `CliError` boundary through typed
 predicates that traverse to `ControlPlaneError`, never string/substring

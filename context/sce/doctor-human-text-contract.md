@@ -53,8 +53,10 @@ The post-commit Agent Trace auto-sync row uses these stable labels and states:
 - `[PASS] Post-commit Agent Trace auto-sync` means the canonical post-commit
   managed block is current and the resolved setting is enabled.
 - `[PASS] Post-commit Agent Trace auto-sync (disabled by config)` means the
-  explicit `agent_trace.auto_sync: false` opt-out is active; it does not make
-  overall doctor readiness fail.
+  explicit `agent_trace.auto_sync: false` opt-out is active, or the effective
+  access policy disallows background cloud operations (`auth.mode: disabled`
+  or a skipped invalid config file); it does not make overall doctor readiness
+  fail.
 - `[FAIL] Post-commit Agent Trace auto-sync` means the enabled capability is not
   ready because the post-commit managed block is missing, stale, unreadable, or
   otherwise not current.

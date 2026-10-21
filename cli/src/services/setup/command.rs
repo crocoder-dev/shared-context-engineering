@@ -7,6 +7,9 @@ use crate::services::lifecycle::{
 };
 use crate::services::{config, setup};
 
+const CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE: &str =
+    "Claude telemetry: skipped; SCE telemetry is disabled by config.";
+
 pub struct SetupCommand {
     pub request: setup::SetupRequest,
 }
@@ -100,7 +103,7 @@ impl SetupCommand {
             sections.push(setup_message);
 
             if claude_telemetry_selected {
-                sections.push(claude_telemetry_report());
+                sections.push(claude_telemetry_report(&repository_root));
             }
         }
 
@@ -116,20 +119,29 @@ fn dispatch_targets_claude(dispatch: Option<&setup::SetupDispatch>) -> bool {
     )
 }
 
-fn claude_telemetry_report() -> String {
+fn claude_telemetry_report(repository_root: &std::path::Path) -> String {
+    let telemetry_enabled = config::resolve_auth_runtime_config(repository_root)
+        .is_ok_and(|config| config.access_policy.telemetry_enabled());
+
     render_claude_telemetry_section(
+        telemetry_enabled,
         setup::claude_telemetry::resolve_claude_settings_path().as_deref(),
         &setup::claude_telemetry::managed_claude_settings_path(),
     )
 }
 
 fn render_claude_telemetry_section(
+    telemetry_enabled: bool,
     settings_path: Option<&std::path::Path>,
     managed_settings_path: &std::path::Path,
 ) -> String {
     use setup::claude_telemetry::{
         format_claude_telemetry_report, install_claude_telemetry, ClaudeTelemetryInstallOutcome,
     };
+
+    if !telemetry_enabled {
+        return CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE.to_string();
+    }
 
     let installed = match settings_path {
         Some(settings_path) => install_claude_telemetry(settings_path, managed_settings_path)
@@ -247,9 +259,14 @@ mod tests {
         .expect("dispatch should resolve")
     }
 
-    fn run_claude_telemetry_stage(dispatch: Option<&SetupDispatch>, root: &Path) -> Option<String> {
+    fn run_claude_telemetry_stage(
+        dispatch: Option<&SetupDispatch>,
+        telemetry_enabled: bool,
+        root: &Path,
+    ) -> Option<String> {
         dispatch_targets_claude(dispatch).then(|| {
             render_claude_telemetry_section(
+                telemetry_enabled,
                 Some(&root.join("settings.json")),
                 &root.join("managed.json"),
             )
@@ -262,8 +279,11 @@ mod tests {
         let settings = dir.path().join("settings.json");
         fs::write(&settings, r#"{"otelHeadersHelper":"my-helper"}"#).unwrap();
 
-        let report =
-            render_claude_telemetry_section(Some(&settings), &dir.path().join("managed.json"));
+        let report = render_claude_telemetry_section(
+            true,
+            Some(&settings),
+            &dir.path().join("managed.json"),
+        );
 
         assert!(report.contains("skipped"));
         assert!(!report.contains("authentication pending"));
@@ -274,6 +294,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
 
         let report = render_claude_telemetry_section(
+            true,
             Some(&dir.path().join("settings.json")),
             &dir.path().join("managed.json"),
         );
@@ -305,9 +326,87 @@ mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
 
-            assert!(run_claude_telemetry_stage(Some(&dispatch), dir.path()).is_some());
+            assert!(run_claude_telemetry_stage(Some(&dispatch), true, dir.path()).is_some());
             assert_installed(dir.path());
         }
+    }
+
+    #[test]
+    fn setup_claude_telemetry_skips_install_when_telemetry_is_disabled_by_config() {
+        let dispatch = dispatch_for(SetupMode::NonInteractive(SetupTarget::Claude), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            run_claude_telemetry_stage(Some(&dispatch), false, dir.path()).as_deref(),
+            Some(CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE)
+        );
+        assert_untouched(dir.path());
+
+        let dir = tempfile::tempdir().unwrap();
+        let existing = br#"{"env":{"FOO":"bar"},"model":"opus"}"#;
+        fs::write(dir.path().join("settings.json"), existing).unwrap();
+        assert_eq!(
+            run_claude_telemetry_stage(Some(&dispatch), false, dir.path()).as_deref(),
+            Some("Claude telemetry: skipped; SCE telemetry is disabled by config.")
+        );
+        assert_eq!(
+            fs::read(dir.path().join("settings.json")).unwrap(),
+            existing
+        );
+
+        let report = run_claude_telemetry_stage(Some(&dispatch), true, dir.path()).unwrap();
+        assert_eq!(
+            report,
+            "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.\nClaude telemetry: authentication pending for this repository; run 'sce auth login' in this repository to start exporting."
+        );
+        assert_installed(dir.path());
+        let parsed: Value =
+            serde_json::from_slice(&fs::read(dir.path().join("settings.json")).unwrap()).unwrap();
+        assert_eq!(parsed["model"], "opus");
+        assert_eq!(parsed["env"]["FOO"], "bar");
+    }
+
+    #[test]
+    fn setup_claude_telemetry_policy_follows_layered_config() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".git")).unwrap();
+        let global = dir.path().join("global.json");
+        let local_dir = dir.path().join(".sce");
+        fs::create_dir_all(&local_dir).unwrap();
+        let local = local_dir.join("config.json");
+        let enabled = |global_json: &str, local_json: Option<&str>| {
+            fs::write(&global, global_json).unwrap();
+            match local_json {
+                Some(json) => fs::write(&local, json).unwrap(),
+                None => {
+                    let _ = fs::remove_file(&local);
+                }
+            }
+            config::resolver::resolve_auth_runtime_config_with(
+                dir.path(),
+                |_| None,
+                |path| fs::read_to_string(path).map_err(anyhow::Error::from),
+                Path::exists,
+                || Ok(global.clone()),
+            )
+            .is_ok_and(|config| config.access_policy.telemetry_enabled())
+        };
+
+        assert!(enabled(r#"{"telemetry":{"enabled":true}}"#, None));
+        assert!(!enabled("{}", None));
+        assert!(!enabled("{}", Some(r#"{"telemetry":{"enabled":true}}"#)));
+        assert!(!enabled(
+            r#"{"telemetry":{"enabled":true}}"#,
+            Some(r#"{"telemetry":{"enabled":false}}"#)
+        ));
+        assert!(!enabled(
+            r#"{"telemetry":{"enabled":true}}"#,
+            Some(r#"{"auth":{"mode":"disabled"}}"#)
+        ));
+        assert!(!enabled(
+            r#"{"telemetry":{"enabled":true}}"#,
+            Some(r#"{"telemetry":{"enabled":"yes"}}"#)
+        ));
     }
 
     #[test]
@@ -336,7 +435,7 @@ mod tests {
         for dispatch in &dispatches {
             let dir = tempfile::tempdir().unwrap();
 
-            assert!(run_claude_telemetry_stage(dispatch.as_ref(), dir.path()).is_none());
+            assert!(run_claude_telemetry_stage(dispatch.as_ref(), true, dir.path()).is_none());
             assert_untouched(dir.path());
         }
     }

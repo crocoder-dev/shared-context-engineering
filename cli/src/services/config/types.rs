@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use clap::ValueEnum;
 
+use crate::services::error::AuthPolicyConfigFile;
 use crate::services::output_format::OutputFormat;
 
 pub const NAME: &str = "config";
@@ -83,6 +84,139 @@ impl LogFormat {
             Self::Text => "text",
             Self::Json => "json",
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AuthMode {
+    Disabled,
+    Optional,
+    Mandatory,
+}
+
+impl AuthMode {
+    pub(crate) fn parse(raw: &str, source: &str) -> anyhow::Result<Self> {
+        match raw {
+            "disabled" => Ok(Self::Disabled),
+            "optional" => Ok(Self::Optional),
+            "mandatory" => Ok(Self::Mandatory),
+            _ => anyhow::bail!(
+                "Invalid auth mode '{raw}' from {source}. Valid values: disabled, optional, mandatory."
+            ),
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Optional => "optional",
+            Self::Mandatory => "mandatory",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PolicyLayer {
+    User,
+    Repository,
+    Explicit,
+}
+
+impl PolicyLayer {
+    pub(crate) const fn from_config_path_source(source: ConfigPathSource) -> Self {
+        match source {
+            ConfigPathSource::DefaultDiscoveredGlobal => Self::User,
+            ConfigPathSource::DefaultDiscoveredLocal => Self::Repository,
+            ConfigPathSource::Flag | ConfigPathSource::Env => Self::Explicit,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryPolicyState {
+    Enabled,
+    Disabled(TelemetryDisabledReason),
+}
+
+impl TelemetryPolicyState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled(_) => "disabled",
+        }
+    }
+
+    pub(crate) fn disabled_reason(self) -> Option<TelemetryDisabledReason> {
+        match self {
+            Self::Enabled => None,
+            Self::Disabled(reason) => Some(reason),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TelemetryDisabledReason {
+    NotEnabled,
+    UserOptOut,
+    NoUserConsent,
+    RepositoryOptOut,
+    AuthDisabled,
+    InvalidConfig,
+}
+
+impl TelemetryDisabledReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NotEnabled => "not_enabled",
+            Self::UserOptOut => "user_opt_out",
+            Self::NoUserConsent => "no_user_consent",
+            Self::RepositoryOptOut => "repository_opt_out",
+            Self::AuthDisabled => "auth_disabled",
+            Self::InvalidConfig => "invalid_config",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedAccessPolicy {
+    pub(crate) auth_mode: ResolvedValue<AuthMode>,
+    pub(crate) telemetry_enabled: ResolvedValue<bool>,
+    pub(crate) telemetry: TelemetryPolicyState,
+    pub(crate) background_cloud_allowed: bool,
+}
+
+impl ResolvedAccessPolicy {
+    pub(crate) fn telemetry_enabled(&self) -> bool {
+        self.telemetry == TelemetryPolicyState::Enabled
+    }
+
+    pub(crate) fn auth_allowed(&self) -> bool {
+        self.auth_mode.value != AuthMode::Disabled
+    }
+
+    pub(crate) fn auto_sync_allowed(&self, configured: bool) -> bool {
+        configured && self.background_cloud_allowed
+    }
+
+    pub(crate) fn auth_disabled_config_file(&self) -> Option<AuthPolicyConfigFile> {
+        if self.auth_allowed() {
+            return None;
+        }
+        Some(match self.auth_mode.source {
+            ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal) => {
+                AuthPolicyConfigFile::Repository
+            }
+            ValueSource::Flag | ValueSource::ConfigFile(ConfigPathSource::Flag) => {
+                AuthPolicyConfigFile::ConfigFlag
+            }
+            ValueSource::Env | ValueSource::ConfigFile(ConfigPathSource::Env) => {
+                AuthPolicyConfigFile::ConfigEnv
+            }
+            ValueSource::Default
+            | ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal) => {
+                AuthPolicyConfigFile::Global
+            }
+        })
     }
 }
 
@@ -173,6 +307,7 @@ pub(crate) struct LoadedConfigPath {
 pub(crate) struct ResolvedAuthRuntimeConfig {
     pub(crate) workos_client_id: ResolvedOptionalValue<String>,
     pub(crate) control_plane_base_url: ResolvedOptionalValue<String>,
+    pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -184,12 +319,14 @@ pub(crate) struct ResolvedObservabilityRuntimeConfig {
     pub(crate) log_file_retention_limit: usize,
     pub(crate) loaded_config_paths: Vec<LoadedConfigPath>,
     pub(crate) validation_errors: Vec<String>,
+    pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedHookRuntimeConfig {
     pub(crate) attribution_hooks_enabled: bool,
     pub(crate) agent_trace_auto_sync: bool,
+    pub(crate) access_policy: ResolvedAccessPolicy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

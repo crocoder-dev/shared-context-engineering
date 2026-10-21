@@ -12,9 +12,11 @@ use super::types::{
 const STATE_HEALTHY: &str = "healthy";
 const STATE_NOT_CONFIGURED: &str = "not_configured";
 const STATE_DISABLED: &str = "disabled";
+const STATE_DISABLED_BY_CONFIG: &str = "disabled_by_config";
 const SEVERITY_WARNING: &str = "warning";
 const NEXT_ACTION_AUTH_LOGIN: &str = "auth_login";
 const NEXT_ACTION_MANUAL_STEPS: &str = "manual_steps";
+pub(super) const OPT_IN_NOTE: &str = "Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the global SCE config to resume it.";
 pub(super) const HOOK_IMPACT: &str =
     "Claude Code hooks continue working, but telemetry export is disabled.";
 const MACOS_INACCESSIBLE_SUMMARY: &str =
@@ -63,7 +65,9 @@ fn diagnostic_for_platform(
         return None;
     };
     let (kind, summary, remediation, next_action) = match reason {
-        TelemetryFallbackReason::NotConfigured => return None,
+        TelemetryFallbackReason::DisabledByConfig | TelemetryFallbackReason::NotConfigured => {
+            return None
+        }
         TelemetryFallbackReason::CredentialInaccessible => {
             let (summary, remediation) = inaccessible_guidance(platform);
             (
@@ -173,6 +177,13 @@ pub(super) fn json(health: ManagedTelemetryHealth) -> Value {
             "severity": null,
             "next_action": null,
         }),
+        (ManagedTelemetryHealth::DisabledByConfig { .. }, None) => json!({
+            "state": STATE_DISABLED_BY_CONFIG,
+            "reason": TelemetryFallbackReason::DisabledByConfig.as_str(),
+            "kind": null,
+            "severity": null,
+            "next_action": null,
+        }),
         (ManagedTelemetryHealth::Disabled(reason), None) => json!({
             "state": STATE_NOT_CONFIGURED,
             "reason": reason.as_str(),
@@ -217,6 +228,30 @@ mod tests {
                 "severity": null,
                 "next_action": null,
             })
+        );
+    }
+
+    #[test]
+    fn telemetry_disabled_by_config_reports_no_problem_and_a_stable_json_state() {
+        for readiness_hint_present in [false, true] {
+            let health = ManagedTelemetryHealth::DisabledByConfig {
+                readiness_hint_present,
+            };
+            assert_eq!(problem(health), None);
+            assert_eq!(
+                json(health),
+                json!({
+                    "state": "disabled_by_config",
+                    "reason": "disabled_by_config",
+                    "kind": null,
+                    "severity": null,
+                    "next_action": null,
+                })
+            );
+        }
+        assert_eq!(
+            problem(disabled(TelemetryFallbackReason::DisabledByConfig)),
+            None
         );
     }
 

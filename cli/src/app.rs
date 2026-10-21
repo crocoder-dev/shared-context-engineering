@@ -28,6 +28,7 @@ struct StartupContext {
 struct AppRuntime {
     logger: services::observability::Logger,
     telemetry: RuntimeTelemetry,
+    telemetry_enabled: bool,
     fs: services::capabilities::StdFsOps,
     git: services::capabilities::ProcessGitOps,
     registry: services::command_registry::CommandRegistry,
@@ -297,7 +298,8 @@ where
             );
         }
     };
-    runtime.telemetry = RuntimeTelemetry::resolve(span_kind, &runtime.logger).await;
+    runtime.telemetry =
+        RuntimeTelemetry::resolve(span_kind, runtime.telemetry_enabled, &runtime.logger).await;
     let rendered = run_command_lifecycle(args, &runtime, stdout, stderr).await;
     runtime.telemetry.shutdown().await;
     app_support::exit_code_for(&rendered)
@@ -363,6 +365,10 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
     Ok(AppRuntime {
         logger,
         telemetry: RuntimeTelemetry::Noop(NoopTelemetry),
+        telemetry_enabled: startup
+            .observability_config
+            .access_policy
+            .telemetry_enabled(),
         fs: services::capabilities::StdFsOps,
         git: services::capabilities::ProcessGitOps,
         registry: services::command_registry::build_default_registry(),
@@ -980,8 +986,9 @@ pub(crate) mod tests {
         let runtime = build_runtime().unwrap();
         let result = runtime.block_on(services::auth_command::telemetry_headers_with(
             Some(repo.path().to_path_buf()),
-            false,
             true,
+            false,
+            || true,
             |_: &std::path::Path| Some("repository-a".to_string()),
             |_: String| stalled_keychain_lookup(),
         ));
@@ -1142,7 +1149,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn disallowed_managed_telemetry_resolves_to_noop_without_credential_lookup() {
         let telemetry =
-            RuntimeTelemetry::resolve(None, &services::observability::traits::NoopLogger).await;
+            RuntimeTelemetry::resolve(None, true, &services::observability::traits::NoopLogger)
+                .await;
         assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
     }
 }

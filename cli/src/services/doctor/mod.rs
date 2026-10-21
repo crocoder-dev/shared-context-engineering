@@ -126,13 +126,21 @@ async fn execute_doctor_with_context(
                 Ok(resolve_sce_default_locations()?.global_config_file())
             },
             probe_codex_hook_policy: &codex_hook_policy::probe_default,
-            managed_telemetry: crate::services::managed_telemetry::inspect_health().await,
+            managed_telemetry: crate::services::managed_telemetry::inspect_health(
+                telemetry_enabled_for(repository_root),
+            )
+            .await,
         },
         mutation_scope_seam,
         reconcile_seam,
         recommendation_seam,
     )
     .await
+}
+
+fn telemetry_enabled_for(repository_root: &Path) -> bool {
+    crate::services::config::resolve_observability_runtime_config(repository_root)
+        .is_ok_and(|config| config.access_policy.telemetry_enabled())
 }
 
 async fn execute_doctor_with_lifecycle_providers(

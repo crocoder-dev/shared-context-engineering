@@ -48,8 +48,6 @@ impl FailureClass {
     }
 }
 
-/// Catalog of expected, deliberately-explained failures presented to the user
-/// as a friendly diagnostic instead of a technical error chain.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum UserError {
@@ -58,11 +56,18 @@ pub enum UserError {
     NotGitRemote,
     AuthStorageUnavailable(AuthStorageFailure),
     LoginAuthStorageUnavailable(AuthStorageFailure),
+    AuthDisabledByConfig(AuthPolicyConfigFile),
     UnexpectedFailure,
 }
 
-/// Typed cause of an authentication storage failure, selected from typed
-/// error sources so user guidance never depends on diagnostic text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AuthPolicyConfigFile {
+    Global,
+    Repository,
+    ConfigFlag,
+    ConfigEnv,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AuthStorageFailure {
     CredentialAccess,
@@ -78,6 +83,7 @@ impl UserError {
             | Self::NotGitRemote
             | Self::AuthStorageUnavailable(_)
             | Self::LoginAuthStorageUnavailable(_)
+            | Self::AuthDisabledByConfig(_)
             | Self::UnexpectedFailure => FailureClass::Runtime,
         }
     }
@@ -90,6 +96,7 @@ impl UserError {
             Self::AuthStorageUnavailable(_) | Self::LoginAuthStorageUnavailable(_) => {
                 "auth.storage_unavailable"
             }
+            Self::AuthDisabledByConfig(_) => "auth.disabled_by_config",
             Self::UnexpectedFailure => "general.unexpected_failure",
         }
     }
@@ -115,6 +122,7 @@ impl UserError {
                 AuthStorageOperation::Login,
                 *failure,
             ),
+            Self::AuthDisabledByConfig(file) => auth_disabled_by_config_message(*file),
             Self::UnexpectedFailure => {
                 "An unexpected error occurred. Check the log files for more details."
             }
@@ -268,6 +276,35 @@ To fix:
   2. Retry the command.
   3. If the problem persists, check the SCE log files for details.";
 
+const AUTH_DISABLED_BY_GLOBAL_CONFIG: &str =
+    "Authentication is disabled by `auth.mode: disabled` in the global SCE config.
+
+To use SCE authentication, set `auth.mode` to `optional` or `mandatory` in that file, then retry.";
+
+const AUTH_DISABLED_BY_REPOSITORY_CONFIG: &str =
+    "Authentication is disabled by `auth.mode: disabled` in the repository SCE config (`.sce/config.json`).
+
+To use SCE authentication, set `auth.mode` to `optional` or `mandatory` in that file, then retry.";
+
+const AUTH_DISABLED_BY_FLAG_CONFIG: &str =
+    "Authentication is disabled by `auth.mode: disabled` in the SCE config file passed with `--config`.
+
+To use SCE authentication, set `auth.mode` to `optional` or `mandatory` in that file, then retry.";
+
+const AUTH_DISABLED_BY_ENV_CONFIG: &str =
+    "Authentication is disabled by `auth.mode: disabled` in the SCE config file named by `SCE_CONFIG_FILE`.
+
+To use SCE authentication, set `auth.mode` to `optional` or `mandatory` in that file, then retry.";
+
+const fn auth_disabled_by_config_message(file: AuthPolicyConfigFile) -> &'static str {
+    match file {
+        AuthPolicyConfigFile::Global => AUTH_DISABLED_BY_GLOBAL_CONFIG,
+        AuthPolicyConfigFile::Repository => AUTH_DISABLED_BY_REPOSITORY_CONFIG,
+        AuthPolicyConfigFile::ConfigFlag => AUTH_DISABLED_BY_FLAG_CONFIG,
+        AuthPolicyConfigFile::ConfigEnv => AUTH_DISABLED_BY_ENV_CONFIG,
+    }
+}
+
 const fn auth_storage_unavailable_message(
     platform: CredentialStorePlatform,
     operation: AuthStorageOperation,
@@ -414,6 +451,42 @@ mod tests {
         assert_eq!(error.code(), "SCE-ERR-RUNTIME");
         assert_eq!(UserError::NotAuthenticated.key(), "auth.not_authenticated");
         assert!(error.to_string().contains("You are not logged in"));
+    }
+
+    #[test]
+    fn auth_disabled_by_config_has_stable_runtime_catalog_mapping_per_file() {
+        for (file, location) in [
+            (AuthPolicyConfigFile::Global, "in the global SCE config."),
+            (
+                AuthPolicyConfigFile::Repository,
+                "in the repository SCE config (`.sce/config.json`).",
+            ),
+            (
+                AuthPolicyConfigFile::ConfigFlag,
+                "in the SCE config file passed with `--config`.",
+            ),
+            (
+                AuthPolicyConfigFile::ConfigEnv,
+                "in the SCE config file named by `SCE_CONFIG_FILE`.",
+            ),
+        ] {
+            let user_error = UserError::AuthDisabledByConfig(file);
+            let error = CliError::User {
+                error: user_error.clone(),
+                source: None,
+            };
+
+            assert_eq!(error.class(), FailureClass::Runtime);
+            assert_eq!(error.code(), "SCE-ERR-RUNTIME");
+            assert_eq!(user_error.key(), "auth.disabled_by_config");
+            assert_eq!(
+                user_error.message(),
+                format!(
+                    "Authentication is disabled by `auth.mode: disabled` {location}\n\nTo use SCE authentication, set `auth.mode` to `optional` or `mandatory` in that file, then retry."
+                )
+            );
+            assert_eq!(error.to_string(), user_error.message());
+        }
     }
 
     #[test]

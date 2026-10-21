@@ -20,6 +20,8 @@ const AUTH_DB_TEST_SECRET: &str = "doctor-cli-test-secret";
 const UNREADABLE_AUTH_DB: &[u8] = b"not an encrypted auth database";
 const FAR_FUTURE_READINESS: &[u8] = br#"{"expires_at_unix_seconds":4102444800}"#;
 
+const TELEMETRY_ENABLED_CONFIG: &str = r#"{"telemetry":{"enabled":true}}"#;
+const TELEMETRY_OPT_IN_NOTE: &str = "Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the global SCE config to resume it.";
 const EXIT_SUCCESS: &str = "success";
 const EXIT_FAILURE: &str = "failure";
 
@@ -140,6 +142,12 @@ impl Sandbox {
     fn state_json(&self) -> Value {
         serde_json::from_slice(&self.state_bytes().expect("maintenance state was written"))
             .expect("state JSON")
+    }
+
+    fn telemetry_enabled_config(&self) -> String {
+        let path = self.dir.path().join("telemetry-enabled.json");
+        std::fs::write(&path, TELEMETRY_ENABLED_CONFIG).expect("telemetry config");
+        path.to_string_lossy().into_owned()
     }
 
     fn run(&self, args: &[&str]) -> CliRun {
@@ -620,11 +628,15 @@ fn global_state_warnings(report: &Value) -> Vec<Value> {
 async fn doctor_on_fresh_state_reports_unconfigured_telemetry_without_a_warning() {
     let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
     let auth_dir = sandbox.state_root().join("sce");
+    let config = sandbox.telemetry_enabled_config();
 
     let report = sandbox
         .run_with_env(
             &["doctor", "--format", "json"],
-            &[(AUTH_DB_ENCRYPTION_KEY_ENV, "")],
+            &[
+                (AUTH_DB_ENCRYPTION_KEY_ENV, ""),
+                ("SCE_CONFIG_FILE", config.as_str()),
+            ],
         )
         .json();
 
@@ -644,7 +656,11 @@ async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_e
     let readiness = auth_dir.join("telemetry-ready.json");
     std::fs::write(&auth_db, UNREADABLE_AUTH_DB).expect("auth DB");
     std::fs::write(&readiness, FAR_FUTURE_READINESS).expect("readiness");
-    let env = [(AUTH_DB_ENCRYPTION_KEY_ENV, AUTH_DB_TEST_SECRET)];
+    let config = sandbox.telemetry_enabled_config();
+    let env = [
+        (AUTH_DB_ENCRYPTION_KEY_ENV, AUTH_DB_TEST_SECRET),
+        ("SCE_CONFIG_FILE", config.as_str()),
+    ];
 
     let fix = sandbox.run_with_env(&["doctor", "--fix", "--format", "json"], &env);
     let report = fix.json();
@@ -689,4 +705,101 @@ async fn doctor_fix_reports_unreadable_telemetry_credentials_without_auth_side_e
     );
     assert!(!fix.stdout.contains(AUTH_DB_TEST_SECRET));
     assert!(!fix.stderr.contains(AUTH_DB_TEST_SECRET));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_reports_post_commit_auto_sync_disabled_when_auth_is_disabled() {
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    let config_dir = sandbox.repo.join(".sce");
+    std::fs::create_dir_all(&config_dir).expect("config dir");
+    let config = config_dir.join("config.json");
+
+    std::fs::write(&config, r#"{"agent_trace":{"auto_sync":true}}"#).expect("config");
+    let allowed = sandbox.run(&["doctor", "--format", "json"]).json();
+    assert_eq!(allowed["post_commit_auto_sync"]["enabled"], true);
+    assert_ne!(allowed["post_commit_auto_sync"]["state"], "disabled");
+
+    std::fs::write(
+        &config,
+        r#"{"agent_trace":{"auto_sync":true},"auth":{"mode":"disabled"}}"#,
+    )
+    .expect("config");
+    let report = sandbox.run(&["doctor", "--format", "json"]).json();
+    assert_eq!(
+        report["post_commit_auto_sync"],
+        serde_json::json!({
+            "state": "disabled",
+            "enabled": false,
+            "source": "config_file",
+            "config_source": "default_discovered_local",
+        })
+    );
+    let text = sandbox.run(&["doctor"]);
+    assert!(
+        text.stdout
+            .contains("[PASS] Post-commit Agent Trace auto-sync (disabled by config)\n"),
+        "{}",
+        text.stdout
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn doctor_with_telemetry_disabled_by_config_never_reads_the_auth_db() {
+    let sandbox = Sandbox::new("https://example.invalid/org/repo-a.git");
+    let auth_dir = sandbox.state_root().join("sce");
+    let env = [(AUTH_DB_ENCRYPTION_KEY_ENV, "")];
+
+    let fresh = sandbox.run_with_env(&["doctor"], &env);
+    assert!(
+        fresh
+            .stdout
+            .contains("[PASS] Managed telemetry (disabled by config)\n"),
+        "{}",
+        fresh.stdout
+    );
+    assert!(
+        !fresh.stdout.contains(TELEMETRY_OPT_IN_NOTE),
+        "{}",
+        fresh.stdout
+    );
+    assert!(!auth_dir.join("auth.db").exists());
+
+    std::fs::create_dir_all(&auth_dir).expect("auth dir");
+    let auth_db = auth_dir.join("auth.db");
+    let readiness = auth_dir.join("telemetry-ready.json");
+    std::fs::write(&auth_db, UNREADABLE_AUTH_DB).expect("auth DB");
+    std::fs::write(&readiness, FAR_FUTURE_READINESS).expect("readiness");
+
+    let report = sandbox
+        .run_with_env(&["doctor", "--format", "json"], &env)
+        .json();
+    assert_eq!(
+        report["managed_telemetry"],
+        serde_json::json!({
+            "state": "disabled_by_config",
+            "reason": "disabled_by_config",
+            "kind": null,
+            "severity": null,
+            "next_action": null,
+        })
+    );
+    let warnings = global_state_warnings(&report);
+    assert!(warnings.is_empty(), "{warnings:#?}");
+
+    let text = sandbox.run_with_env(&["doctor"], &env);
+    assert!(
+        text.stdout.contains(&format!(
+            "[PASS] Managed telemetry (disabled by config)\n    {TELEMETRY_OPT_IN_NOTE}\n"
+        )),
+        "{}",
+        text.stdout
+    );
+    assert_eq!(
+        std::fs::read(&auth_db).expect("auth DB kept"),
+        UNREADABLE_AUTH_DB
+    );
+    assert_eq!(
+        std::fs::read(&readiness).expect("readiness kept"),
+        FAR_FUTURE_READINESS
+    );
 }

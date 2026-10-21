@@ -161,6 +161,31 @@ local sceConfigSchema = new JsonSchema {
         }
       }
     }
+    ["auth"] = new JsonSchema {
+      type = "object"
+      description = "Authentication policy for SCE cloud access. The most restrictive mode across the user and repository layers wins."
+      additionalProperties = false
+      properties {
+        ["mode"] = new JsonSchema {
+          type = "string"
+          description = "Authentication mode: `disabled` forbids login and cloud access, `optional` allows them, and `mandatory` requires authentication for explicit auth commands."
+          enum = new { "disabled"; "optional"; "mandatory" }
+          default = "optional"
+        }
+      }
+    }
+    ["telemetry"] = new JsonSchema {
+      type = "object"
+      description = "Consent for SCE-managed telemetry. A repository layer can opt out but cannot enable telemetry without user-layer consent."
+      additionalProperties = false
+      properties {
+        ["enabled"] = new JsonSchema {
+          type = "boolean"
+          description = "Enable SCE-managed OTLP export and the Claude telemetry headers helper. Does not select the destination; the `otel` block declares endpoints."
+          default = false
+        }
+      }
+    }
     ["otel"] = new JsonSchema {
       type = "object"
       description = "Optional managed OpenTelemetry declaration. Omitting the block or any field keeps the code-owned managed defaults; managed export never lets this block redirect authenticated requests."

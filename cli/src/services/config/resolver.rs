@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::services::default_paths::{
-    observability_log_dir, resolve_sce_default_locations, RepoPaths,
+    enclosing_repository_root_with, observability_log_dir, resolve_sce_default_locations, RepoPaths,
 };
 
 use crate::services::managed_telemetry::MANAGED_OTLP_DEFAULTS;
@@ -17,10 +17,11 @@ use crate::services::managed_telemetry::MANAGED_OTLP_DEFAULTS;
 use super::policy::{build_validation_warnings, resolve_bash_policy_config, BashPolicyConfig};
 use super::schema;
 use super::types::{
-    parse_bool_value_from, ConfigPathSource, ConfigRequest, DatabaseRetryConfig, LoadedConfigPath,
-    LogFormat, LogLevel, ReportFormat, ResolvedAgentTraceStorageRuntimeConfig,
-    ResolvedAuthRuntimeConfig, ResolvedHookRuntimeConfig, ResolvedObservabilityRuntimeConfig,
-    ResolvedOptionalValue, ResolvedValue, ValueSource, DEFAULT_LOG_FILE_RETENTION_LIMIT,
+    parse_bool_value_from, AuthMode, ConfigPathSource, ConfigRequest, DatabaseRetryConfig,
+    LoadedConfigPath, LogFormat, LogLevel, PolicyLayer, ReportFormat, ResolvedAccessPolicy,
+    ResolvedAgentTraceStorageRuntimeConfig, ResolvedAuthRuntimeConfig, ResolvedHookRuntimeConfig,
+    ResolvedObservabilityRuntimeConfig, ResolvedOptionalValue, ResolvedValue,
+    TelemetryDisabledReason, TelemetryPolicyState, ValueSource, DEFAULT_LOG_FILE_RETENTION_LIMIT,
     ENV_ATTRIBUTION_HOOKS_DISABLED, ENV_LOG_DIR, ENV_LOG_FORMAT, ENV_LOG_LEVEL,
 };
 
@@ -37,6 +38,16 @@ pub(crate) const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
 
 const CONTROL_PLANE_BASE_URL_ENV: &str = "SCE_CONTROL_PLANE_BASE_URL";
 const CONTROL_PLANE_BASE_URL_BAKED_DEFAULT: &str = "https://sce.crocoderlab.dev";
+
+pub(crate) const WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT: &str = "telemetry.enabled is true in the repository config but not in the user config; SCE telemetry stays disabled until the user config sets telemetry.enabled to true.";
+pub(crate) const WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED: &str =
+    "telemetry.enabled is true but auth.mode resolves to disabled; SCE telemetry is disabled.";
+pub(crate) const WARNING_AUTO_SYNC_WITH_AUTH_DISABLED: &str =
+    "agent_trace.auto_sync is true but auth.mode resolves to disabled; post-commit auto-sync is skipped.";
+pub(crate) const WARNING_REPOSITORY_MANDATORY_OVERRIDDEN_BY_USER_DISABLED: &str = "auth.mode is mandatory in the repository config but disabled in the user config; auth.mode resolves to disabled.";
+pub(crate) const WARNING_EXPLICIT_AUTH_MODE_OVERRIDDEN: &str = "auth.mode in the explicitly selected config is less restrictive than the global or repository config; the most restrictive auth.mode applies.";
+pub(crate) const WARNING_EXPLICIT_TELEMETRY_OVERRIDDEN: &str = "telemetry.enabled is true in the explicitly selected config but false in the global or repository config; SCE telemetry is disabled.";
+pub(crate) const WARNING_INVALID_LAYER_DISABLES_CLOUD: &str = "A discovered config file was skipped as invalid; SCE telemetry and background cloud operations are disabled.";
 
 pub(crate) const CONTROL_PLANE_BASE_URL_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
     config_key: "control_plane_base_url",
@@ -122,6 +133,7 @@ pub(super) struct RuntimeConfig {
     pub(super) otel: ResolvedOtelConfig,
     pub(super) bash_policies: ResolvedOptionalValue<BashPolicyConfig>,
     pub(super) database_retry: ResolvedOptionalValue<DatabaseRetryConfig>,
+    pub(super) access_policy: ResolvedAccessPolicy,
     pub(super) validation_errors: Vec<String>,
     pub(super) validation_warnings: Vec<String>,
 }
@@ -169,7 +181,7 @@ pub(crate) fn resolve_hook_runtime_config(cwd: &Path) -> Result<ResolvedHookRunt
 
 pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
     cwd: &Path,
-) -> Result<ResolvedValue<bool>> {
+) -> Result<(ResolvedValue<bool>, ResolvedAccessPolicy)> {
     let runtime = resolve_runtime_config_with(
         &ConfigRequest {
             report_format: ReportFormat::Text,
@@ -186,7 +198,7 @@ pub(crate) fn resolve_agent_trace_auto_sync_runtime_config(
         resolve_default_global_config_path,
     )?;
 
-    Ok(runtime.agent_trace_auto_sync)
+    Ok((runtime.agent_trace_auto_sync, runtime.access_policy))
 }
 
 pub(crate) fn resolve_agent_trace_storage_runtime_config(
@@ -283,6 +295,7 @@ where
     Ok(ResolvedAuthRuntimeConfig {
         workos_client_id: runtime.workos_client_id,
         control_plane_base_url: runtime.control_plane_base_url,
+        access_policy: runtime.access_policy,
     })
 }
 
@@ -319,6 +332,7 @@ where
         log_file_retention_limit: runtime.log_file_retention_limit.value,
         loaded_config_paths: runtime.loaded_config_paths,
         validation_errors: runtime.validation_errors,
+        access_policy: runtime.access_policy,
     })
 }
 
@@ -350,6 +364,7 @@ where
     Ok(ResolvedHookRuntimeConfig {
         attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
         agent_trace_auto_sync: runtime.agent_trace_auto_sync.value,
+        access_policy: runtime.access_policy,
     })
 }
 
@@ -368,7 +383,7 @@ pub(super) fn resolve_runtime_config(request: &ConfigRequest, cwd: &Path) -> Res
 }
 
 #[allow(clippy::too_many_lines)]
-fn resolve_runtime_config_with<FEnv, FRead, FGlobalPath>(
+pub(super) fn resolve_runtime_config_with<FEnv, FRead, FGlobalPath>(
     request: &ConfigRequest,
     cwd: &Path,
     env_lookup: FEnv,
@@ -401,6 +416,8 @@ where
         agent_trace_repository_id: None,
         agent_trace_repository_remote: None,
         agent_trace_auto_sync: None,
+        auth_mode: None,
+        telemetry_enabled: None,
         otel: schema::OtelFileConfig::default(),
         bash_policy_presets: None,
         bash_policy_custom: None,
@@ -408,6 +425,12 @@ where
         integrations: None,
     };
     let mut validation_errors = Vec::new();
+    let mut user_policy_layer = AccessPolicyLayer::default();
+    let mut repository_policy_layer = AccessPolicyLayer::default();
+    let mut explicit_policy_layer = AccessPolicyLayer::default();
+    let explicit_config_selected = loaded_config_paths
+        .iter()
+        .any(|loaded_path| !loaded_path.source.is_default_discovered());
     for loaded_path in &loaded_config_paths {
         let raw = read_file(&loaded_path.path)?;
         let layer = match schema::parse_file_config(&raw, &loaded_path.path, loaded_path.source) {
@@ -418,6 +441,16 @@ where
             }
             Err(error) => return Err(error),
         };
+        let policy_layer = match PolicyLayer::from_config_path_source(loaded_path.source) {
+            PolicyLayer::User => &mut user_policy_layer,
+            PolicyLayer::Repository => &mut repository_policy_layer,
+            PolicyLayer::Explicit => &mut explicit_policy_layer,
+        };
+        policy_layer.auth_mode = layer.auth_mode;
+        policy_layer.telemetry_enabled = layer.telemetry_enabled;
+        if explicit_config_selected && loaded_path.source.is_default_discovered() {
+            continue;
+        }
         if let Some(log_level) = layer.log_level {
             file_config.log_level = Some(log_level);
         }
@@ -610,7 +643,23 @@ where
         file_config.bash_policy_presets.as_ref(),
         file_config.bash_policy_custom.as_ref(),
     );
-    let validation_warnings = build_validation_warnings(&resolved_bash_policies);
+    let mut validation_warnings = build_validation_warnings(&resolved_bash_policies);
+
+    let degraded = !validation_errors.is_empty();
+    let access_policy = resolve_access_policy(
+        &user_policy_layer,
+        &repository_policy_layer,
+        &explicit_policy_layer,
+        degraded,
+    );
+    validation_warnings.extend(build_access_policy_warnings(
+        &user_policy_layer,
+        &repository_policy_layer,
+        &explicit_policy_layer,
+        &access_policy,
+        resolved_agent_trace_auto_sync.value,
+        degraded,
+    ));
 
     let resolved_database_retry =
         resolve_database_retry_config(file_config.database_retry.as_ref());
@@ -631,9 +680,163 @@ where
         otel: resolve_otel_config(file_config.otel),
         bash_policies: resolved_bash_policies,
         database_retry: resolved_database_retry,
+        access_policy,
         validation_errors,
         validation_warnings,
     })
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(super) struct AccessPolicyLayer {
+    pub(super) auth_mode: Option<schema::FileConfigValue<AuthMode>>,
+    pub(super) telemetry_enabled: Option<schema::FileConfigValue<bool>>,
+}
+
+impl AccessPolicyLayer {
+    fn telemetry(&self) -> Option<bool> {
+        self.telemetry_enabled.as_ref().map(|value| value.value)
+    }
+
+    fn auth_mode(&self) -> Option<AuthMode> {
+        self.auth_mode.as_ref().map(|value| value.value)
+    }
+}
+
+const fn auth_mode_restriction_rank(mode: AuthMode) -> u8 {
+    match mode {
+        AuthMode::Optional => 0,
+        AuthMode::Mandatory => 1,
+        AuthMode::Disabled => 2,
+    }
+}
+
+fn resolve_effective_auth_mode(
+    user: &AccessPolicyLayer,
+    repository: &AccessPolicyLayer,
+    explicit: &AccessPolicyLayer,
+) -> ResolvedValue<AuthMode> {
+    let mut resolved = ResolvedValue {
+        value: AuthMode::Optional,
+        source: ValueSource::Default,
+    };
+    let mut deciding_rank = None;
+    for value in [
+        user.auth_mode.as_ref(),
+        repository.auth_mode.as_ref(),
+        explicit.auth_mode.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let rank = auth_mode_restriction_rank(value.value);
+        if deciding_rank.is_none_or(|deciding| rank >= deciding) {
+            deciding_rank = Some(rank);
+            resolved = ResolvedValue {
+                value: value.value,
+                source: ValueSource::ConfigFile(value.source),
+            };
+        }
+    }
+    resolved
+}
+
+pub(super) fn resolve_access_policy(
+    user: &AccessPolicyLayer,
+    repository: &AccessPolicyLayer,
+    explicit: &AccessPolicyLayer,
+    degraded: bool,
+) -> ResolvedAccessPolicy {
+    let auth_mode = resolve_effective_auth_mode(user, repository, explicit);
+    let auth_disabled = auth_mode.value == AuthMode::Disabled;
+
+    let telemetry_enabled = match explicit
+        .telemetry_enabled
+        .as_ref()
+        .or(repository.telemetry_enabled.as_ref())
+        .or(user.telemetry_enabled.as_ref())
+    {
+        Some(value) => ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        },
+        None => ResolvedValue {
+            value: false,
+            source: ValueSource::Default,
+        },
+    };
+
+    let telemetry = if degraded {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::InvalidConfig)
+    } else if auth_disabled {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::AuthDisabled)
+    } else if user_telemetry_opt_out(user, explicit) {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::UserOptOut)
+    } else if repository.telemetry() == Some(false) {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::RepositoryOptOut)
+    } else if user_telemetry_consent(user, explicit) {
+        TelemetryPolicyState::Enabled
+    } else if repository.telemetry() == Some(true) {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::NoUserConsent)
+    } else {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled)
+    };
+
+    ResolvedAccessPolicy {
+        auth_mode,
+        telemetry_enabled,
+        telemetry,
+        background_cloud_allowed: !auth_disabled && !degraded,
+    }
+}
+
+fn user_telemetry_opt_out(user: &AccessPolicyLayer, explicit: &AccessPolicyLayer) -> bool {
+    user.telemetry() == Some(false) || explicit.telemetry() == Some(false)
+}
+
+fn user_telemetry_consent(user: &AccessPolicyLayer, explicit: &AccessPolicyLayer) -> bool {
+    user.telemetry() == Some(true) || explicit.telemetry() == Some(true)
+}
+
+fn build_access_policy_warnings(
+    user: &AccessPolicyLayer,
+    repository: &AccessPolicyLayer,
+    explicit: &AccessPolicyLayer,
+    policy: &ResolvedAccessPolicy,
+    agent_trace_auto_sync: bool,
+    degraded: bool,
+) -> Vec<String> {
+    let auth_disabled = policy.auth_mode.value == AuthMode::Disabled;
+    let layers = [user, repository, explicit];
+    let mut warnings = Vec::new();
+    if repository.telemetry() == Some(true) && !user_telemetry_consent(user, explicit) {
+        warnings.push(WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT.to_string());
+    }
+    if auth_disabled && layers.iter().any(|layer| layer.telemetry() == Some(true)) {
+        warnings.push(WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED.to_string());
+    }
+    if auth_disabled && agent_trace_auto_sync {
+        warnings.push(WARNING_AUTO_SYNC_WITH_AUTH_DISABLED.to_string());
+    }
+    if repository.auth_mode() == Some(AuthMode::Mandatory)
+        && (user.auth_mode() == Some(AuthMode::Disabled)
+            || explicit.auth_mode() == Some(AuthMode::Disabled))
+    {
+        warnings.push(WARNING_REPOSITORY_MANDATORY_OVERRIDDEN_BY_USER_DISABLED.to_string());
+    }
+    if explicit.auth_mode().is_some_and(|mode| {
+        auth_mode_restriction_rank(mode) < auth_mode_restriction_rank(policy.auth_mode.value)
+    }) {
+        warnings.push(WARNING_EXPLICIT_AUTH_MODE_OVERRIDDEN.to_string());
+    }
+    if explicit.telemetry() == Some(true)
+        && (user.telemetry() == Some(false) || repository.telemetry() == Some(false))
+    {
+        warnings.push(WARNING_EXPLICIT_TELEMETRY_OVERRIDDEN.to_string());
+    }
+    if degraded {
+        warnings.push(WARNING_INVALID_LAYER_DISABLES_CLOUD.to_string());
+    }
+    warnings
 }
 
 fn merge_otel_layer(target: &mut schema::OtelFileConfig, layer: schema::OtelFileConfig) {
@@ -713,6 +916,39 @@ where
     FEnv: Fn(&str) -> Option<String>,
     FGlobalPath: Fn() -> Result<PathBuf>,
 {
+    let explicit_path = resolve_explicit_config_path(request, env_lookup, path_exists)?;
+
+    let mut loaded_paths = Vec::new();
+
+    let global_path = resolve_global_config_path()?;
+    if path_exists(&global_path) {
+        loaded_paths.push(LoadedConfigPath {
+            path: global_path,
+            source: ConfigPathSource::DefaultDiscoveredGlobal,
+        });
+    }
+
+    let repository_root = enclosing_repository_root_with(cwd, path_exists).unwrap_or(cwd);
+    let local_path = RepoPaths::new(repository_root).sce_config_file();
+    if path_exists(&local_path) {
+        loaded_paths.push(LoadedConfigPath {
+            path: local_path,
+            source: ConfigPathSource::DefaultDiscoveredLocal,
+        });
+    }
+
+    loaded_paths.extend(explicit_path);
+    Ok(loaded_paths)
+}
+
+fn resolve_explicit_config_path<FEnv>(
+    request: &ConfigRequest,
+    env_lookup: &FEnv,
+    path_exists: fn(&Path) -> bool,
+) -> Result<Option<LoadedConfigPath>>
+where
+    FEnv: Fn(&str) -> Option<String>,
+{
     if let Some(path) = request.config_path.as_ref() {
         if !path_exists(path) {
             bail!(
@@ -720,10 +956,10 @@ where
                 path.display()
             );
         }
-        return Ok(vec![LoadedConfigPath {
+        return Ok(Some(LoadedConfigPath {
             path: path.clone(),
             source: ConfigPathSource::Flag,
-        }]);
+        }));
     }
 
     if let Some(raw) = env_lookup("SCE_CONFIG_FILE") {
@@ -734,31 +970,13 @@ where
                 path.display()
             );
         }
-        return Ok(vec![LoadedConfigPath {
+        return Ok(Some(LoadedConfigPath {
             path,
             source: ConfigPathSource::Env,
-        }]);
+        }));
     }
 
-    let mut discovered_paths = Vec::new();
-
-    let global_path = resolve_global_config_path()?;
-    if path_exists(&global_path) {
-        discovered_paths.push(LoadedConfigPath {
-            path: global_path,
-            source: ConfigPathSource::DefaultDiscoveredGlobal,
-        });
-    }
-
-    let local_path = RepoPaths::new(cwd).sce_config_file();
-    if path_exists(&local_path) {
-        discovered_paths.push(LoadedConfigPath {
-            path: local_path,
-            source: ConfigPathSource::DefaultDiscoveredLocal,
-        });
-    }
-
-    Ok(discovered_paths)
+    Ok(None)
 }
 
 fn resolve_default_global_config_path() -> Result<PathBuf> {
@@ -868,6 +1086,7 @@ mod tests {
         Ok(ResolvedHookRuntimeConfig {
             attribution_hooks_enabled: runtime.attribution_hooks_enabled.value,
             agent_trace_auto_sync: runtime.agent_trace_auto_sync.value,
+            access_policy: runtime.access_policy,
         })
     }
 
@@ -1196,5 +1415,779 @@ mod tests {
             runtime.control_plane_base_url.source,
             Some(ValueSource::Env)
         );
+    }
+}
+
+#[cfg(test)]
+mod access_policy_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+
+    const GLOBAL_PATH: &str = "/tmp/policy-global/sce/config.json";
+    const LOCAL_PATH: &str = "/tmp/policy-repo/.sce/config.json";
+    const EXPLICIT_PATH: &str = "/tmp/policy-explicit.json";
+
+    #[derive(Clone, Copy, Debug)]
+    enum Decider {
+        Default,
+        User,
+        Repository,
+    }
+
+    fn layer(
+        source: ConfigPathSource,
+        auth_mode: Option<AuthMode>,
+        telemetry: Option<bool>,
+    ) -> AccessPolicyLayer {
+        AccessPolicyLayer {
+            auth_mode: auth_mode.map(|value| schema::FileConfigValue { value, source }),
+            telemetry_enabled: telemetry.map(|value| schema::FileConfigValue { value, source }),
+        }
+    }
+
+    fn user(auth_mode: Option<AuthMode>, telemetry: Option<bool>) -> AccessPolicyLayer {
+        layer(
+            ConfigPathSource::DefaultDiscoveredGlobal,
+            auth_mode,
+            telemetry,
+        )
+    }
+
+    fn repository(auth_mode: Option<AuthMode>, telemetry: Option<bool>) -> AccessPolicyLayer {
+        layer(
+            ConfigPathSource::DefaultDiscoveredLocal,
+            auth_mode,
+            telemetry,
+        )
+    }
+
+    fn decider_source(decider: Decider) -> ValueSource {
+        match decider {
+            Decider::Default => ValueSource::Default,
+            Decider::User => ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal),
+            Decider::Repository => {
+                ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal)
+            }
+        }
+    }
+
+    #[test]
+    fn access_policy_auth_mode_most_restrictive_layer_wins() {
+        use AuthMode::{Disabled, Mandatory, Optional};
+        use Decider::{Default, Repository, User};
+
+        let cases = [
+            (None, None, Optional, Default),
+            (None, Some(Disabled), Disabled, Repository),
+            (None, Some(Optional), Optional, Repository),
+            (None, Some(Mandatory), Mandatory, Repository),
+            (Some(Disabled), None, Disabled, User),
+            (Some(Disabled), Some(Disabled), Disabled, Repository),
+            (Some(Disabled), Some(Optional), Disabled, User),
+            (Some(Disabled), Some(Mandatory), Disabled, User),
+            (Some(Optional), None, Optional, User),
+            (Some(Optional), Some(Disabled), Disabled, Repository),
+            (Some(Optional), Some(Optional), Optional, Repository),
+            (Some(Optional), Some(Mandatory), Mandatory, Repository),
+            (Some(Mandatory), None, Mandatory, User),
+            (Some(Mandatory), Some(Disabled), Disabled, Repository),
+            (Some(Mandatory), Some(Optional), Mandatory, User),
+            (Some(Mandatory), Some(Mandatory), Mandatory, Repository),
+        ];
+
+        for (user_mode, repository_mode, expected_mode, decider) in cases {
+            for degraded in [false, true] {
+                let policy = resolve_access_policy(
+                    &user(user_mode, None),
+                    &repository(repository_mode, None),
+                    &AccessPolicyLayer::default(),
+                    degraded,
+                );
+                let case = format!(
+                    "user={user_mode:?} repository={repository_mode:?} degraded={degraded}"
+                );
+
+                assert_eq!(policy.auth_mode.value, expected_mode, "{case}");
+                assert_eq!(policy.auth_mode.source, decider_source(decider), "{case}");
+                assert_eq!(policy.auth_allowed(), expected_mode != Disabled, "{case}");
+                assert_eq!(
+                    policy.background_cloud_allowed,
+                    expected_mode != Disabled && !degraded,
+                    "{case}"
+                );
+                assert_eq!(
+                    policy.auto_sync_allowed(true),
+                    policy.background_cloud_allowed,
+                    "{case}"
+                );
+                assert!(!policy.auto_sync_allowed(false), "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn access_policy_telemetry_requires_user_consent_and_honors_opt_outs() {
+        use TelemetryDisabledReason::{
+            AuthDisabled, InvalidConfig, NoUserConsent, NotEnabled, RepositoryOptOut, UserOptOut,
+        };
+        use TelemetryPolicyState::{Disabled, Enabled};
+
+        let base_cases = [
+            (None, None, Disabled(NotEnabled), false, Decider::Default),
+            (
+                None,
+                Some(true),
+                Disabled(NoUserConsent),
+                true,
+                Decider::Repository,
+            ),
+            (
+                None,
+                Some(false),
+                Disabled(RepositoryOptOut),
+                false,
+                Decider::Repository,
+            ),
+            (Some(true), None, Enabled, true, Decider::User),
+            (Some(true), Some(true), Enabled, true, Decider::Repository),
+            (
+                Some(true),
+                Some(false),
+                Disabled(RepositoryOptOut),
+                false,
+                Decider::Repository,
+            ),
+            (
+                Some(false),
+                None,
+                Disabled(UserOptOut),
+                false,
+                Decider::User,
+            ),
+            (
+                Some(false),
+                Some(true),
+                Disabled(UserOptOut),
+                true,
+                Decider::Repository,
+            ),
+            (
+                Some(false),
+                Some(false),
+                Disabled(UserOptOut),
+                false,
+                Decider::Repository,
+            ),
+        ];
+
+        for (user_telemetry, repository_telemetry, base_state, configured, decider) in base_cases {
+            for degraded in [false, true] {
+                for auth_disabled in [false, true] {
+                    let user_mode = auth_disabled.then_some(AuthMode::Disabled);
+                    let policy = resolve_access_policy(
+                        &user(user_mode, user_telemetry),
+                        &repository(None, repository_telemetry),
+                        &AccessPolicyLayer::default(),
+                        degraded,
+                    );
+                    let expected = if degraded {
+                        Disabled(InvalidConfig)
+                    } else if auth_disabled {
+                        Disabled(AuthDisabled)
+                    } else {
+                        base_state
+                    };
+                    let case = format!(
+                        "user={user_telemetry:?} repository={repository_telemetry:?} degraded={degraded} auth_disabled={auth_disabled}"
+                    );
+
+                    assert_eq!(policy.telemetry, expected, "{case}");
+                    assert_eq!(policy.telemetry_enabled(), expected == Enabled, "{case}");
+                    assert_eq!(policy.telemetry_enabled.value, configured, "{case}");
+                    assert_eq!(
+                        policy.telemetry_enabled.source,
+                        decider_source(decider),
+                        "{case}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn access_policy_repository_auth_disabled_forces_telemetry_off() {
+        let policy = resolve_access_policy(
+            &user(None, Some(true)),
+            &repository(Some(AuthMode::Disabled), None),
+            &AccessPolicyLayer::default(),
+            false,
+        );
+
+        assert_eq!(
+            policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::AuthDisabled)
+        );
+        assert!(!policy.background_cloud_allowed);
+    }
+
+    #[test]
+    fn access_policy_warnings_are_deterministic_and_ordered() {
+        let user_layer = user(Some(AuthMode::Disabled), None);
+        let repository_layer = repository(Some(AuthMode::Mandatory), Some(true));
+        let explicit_layer = AccessPolicyLayer::default();
+        let policy = resolve_access_policy(&user_layer, &repository_layer, &explicit_layer, true);
+
+        assert_eq!(
+            build_access_policy_warnings(
+                &user_layer,
+                &repository_layer,
+                &explicit_layer,
+                &policy,
+                true,
+                true
+            ),
+            vec![
+                WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT.to_string(),
+                WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED.to_string(),
+                WARNING_AUTO_SYNC_WITH_AUTH_DISABLED.to_string(),
+                WARNING_REPOSITORY_MANDATORY_OVERRIDDEN_BY_USER_DISABLED.to_string(),
+                WARNING_INVALID_LAYER_DISABLES_CLOUD.to_string(),
+            ]
+        );
+
+        let consenting_user = user(Some(AuthMode::Optional), Some(true));
+        let consenting_policy =
+            resolve_access_policy(&consenting_user, &repository_layer, &explicit_layer, false);
+        assert!(build_access_policy_warnings(
+            &consenting_user,
+            &repository_layer,
+            &explicit_layer,
+            &consenting_policy,
+            true,
+            false,
+        )
+        .is_empty());
+
+        let restricting_user = user(Some(AuthMode::Mandatory), Some(false));
+        let silent_repository = repository(None, None);
+        let permissive_explicit =
+            layer(ConfigPathSource::Flag, Some(AuthMode::Optional), Some(true));
+        let overridden_policy = resolve_access_policy(
+            &restricting_user,
+            &silent_repository,
+            &permissive_explicit,
+            false,
+        );
+        assert_eq!(
+            build_access_policy_warnings(
+                &restricting_user,
+                &silent_repository,
+                &permissive_explicit,
+                &overridden_policy,
+                false,
+                false,
+            ),
+            vec![
+                WARNING_EXPLICIT_AUTH_MODE_OVERRIDDEN.to_string(),
+                WARNING_EXPLICIT_TELEMETRY_OVERRIDDEN.to_string(),
+            ]
+        );
+    }
+
+    fn discovered_paths_exist(path: &Path) -> bool {
+        path == Path::new(GLOBAL_PATH) || path == Path::new(LOCAL_PATH)
+    }
+
+    fn resolve_discovered(global: &'static str, local: &'static str) -> RuntimeConfig {
+        resolve_runtime_config_with(
+            &ConfigRequest {
+                report_format: ReportFormat::Text,
+                config_path: None,
+                log_level: None,
+            },
+            Path::new("/tmp/policy-repo"),
+            |_| None,
+            move |path| {
+                if path == Path::new(GLOBAL_PATH) {
+                    Ok(global.to_string())
+                } else {
+                    Ok(local.to_string())
+                }
+            },
+            discovered_paths_exist,
+            || Ok(PathBuf::from(GLOBAL_PATH)),
+        )
+        .unwrap()
+    }
+
+    fn all_policy_paths_exist(path: &Path) -> bool {
+        [GLOBAL_PATH, LOCAL_PATH, EXPLICIT_PATH]
+            .iter()
+            .any(|candidate| path == Path::new(candidate))
+    }
+
+    fn resolve_with_explicit(
+        source: ConfigPathSource,
+        global: &'static str,
+        repository: &'static str,
+        explicit: &'static str,
+    ) -> RuntimeConfig {
+        let request = ConfigRequest {
+            config_path: (source == ConfigPathSource::Flag).then(|| PathBuf::from(EXPLICIT_PATH)),
+            report_format: ReportFormat::Text,
+            log_level: None,
+        };
+        resolve_runtime_config_with(
+            &request,
+            Path::new("/tmp/policy-repo"),
+            move |key| {
+                (source == ConfigPathSource::Env && key == "SCE_CONFIG_FILE")
+                    .then(|| EXPLICIT_PATH.to_string())
+            },
+            move |path| {
+                Ok(if path == Path::new(GLOBAL_PATH) {
+                    global
+                } else if path == Path::new(LOCAL_PATH) {
+                    repository
+                } else {
+                    explicit
+                }
+                .to_string())
+            },
+            all_policy_paths_exist,
+            || Ok(PathBuf::from(GLOBAL_PATH)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn explicit_config_cannot_bypass_global_or_repository_restrictions() {
+        use TelemetryDisabledReason::{AuthDisabled, InvalidConfig, RepositoryOptOut, UserOptOut};
+        use TelemetryPolicyState::{Disabled, Enabled};
+
+        #[derive(Clone, Copy, Debug)]
+        enum Deciding {
+            Default,
+            Global,
+            Repository,
+            Explicit,
+        }
+
+        const TELEMETRY_ON: &str = r#"{"telemetry":{"enabled":true}}"#;
+        const TELEMETRY_OFF: &str = r#"{"telemetry":{"enabled":false}}"#;
+        let cases = [
+            (
+                TELEMETRY_OFF,
+                "{}",
+                TELEMETRY_ON,
+                AuthMode::Optional,
+                Deciding::Default,
+                Disabled(UserOptOut),
+            ),
+            (
+                r#"{"auth":{"mode":"disabled"}}"#,
+                "{}",
+                r#"{"auth":{"mode":"optional"},"telemetry":{"enabled":true}}"#,
+                AuthMode::Disabled,
+                Deciding::Global,
+                Disabled(AuthDisabled),
+            ),
+            (
+                TELEMETRY_ON,
+                TELEMETRY_OFF,
+                TELEMETRY_ON,
+                AuthMode::Optional,
+                Deciding::Default,
+                Disabled(RepositoryOptOut),
+            ),
+            (
+                r#"{"auth":{"mode":"optional"}}"#,
+                r#"{"auth":{"mode":"disabled"}}"#,
+                r#"{"auth":{"mode":"mandatory"},"telemetry":{"enabled":true}}"#,
+                AuthMode::Disabled,
+                Deciding::Repository,
+                Disabled(AuthDisabled),
+            ),
+            (
+                TELEMETRY_OFF,
+                TELEMETRY_ON,
+                TELEMETRY_ON,
+                AuthMode::Optional,
+                Deciding::Default,
+                Disabled(UserOptOut),
+            ),
+            (
+                "{}",
+                "{}",
+                r#"{"auth":{"mode":"mandatory"},"telemetry":{"enabled":true}}"#,
+                AuthMode::Mandatory,
+                Deciding::Explicit,
+                Enabled,
+            ),
+            (
+                r#"{"telemetry":{"enabled":"no"}}"#,
+                "{}",
+                TELEMETRY_ON,
+                AuthMode::Optional,
+                Deciding::Default,
+                Disabled(InvalidConfig),
+            ),
+        ];
+
+        for (global, repository, explicit, auth_mode, deciding, telemetry) in cases {
+            for source in [ConfigPathSource::Flag, ConfigPathSource::Env] {
+                let runtime = resolve_with_explicit(source, global, repository, explicit);
+                let policy = &runtime.access_policy;
+                let case = format!(
+                    "global={global} repository={repository} explicit={explicit} source={source:?}"
+                );
+                let expected_auth_source = match deciding {
+                    Deciding::Default => ValueSource::Default,
+                    Deciding::Global => {
+                        ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal)
+                    }
+                    Deciding::Repository => {
+                        ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal)
+                    }
+                    Deciding::Explicit => ValueSource::ConfigFile(source),
+                };
+                let cloud_allowed =
+                    auth_mode != AuthMode::Disabled && telemetry != Disabled(InvalidConfig);
+
+                assert_eq!(policy.auth_mode.value, auth_mode, "{case}");
+                assert_eq!(policy.auth_mode.source, expected_auth_source, "{case}");
+                assert_eq!(policy.telemetry, telemetry, "{case}");
+                assert_eq!(policy.background_cloud_allowed, cloud_allowed, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_config_keeps_replacing_discovered_ordinary_values() {
+        for source in [ConfigPathSource::Flag, ConfigPathSource::Env] {
+            let runtime = resolve_with_explicit(
+                source,
+                r#"{"log_level":"warn","agent_trace":{"auto_sync":true}}"#,
+                r#"{"agent_trace":{"repository_remote":"upstream"}}"#,
+                r#"{"log_level":"debug"}"#,
+            );
+
+            assert_eq!(runtime.log_level.value, LogLevel::Debug);
+            assert_eq!(runtime.log_level.source, ValueSource::ConfigFile(source));
+            assert_eq!(runtime.agent_trace_auto_sync.source, ValueSource::Default);
+            assert_eq!(
+                runtime.agent_trace_repository_remote.source,
+                ValueSource::Default
+            );
+            assert_eq!(
+                runtime
+                    .loaded_config_paths
+                    .iter()
+                    .map(|loaded| loaded.source)
+                    .collect::<Vec<_>>(),
+                vec![
+                    ConfigPathSource::DefaultDiscoveredGlobal,
+                    ConfigPathSource::DefaultDiscoveredLocal,
+                    source,
+                ]
+            );
+        }
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=SCE Test",
+                "-c",
+                "user.email=sce@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?} in {}", dir.display());
+    }
+
+    fn write_repository_config(dir: &Path, contents: &str) -> PathBuf {
+        let path = RepoPaths::new(dir).sce_config_file();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn repository_policy_outside_git_is_discovered_from_the_working_directory_only() {
+        let at_directory = resolve_discovered(
+            r#"{"telemetry":{"enabled":true}}"#,
+            r#"{"telemetry":{"enabled":false}}"#,
+        );
+        assert_eq!(
+            at_directory.access_policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::RepositoryOptOut)
+        );
+
+        let below_directory = resolve_runtime_config_with(
+            &ConfigRequest {
+                report_format: ReportFormat::Text,
+                config_path: None,
+                log_level: None,
+            },
+            Path::new("/tmp/policy-repo/src"),
+            |_| None,
+            |_| Ok(r#"{"telemetry":{"enabled":true}}"#.to_string()),
+            discovered_paths_exist,
+            || Ok(PathBuf::from(GLOBAL_PATH)),
+        )
+        .unwrap();
+        assert_eq!(below_directory.loaded_config_paths.len(), 1);
+        assert_eq!(
+            below_directory.access_policy.telemetry,
+            TelemetryPolicyState::Enabled
+        );
+    }
+
+    #[test]
+    fn repository_policy_is_discovered_from_the_enclosing_git_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let global = base.join("global-config.json");
+        std::fs::write(
+            &global,
+            r#"{"auth":{"mode":"optional"},"telemetry":{"enabled":true}}"#,
+        )
+        .unwrap();
+
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init", "--quiet"]);
+        let repo_config = write_repository_config(&repo, r#"{"telemetry":{"enabled":false}}"#);
+        git(&repo, &["add", ".sce/config.json"]);
+        git(&repo, &["commit", "--quiet", "-m", "init"]);
+        let worktree = base.join("worktree");
+        git(
+            &repo,
+            &["worktree", "add", "--quiet", worktree.to_str().unwrap()],
+        );
+        let worktree_config = RepoPaths::new(&worktree).sce_config_file();
+
+        let inner = repo.join("vendor").join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        git(&inner, &["init", "--quiet"]);
+        let inner_config = write_repository_config(&inner, r#"{"auth":{"mode":"disabled"}}"#);
+
+        for nested in [&repo, &worktree, &inner] {
+            std::fs::create_dir_all(nested.join("src").join("module")).unwrap();
+        }
+
+        let resolve = |cwd: &Path| {
+            resolve_runtime_config_with(
+                &ConfigRequest {
+                    report_format: ReportFormat::Text,
+                    config_path: None,
+                    log_level: None,
+                },
+                cwd,
+                |_| None,
+                |path| Ok(std::fs::read_to_string(path)?),
+                Path::exists,
+                || Ok(global.clone()),
+            )
+            .unwrap()
+        };
+        let repository_opt_out =
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::RepositoryOptOut);
+        let auth_disabled = TelemetryPolicyState::Disabled(TelemetryDisabledReason::AuthDisabled);
+        let cases = [
+            (
+                &repo,
+                Some(&repo_config),
+                AuthMode::Optional,
+                repository_opt_out,
+            ),
+            (
+                &worktree,
+                Some(&worktree_config),
+                AuthMode::Optional,
+                repository_opt_out,
+            ),
+            (
+                &inner,
+                Some(&inner_config),
+                AuthMode::Disabled,
+                auth_disabled,
+            ),
+        ];
+
+        for (root, config, auth_mode, telemetry) in cases {
+            for cwd in [root.clone(), root.join("src").join("module")] {
+                let runtime = resolve(&cwd);
+                let case = cwd.display().to_string();
+                assert_eq!(
+                    runtime
+                        .loaded_config_paths
+                        .last()
+                        .map(|loaded| &loaded.path),
+                    config,
+                    "{case}"
+                );
+                assert_eq!(runtime.access_policy.auth_mode.value, auth_mode, "{case}");
+                assert_eq!(runtime.access_policy.telemetry, telemetry, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn access_policy_invalid_global_layer_is_skipped_and_degrades_policy() {
+        let runtime = resolve_discovered(
+            r#"{"auth":{"mode":"sometimes"}}"#,
+            r#"{"telemetry":{"enabled":true}}"#,
+        );
+
+        assert_eq!(runtime.validation_errors.len(), 1);
+        assert_eq!(
+            runtime.access_policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::InvalidConfig)
+        );
+        assert_eq!(runtime.access_policy.auth_mode.value, AuthMode::Optional);
+        assert!(!runtime.access_policy.background_cloud_allowed);
+        assert_eq!(
+            runtime.validation_warnings,
+            vec![
+                WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT.to_string(),
+                WARNING_INVALID_LAYER_DISABLES_CLOUD.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn access_policy_invalid_local_layer_is_skipped_and_degrades_policy() {
+        let runtime = resolve_discovered(
+            r#"{"auth":{"mode":"mandatory"},"telemetry":{"enabled":true}}"#,
+            r#"{"telemetry":{"enabled":"yes"}}"#,
+        );
+
+        assert_eq!(runtime.validation_errors.len(), 1);
+        assert_eq!(
+            runtime.access_policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::InvalidConfig)
+        );
+        assert_eq!(runtime.access_policy.auth_mode.value, AuthMode::Mandatory);
+        assert_eq!(
+            runtime.access_policy.auth_mode.source,
+            ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal)
+        );
+        assert!(!runtime.access_policy.background_cloud_allowed);
+        assert_eq!(
+            runtime.validation_warnings,
+            vec![WARNING_INVALID_LAYER_DISABLES_CLOUD.to_string()]
+        );
+    }
+
+    #[test]
+    fn access_policy_merge_loop_routes_layers_and_appends_ordered_warnings() {
+        let runtime = resolve_discovered(
+            r#"{"auth":{"mode":"disabled"}}"#,
+            r#"{"auth":{"mode":"mandatory"},"telemetry":{"enabled":true},"agent_trace":{"auto_sync":true}}"#,
+        );
+
+        assert!(runtime.validation_errors.is_empty());
+        assert_eq!(runtime.access_policy.auth_mode.value, AuthMode::Disabled);
+        assert_eq!(
+            runtime.access_policy.auth_mode.source,
+            ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal)
+        );
+        assert_eq!(
+            runtime.access_policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::AuthDisabled)
+        );
+        assert_eq!(
+            runtime.validation_warnings,
+            vec![
+                WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT.to_string(),
+                WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED.to_string(),
+                WARNING_AUTO_SYNC_WITH_AUTH_DISABLED.to_string(),
+                WARNING_REPOSITORY_MANDATORY_OVERRIDDEN_BY_USER_DISABLED.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn access_policy_defaults_when_no_config_files_exist() {
+        let runtime = resolve_runtime_config_with(
+            &ConfigRequest {
+                report_format: ReportFormat::Text,
+                config_path: None,
+                log_level: None,
+            },
+            Path::new("/tmp/policy-repo"),
+            |_| None,
+            |_| Ok("{}".to_string()),
+            |_| false,
+            || Ok(PathBuf::from(GLOBAL_PATH)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtime.access_policy,
+            ResolvedAccessPolicy {
+                auth_mode: ResolvedValue {
+                    value: AuthMode::Optional,
+                    source: ValueSource::Default,
+                },
+                telemetry_enabled: ResolvedValue {
+                    value: false,
+                    source: ValueSource::Default,
+                },
+                telemetry: TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled),
+                background_cloud_allowed: true,
+            }
+        );
+        assert!(runtime.validation_warnings.is_empty());
+    }
+
+    #[test]
+    fn access_policy_is_exposed_on_projected_runtime_configs() {
+        let expected = resolve_discovered(
+            r#"{"telemetry":{"enabled":true}}"#,
+            r#"{"auth":{"mode":"mandatory"}}"#,
+        )
+        .access_policy;
+        let read = |path: &Path| {
+            if path == Path::new(GLOBAL_PATH) {
+                Ok(r#"{"telemetry":{"enabled":true}}"#.to_string())
+            } else {
+                Ok(r#"{"auth":{"mode":"mandatory"}}"#.to_string())
+            }
+        };
+        let cwd = Path::new("/tmp/policy-repo");
+        let global = || Ok(PathBuf::from(GLOBAL_PATH));
+
+        let auth =
+            resolve_auth_runtime_config_with(cwd, |_| None, read, discovered_paths_exist, global)
+                .unwrap();
+        let hook =
+            resolve_hook_runtime_config_with(cwd, |_| None, read, discovered_paths_exist, global)
+                .unwrap();
+        let observability = resolve_observability_runtime_config_with(
+            cwd,
+            |_| None,
+            read,
+            discovered_paths_exist,
+            global,
+        )
+        .unwrap();
+
+        assert_eq!(expected.telemetry, TelemetryPolicyState::Enabled);
+        assert_eq!(auth.access_policy, expected);
+        assert_eq!(hook.access_policy, expected);
+        assert_eq!(observability.access_policy, expected);
     }
 }

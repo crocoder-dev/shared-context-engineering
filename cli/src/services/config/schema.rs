@@ -18,9 +18,10 @@ use serde_json::Value;
 
 use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
 use super::types::{
-    parse_optional_workflow_id, AgentTraceDbRetryConfig, ConfigPathSource, DatabaseRetryConfig,
-    IntegrationTargetId, IntegrationsConfig, LogFormat, LogLevel, PerDbRetryConfig,
-    AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS, AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS,
+    parse_optional_workflow_id, AgentTraceDbRetryConfig, AuthMode, ConfigPathSource,
+    DatabaseRetryConfig, IntegrationTargetId, IntegrationsConfig, LogFormat, LogLevel,
+    PerDbRetryConfig, AGENT_TRACE_DB_BUSY_TIMEOUT_MAX_MS,
+    AGENT_TRACE_DB_CONTENTION_DEADLINE_MAX_MS,
 };
 use crate::services::resilience::{RetryPolicy, RetryPolicyError};
 
@@ -41,13 +42,15 @@ pub(crate) const TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     super::resolver::WORKOS_CLIENT_ID_KEY.config_key,
     super::resolver::CONTROL_PLANE_BASE_URL_KEY.config_key,
     "agent_trace",
+    "auth",
+    "telemetry",
     "otel",
     "policies",
     "integrations",
 ];
 
 pub(crate) const TOP_LEVEL_CONFIG_KEYS_DESCRIPTION: &str =
-    "$schema, log_level, log_format, log_to_file, workos_client_id, control_plane_base_url, agent_trace, otel, policies, integrations, log_dir, log_file_retention_limit";
+    "$schema, log_level, log_format, log_to_file, workos_client_id, control_plane_base_url, agent_trace, auth, telemetry, otel, policies, integrations, log_dir, log_file_retention_limit";
 
 const PER_DB_RETRY_KEYS: &[&str] = &["connection_open", "query"];
 const PER_DB_RETRY_KEYS_DESCRIPTION: &str = "connection_open, query";
@@ -90,6 +93,8 @@ pub(crate) struct ParsedFileConfigDocument {
     pub(crate) workos_client_id: Option<String>,
     pub(crate) control_plane_base_url: Option<String>,
     pub(crate) agent_trace: Option<ParsedAgentTraceConfigDocument>,
+    pub(crate) auth: Option<ParsedAuthConfigDocument>,
+    pub(crate) telemetry: Option<ParsedTelemetryConfigDocument>,
     pub(crate) otel: Option<ParsedOtelConfigDocument>,
     pub(crate) policies: Option<ParsedPoliciesConfigDocument>,
     pub(crate) integrations: Option<ParsedIntegrationsConfigDocument>,
@@ -100,6 +105,16 @@ pub(crate) struct ParsedAgentTraceConfigDocument {
     pub(crate) repository_id: Option<String>,
     pub(crate) repository_remote: Option<String>,
     pub(crate) auto_sync: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedAuthConfigDocument {
+    pub(crate) mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub(crate) struct ParsedTelemetryConfigDocument {
+    pub(crate) enabled: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -207,6 +222,8 @@ pub(crate) struct FileConfig {
     pub(crate) agent_trace_repository_id: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_repository_remote: Option<FileConfigValue<String>>,
     pub(crate) agent_trace_auto_sync: Option<FileConfigValue<bool>>,
+    pub(crate) auth_mode: Option<FileConfigValue<AuthMode>>,
+    pub(crate) telemetry_enabled: Option<FileConfigValue<bool>>,
     pub(crate) otel: OtelFileConfig,
     pub(crate) bash_policy_presets: Option<FileConfigValue<Vec<String>>>,
     pub(crate) bash_policy_custom: Option<FileConfigValue<Vec<CustomBashPolicyEntry>>>,
@@ -358,6 +375,8 @@ pub(crate) fn parse_file_config(
         .map(|value| FileConfigValue { value, source });
     let (agent_trace_repository_id, agent_trace_repository_remote, agent_trace_auto_sync) =
         map_agent_trace_config(typed.agent_trace.as_ref(), object, path, source)?;
+    let auth_mode = map_auth_config(typed.auth.as_ref(), object, path, source)?;
+    let telemetry_enabled = map_telemetry_config(typed.telemetry.as_ref(), object, path, source)?;
     let otel = map_otel_config(typed.otel.as_ref(), object, path, source)?;
     let (attribution_hooks_enabled, bash_policy_presets, bash_policy_custom, database_retry) =
         map_policies_config(typed.policies.as_ref(), object, path, source)?;
@@ -375,6 +394,8 @@ pub(crate) fn parse_file_config(
         agent_trace_repository_id,
         agent_trace_repository_remote,
         agent_trace_auto_sync,
+        auth_mode,
+        telemetry_enabled,
         otel,
         bash_policy_presets,
         bash_policy_custom,
@@ -775,6 +796,66 @@ fn map_agent_trace_config(
     Ok((repository_id, repository_remote, auto_sync))
 }
 
+fn map_auth_config(
+    typed: Option<&ParsedAuthConfigDocument>,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<Option<FileConfigValue<AuthMode>>> {
+    let Some(auth_value) = object.get("auth") else {
+        return Ok(None);
+    };
+
+    let auth_object = auth_value.as_object().with_context(|| {
+        format!(
+            "Config key 'auth' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(auth_object, path, Some("auth"), &["mode"], "mode")?;
+
+    typed
+        .and_then(|config| config.mode.as_deref())
+        .map(|raw| -> Result<FileConfigValue<AuthMode>> {
+            Ok(FileConfigValue {
+                value: AuthMode::parse(raw, &format!("config file '{}'", path.display()))?,
+                source,
+            })
+        })
+        .transpose()
+}
+
+fn map_telemetry_config(
+    typed: Option<&ParsedTelemetryConfigDocument>,
+    object: &serde_json::Map<String, Value>,
+    path: &Path,
+    source: ConfigPathSource,
+) -> Result<Option<FileConfigValue<bool>>> {
+    let Some(telemetry_value) = object.get("telemetry") else {
+        return Ok(None);
+    };
+
+    let telemetry_object = telemetry_value.as_object().with_context(|| {
+        format!(
+            "Config key 'telemetry' in '{}' must be an object.",
+            path.display()
+        )
+    })?;
+
+    validate_object_keys(
+        telemetry_object,
+        path,
+        Some("telemetry"),
+        &["enabled"],
+        "enabled",
+    )?;
+
+    Ok(typed
+        .and_then(|config| config.enabled)
+        .map(|value| FileConfigValue { value, source }))
+}
+
 fn map_otel_config(
     typed: Option<&ParsedOtelConfigDocument>,
     object: &serde_json::Map<String, Value>,
@@ -1040,6 +1121,136 @@ mod agent_trace_config_tests {
             .to_string();
 
         assert!(error.contains("failed schema validation"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod access_policy_config_tests {
+    use std::path::Path;
+
+    use super::{parse_file_config, AuthMode, ConfigPathSource, FileConfig};
+
+    const CONFIG_PATH: &str = "/tmp/sce-config.json";
+
+    fn parse_from(raw: &str, source: ConfigPathSource) -> anyhow::Result<FileConfig> {
+        parse_file_config(raw, Path::new(CONFIG_PATH), source)
+    }
+
+    #[test]
+    fn auth_and_telemetry_sections_parse_with_layer_source() {
+        let sources = [
+            ConfigPathSource::Flag,
+            ConfigPathSource::Env,
+            ConfigPathSource::DefaultDiscoveredGlobal,
+            ConfigPathSource::DefaultDiscoveredLocal,
+        ];
+        let cases = [
+            ("disabled", AuthMode::Disabled, false),
+            ("optional", AuthMode::Optional, true),
+            ("mandatory", AuthMode::Mandatory, false),
+        ];
+
+        for source in sources {
+            for (raw_mode, mode, enabled) in cases {
+                let config = parse_from(
+                    &format!(
+                        r#"{{"auth":{{"mode":"{raw_mode}"}},"telemetry":{{"enabled":{enabled}}}}}"#
+                    ),
+                    source,
+                )
+                .unwrap();
+
+                let auth_mode = config.auth_mode.unwrap();
+                assert_eq!(auth_mode.value, mode);
+                assert_eq!(auth_mode.source, source);
+                assert_eq!(mode.as_str(), raw_mode);
+                let telemetry_enabled = config.telemetry_enabled.unwrap();
+                assert_eq!(telemetry_enabled.value, enabled);
+                assert_eq!(telemetry_enabled.source, source);
+            }
+        }
+    }
+
+    #[test]
+    fn omitted_or_empty_auth_and_telemetry_sections_parse_as_unset() {
+        for raw in [
+            "{}",
+            r#"{"log_level":"warn"}"#,
+            r#"{"auth":{},"telemetry":{}}"#,
+        ] {
+            let config = parse_from(raw, ConfigPathSource::Flag).unwrap();
+            assert_eq!(config.auth_mode, None, "{raw}");
+            assert_eq!(config.telemetry_enabled, None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn invalid_auth_and_telemetry_sections_fail_with_schema_pointer() {
+        let cases = [
+            (r#"{"auth":{"mode":"required"}}"#, "/auth/mode"),
+            (r#"{"auth":{"mode":true}}"#, "/auth/mode"),
+            (r#"{"auth":{"level":"optional"}}"#, "/auth"),
+            (r#"{"auth":"optional"}"#, "/auth"),
+            (r#"{"telemetry":{"enabled":"true"}}"#, "/telemetry/enabled"),
+            (r#"{"telemetry":{"enabled":1}}"#, "/telemetry/enabled"),
+            (r#"{"telemetry":{"export":true}}"#, "/telemetry"),
+            (r#"{"telemetry":true}"#, "/telemetry"),
+        ];
+
+        for (raw, pointer) in cases {
+            let error = parse_from(raw, ConfigPathSource::DefaultDiscoveredLocal)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!(
+                    "Config file '{CONFIG_PATH}' failed schema validation against generated schema"
+                )),
+                "{raw}: {error}"
+            );
+            assert!(error.contains(&format!(": {pointer}: ")), "{raw}: {error}");
+        }
+    }
+
+    #[test]
+    fn auth_and_telemetry_key_checks_reject_unknown_keys_as_backstop() {
+        let object = serde_json::json!({"auth": {"level": "optional"}});
+        let error = super::map_auth_config(
+            None,
+            object.as_object().unwrap(),
+            Path::new(CONFIG_PATH),
+            ConfigPathSource::Flag,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "Config key 'auth' in '/tmp/sce-config.json' contains unknown key 'level'. Allowed keys: mode."
+        );
+
+        let object = serde_json::json!({"telemetry": {"export": true}});
+        let error = super::map_telemetry_config(
+            None,
+            object.as_object().unwrap(),
+            Path::new(CONFIG_PATH),
+            ConfigPathSource::Flag,
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "Config key 'telemetry' in '/tmp/sce-config.json' contains unknown key 'export'. Allowed keys: enabled."
+        );
+    }
+
+    #[test]
+    fn auth_mode_parse_rejects_unknown_value() {
+        let error = AuthMode::parse("required", "test source")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Invalid auth mode 'required' from test source. Valid values: disabled, optional, mandatory."
+        );
     }
 }
 

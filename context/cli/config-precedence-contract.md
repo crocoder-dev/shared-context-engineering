@@ -59,15 +59,16 @@ The control-plane default is separate from the config schema declaration (`https
 
 When a supported auth-adjacent key omits a baked default, the same resolver still reports `value: null` / `(unset)` with no resolved source when both env and config inputs are absent.
 
-Config file selection follows this deterministic order:
+Config files are selected and loaded in this deterministic order:
 
-1. `--config <path>`
-2. `SCE_CONFIG_FILE`
-3. discovered defaults when no explicit path/env override is provided:
+1. discovered defaults, always:
    - global: `${config_root}/sce/config.json`, where `config_root` comes from the shared default-path policy seam in `cli/src/services/default_paths.rs` and resolves to `dirs::config_dir()` on supported platforms (Linux fallback: `~/.config` when `XDG_CONFIG_HOME` is unset)
-   - local: `.sce/config.json` under current working directory
+   - local: `.sce/config.json` at the enclosing Git worktree root, the nearest ancestor of the current working directory (inclusive) that contains a `.git` directory or file (`default_paths::enclosing_repository_root_with`). This covers ordinary repositories, linked worktrees, submodules, and nested repositories (the innermost root wins). Outside a Git repository, it is `.sce/config.json` under the current working directory. Discovery probes only the filesystem; it runs no Git subprocess and does not consult `GIT_DIR` / `GIT_WORK_TREE`.
+2. one explicit file, when selected: `--config <path>`, otherwise `SCE_CONFIG_FILE`.
 
-When both discovered defaults exist, they are merged in memory in deterministic order `global -> local`, and local values override global values per key.
+Without an explicit file, the discovered defaults are merged in memory in deterministic order `global -> local`, and local values override global values per key.
+
+With an explicit file, ordinary keys keep their existing behavior: they come only from the explicit file, and the discovered files contribute nothing to them. The discovered files are still read for the access-policy keys `auth.mode` and `telemetry.enabled`, which resolve across all three layers with restriction- and consent-gated precedence (see [effective access policy](access-policy.md#explicit-config-files)). An explicit file can override ordinary configuration but cannot lift a global or repository restriction or opt-out.
 
 When a default-discovered global or repo-local config file exists but fails JSON parsing, top-level-object validation, or schema validation, runtime resolution now skips that file, collects the failure text in `validation_errors`, and continues with remaining discovered layers plus defaults. Explicit `--config <path>` and `SCE_CONFIG_FILE` selections remain fatal on those errors. This means normal command startup still reaches dispatch for commands such as `sce version`, `sce doctor`, and `sce hooks commit-msg` even when discovered config is invalid. Setup and Agent Trace storage consume the same degraded result: setup continues after Git-root and remote preflight, preserves an invalid local file, and skips local target/optional-workflow persistence for that run, while storage uses remaining identity values or the default remote. See [the degraded discovered-config boundary decision](../decisions/2026-09-04-setup-storage-degrade-invalid-discovered-config.md).
 
@@ -82,7 +83,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - Startup/runtime config resolution degrades gracefully for default-discovered files across ordinary startup, setup, and Agent Trace storage: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.
-- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `otel`, `policies`, `integrations`.
+- Allowed keys: `$schema`, `log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`, `workos_client_id`, `control_plane_base_url`, `agent_trace`, `auth`, `telemetry`, `otel`, `policies`, `integrations`.
 - Unknown keys fail validation.
 - `log_to_file` must be a boolean when present and defaults to `true`; it is independent of `log_dir`.
 - `log_level` must be one of `error|warn|info|debug`.
@@ -96,6 +97,10 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `agent_trace.repository_id` must be a non-empty string when present.
 - `agent_trace.repository_remote` must be a non-empty string when present; omitted values resolve to `origin`.
 - `agent_trace.auto_sync` must be a boolean when present; omitted values resolve to `false`. A newly created repo-local config from `sce setup` contains an explicit `true` value.
+
+- `auth` must be an object when present and allows only `mode`, one of `disabled|optional|mandatory` (schema default `optional`); `AuthMode` in `cli/src/services/config/types.rs` owns parsing.
+- `telemetry` must be an object when present and allows only `enabled`, a boolean (schema default `false`). It is consent for SCE-managed export and is independent of the `otel` destination block.
+- Both sections are accepted in global, repo-local, and explicit config files and parse per layer with their `ConfigPathSource` (`FileConfig.auth_mode` / `FileConfig.telemetry_enabled`). Invalid modes, non-boolean `enabled` (including the string `"true"`), unknown sub-keys, and non-object sections fail generated-schema validation with `/auth...` or `/telemetry...` pointers. The resolver captures both values per layer (user = global; repository = repo-local; explicit = `--config` / `SCE_CONFIG_FILE`) and resolves them into the effective access policy with consent-gated precedence and fixed contradiction warnings; see [effective access policy](access-policy.md). `sce config show` reports both values plus the effective telemetry state, and the consumers listed in the access-policy contract enforce them.
 
 - `otel` must be an object when present and allows optional `endpoint`, `protocol`, `traces_endpoint`, `metrics_endpoint`, and `logs_endpoint`; `protocol` accepts only `http/protobuf` and the endpoint fields are non-empty strings. The block and each field are config-file only (global-before-local per-key merge) and omission never removes the code-owned managed OTLP defaults in `cli/src/services/managed_telemetry.rs` (`https://otel.crocoderlab.dev`, `http/protobuf`, and `/v1/traces`, `/v1/metrics`, `/v1/logs` paths); `show` reports each as `otel.<field>` with `source: default` when unset. The metrics endpoint is reserved for a later pipeline.
 - `integrations` must be an object when present and currently allows `target` and `optional_workflows`; either key alone yields a parsed `IntegrationsConfig` with the other defaulting to empty.
@@ -125,13 +130,14 @@ When a default-discovered global or repo-local config file exists but fails JSON
 - `show` and `validate` support deterministic `text` and `json` outputs.
 - JSON responses include a top-level `status` and nested `result` object.
 - `show` text output includes the canonical precedence string: `flags > env > config file > defaults`.
-- `show` reports discovered config files as `config_paths` (JSON) / `Config files:` (text).
+- `show` reports loaded config files as `config_paths` (JSON) / `Config files:` (text), in load order: discovered global, discovered local, then the explicit file. With an explicit file, discovered files are listed too because they feed the access policy; each resolved value's `config_source` shows which file supplied it.
 - Resolved values in `show` continue to report `source`; when source is `config_file`, output also reports a deterministic `config_source` value (`flag`, `env`, `default_discovered_global`, `default_discovered_local`).
 - `show` includes migrated supported auth keys in `result.resolved`.
 - `show` includes resolved observability values directly in `result.resolved`, preserving flat logging keys (`log_level`, `log_format`, `log_to_file`, `log_dir`, `log_file_retention_limit`) and their source metadata.
 - `validate` text output is limited to `SCE config validation`, `Validation issues`, and `Validation warnings` lines.
 - `validate` JSON output is limited to `result.command`, `result.valid`, `result.issues`, and `result.warnings`.
 - `show` includes resolved Agent Trace configuration under `result.resolved.agent_trace` (JSON: `repository_id` optional-value shape, `repository_remote` and `auto_sync` resolved-value shapes) and as per-key text lines, reporting `(unset)` for a missing `repository_id`, `source: default` for the `origin` remote fallback, and `source: default` for omitted `auto_sync`.
+- `show` includes the effective access policy after the Agent Trace keys and before `otel.*`: JSON `result.resolved.auth` (`mode`) and `result.resolved.telemetry` (`enabled`, `effective` `{state, reason}`, `note`), and the matching `auth.mode`, `telemetry.enabled`, `telemetry.effective`, and conditional `telemetry.note` text lines. The [effective access policy](access-policy.md#reporting) file owns the exact shape.
 - `show` includes `policies.database_retry` overrides with provenance; for `agent_trace_db` it also renders configured `busy_timeout_ms` and `contention_deadline_ms` (JSON integers under `agent_trace_db`, text lines suffixed `(busy_timeout_ms)` / `(contention_deadline_ms)`). Unset keys are omitted; their defaults apply at resolution.
 - Doctor consumes the same resolved `agent_trace.auto_sync` value and source metadata; its separate `post_commit_auto_sync` report fact documents hook readiness without launching synchronization.
 - `show` includes resolved bash-tool policies under `result.resolved.policies.bash`.

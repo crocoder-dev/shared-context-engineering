@@ -283,6 +283,7 @@ pub(super) enum DoctorDisplayDetail {
         summary: String,
         remediation: String,
     },
+    Note(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
