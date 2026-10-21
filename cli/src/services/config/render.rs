@@ -12,7 +12,7 @@ use super::types::{
 };
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ResolvedValue, ValueSource};
 
-const TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE: &str = "Claude Code telemetry settings written by earlier sce setup runs are not changed by telemetry.enabled.";
+const TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE: &str = "Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.";
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {

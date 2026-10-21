@@ -253,23 +253,23 @@ Ordering and consent:
 
 ## Acceptance criteria
 
-- [ ] AC1: With global `telemetry.enabled: false` or global `auth.mode: disabled`, removal deletes exactly `otelHeadersHelper` and the 9 SCE `env` entries from SCE-owned settings. Unrelated top-level keys, hooks, permissions, and non-SCE `env` keys survive, and `env` is dropped only when the removal emptied it.
+- [x] AC1: With global `telemetry.enabled: false` or global `auth.mode: disabled`, removal deletes exactly `otelHeadersHelper` and the 9 SCE `env` entries from SCE-owned settings. Unrelated top-level keys, hooks, permissions, and non-SCE `env` keys survive, and `env` is dropped only when the removal emptied it.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_telemetry_removal` (table-driven ownership tests in `config_merge.rs`; confirm a non-zero match count with `-- --list`).
-- [ ] AC2: Settings that are not attributable to SCE stay byte-identical and are reported with a fixed line naming the file: custom helper, other exporter, user-modified SCE values, per-signal additions, SCE endpoint without helper, malformed JSON, symlink, read-only file, and managed settings.
+- [x] AC2: Settings that are not attributable to SCE stay byte-identical and are reported with a fixed line naming the file: custom helper, other exporter, user-modified SCE values, per-signal additions, SCE endpoint without helper, malformed JSON, symlink, read-only file, and managed settings.
   - Validate: same filter; the shell tests assert file bytes before and after, and `fs::read_link` stays unchanged for the symlink case.
-- [ ] AC3: A repository-level or explicit-layer opt-out (`telemetry.enabled: false` or `auth.mode: disabled`) never modifies user-level Claude settings, while global consent stays `true`.
+- [x] AC3: A repository-level or explicit-layer opt-out (`telemetry.enabled: false` or `auth.mode: disabled`) never modifies user-level Claude settings, while global consent stays `true`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup_claude_telemetry` (repository A/B and explicit-layer cases assert byte-identical settings).
-- [ ] AC4: Interactive `sce setup` / `--reconfigure` that records a global withdrawal removes SCE-owned Claude settings in the same run, whether or not Claude is selected and even if a mandatory login fails afterwards. A non-interactive run reconciles only when Claude is selected.
+- [x] AC4: Interactive `sce setup` / `--reconfigure` that records a global withdrawal removes SCE-owned Claude settings in the same run, whether or not Claude is selected and even if a mandatory login fails afterwards. A non-interactive run reconciles only when Claude is selected.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_telemetry_action` plus the `setup_claude_telemetry` integration-style tests in `setup/command.rs`.
-- [ ] AC5: Enable → disable → enable → disable cycles are idempotent. A second disable performs no write, and re-enabling reinstalls the same bytes as a first install.
+- [x] AC5: Enable → disable → enable → disable cycles are idempotent. A second disable performs no write, and re-enabling reinstalls the same bytes as a first install.
   - Validate: lifecycle test in `setup/command.rs` comparing file bytes and mtime-independent content across the cycle.
-- [ ] AC6: Removal never touches `auth.db`, the OS credential store, the repository-authorization lookup, or login, in either interactive or non-interactive mode.
+- [x] AC6: Removal never touches `auth.db`, the OS credential store, the repository-authorization lookup, or login, in either interactive or non-interactive mode.
   - Validate: tests pass an authorization closure that panics if called; inspection confirms that `remove_claude_telemetry` and the removal branch call no `auth_command` / `token_storage` / `auth_db_present` function.
-- [ ] AC7: A cleanup failure (concurrent modification, unwritable directory) is reported as not done, with the path and a remediation. Setup exits 0, and the withdrawn global consent remains saved.
+- [x] AC7: A cleanup failure (concurrent modification, unwritable directory) is reported as not done, with the path and a remediation. Setup exits 0, and the withdrawn global consent remains saved.
   - Validate: shell tests with an injected re-read and a `0o555` directory assert the `Failed` line and an unchanged global config.
-- [ ] AC8: `sce config show` `telemetry.note` describes the new reconciliation behavior in place of the old "not changed" wording.
+- [x] AC8: `sce config show` `telemetry.note` describes the new reconciliation behavior in place of the old "not changed" wording.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::render`.
-- [ ] AC9: The existing install, conflict-detection, and PR #339 non-interactive tests pass unmodified, apart from tests whose asserted output order intentionally changes.
+- [x] AC9: The existing install, conflict-detection, and PR #339 non-interactive tests pass unmodified, apart from tests whose asserted output order intentionally changes.
   - Validate: `nix flake check`.
 
 ### Full validation
@@ -393,7 +393,7 @@ Ordering and consent:
   - Context impact: important. This is a user-visible behavior change: `sce setup` now removes SCE-owned Claude settings on global withdrawal, and in interactive runs that output appears before `SCE login`. Affected context: `context/sce/telemetry-credential.md` (Claude-native telemetry), `context/cli/access-policy.md` (Enforcement/coverage limit), `context/sce/setup-repo-local-config-bootstrap.md` (stage ordering).
   - Context synchronization: synced
 
-- [ ] T04: `Update config show telemetry note for Claude settings reconciliation` (status:todo)
+- [x] T04: `Update config show telemetry note for Claude settings reconciliation` (status:done)
   - Task ID: T04
   - Scope:
     - In: `config/render.rs`:
@@ -403,7 +403,12 @@ Ordering and consent:
   - Dependencies: T03
   - Done when: text and JSON `telemetry.note` render the new constant, and the render tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config::render`.
-  - Context synchronization: pending
+  - Completed: 2026-10-21
+  - Files changed: `cli/src/services/config/render.rs`
+  - Result: `TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE` now reads `Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.` (the plan's example wording verbatim). The text and JSON `telemetry.note` render through the existing constant references. Show/validate structure, JSON field names, and when the note is shown are unchanged. No test edits were needed.
+  - Verify outcomes: `config::render` → 3 passed, 0 failed (passed).
+  - Context impact: important. The user-visible `sce config show` `telemetry.note` text changed. `context/cli/access-policy.md` quotes the old note text in its Reporting section.
+  - Context synchronization: synced
 
 ## Compatibility concerns
 
@@ -418,3 +423,39 @@ Ordering and consent:
 - Should non-interactive `sce setup --claude` / `--all` also remove settings on global withdrawal? This plan says yes, because it is the same surface that installs and needs no auth storage. The narrower alternative is to reconcile only in interactive runs, which leaves non-interactive runs printing the existing skip line over stale settings.
 - Should cleanup failure be fatal (non-zero exit) instead of a reported warning? The plan keeps it non-fatal for consistency with conflict skips. A fatal exit would also suppress the remaining sections, because errors return early.
 - The existing install path replaces a symlinked `settings.json` through `write_atomically` without the symlink check, and reports write I/O errors as "could not be parsed" because of `unwrap_or(SkippedInvalid)`. Both are pre-existing install defects outside this plan's scope. Fix them in a separate PR, or fold them into T02, since they reuse the same guard?
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-21
+
+### Commands run
+
+- `nix flake check` (run 1, concurrent with targeted cargo runs) -> exit 1 (759 passed, 1 failed: `services::auth_db::multiprocess_tests::claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential`, "seed child did not exit within 60s")
+- `run-cli-cargo.sh test ... claude_hook_with_telemetry_disabled_by_config_never_resolves_the_credential` -> exit 0 (1 passed in 0.13s)
+- `nix flake check` (run 2, isolated) -> exit 1 (758 passed, 2 failed: `app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline`, `services::auth_db::multiprocess_tests::concurrent_current_version_writers_persist_every_row`)
+- `nix flake check` (run 3, isolated) -> exit 0 (all checks passed)
+- `run-cli-cargo.sh test ... claude_telemetry_removal` -> exit 0 (7 passed)
+- `run-cli-cargo.sh test ... setup_claude_telemetry` -> exit 0 (8 passed)
+- `run-cli-cargo.sh test ... claude_telemetry_action` -> exit 0 (1 passed)
+- `run-cli-cargo.sh test ... config::render` -> exit 0 (3 passed)
+
+### Success-criteria verification
+
+- [x] AC1: exact removal of the 10 SCE entries, unrelated keys kept, `env` dropped only when emptied -> `claude_telemetry_removal_classifies_ownership` and `claude_telemetry_removal_then_install_round_trips` passed
+- [x] AC2: non-attributable settings stay byte-identical and are reported -> `claude_telemetry_removal_filesystem_outcomes` (invalid JSON, symlink, read-only, modified, helper-missing, managed note) and `claude_telemetry_removal_report_renders_fixed_lines` passed
+- [x] AC3: repository and explicit-layer opt-outs never modify user Claude settings -> `setup_claude_telemetry_repository_opt_out_preserves_user_settings` passed
+- [x] AC4: interactive withdrawal removes regardless of target and before login; non-interactive only with Claude selected -> `claude_telemetry_action_follows_global_withdrawal_only` passed; pre-login placement confirmed by T03 inspection of `execute` order (no unit seam)
+- [x] AC5: enable/disable cycles are idempotent -> `setup_claude_telemetry_consent_cycle_is_idempotent` passed
+- [x] AC6: removal never touches auth storage, authorization, or login -> `setup_claude_telemetry_removal_never_checks_authorization` (panicking closure) passed; inspection: no `auth_command`/`token_storage`/`auth_db_present`/`repository_telemetry_authorized`/`run_login` reference in `claude_telemetry.rs` or `config_merge.rs`, and the `Remove` arm of `render_claude_telemetry_action` calls only `remove_claude_telemetry` + `format_claude_telemetry_removal_report`
+- [x] AC7: cleanup failure is reported as not done, non-fatal, consent kept -> `claude_telemetry_removal_reports_failed_replace_in_unwritable_directory` and the injected-reread case in `claude_telemetry_removal_filesystem_outcomes` passed
+- [x] AC8: `config show` `telemetry.note` describes reconciliation -> `config::render` 3 passed against the updated constant
+- [x] AC9: existing install, conflict, and PR #339 tests pass -> `nix flake check` run 3 exit 0
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- `nix flake check` failed in 2 of 3 runs on timing-sensitive multiprocess/deadline tests in `cli/src/app.rs` and `cli/src/services/auth_db/multiprocess_tests.rs`. This plan does not touch those files, and the failing tests changed between runs. They are flaky under load and may fail CI intermittently.
