@@ -1,9 +1,12 @@
 # Decision: Consent-gated precedence for the effective access policy
 
 Date: 2026-10-20
-Status: Accepted
+Status: Accepted (partially superseded)
+Partially superseded by: `context/decisions/2026-10-22-repository-telemetry-enabled-grants-consent.md` (the user-side-only consent rule only)
 Plan: `context/plans/auth-telemetry-policy-config.md`
 Task: `T02`
+
+> Partially superseded on 2026-10-22 by [A repository telemetry.enabled true grants telemetry consent](2026-10-22-repository-telemetry-enabled-grants-consent.md). A `telemetry.enabled: true` in any layer, including the repository layer, now grants consent unless some layer opts out, and the `no_user_consent` reason and its contradiction warning are removed. Layer discovery, `auth.mode` precedence, degraded handling, and explicit-layer semantics below still apply.
 
 ## Context
 

@@ -1,9 +1,12 @@
 # Decision: Setup writes access-policy answers to the user layer only
 
 Date: 2026-10-21
-Status: Accepted
+Status: Superseded
+Superseded by: `context/decisions/2026-10-22-setup-writes-access-answers-to-repository-config.md`
 Plan: `context/plans/setup-auth-telemetry-consent.md`
 Task: `T01, T05`
+
+> Superseded on 2026-10-22 by [Setup writes access-policy answers to the repository config](2026-10-22-setup-writes-access-answers-to-repository-config.md). Interactive `sce setup` now saves `auth.mode` and `telemetry.enabled` to the repository `.sce/config.json`, and only global or explicit values lock the setup prompts. This record is kept as history.
 
 ## Context
 

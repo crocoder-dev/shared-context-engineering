@@ -36,23 +36,23 @@ This replaces the 2026-10-21 decision "Setup writes access-policy answers to the
 
 ## Acceptance criteria
 
-- [ ] AC1: Interactive setup writes the answered `auth.mode` and `telemetry.enabled` to the repository `.sce/config.json`, writes no access keys to the global config, and keeps unrelated repository keys.
+- [x] AC1: Interactive setup writes the answered `auth.mode` and `telemetry.enabled` to the repository `.sce/config.json`, writes no access keys to the global config, and keeps unrelated repository keys.
   - Validate: setup command tests in `cli/src/services/setup/command.rs`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`.
-- [ ] AC2: A rerun suppresses each access prompt when the repository file holds its value, `--reconfigure` asks again with that value as the default, and a global value no longer suppresses a prompt.
+- [x] AC2: A rerun suppresses each access prompt when the repository file holds its value, `--reconfigure` asks again with that value as the default, and a global value no longer suppresses a prompt.
   - Validate: `resolve_setup_dispatch` / `prepare_interactive_setup` tests with `FakePrompter` for the repo-saved, global-only, and `--reconfigure` cases.
-- [ ] AC3: The repository writer refuses an invalid, concurrently modified, or symlinked file and leaves it byte-identical, and setup then aborts before the target install.
+- [x] AC3: The repository writer refuses an invalid, concurrently modified, or symlinked file and leaves it byte-identical, and setup then aborts before the target install.
   - Validate: repository writer unit tests plus one setup command abort test.
-- [ ] AC4: Global or explicit `disabled` skips the access prompts and global or explicit `mandatory` suppresses the login offer, while repository values are only prompt defaults.
+- [x] AC4: Global or explicit `disabled` skips the access prompts and global or explicit `mandatory` suppresses the login offer, while repository values are only prompt defaults.
   - Validate: `SetupAccessGate::from_policy` and dispatch tests per layer.
-- [ ] AC5: A repository `telemetry.enabled: true` with no `false` in any layer gives effective telemetry `enabled`. Any `false` still disables it, and `no_user_consent` no longer exists.
+- [x] AC5: A repository `telemetry.enabled: true` with no `false` in any layer gives effective telemetry `enabled`. Any `false` still disables it, and `no_user_consent` no longer exists.
   - Validate: `resolve_access_policy` tests in `cli/src/services/config/resolver.rs`; `sce config show --format json` shows `result.resolved.telemetry.effective.state` `enabled` in a repository with only a repository `true`.
-- [ ] AC6: Under `mandatory` with no valid stored credential, `sce doctor` reports a blocking `SCE login` failure with the `sce auth login` fix. It also shows the repository's effective telemetry state and its source.
+- [x] AC6: Under `mandatory` with no valid stored credential, `sce doctor` reports a blocking `SCE login` failure with the `sce auth login` fix. It also shows the repository's effective telemetry state and its source.
   - Validate: doctor render tests with exact text and JSON assertions; `nix run .#sce -- doctor` in a repository with `auth.mode: mandatory` and no login.
-- [ ] AC7: Non-interactive setup under effective `mandatory` prints the fixed login reminder line, exits 0, and never touches `auth.db` or the credential store.
+- [x] AC7: Non-interactive setup under effective `mandatory` prints the fixed login reminder line, exits 0, and never touches `auth.db` or the credential store.
   - Validate: setup command test for `SetupMode::NonInteractive` under `mandatory` asserting the exact line and no credential-store access.
-- [ ] AC8: A Claude `SessionStart` under `mandatory` without a valid stored credential emits exactly one `systemMessage` with `SCE login required for this repository. Run 'sce auth login'.`, and emits nothing when logged in or not `mandatory`. The hook always succeeds.
+- [x] AC8: A Claude `SessionStart` under `mandatory` without a valid stored credential emits exactly one `systemMessage` with `SCE login required for this repository. Run 'sce auth login'.`, and emits nothing when logged in or not `mandatory`. The hook always succeeds.
   - Validate: hook tests for each case; `nix run .#pkl-check-generated` if the generated Claude settings change.
-- [ ] AC9: A new ADR supersedes the 2026-10-21 decision and the user-side-only consent rule of the 2026-10-20 decision, and durable context no longer says setup writes access keys globally or that only the user side grants consent.
+- [x] AC9: A new ADR supersedes the 2026-10-21 decision and the user-side-only consent rule of the 2026-10-20 decision, and durable context no longer says setup writes access keys globally or that only the user side grants consent.
   - Validate: inspect `context/decisions/` and the files listed under Context sync; `nix shell nixpkgs#ripgrep -c rg -n "applies to all repositories on this machine|for this machine|no_user_consent" context cli/src` returns no matches outside superseded ADRs and completed plans.
 
 ### Full validation
@@ -159,21 +159,31 @@ This replaces the 2026-10-21 decision "Setup writes access-policy answers to the
   - Context impact: user-visible output addition to non-interactive setup: a fixed reminder line under effective `mandatory`. Affects the non-interactive reminder part of `context/sce/setup-repo-local-config-bootstrap.md` and the Setup / Enforcement part of `context/cli/access-policy.md`.
   - Context synchronization: synced
 
-- [ ] T06: `Notify Claude sessions when an SCE login is required` (status:todo)
+- [x] T06: `Notify Claude sessions when an SCE login is required` (status:done)
   - Task ID: T06
   - Scope: In — at Claude `SessionStart`, resolve the policy for the session working directory and, under `mandatory` without a valid stored credential, emit one `systemMessage` `SCE login required for this repository. Run 'sce auth login'.`; Pkl hook wiring if a new hook entry is needed; hook tests. Out — OpenCode/Pi/Codex notices, blocking the session, repeated notices within a session.
   - Dependencies: T04
   - Done when: AC8 holds; the hook exits successfully in every case, including policy-resolution and credential-lookup failures.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude`; `nix run .#pkl-check-generated` when Pkl changes.
-  - Context synchronization: pending
+  - Completed: 2026-10-22
+  - Files changed: `cli/src/services/hooks/claude_model_state.rs`
+  - Result: The notice is added to the existing `sce hooks claude-model-state` handler, which the generated Claude settings already run at `SessionStart`. No new hook entry or Pkl change was needed. A new `session_login_notice` helper takes injected policy and credential seams. It returns nothing unless the payload's `hook_event_name` is `SessionStart`. It then resolves the access policy for the hook working directory through `resolve_auth_runtime_config` and, only under effective `mandatory`, runs `auth_command::repository_telemetry_authorized`. That is the same non-interactive, deadline-bounded, fail-closed lookup doctor uses, and it never creates `auth.db`. With no valid credential it returns `{"systemMessage":"SCE login required for this repository. Run 'sce auth login'."}` (constant `SESSION_LOGIN_REQUIRED_MESSAGE`). `run_claude_model_state_subcommand` computes the notice right after reading stdin and before the clock and model-state persistence. It returns the notice as the hook output, so a model-state failure never suppresses it. A failed policy resolution returns nothing, and model-state behavior is unchanged. The hook still always returns successfully. It fires once per `SessionStart` event. Approved assumption: extend `claude-model-state` rather than add a new hook entry. Added 5 inline tests: mandatory without login emits exactly the one-key `systemMessage`; mandatory with login emits nothing; `optional` / `disabled` emit nothing and never run the lookup; non-`SessionStart`, eventless, and non-JSON payloads never resolve the policy; a resolution failure emits nothing.
+  - Verify outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude` passed (43 passed; the 5 new tests ran under the `claude_model_state` filter, 7 passed). `nix run .#pkl-check-generated` was not needed because no Pkl changed. Extra checks: `clippy --all-targets --all-features -- -D warnings` was clean, and `cargo fmt` was applied. I ran the built `sce hooks claude-model-state` in a temp git repository with isolated `HOME` / `XDG_CONFIG_HOME` / `XDG_STATE_HOME`. A `SessionStart` under repository `mandatory` printed exactly the `systemMessage` JSON and exited 0. `PostModelSwitch` under `mandatory`, `SessionStart` under `optional`, and `SessionStart` with an invalid `.sce/config.json` printed nothing to stdout and exited 0. The existing invalid-config startup diagnostic still goes to stderr. No `auth*` file was created.
+  - Context impact: user-visible addition. At Claude `SessionStart`, `sce hooks claude-model-state` may now emit a `systemMessage` login notice under effective `mandatory` without a valid stored credential. Affects the Enforcement part of `context/cli/access-policy.md` and any description of `claude-model-state` hook output (for example the Claude hook entries in `context/glossary.md` or `context/sce/` hook docs).
+  - Context synchronization: synced
 
-- [ ] T07: `Record repository-scoped access answers and sync context` (status:todo)
+- [x] T07: `Record repository-scoped access answers and sync context` (status:done)
   - Task ID: T07
   - Scope: In — new ADR under `context/decisions/` superseding `2026-10-21-setup-writes-access-answers-to-user-layer-only.md` and the user-side-only consent rule of `2026-10-20-consent-gated-access-policy-precedence.md` (supersession notes added to both), covering the lock change, the committed-file consent risk, and the older-binary risk; update the context files listed under Context sync. Out — code changes.
   - Dependencies: T03, T04, T05, T06
   - Done when: AC9 holds.
   - Verify: `nix shell nixpkgs#ripgrep -c rg -n "applies to all repositories on this machine|for this machine|no_user_consent" context cli/src`.
-  - Context synchronization: pending
+  - Completed: 2026-10-22
+  - Files changed: `context/decisions/2026-10-20-consent-gated-access-policy-precedence.md`, `context/decisions/2026-10-21-setup-writes-access-answers-to-user-layer-only.md`
+  - Result: The replacing ADRs were already recorded during the T02 and T03 context syncs. `2026-10-22-setup-writes-access-answers-to-repository-config.md` covers the lock change, the committed-file consent risk, the older-binary risk, and the T03 Claude-removal deviation. `2026-10-22-repository-telemetry-enabled-grants-consent.md` covers the consent rule. Approved assumption: those two ADRs together serve as the plan's new ADR, so no third ADR was written. T07 added the supersession notes. The 2026-10-21 ADR is now `Status: Superseded`, with a `Superseded by:` line and a note pointing to the repository-config ADR. The 2026-10-20 ADR is now `Status: Accepted (partially superseded)`, with a `Partially superseded by:` line limited to the user-side-only consent rule, and a note saying which parts still apply. The Context sync files (`access-policy.md`, `setup-repo-local-config-bootstrap.md`, `telemetry-credential.md`, `glossary.md`, `context-map.md`) already describe repository-scoped answers, any-layer consent, the doctor `SCE login` row, the non-interactive reminder, and the Claude session notice, so none of them changed. Follow-up outside this task's no-code scope: the login provisioning message `TELEMETRY_PROVISIONING_DISABLED` (`cli/src/services/auth_command/mod.rs`) still says `Set telemetry.enabled: true in the global SCE config to enable it.`. `context/cli/access-policy.md` quotes it exactly.
+  - Verify outcome: the planned `rg` check ran. Matches remain only in: completed plans (`auth-telemetry-policy-config`, `setup-auth-telemetry-consent`, `claude-telemetry-consent-reconciliation`); this active plan's own description of the change; the superseded 2026-10-21 ADR; the partially superseded 2026-10-20 ADR; the 2026-10-22 consent ADR and its `context-map.md` index entry, both of which record the removal of `no_user_consent`. There are no matches in `cli/src` or in any current-state context file. AC9 holds.
+  - Context impact: decision records only. The two older ADRs now carry supersession status and notes. No current-state context or code behavior changed.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -181,3 +191,40 @@ This replaces the 2026-10-21 decision "Setup writes access-policy answers to the
 - Claude-native telemetry settings stay in the user-level `~/.claude/settings.json`, so Claude Code is set up to export in every repository. In repositories without consent the headers helper fails closed, so export there has no SCE credential. Claude may still try to send to the OTLP endpoint. Moving those settings into the repository's Claude settings is out of scope here.
 - Older released binaries (`v0.4.0-pre-alpha-v11` and earlier) reject the `auth` and `telemetry` keys. A teammate on one of them has the whole repository config skipped as invalid, including bash policies and integration targets. The plan records this as a release-coupling risk in the ADR. The safer alternative is to hold the repository write until a release that accepts the keys has shipped.
 - Should a team-committed repository value (especially `auth.mode: disabled`) still lock the setup prompts? The plan lets `sce setup --reconfigure` change any repository value.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-22
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all 3 checks passed: `cli-tests`, `cli-clippy`, `cli-fmt`)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 145 files)
+- `nix shell nixpkgs#ripgrep -c rg -n "applies to all repositories on this machine|for this machine|no_user_consent" context cli/src` -> exit 0 (matches only in completed plans, this plan, the superseded/partially superseded ADRs, and the 2026-10-22 consent ADR plus its `context-map.md` index entry recording the removal; none in `cli/src`)
+- `nix build .#default` then built `sce config show --format json` in a temp repo with only repository `telemetry.enabled: true` (isolated `HOME`/`XDG_*`) -> exit 0 (`effective.state` `enabled`, `enabled.config_source` `default_discovered_local`, `note` null)
+- Built `sce doctor` (text and `--format json`) in a temp repo with repository `auth.mode: mandatory` and no login -> exit 0 (`[FAIL] SCE login` with `auth.mode: mandatory is set in the repository SCE config (`.sce/config.json`), but no valid SCE login was found.` / `Run 'sce auth login'.`; JSON `sce_login.state` `not_logged_in`; no `auth*` file created)
+- Built `sce doctor` in the repository-consent temp repo -> exit 0 (`[PASS] Managed telemetry: enabled for this repository (not configured)`, `Source: repository SCE config (`.sce/config.json`)`)
+
+### Success-criteria verification
+
+- [x] AC1: Interactive setup writes access answers to the repository `.sce/config.json` only, keeping unrelated keys -> setup command tests pass inside `nix flake check` `cli-tests`
+- [x] AC2: Repository-saved answers suppress prompts, `--reconfigure` defaults to them, global values no longer suppress -> `FakePrompter` dispatch tests pass in `cli-tests`
+- [x] AC3: Repository writer refuses invalid, concurrently modified, or symlinked files byte-identically; setup aborts before target install -> writer unit tests and symlink abort test pass in `cli-tests`
+- [x] AC4: Global/explicit `disabled` skips prompts, global/explicit `mandatory` suppresses login offer; repository values are defaults only -> `SetupAccessGate::from_policy` per-layer tests pass in `cli-tests`
+- [x] AC5: Repository `true` alone enables telemetry, any `false` disables, `no_user_consent` gone -> resolver tests pass; built `sce config show --format json` shows `enabled`; no `no_user_consent` in `cli/src`
+- [x] AC6: `sce doctor` reports blocking `SCE login` failure with fix and shows repository telemetry state and source -> doctor render tests pass; built `sce doctor` text/JSON confirmed in both temp repos
+- [x] AC7: Non-interactive setup under `mandatory` prints the fixed reminder, exits 0, no credential-store access -> non-interactive setup tests pass in `cli-tests`
+- [x] AC8: Claude `SessionStart` under `mandatory` without login emits exactly one `systemMessage`, nothing otherwise, always succeeds -> `claude_model_state` hook tests pass in `cli-tests`; no Pkl change, `pkl-check-generated` passed
+- [x] AC9: New ADRs supersede the 2026-10-21 decision and the user-side-only consent rule; durable context updated -> inspected `context/decisions/` (2026-10-21 `Superseded`, 2026-10-20 `partially superseded`, two 2026-10-22 ADRs); remaining `rg` matches are historical records of the change only
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- `TELEMETRY_PROVISIONING_DISABLED` in `cli/src/services/auth_command/mod.rs` still says `Set telemetry.enabled: true in the global SCE config to enable it.` (recorded T07 follow-up, outside this plan's wording changes).
+- Committed repository `telemetry.enabled: true` opts in every cloner without asking, and older binaries (`v0.4.0-pre-alpha-v11` and earlier) reject the `auth`/`telemetry` keys; both are recorded open questions/ADR risks.
+- Claude-native telemetry removal still reads only global preferences, so a repository `telemetry.enabled: false` answer gives `SkipDisabled` rather than `Remove` (recorded T03 deviation).
+- In a bare temp repo, `sce doctor` repeats the same state/repository-identity problems under several Environment rows; this is outside the plan's scope and was not investigated here.
