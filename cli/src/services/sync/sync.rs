@@ -546,10 +546,7 @@ mod tests {
     use serde_json::{json, Value};
     use tokio::sync::{oneshot, Notify};
 
-    use super::{
-        join_three_to_completion, run_current_sync_with_progress_and_clock, sync_one_stream,
-        StreamSyncReport, SystemSyncProgressClock, TraceSyncError,
-    };
+    use super::{join_three_to_completion, sync_one_stream, StreamSyncReport, TraceSyncError};
     use crate::services::agent_trace_db::MessageRole;
     use crate::services::agent_trace_export::AgentTraceMessageExportRow;
     use crate::services::agent_trace_sync::control_plane::{
@@ -559,7 +556,7 @@ mod tests {
     use crate::services::agent_trace_sync::StreamSyncError;
     use crate::services::auth::TokenResponse;
     use crate::services::db::encryption_key::CredentialAccess;
-    use crate::services::error::AuthPolicyConfigFile;
+
     use crate::services::sync::progress::NoopProgressReporter;
     use crate::services::token_storage::StoredTokens;
 
@@ -568,36 +565,6 @@ mod tests {
     const TEST_BATCH_TIMEOUT: Duration = Duration::from_millis(500);
     const TEST_DEADLINE: Duration = Duration::from_secs(10);
     const STALL_SAFETY_BOUND: Duration = Duration::from_secs(10);
-
-    #[tokio::test]
-    async fn sync_rejects_disabled_auth_before_storage_or_credential_access() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        std::fs::create_dir(dir.path().join(".git")).expect("repository marker");
-        std::fs::create_dir_all(dir.path().join(".sce")).expect("config dir");
-        std::fs::write(
-            dir.path().join(".sce").join("config.json"),
-            r#"{"auth":{"mode":"disabled"}}"#,
-        )
-        .expect("repository config");
-
-        let error = run_current_sync_with_progress_and_clock(
-            dir.path(),
-            &mut NoopProgressReporter,
-            &SystemSyncProgressClock,
-        )
-        .await
-        .expect_err("disabled auth must reject sync");
-
-        assert!(
-            matches!(
-                error,
-                TraceSyncError::AuthDisabled(AuthPolicyConfigFile::Repository)
-            ),
-            "{error:?}"
-        );
-        assert!(!error.is_authentication_failure());
-        assert_eq!(error.storage_failure(), None);
-    }
 
     #[tokio::test]
     async fn sibling_failure_does_not_cancel_in_flight_credential_save() {

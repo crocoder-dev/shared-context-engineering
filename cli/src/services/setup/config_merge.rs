@@ -387,6 +387,96 @@ pub(crate) fn merge_claude_telemetry_settings(
     ))
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum ClaudeTelemetryRemovalMerge {
+    Removed(Vec<u8>),
+    NotInstalled,
+    Modified(ClaudeTelemetrySkipReason),
+    HelperMissing,
+}
+
+pub(crate) fn remove_claude_telemetry_settings(
+    existing_bytes: Option<&[u8]>,
+    source_path: &str,
+) -> Result<ClaudeTelemetryRemovalMerge> {
+    let Some(bytes) = existing_bytes else {
+        return Ok(ClaudeTelemetryRemovalMerge::NotInstalled);
+    };
+    let existing: Value = serde_json::from_slice(bytes).with_context(|| {
+        format!("Existing config file '{source_path}' must contain valid JSON.")
+    })?;
+    let mut settings = existing.as_object().cloned().with_context(|| {
+        format!("Existing config file '{source_path}' must contain a top-level JSON object.")
+    })?;
+    let mut env = match settings.get("env") {
+        Some(value) => Some(value.as_object().cloned().with_context(|| {
+            format!("Existing config file '{source_path}' key 'env' must be a JSON object.")
+        })?),
+        None => None,
+    };
+
+    match settings.get(CLAUDE_OTEL_HEADERS_HELPER_KEY) {
+        Some(helper) if helper.as_str() == Some(CLAUDE_OTEL_HEADERS_HELPER_COMMAND) => {}
+        Some(_) => return Ok(ClaudeTelemetryRemovalMerge::NotInstalled),
+        None => {
+            let sce_endpoint = env
+                .as_ref()
+                .and_then(|env| env.get("OTEL_EXPORTER_OTLP_ENDPOINT"))
+                .and_then(Value::as_str)
+                == Some(MANAGED_OTLP_ENDPOINT);
+            return Ok(if sce_endpoint {
+                ClaudeTelemetryRemovalMerge::HelperMissing
+            } else {
+                ClaudeTelemetryRemovalMerge::NotInstalled
+            });
+        }
+    }
+
+    if let Some(reason) = claude_telemetry_conflict(&existing) {
+        return Ok(ClaudeTelemetryRemovalMerge::Modified(reason));
+    }
+
+    settings.remove(CLAUDE_OTEL_HEADERS_HELPER_KEY);
+    if let Some(env) = env.as_mut() {
+        let was_empty = env.is_empty();
+        for (key, value) in claude_telemetry_env_entries() {
+            if env.get(key).and_then(Value::as_str) == Some(value) {
+                env.remove(key);
+            }
+        }
+        if !was_empty && env.is_empty() {
+            settings.remove("env");
+        } else {
+            settings.insert("env".to_string(), Value::Object(env.clone()));
+        }
+    }
+
+    let mut serialized = serde_json::to_string_pretty(&Value::Object(settings))
+        .context("Failed to serialize Claude settings after telemetry removal")?;
+    serialized.push('\n');
+    Ok(ClaudeTelemetryRemovalMerge::Removed(
+        serialized.into_bytes(),
+    ))
+}
+
+pub(crate) fn settings_configure_claude_telemetry(settings: &Value) -> bool {
+    if settings.get(CLAUDE_OTEL_HEADERS_HELPER_KEY).is_some() {
+        return true;
+    }
+    let Some(env) = settings.get("env").and_then(Value::as_object) else {
+        return false;
+    };
+    CLAUDE_TELEMETRY_SWITCH_KEYS
+        .iter()
+        .chain(CLAUDE_TELEMETRY_PRIVACY_KEYS.iter())
+        .chain(CLAUDE_OTEL_ENDPOINT_KEYS.iter())
+        .chain(CLAUDE_OTEL_HEADERS_KEYS.iter())
+        .chain(CLAUDE_OTEL_PROTOCOL_KEYS.iter())
+        .chain(CLAUDE_OTEL_EXPORTER_KEYS.iter())
+        .chain(CLAUDE_TELEMETRY_HELPER_SETTING_KEYS.iter())
+        .any(|key| env.contains_key(*key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
