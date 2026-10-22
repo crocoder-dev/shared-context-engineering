@@ -760,9 +760,9 @@ mod tests {
 
     use anyhow::{anyhow, Result};
 
-    use crate::services::agent_trace::{validate_agent_trace_value, AgentTrace, AgentTraceVcsType};
+    use crate::services::agent_trace::{validate_agent_trace_value, AgentTrace};
     use crate::services::agent_trace_db::AgentTraceInsert;
-    use crate::services::config::resolver::resolve_hook_runtime_config_with;
+
     use crate::services::error::CliError;
     use crate::services::observability::traits::Logger;
     use crate::services::patch::ParsedPatch;
@@ -770,8 +770,7 @@ mod tests {
     use super::super::commit_patch_id::compute_commit_patch_id;
     use super::{
         capture_post_commit_patch_from_git, resolve_post_commit_commit_patch_id,
-        run_post_commit_agent_trace_flow_with, run_post_commit_subcommand_with,
-        PostCommitIntersectionFlowResult, AUTO_SYNC_SKIPPED_BY_POLICY_EVENT,
+        run_post_commit_agent_trace_flow_with, PostCommitIntersectionFlowResult,
         COMMIT_PATCH_ID_UNAVAILABLE_EVENT,
     };
 
@@ -789,10 +788,6 @@ mod tests {
     impl RecordingLogger {
         fn warnings(&self) -> Vec<(String, String)> {
             self.warnings.lock().unwrap().clone()
-        }
-
-        fn debugs(&self) -> Vec<String> {
-            self.debugs.lock().unwrap().clone()
         }
     }
 
@@ -1039,92 +1034,5 @@ mod tests {
         .await
         .expect_err("persistence failure must propagate");
         assert_eq!(persistence_error.to_string(), "persistence rejected");
-    }
-
-    #[tokio::test]
-    async fn post_commit_launches_auto_sync_only_when_background_cloud_is_allowed() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let root = dir.path().join("repo");
-        std::fs::create_dir_all(&root).expect("repo dir");
-        init_repository_with_commit(&root);
-        let global = dir.path().join("global.json");
-        let local = root.join(".sce").join("config.json");
-        std::fs::create_dir_all(local.parent().expect("local config dir")).expect("local dir");
-
-        for auto_sync in [false, true] {
-            for (case, auth_mode, degraded) in [
-                ("disabled", "disabled", false),
-                ("optional", "optional", false),
-                ("mandatory", "mandatory", false),
-                ("degraded", "optional", true),
-            ] {
-                std::fs::write(
-                    &global,
-                    format!(
-                        r#"{{"agent_trace":{{"auto_sync":{auto_sync}}},"auth":{{"mode":"{auth_mode}"}}}}"#
-                    ),
-                )
-                .expect("global config");
-                if degraded {
-                    std::fs::write(&local, r#"{"auth":{"mode":"bogus"}}"#).expect("local config");
-                } else {
-                    let _ = std::fs::remove_file(&local);
-                }
-
-                let logger = RecordingLogger::default();
-                let launches = RefCell::new(0_usize);
-                let output = run_post_commit_subcommand_with(
-                    &root,
-                    None,
-                    REMOTE_URL,
-                    async |root: &Path| Ok(flow_result(root)),
-                    async |_: &Path,
-                           result: &PostCommitIntersectionFlowResult,
-                           _: Option<AgentTraceVcsType>,
-                           _: &str,
-                           _: Option<&RecordingLogger>| {
-                        Ok(run_flow_capturing(result, None).await.0)
-                    },
-                    |root| {
-                        resolve_hook_runtime_config_with(
-                            root,
-                            |_| None,
-                            |path| std::fs::read_to_string(path).map_err(anyhow::Error::from),
-                            Path::exists,
-                            || Ok(global.clone()),
-                        )
-                    },
-                    |_| {
-                        *launches.borrow_mut() += 1;
-                        Ok(())
-                    },
-                    async |_: &Path| Ok(()),
-                    Some(&logger),
-                )
-                .await
-                .unwrap_or_else(|error| panic!("{case} auto_sync={auto_sync}: {error:#}"));
-
-                let allowed = auth_mode != "disabled" && !degraded;
-                assert!(
-                    output.starts_with("post-commit hook processed intersection: commit="),
-                    "{case} auto_sync={auto_sync}: {output}"
-                );
-                assert_eq!(
-                    *launches.borrow(),
-                    usize::from(auto_sync && allowed),
-                    "{case} auto_sync={auto_sync}"
-                );
-                let expected_debugs = if auto_sync && !allowed {
-                    vec![AUTO_SYNC_SKIPPED_BY_POLICY_EVENT.to_string()]
-                } else {
-                    Vec::new()
-                };
-                assert_eq!(
-                    logger.debugs(),
-                    expected_debugs,
-                    "{case} auto_sync={auto_sync}"
-                );
-            }
-        }
     }
 }

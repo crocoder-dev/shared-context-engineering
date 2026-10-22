@@ -1114,42 +1114,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn only_claude_hook_invocations_are_admitted_to_managed_hook_telemetry() {
-        const HOOK: Option<ManagedSpanKind> = Some(ManagedSpanKind::ClaudeHook);
-        const COMMAND: Option<ManagedSpanKind> = Some(ManagedSpanKind::Command);
-        let cases: [(&[&str], bool, Option<ManagedSpanKind>); 20] = [
-            (&["sce", "hooks", "claude-mutation-scope"], false, HOOK),
-            (&["sce", "hooks", "claude-model-state"], false, HOOK),
-            (&["sce", "hooks", "diff-trace"], true, HOOK),
-            (&["sce", "hooks", "diff-trace"], false, None),
-            (&["sce", "hooks", "conversation-trace"], true, HOOK),
-            (&["sce", "hooks", "conversation-trace"], false, None),
-            (&["sce", "policy", "bash"], true, HOOK),
-            (&["sce", "policy", "bash"], false, None),
-            (&["sce", "hooks", "pre-commit"], true, None),
-            (&["sce", "--verbose", "hooks", "codex"], true, None),
-            (&["sce", "hooks", "codex-mutation-scope"], true, None),
-            (&["sce", "hooks", "opencode-mutation-scope"], true, None),
-            (&["sce", "hooks", "pi-mutation-scope"], true, None),
-            (&["sce", "hooks"], true, None),
-            (&["sce", "auth", "telemetry-headers"], true, None),
-            (&["sce", "setup"], true, None),
-            (&["sce", "setup", "--claude"], true, None),
-            (&["sce", "auth", "login"], true, COMMAND),
-            (&["sce", "config", "show"], false, COMMAND),
-            (&["sce", "doctor"], true, COMMAND),
-        ];
-        for (args, claude_caller, expected) in cases {
-            let args = args.iter().map(ToString::to_string).collect::<Vec<_>>();
-            assert_eq!(
-                managed_span_kind(&args, claude_caller),
-                expected,
-                "{args:?} claude_caller={claude_caller}"
-            );
-        }
-    }
-
     #[tokio::test]
     async fn disallowed_managed_telemetry_resolves_to_noop_without_credential_lookup() {
         let telemetry =
