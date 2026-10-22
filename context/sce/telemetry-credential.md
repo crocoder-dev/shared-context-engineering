@@ -39,7 +39,7 @@ flowchart LR
 
 ## Doctor health check
 
-`sce doctor` reports managed telemetry as the last `Environment` row and as a top-level JSON `managed_telemetry` object. `managed_telemetry::inspect_health` computes it once per invocation, and it is read-only:
+`sce doctor` reports managed telemetry as the last `Environment` row and as a top-level JSON `managed_telemetry` object. `managed_telemetry::inspect_health` computes it once per invocation, and it is read-only. The row and the JSON also report the effective policy for the inspected repository (see [Policy state](#policy-state)):
 
 - It never issues a credential, contacts the Control Plane, or starts an OTLP exporter.
 - It checks the effective access policy for the inspected repository root first; an unresolvable config counts as not enabled. When telemetry is not `Enabled`, it returns `DisabledByConfig { auth_db_present }` without opening `auth.db` or touching the credential store. It only checks whether `auth.db` exists (a stat), to decide on the opt-in line.
@@ -48,9 +48,9 @@ flowchart LR
 
 | Health | Text row | JSON `state` / `reason` | Problem `kind` | `next_action` |
 | --- | --- | --- | --- | --- |
-| Telemetry not `Enabled` by policy | `[PASS] Managed telemetry (disabled by config)` | `disabled_by_config` / `disabled_by_config` | none | none |
-| No `auth.db`, or no telemetry row | `[PASS] Managed telemetry (not configured)` | `not_configured` / `not_configured` | none | none |
-| Credential valid | `[PASS] Managed telemetry` | `healthy` / `null` | none | none |
+| Telemetry not `Enabled` by policy | `[PASS] Managed telemetry: disabled (reason: <reason>)` | `disabled_by_config` / `disabled_by_config` | none | none |
+| No `auth.db`, or no telemetry row | `[PASS] Managed telemetry: enabled for this repository (not configured)` | `not_configured` / `not_configured` | none | none |
+| Credential valid | `[PASS] Managed telemetry: enabled for this repository` | `healthy` / `null` | none | none |
 | Store refuses silent access | `[WARN]` | `disabled` / `credential_inaccessible` | `managed_telemetry_credential_inaccessible` | `auth_login` |
 | Unusable row (no WorkOS session, identity mismatch, legacy or malformed) or schema not current | `[WARN]` | `disabled` / `credential_unavailable` | `managed_telemetry_credential_unavailable` | `auth_login` |
 | Credential expired | `[WARN]` | `disabled` / `credential_expired` | `managed_telemetry_credential_expired` | `auth_login` |
@@ -60,10 +60,16 @@ flowchart LR
 
 - The JSON object has `state`, `reason`, `kind`, `severity` (`warning` or `null`), and `next_action`. A warning also appears in `problems` (category `global_state`, severity `warning`, fixability `manual_only`) with the same `next_action`. It never makes doctor `not_ready`.
 - Every warning says that Claude Code hooks continue working and only telemetry export is disabled.
-- When telemetry is disabled by config and `auth.db` exists (an earlier login stored credentials), the `disabled by config` row adds one fixed line: `Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the global SCE config to resume it.`
+- When the disabled reason is `not_enabled` and `auth.db` exists (an earlier login stored credentials), the row adds one fixed line: `Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the repository SCE config to enable it for this repository.` Other disabled reasons (an opt-out, `auth_disabled`, `invalid_config`) never show it.
 - Only macOS `credential_inaccessible` recommends choosing "Always Allow" in the Keychain dialog shown by `sce auth login`. Other platforms name their store (Secret Service, Windows Credential Manager) instead. Expiry, missing credentials, timeouts, and DB or path errors never mention it.
 - Output uses fixed text only. It never includes `TokenStorageError` details, Keychain error codes, keys, WorkOS tokens, or OpenBao tokens. The detailed reason stays in the local `sce.telemetry.fallback` log event that the same doctor invocation's startup lookup writes.
-- Code: `cli/src/services/doctor/managed_telemetry.rs` (classification text and JSON) and `cli/src/services/managed_telemetry.rs` (`inspect_health`, `inspect_health_with`).
+- Code: `cli/src/services/doctor/managed_telemetry.rs` (classification text and JSON), `cli/src/services/doctor/access.rs` (policy state and source), and `cli/src/services/managed_telemetry.rs` (`inspect_health`, `inspect_health_with`).
+
+### Policy state
+
+- The row label carries the effective telemetry state for the inspected repository: `Managed telemetry: enabled for this repository` or `Managed telemetry: disabled (reason: <reason>)`, with the reasons from [access-policy.md](../cli/access-policy.md). A warning row keeps the enabled label.
+- Every row, healthy rows included, adds `Source: <layer>` naming the deciding layer: `repository SCE config (`.sce/config.json`)`, `global SCE config`, the `--config` or `SCE_CONFIG_FILE` file, or `default`. The deciding layer is the `telemetry.enabled` layer for an opt-out, consent, or `not_enabled`, and the `auth.mode` layer for `auth_disabled`. `invalid_config` has no source line.
+- JSON adds `managed_telemetry.policy` with `state` (`enabled` / `disabled`), `reason` (or `null`), `source` (`config_file` / `default`), and `config_source` (the config layer, or `null`). The health keys above keep their meaning.
 
 ## Hidden header helper
 

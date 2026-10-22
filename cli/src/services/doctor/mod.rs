@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::app::{ContextWithRepoRoot, HasRepoRoot};
+use crate::services::auth_command;
 use crate::services::codex_hook_policy;
+use crate::services::config::{ResolvedAccessPolicy, TelemetryPolicyState};
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
 use crate::services::lifecycle::{
     lifecycle_providers, FixOutcome, HealthCategory, HealthFixability, HealthProblem,
@@ -19,6 +21,7 @@ use crate::services::mutation_trace::runtime::{
 use crate::services::output_format::OutputFormat;
 use crate::services::setup;
 
+mod access;
 mod fixes;
 mod inspect;
 mod managed_telemetry;
@@ -27,6 +30,7 @@ pub(crate) mod types;
 
 pub mod command;
 
+use access::DoctorAccess;
 use fixes::build_manual_fix_results;
 use inspect::{
     build_report_with_lifecycle_problems, finalize_mutation_scope_repair_results,
@@ -63,11 +67,13 @@ struct DoctorDependencies<'a, G, S, C, P> {
     resolve_global_config_path: &'a C,
     probe_codex_hook_policy: &'a P,
     managed_telemetry: ManagedTelemetryHealth,
+    access: DoctorAccess,
 }
 
 struct DoctorExecution {
     report: HookDoctorReport,
     managed_telemetry: ManagedTelemetryHealth,
+    access: DoctorAccess,
     fix_results: Vec<DoctorFixResultRecord>,
     ref_reconciliation: Option<ReconciliationRecommendation>,
     ref_reconciliation_fix: Option<ReconciliationFix>,
@@ -115,6 +121,11 @@ async fn execute_doctor_with_context(
     reconcile_seam: &impl std::ops::AsyncFn(&Path) -> ReconciliationFix,
     recommendation_seam: &impl Fn(&Path) -> Option<ReconciliationRecommendation>,
 ) -> DoctorExecution {
+    let policy = access_policy_for(repository_root);
+    let access = DoctorAccess::inspect(policy.as_ref(), || {
+        auth_command::repository_telemetry_authorized(repository_root)
+    })
+    .await;
     execute_doctor_with_lifecycle_providers(
         request,
         repository_root,
@@ -127,9 +138,10 @@ async fn execute_doctor_with_context(
             },
             probe_codex_hook_policy: &codex_hook_policy::probe_default,
             managed_telemetry: crate::services::managed_telemetry::inspect_health(
-                telemetry_enabled_for(repository_root),
+                access.telemetry == TelemetryPolicyState::Enabled,
             )
             .await,
+            access,
         },
         mutation_scope_seam,
         reconcile_seam,
@@ -138,9 +150,10 @@ async fn execute_doctor_with_context(
     .await
 }
 
-fn telemetry_enabled_for(repository_root: &Path) -> bool {
+fn access_policy_for(repository_root: &Path) -> Option<ResolvedAccessPolicy> {
     crate::services::config::resolve_observability_runtime_config(repository_root)
-        .is_ok_and(|config| config.access_policy.telemetry_enabled())
+        .ok()
+        .map(|config| config.access_policy)
 }
 
 async fn execute_doctor_with_lifecycle_providers(
@@ -164,12 +177,14 @@ async fn execute_doctor_with_lifecycle_providers(
 ) -> DoctorExecution {
     let policy_readiness = (dependencies.probe_codex_hook_policy)();
     let managed_telemetry = dependencies.managed_telemetry;
+    let access = dependencies.access;
 
     let providers = lifecycle_providers(true);
     let initial_problems = diagnose_lifecycle_providers(context, &providers).await;
     let initial_doctor_problems = initial_problems
         .iter()
         .map(|problem| problem.problem.clone())
+        .chain(access.login_problem())
         .chain(managed_telemetry::problem(managed_telemetry))
         .collect::<Vec<_>>();
     let initial_report = build_report_with_lifecycle_problems(
@@ -185,6 +200,7 @@ async fn execute_doctor_with_lifecycle_providers(
         return DoctorExecution {
             report: initial_report,
             managed_telemetry,
+            access,
             fix_results: Vec::new(),
             ref_reconciliation: recommendation_seam(repository_root),
             ref_reconciliation_fix: None,
@@ -202,6 +218,7 @@ async fn execute_doctor_with_lifecycle_providers(
     let final_doctor_problems = final_problems
         .into_iter()
         .map(|problem| problem.problem)
+        .chain(access.login_problem())
         .chain(managed_telemetry::problem(managed_telemetry))
         .collect::<Vec<_>>();
     let final_report = build_report_with_lifecycle_problems(
@@ -227,6 +244,7 @@ async fn execute_doctor_with_lifecycle_providers(
     DoctorExecution {
         report: final_report,
         managed_telemetry,
+        access,
         fix_results,
         ref_reconciliation: None,
         ref_reconciliation_fix: Some(reconciliation_fix),
@@ -500,6 +518,7 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::MutationScopeHealthBlocked => ProblemKind::MutationScopeHealthBlocked,
         HealthProblemKind::MutationScopeHealthInvalid => ProblemKind::MutationScopeHealthInvalid,
         HealthProblemKind::ManagedTelemetryUnavailable => ProblemKind::ManagedTelemetryUnavailable,
+        HealthProblemKind::SceLoginRequired => ProblemKind::SceLoginRequired,
     }
 }
 
@@ -580,6 +599,7 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         ProblemKind::MutationScopeHealthBlocked => HealthProblemKind::MutationScopeHealthBlocked,
         ProblemKind::MutationScopeHealthInvalid => HealthProblemKind::MutationScopeHealthInvalid,
         ProblemKind::ManagedTelemetryUnavailable => HealthProblemKind::ManagedTelemetryUnavailable,
+        ProblemKind::SceLoginRequired => HealthProblemKind::SceLoginRequired,
     }
 }
 

@@ -4,6 +4,7 @@ use serde_json::json;
 use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
 use crate::services::style::{heading, label, supports_color, value, OwoColorize};
 
+use super::access::{DoctorAccess, LoginState};
 use super::types::{
     fix_result_outcome, mutation_scope_health_status, mutation_scope_target_id, problem_category,
     problem_fixability, problem_severity, DoctorDisplayDetail, DoctorDisplayNode,
@@ -13,6 +14,7 @@ use super::types::{
     PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{managed_telemetry, DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
+use crate::services::config::{TelemetryDisabledReason, TelemetryPolicyState};
 use crate::services::managed_telemetry::ManagedTelemetryHealth;
 use crate::services::mutation_trace::runtime::{
     ReconciliationCounts, ReconciliationFix, ReconciliationRecommendation, StateWarning,
@@ -31,7 +33,7 @@ pub(super) fn render_report(request: DoctorRequest, execution: &DoctorExecution)
 
 fn format_execution(execution: &DoctorExecution) -> String {
     let report = &execution.report;
-    let base_report = format_report(report, execution.managed_telemetry);
+    let base_report = format_report(report, execution.managed_telemetry, execution.access);
     let mut lines = base_report
         .lines()
         .map(ToOwned::to_owned)
@@ -104,13 +106,18 @@ fn format_age(age_ms: i64) -> String {
     }
 }
 
-fn format_report(report: &HookDoctorReport, managed_telemetry: ManagedTelemetryHealth) -> String {
-    format_report_with_color_policy(report, managed_telemetry, supports_color())
+fn format_report(
+    report: &HookDoctorReport,
+    managed_telemetry: ManagedTelemetryHealth,
+    access: DoctorAccess,
+) -> String {
+    format_report_with_color_policy(report, managed_telemetry, access, supports_color())
 }
 
 fn format_report_with_color_policy(
     report: &HookDoctorReport,
     managed_telemetry: ManagedTelemetryHealth,
+    access: DoctorAccess,
     color_enabled: bool,
 ) -> String {
     let blocking_problem_count = report
@@ -130,7 +137,7 @@ fn format_report_with_color_policy(
     });
 
     lines.push(format!("\n{}", heading("Environment")));
-    for node in environment_nodes(report, managed_telemetry) {
+    for node in environment_nodes(report, managed_telemetry, access) {
         render_display_node(&mut lines, &node, color_enabled, 2, true);
     }
 
@@ -256,6 +263,7 @@ fn format_human_text_row(
 fn environment_nodes(
     report: &HookDoctorReport,
     managed_telemetry: ManagedTelemetryHealth,
+    access: DoctorAccess,
 ) -> Vec<DoctorDisplayNode> {
     vec![
         top_level_node(
@@ -291,39 +299,62 @@ fn environment_nodes(
                 )
             }),
         ),
-        managed_telemetry_node(managed_telemetry),
+        sce_login_node(report, access),
+        managed_telemetry_node(managed_telemetry, access),
     ]
 }
 
-fn managed_telemetry_node(health: ManagedTelemetryHealth) -> DoctorDisplayNode {
-    match (health, managed_telemetry::diagnostic(health)) {
-        (_, Some(diagnostic)) => top_level_node(
-            "Managed telemetry",
-            DoctorDisplayStatus::Warn,
-            vec![DoctorDisplayDetail::ManagedTelemetry {
-                reason: diagnostic.reason,
-                summary: diagnostic.summary,
-                remediation: diagnostic.remediation,
-            }],
-        ),
-        (ManagedTelemetryHealth::Healthy, None) => {
-            top_level_node("Managed telemetry", DoctorDisplayStatus::Pass, Vec::new())
-        }
-        (ManagedTelemetryHealth::Disabled(_), None) => top_level_node(
-            "Managed telemetry (not configured)",
+fn sce_login_node(report: &HookDoctorReport, access: DoctorAccess) -> DoctorDisplayNode {
+    match access.login {
+        LoginState::NotRequired => top_level_node(
+            "SCE login (not required)",
             DoctorDisplayStatus::Pass,
             Vec::new(),
         ),
-        (ManagedTelemetryHealth::DisabledByConfig { auth_db_present }, None) => top_level_node(
-            "Managed telemetry (disabled by config)",
-            DoctorDisplayStatus::Pass,
-            if auth_db_present {
-                vec![DoctorDisplayDetail::Note(managed_telemetry::OPT_IN_NOTE)]
-            } else {
-                Vec::new()
-            },
+        LoginState::LoggedIn => top_level_node("SCE login", DoctorDisplayStatus::Pass, Vec::new()),
+        LoginState::NotLoggedIn => top_level_node(
+            "SCE login",
+            DoctorDisplayStatus::Fail,
+            problem_details(report, |kind| matches!(kind, ProblemKind::SceLoginRequired)),
         ),
     }
+}
+
+fn managed_telemetry_node(
+    health: ManagedTelemetryHealth,
+    access: DoctorAccess,
+) -> DoctorDisplayNode {
+    let label = access.telemetry_label();
+    let mut details = access
+        .telemetry_source_label()
+        .map(DoctorDisplayDetail::Source)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let (label, status) = match (health, managed_telemetry::diagnostic(health)) {
+        (_, Some(diagnostic)) => {
+            details.push(DoctorDisplayDetail::ManagedTelemetry {
+                reason: diagnostic.reason,
+                summary: diagnostic.summary,
+                remediation: diagnostic.remediation,
+            });
+            (label, DoctorDisplayStatus::Warn)
+        }
+        (ManagedTelemetryHealth::Disabled(_), None) => (
+            format!("{label} (not configured)"),
+            DoctorDisplayStatus::Pass,
+        ),
+        (ManagedTelemetryHealth::DisabledByConfig { auth_db_present }, None) => {
+            if auth_db_present
+                && access.telemetry
+                    == TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled)
+            {
+                details.push(DoctorDisplayDetail::Note(managed_telemetry::OPT_IN_NOTE));
+            }
+            (label, DoctorDisplayStatus::Pass)
+        }
+        (ManagedTelemetryHealth::Healthy, None) => (label, DoctorDisplayStatus::Pass),
+    };
+    top_level_node(&label, status, details)
 }
 
 fn top_level_node(
@@ -666,7 +697,10 @@ fn render_display_node(
     ));
     if !expand_unhealthy || node.status == DoctorDisplayStatus::Pass {
         for detail in &node.details {
-            if matches!(detail, DoctorDisplayDetail::Note(_)) {
+            if matches!(
+                detail,
+                DoctorDisplayDetail::Note(_) | DoctorDisplayDetail::Source(_)
+            ) {
                 render_display_detail(lines, detail, indent + 2);
             }
         }
@@ -752,6 +786,7 @@ fn render_display_detail(lines: &mut Vec<String>, detail: &DoctorDisplayDetail, 
             lines.extend(remediation.lines().map(|line| format!("{prefix}{line}")));
         }
         DoctorDisplayDetail::Note(note) => lines.push(format!("{prefix}{note}")),
+        DoctorDisplayDetail::Source(source) => lines.push(format!("{prefix}Source: {source}")),
     }
 }
 
@@ -963,16 +998,12 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
             .hooks_directory
             .as_ref()
             .map(|path| path.display().to_string()),
-        "post_commit_auto_sync": {
-            "state": post_commit_auto_sync_state(report.post_commit_auto_sync.state),
-            "enabled": report.post_commit_auto_sync.enabled,
-            "source": report.post_commit_auto_sync.source,
-            "config_source": report.post_commit_auto_sync.config_source,
-        },
+        "post_commit_auto_sync": post_commit_auto_sync_json(report),
         "config_paths": config_paths,
         "hooks": hooks,
         "mutation_scope_health": mutation_scope_health_json(&report.mutation_scope_health),
-        "managed_telemetry": managed_telemetry::json(execution.managed_telemetry),
+        "sce_login": execution.access.login_json(),
+        "managed_telemetry": managed_telemetry::json(execution.managed_telemetry, execution.access),
         "problems": report.problems.iter().map(|problem| json!({
             "category": problem_category(problem.category),
             "severity": problem_severity(problem.severity),
@@ -999,6 +1030,15 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
     });
 
     serde_json::to_string_pretty(&payload).context("failed to serialize doctor report to JSON")
+}
+
+fn post_commit_auto_sync_json(report: &HookDoctorReport) -> serde_json::Value {
+    json!({
+        "state": post_commit_auto_sync_state(report.post_commit_auto_sync.state),
+        "enabled": report.post_commit_auto_sync.enabled,
+        "source": report.post_commit_auto_sync.source,
+        "config_source": report.post_commit_auto_sync.config_source,
+    })
 }
 
 fn post_commit_auto_sync_state(state: PostCommitAutoSyncState) -> &'static str {
@@ -1281,5 +1321,303 @@ mod reconciliation_render_tests {
         for (label, fix, expected) in cases {
             assert_eq!(ref_reconciliation_fix_json(&fix), expected, "{label}");
         }
+    }
+}
+
+#[cfg(test)]
+mod access_render_tests {
+    use std::future::Future;
+
+    use serde_json::json;
+
+    use super::{managed_telemetry_node, render_display_node, sce_login_node};
+    use crate::services::config::{
+        AuthMode, ConfigPathSource, ResolvedAccessPolicy, ResolvedValue, TelemetryDisabledReason,
+        TelemetryPolicyState, ValueSource,
+    };
+    use crate::services::doctor::access::{DoctorAccess, LoginState};
+    use crate::services::doctor::managed_telemetry;
+    use crate::services::doctor::types::{
+        DoctorDisplayNode, HookDoctorReport, HookPathSource, PostCommitAutoSyncHealth,
+        PostCommitAutoSyncState, ProblemSeverity, Readiness,
+    };
+    use crate::services::doctor::DoctorMode;
+    use crate::services::managed_telemetry::ManagedTelemetryHealth;
+
+    const REPOSITORY: ValueSource =
+        ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal);
+    const GLOBAL: ValueSource = ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal);
+
+    fn policy(
+        auth_mode: AuthMode,
+        auth_source: ValueSource,
+        telemetry_enabled: ResolvedValue<bool>,
+        telemetry: TelemetryPolicyState,
+    ) -> ResolvedAccessPolicy {
+        ResolvedAccessPolicy {
+            auth_mode: ResolvedValue {
+                value: auth_mode,
+                source: auth_source,
+            },
+            telemetry_enabled,
+            telemetry,
+            background_cloud_allowed: auth_mode != AuthMode::Disabled,
+        }
+    }
+
+    fn telemetry_default() -> ResolvedValue<bool> {
+        ResolvedValue {
+            value: false,
+            source: ValueSource::Default,
+        }
+    }
+
+    fn not_enabled() -> TelemetryPolicyState {
+        TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled)
+    }
+
+    fn inspect<Fut>(policy: &ResolvedAccessPolicy, authorized: impl FnOnce() -> Fut) -> DoctorAccess
+    where
+        Fut: Future<Output = bool>,
+    {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(DoctorAccess::inspect(Some(policy), authorized))
+    }
+
+    fn report(access: DoctorAccess) -> HookDoctorReport {
+        HookDoctorReport {
+            mode: DoctorMode::Diagnose,
+            readiness: Readiness::Ready,
+            state_root: None,
+            agent_trace_db: None,
+            repository_root: None,
+            hook_path_source: HookPathSource::Default,
+            hooks_directory: None,
+            post_commit_auto_sync: PostCommitAutoSyncHealth {
+                state: PostCommitAutoSyncState::NotApplicable,
+                enabled: false,
+                source: "default",
+                config_source: None,
+            },
+            config_locations: Vec::new(),
+            hooks: Vec::new(),
+            integration_groups: Vec::new(),
+            integration_targets_absent: false,
+            mutation_scope_health: Vec::new(),
+            problems: access.login_problem().into_iter().collect(),
+        }
+    }
+
+    fn render(node: &DoctorDisplayNode) -> Vec<String> {
+        let mut lines = Vec::new();
+        render_display_node(&mut lines, node, false, 2, true);
+        lines
+    }
+
+    #[test]
+    fn mandatory_without_login_reports_blocking_sce_login_failure() {
+        let access = inspect(
+            &policy(
+                AuthMode::Mandatory,
+                REPOSITORY,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async { false },
+        );
+        let report = report(access);
+
+        assert_eq!(access.login, LoginState::NotLoggedIn);
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(report.problems[0].severity, ProblemSeverity::Error);
+        assert_eq!(
+            render(&sce_login_node(&report, access)),
+            vec![
+                "  [FAIL] SCE login",
+                "    Problem: auth.mode: mandatory is set in the repository SCE config (`.sce/config.json`), but no valid SCE login was found.",
+                "    Remediation: Run 'sce auth login'.",
+            ]
+        );
+        assert_eq!(
+            access.login_json(),
+            json!({
+                "state": "not_logged_in",
+                "auth_mode": "mandatory",
+                "source": "config_file",
+                "config_source": "default_discovered_local",
+            })
+        );
+    }
+
+    #[test]
+    fn mandatory_with_login_passes_without_problem() {
+        let access = inspect(
+            &policy(
+                AuthMode::Mandatory,
+                GLOBAL,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async { true },
+        );
+        let report = report(access);
+
+        assert!(report.problems.is_empty());
+        assert_eq!(
+            render(&sce_login_node(&report, access)),
+            vec!["  [PASS] SCE login"]
+        );
+        assert_eq!(access.login_json()["state"], "logged_in");
+    }
+
+    #[test]
+    fn non_mandatory_mode_skips_credential_lookup() {
+        let access = inspect(
+            &policy(
+                AuthMode::Optional,
+                ValueSource::Default,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async { panic!("credential lookup must not run outside mandatory mode") },
+        );
+        let report = report(access);
+
+        assert!(report.problems.is_empty());
+        assert_eq!(
+            render(&sce_login_node(&report, access)),
+            vec!["  [PASS] SCE login (not required)"]
+        );
+        assert_eq!(
+            access.login_json(),
+            json!({
+                "state": "not_required",
+                "auth_mode": "optional",
+                "source": "default",
+                "config_source": null,
+            })
+        );
+    }
+
+    #[test]
+    fn repository_telemetry_consent_reports_enabled_state_and_source() {
+        let access = inspect(
+            &policy(
+                AuthMode::Optional,
+                ValueSource::Default,
+                ResolvedValue {
+                    value: true,
+                    source: REPOSITORY,
+                },
+                TelemetryPolicyState::Enabled,
+            ),
+            || async { false },
+        );
+
+        assert_eq!(
+            render(&managed_telemetry_node(
+                ManagedTelemetryHealth::Healthy,
+                access
+            )),
+            vec![
+                "  [PASS] Managed telemetry: enabled for this repository",
+                "    Source: repository SCE config (`.sce/config.json`)",
+            ]
+        );
+        assert_eq!(
+            managed_telemetry::json(ManagedTelemetryHealth::Healthy, access),
+            json!({
+                "state": "healthy",
+                "reason": null,
+                "kind": null,
+                "severity": null,
+                "next_action": null,
+                "policy": {
+                    "state": "enabled",
+                    "reason": null,
+                    "source": "config_file",
+                    "config_source": "default_discovered_local",
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn unconfigured_telemetry_reports_reason_and_repository_opt_in_note() {
+        let access = inspect(
+            &policy(
+                AuthMode::Optional,
+                ValueSource::Default,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async { false },
+        );
+        let health = ManagedTelemetryHealth::DisabledByConfig {
+            auth_db_present: true,
+        };
+
+        assert_eq!(
+            render(&managed_telemetry_node(health, access)),
+            vec![
+                "  [PASS] Managed telemetry: disabled (reason: not_enabled)",
+                "    Source: default",
+                "    Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the repository SCE config to enable it for this repository.",
+            ]
+        );
+        assert_eq!(
+            managed_telemetry::json(health, access),
+            json!({
+                "state": "disabled_by_config",
+                "reason": "disabled_by_config",
+                "kind": null,
+                "severity": null,
+                "next_action": null,
+                "policy": {
+                    "state": "disabled",
+                    "reason": "not_enabled",
+                    "source": "default",
+                    "config_source": null,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn user_opt_out_reports_deciding_layer_without_opt_in_note() {
+        let access = inspect(
+            &policy(
+                AuthMode::Optional,
+                ValueSource::Default,
+                ResolvedValue {
+                    value: false,
+                    source: GLOBAL,
+                },
+                TelemetryPolicyState::Disabled(TelemetryDisabledReason::UserOptOut),
+            ),
+            || async { false },
+        );
+        let health = ManagedTelemetryHealth::DisabledByConfig {
+            auth_db_present: true,
+        };
+
+        assert_eq!(
+            render(&managed_telemetry_node(health, access)),
+            vec![
+                "  [PASS] Managed telemetry: disabled (reason: user_opt_out)",
+                "    Source: global SCE config",
+            ]
+        );
+        assert_eq!(
+            managed_telemetry::json(health, access)["policy"],
+            json!({
+                "state": "disabled",
+                "reason": "user_opt_out",
+                "source": "config_file",
+                "config_source": "default_discovered_global",
+            })
+        );
     }
 }
