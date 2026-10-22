@@ -146,13 +146,18 @@ This replaces the 2026-10-21 decision "Setup writes access-policy answers to the
   - Context impact: user-visible behavior change to `sce doctor` text and JSON: a new `SCE login` row and blocking problem, new managed-telemetry row labels and the `Source:` detail, new `OPT_IN_NOTE` text, and new `sce_login` / `managed_telemetry.policy` JSON objects. Affects `context/sce/telemetry-credential.md` (doctor health check and opt-in note), the doctor entries in `context/glossary.md`, and any doctor output description in `context/cli/cli-command-surface.md`.
   - Context synchronization: synced
 
-- [ ] T05: `Print a login reminder in non-interactive setup under mandatory` (status:todo)
+- [x] T05: `Print a login reminder in non-interactive setup under mandatory` (status:done)
   - Task ID: T05
   - Scope: In — non-interactive and target-flag setup add the fixed `SCE login: required by auth.mode: mandatory for this repository; run 'sce auth login' if you are not logged in.` line when the effective mode is `mandatory`; setup tests. Out — running login, credential lookup, exit-code changes, hooks-only and context-only modes.
   - Dependencies: T03
   - Done when: AC7 holds; non-`mandatory` runs and interactive runs print no new line.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`.
-  - Context synchronization: pending
+  - Completed: 2026-10-22
+  - Files changed: `cli/src/services/setup/command.rs`
+  - Result: Added `SETUP_LOGIN_REMINDER_LINE` (`SCE login: required by auth.mode: mandatory for this repository; run 'sce auth login' if you are not logged in.`) and `non_interactive_login_reminder`. That function resolves the access policy for the repository root and returns the line only when the effective `auth.mode` is `mandatory`. A failed policy resolution returns no line, so setup never fails or changes its exit code because of the reminder. A new `non_interactive_followup` helper replaces the inline non-interactive `else` branch of `SetupCommand::execute`. It pushes the reminder as its own section after the target install output and before the Claude telemetry section, then returns the existing non-interactive Claude telemetry action. The helper exists only to keep `execute` under clippy's line limit. Only non-interactive and target-flag setup reach that branch. Interactive runs keep their login step, and hooks-only and context-only runs never reach it. The reminder only resolves config: no `auth.db` open, no credential lookup. Approved assumptions: the reminder's placement, and no reminder when resolution fails. Added 2 tests. One covers repository, global, and explicit `mandatory`, which print the exact line, and repository `optional`, `disabled`, and the default, which print nothing; it also asserts no `auth*` file is created under the fixture directory. The other covers resolution failure, which prints nothing.
+  - Verify outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` passed (75 passed). Extra checks: `clippy --all-targets --all-features -- -D warnings` was clean, and `cargo fmt` was applied. The built `sce setup --opencode` was run in a temp git repository with a remote and isolated `HOME` / `XDG_CONFIG_HOME` / `XDG_STATE_HOME`. With `.sce/config.json` `{"auth":{"mode":"mandatory"}}` it exited 0 and printed the exact reminder line. With `optional` it exited 0 and printed no `SCE login` line. No `auth*` file was created under the isolated directories.
+  - Context impact: user-visible output addition to non-interactive setup: a fixed reminder line under effective `mandatory`. Affects the non-interactive reminder part of `context/sce/setup-repo-local-config-bootstrap.md` and the Setup / Enforcement part of `context/cli/access-policy.md`.
+  - Context synchronization: synced
 
 - [ ] T06: `Notify Claude sessions when an SCE login is required` (status:todo)
   - Task ID: T06
