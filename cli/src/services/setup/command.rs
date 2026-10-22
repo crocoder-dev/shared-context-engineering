@@ -680,12 +680,15 @@ where
     }
 
     let installed = match settings_path {
-        Some(settings_path) => install_claude_telemetry(settings_path, managed_settings_path)
-            .unwrap_or(ClaudeTelemetryInstallOutcome::SkippedInvalid),
-        None => ClaudeTelemetryInstallOutcome::SkippedInvalid,
+        Some(settings_path) => install_claude_telemetry(settings_path, managed_settings_path),
+        None => ClaudeTelemetryInstallOutcome::SettingsPathUnavailable,
     };
     let authorization = match (&installed, authorization_check) {
-        (ClaudeTelemetryInstallOutcome::Configured, RepositoryAuthorizationCheck::Verify) => {
+        (
+            ClaudeTelemetryInstallOutcome::Configured
+            | ClaudeTelemetryInstallOutcome::AlreadyCurrent,
+            RepositoryAuthorizationCheck::Verify,
+        ) => {
             if repository_authorized().await {
                 RepositoryAuthorization::Authorized
             } else {
@@ -881,8 +884,33 @@ mod tests {
 
     const CLAUDE_CONFIGURED_LINE: &str =
         "Claude telemetry: configured in user-level Claude settings for native OpenTelemetry export.";
+
     const CLAUDE_NOT_READY_LINE: &str = "Claude telemetry: not ready for this repository; no valid SCE telemetry credential is authorized for it, so Claude will not export. Run 'sce auth login' in this repository with the SCE account it is enrolled under.";
     const CLAUDE_NOT_CHECKED_LINE: &str = "Claude telemetry: configured; repository authorization was not checked during non-interactive setup.";
+
+    #[test]
+    fn setup_claude_telemetry_reports_install_failures_without_authorization_lookup() {
+        for (case, expected) in [
+            ("read", "Claude telemetry: failed to read Claude settings. Check settings files and directory permissions, then rerun 'sce setup'."),
+            ("write", "Claude telemetry: failed to write Claude settings. Check directory permissions and available disk space, then rerun 'sce setup'."),
+            ("invalid", "Claude telemetry: skipped; existing Claude settings contain invalid JSON or an invalid structure and were left unchanged. Fix the settings, then rerun 'sce setup'."),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let settings = dir.path().join("settings.json");
+            match case {
+                "read" => fs::create_dir(&settings).unwrap(),
+                "write" => fs::create_dir(settings.with_extension("json.sce-tmp")).unwrap(),
+                "invalid" => fs::write(&settings, b"{fixture-secret-token").unwrap(),
+                _ => unreachable!(),
+            }
+            let (report, looked_up) = render_claude_telemetry(
+                true, &settings, &dir.path().join("managed.json"),
+                RepositoryAuthorizationCheck::Verify, None,
+            );
+            assert_eq!(report, expected, "{case}");
+            assert!(!looked_up, "{case}");
+        }
+    }
 
     fn assert_installed(root: &Path) {
         let parsed: Value =
