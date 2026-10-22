@@ -33,6 +33,7 @@ const SETUP_LOGIN_NOT_REQUESTED_LINE: &str =
 const SETUP_LOGIN_DECLINED_LINE: &str = "SCE login: skipped; run 'sce auth login' to log in.";
 const SETUP_LOGIN_FAILED_PREFIX: &str = "SCE login: failed: ";
 const SETUP_LOGIN_RETRY_LINE: &str = "Run 'sce auth login' to retry.";
+const SETUP_LOGIN_REMINDER_LINE: &str = "SCE login: required by auth.mode: mandatory for this repository; run 'sce auth login' if you are not logged in.";
 const RECONFIGURE_HINT_LINE: &str =
     "- Run 'sce setup --reconfigure' to change saved setup answers.";
 
@@ -151,7 +152,7 @@ impl SetupCommand {
                 sections.push(render_setup_login_section(&login_status));
                 deferred_action
             } else {
-                non_interactive_claude_telemetry_action(&repository_root, claude_telemetry_selected)
+                non_interactive_followup(&repository_root, claude_telemetry_selected, &mut sections)
             };
 
             sections.extend(render_claude_telemetry(deferred_telemetry_action).await);
@@ -391,6 +392,19 @@ fn setup_login_action(
     }
 }
 
+fn non_interactive_login_reminder<R>(
+    repository_root: &Path,
+    resolve_policy: R,
+) -> Option<&'static str>
+where
+    R: Fn(&Path) -> anyhow::Result<ResolvedAccessPolicy>,
+{
+    resolve_policy(repository_root)
+        .ok()
+        .filter(|policy| policy.auth_mode.value == AuthMode::Mandatory)
+        .map(|_| SETUP_LOGIN_REMINDER_LINE)
+}
+
 async fn run_setup_login_step<L, LF>(
     action: SetupLoginAction,
     login: L,
@@ -576,6 +590,17 @@ fn split_pre_login_removal(
         Some(ClaudeTelemetryAction::Remove) => (action, None),
         _ => (None, action),
     }
+}
+
+fn non_interactive_followup(
+    repository_root: &Path,
+    claude_selected: bool,
+    sections: &mut Vec<String>,
+) -> Option<ClaudeTelemetryAction> {
+    sections.extend(
+        non_interactive_login_reminder(repository_root, resolve_access_policy).map(str::to_string),
+    );
+    non_interactive_claude_telemetry_action(repository_root, claude_selected)
 }
 
 fn non_interactive_claude_telemetry_action(
@@ -1583,5 +1608,90 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(entries.len(), 2);
+    }
+    #[test]
+    fn non_interactive_setup_reminds_login_only_under_mandatory() {
+        let mandatory = r#"{"auth":{"mode":"mandatory"}}"#;
+        let cases = [
+            ("repository mandatory", "repository", Some(mandatory), true),
+            ("global mandatory", "global", Some(mandatory), true),
+            ("explicit mandatory", "explicit", Some(mandatory), true),
+            (
+                "repository optional",
+                "repository",
+                Some(r#"{"auth":{"mode":"optional"}}"#),
+                false,
+            ),
+            (
+                "repository disabled",
+                "repository",
+                Some(r#"{"auth":{"mode":"disabled"}}"#),
+                false,
+            ),
+            ("default", "repository", None, false),
+        ];
+        for (name, layer, json, reminded) in cases {
+            let fixture = AccessFixture::new();
+            let explicit = fixture.global.with_file_name("explicit.json");
+            if let Some(json) = json {
+                match layer {
+                    "repository" => fixture.write_repo_config(json),
+                    "global" => fs::write(&fixture.global, json).unwrap(),
+                    _ => fs::write(&explicit, json).unwrap(),
+                }
+            }
+            let resolve_policy = |root: &Path| {
+                config::resolver::resolve_auth_runtime_config_with(
+                    root,
+                    |key| {
+                        (layer == "explicit" && key == "SCE_CONFIG_FILE")
+                            .then(|| explicit.display().to_string())
+                    },
+                    |path| fs::read_to_string(path).map_err(anyhow::Error::from),
+                    Path::exists,
+                    || Ok(fixture.global.clone()),
+                )
+                .map(|config| config.access_policy)
+            };
+
+            assert_eq!(
+                non_interactive_login_reminder(&fixture.repo, resolve_policy),
+                reminded.then_some(
+                    "SCE login: required by auth.mode: mandatory for this repository; run 'sce auth login' if you are not logged in."
+                ),
+                "{name}"
+            );
+            let auth_files: Vec<_> = walk_files(fixture.repo.parent().unwrap())
+                .into_iter()
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("auth"))
+                })
+                .collect();
+            assert!(auth_files.is_empty(), "{name}: {auth_files:?}");
+        }
+    }
+
+    #[test]
+    fn non_interactive_setup_skips_login_reminder_when_policy_resolution_fails() {
+        assert_eq!(
+            non_interactive_login_reminder(Path::new("/nonexistent"), |_| {
+                Err(anyhow::anyhow!("resolution failed"))
+            }),
+            None
+        );
+    }
+
+    fn walk_files(root: &Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        for entry in fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(walk_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 }
