@@ -148,6 +148,7 @@ Supporting repo docs:
 
 Recent decision records:
 
+- `context/decisions/2026-10-22-repository-telemetry-enabled-grants-consent.md` (a `telemetry.enabled: true` in any layer, including the repository `.sce/config.json`, grants telemetry consent unless some layer opts out; removes `no_user_consent` and its warning; supersedes only the user-side-only consent rule of `2026-10-20-consent-gated-access-policy-precedence.md`)
 - `context/decisions/2026-10-21-setup-writes-access-answers-to-user-layer-only.md` (interactive setup writes `auth.mode` / `telemetry.enabled` only to the global user config, atomically and before any repository write, never to repository or explicit config files; resolver precedence unchanged)
 - `context/decisions/2026-10-02-claude-background-bash-untracked.md` (effective Claude background-admission decision; supersedes `context/decisions/2026-10-01-claude-background-admission-requires-proven-lifecycle.md`, which is retained unmodified as history: permits Claude-managed `Bash(run_in_background=true)` natively with no mutation scope, adapter attempt, lifecycle tracking, or mutation-attribution guarantee, accepting that an untracked background process may contaminate a concurrent tracked scope's attribution; lifecycle completion remains unproven, background `PowerShell` stays denied, and the Claude adapter implements the decision)
 - `context/decisions/2026-09-07-split-auto-sync-defaults.md` (newly bootstrapped repo-local config explicitly opts into Agent Trace auto-sync while omitted runtime values remain disabled)

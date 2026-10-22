@@ -2,7 +2,7 @@
 
 ## Scope
 
-This file describes how the CLI turns the per-layer `auth.mode` and `telemetry.enabled` config values into one effective access policy (`ResolvedAccessPolicy`). Key syntax and schema validation are in [config precedence contract](config-precedence-contract.md). The precedence model is recorded in [ADR: consent-gated access policy precedence](../decisions/2026-10-20-consent-gated-access-policy-precedence.md).
+This file describes how the CLI turns the per-layer `auth.mode` and `telemetry.enabled` config values into one effective access policy (`ResolvedAccessPolicy`). Key syntax and schema validation are in [config precedence contract](config-precedence-contract.md). The precedence model is recorded in [ADR: consent-gated access policy precedence](../decisions/2026-10-20-consent-gated-access-policy-precedence.md); its user-side-only consent rule is superseded by [ADR: repository telemetry.enabled grants consent](../decisions/2026-10-22-repository-telemetry-enabled-grants-consent.md).
 
 Status: the resolver computes and exposes the policy, and `sce config show` / `validate` report it (see [Reporting](#reporting)). Managed telemetry startup, `sce doctor`'s managed-telemetry and auto-sync health, the hidden `sce auth telemetry-headers` helper, `sce auth login` / `whoami`, `sce sync`, and post-commit auto-sync enforce the policy (see [Enforcement](#enforcement)). Interactive `sce setup` is the writer for the user layer's access keys (see [Setup](#setup)).
 
@@ -13,11 +13,11 @@ Status: the resolver computes and exposes the policy, and `sce config show` / `v
   - **User layer:** the `DefaultDiscoveredGlobal` file.
   - **Repository layer:** the `DefaultDiscoveredLocal` file, `.sce/config.json` at the enclosing Git worktree root (see [Repository discovery](#repository-discovery)).
   - **Explicit layer:** the single file selected with `--config` (`Flag`) or `SCE_CONFIG_FILE` (`Env`). It is loaded in addition to the discovered files, never instead of them.
-  - **User side:** the user layer and the explicit layer together. Only the user side can grant telemetry consent.
+  - **User side:** the user layer and the explicit layer together. A user-side `false` is a `user_opt_out`. Any layer, including the repository layer, can grant telemetry consent.
   - Neither key has an environment-variable or CLI-flag layer of its own.
 - **Effective access policy** (`ResolvedAccessPolicy`), with these fields:
   - `auth_mode`: the effective mode, with the deciding layer as its source.
-  - `telemetry_enabled`: the configured merged value with its provenance.
+  - `telemetry_enabled`: the configured value of the layer that decided the effective state, with its provenance.
   - `telemetry`: the effective state, `TelemetryPolicyState` (`Enabled`, or `Disabled(reason)`).
   - `background_cloud_allowed`.
 - **Degraded:** at least one default-discovered file was skipped as invalid.
@@ -34,7 +34,7 @@ Every consumer goes through this one resolver, so running from the repository ro
 `--config` / `SCE_CONFIG_FILE` select one explicit file. The loaded paths are, in order: the global file (if present), the repository file (if present), then the explicit file.
 
 - **Ordinary keys** (logging, Agent Trace, `otel`, `policies`, `integrations`, `workos_client_id`, `control_plane_base_url`) come only from the explicit file, as before. The discovered files contribute nothing to them.
-- **Access-policy keys** (`auth.mode`, `telemetry.enabled`) are read from every loaded layer. The explicit layer can add a restriction or grant user-side consent, but cannot lift a global or repository restriction.
+- **Access-policy keys** (`auth.mode`, `telemetry.enabled`) are read from every loaded layer. The explicit layer can add a restriction or grant consent, but cannot lift a global or repository restriction.
 - An invalid explicit file stays fatal. An invalid discovered file is skipped and degrades the policy exactly as without an explicit file, so an unreadable global opt-out can never be bypassed by `--config`.
 
 ## Resolution
@@ -50,17 +50,15 @@ flowchart TD
   U0 -- yes --> UO[Disabled UserOptOut]
   U0 -- no --> R0{repository false?}
   R0 -- yes --> RO[Disabled RepositoryOptOut]
-  R0 -- no --> U1{user or explicit true?}
-  U1 -- yes --> E[Enabled]
-  U1 -- no --> R1{repository true?}
-  R1 -- yes --> NC[Disabled NoUserConsent]
-  R1 -- no --> NE[Disabled NotEnabled]
+  R0 -- no --> T1{any layer true?}
+  T1 -- yes --> E[Enabled]
+  T1 -- no --> NE[Disabled NotEnabled]
 ```
 
 - **Auth mode:** the most restrictive layer wins (`disabled > mandatory > optional`).
   - The source is the deciding layer. Layers are compared in the order user, repository, explicit; on a tie the later layer is the source.
   - When no layer sets it, the result is `optional` with `source: default`.
-- **`telemetry_enabled` value:** the explicit value if set, otherwise the repository value, otherwise the user value, otherwise `false` with `source: default`. This is the configured value (ordinary override order), not the effective state.
+- **`telemetry_enabled` value** (`resolve_telemetry_enabled`): the first `false` in the order explicit, user, repository; otherwise the first `true` in the order explicit, repository, user; otherwise `false` with `source: default`. Its source is therefore the layer that decided the opt-out or consent.
 - **`background_cloud_allowed`:** `!auth_disabled && !degraded`.
 - **Helpers:**
   - `telemetry_enabled()` is true only for `Enabled`.
@@ -79,25 +77,24 @@ flowchart TD
 | `auth.mode: optional` | `auth.mode: disabled` | `auth.mode: mandatory` | auth `disabled` (source repository) |
 | `telemetry.enabled: false` | `telemetry.enabled: true` | `telemetry.enabled: true` | telemetry disabled (`user_opt_out`) |
 | absent | absent | `auth.mode: mandatory`, `telemetry.enabled: true` | auth `mandatory` (source explicit), telemetry enabled |
+| absent | `telemetry.enabled: true` | absent | telemetry enabled (source repository) |
 | invalid | absent | `telemetry.enabled: true` | telemetry disabled (`invalid_config`), no background cloud |
 
 ## Contradiction warnings
 
 The resolver appends these fixed strings to `validation_warnings`, after the bash-policy redundancy warnings, in this order:
 
-1. Repository `telemetry.enabled: true` without a user-side `true`:
-   `telemetry.enabled is true in the repository config but not in the user config; SCE telemetry stays disabled until the user config sets telemetry.enabled to true.`
-2. Any layer has `telemetry.enabled: true` while the effective auth is `disabled`:
+1. Any layer has `telemetry.enabled: true` while the effective auth is `disabled`:
    `telemetry.enabled is true but auth.mode resolves to disabled; SCE telemetry is disabled.`
-3. `agent_trace.auto_sync` resolves `true` while the effective auth is `disabled`:
+2. `agent_trace.auto_sync` resolves `true` while the effective auth is `disabled`:
    `agent_trace.auto_sync is true but auth.mode resolves to disabled; post-commit auto-sync is skipped.`
-4. Repository `mandatory` while the user or explicit layer is `disabled`:
+3. Repository `mandatory` while the user or explicit layer is `disabled`:
    `auth.mode is mandatory in the repository config but disabled in the user config; auth.mode resolves to disabled.`
-5. Explicit `auth.mode` less restrictive than the effective mode:
+4. Explicit `auth.mode` less restrictive than the effective mode:
    `auth.mode in the explicitly selected config is less restrictive than the global or repository config; the most restrictive auth.mode applies.`
-6. Explicit `telemetry.enabled: true` while the global or repository layer is `false`:
+5. Explicit `telemetry.enabled: true` while the global or repository layer is `false`:
    `telemetry.enabled is true in the explicitly selected config but false in the global or repository config; SCE telemetry is disabled.`
-7. Degraded:
+6. Degraded:
    `A discovered config file was skipped as invalid; SCE telemetry and background cloud operations are disabled.`
 
 Each string is a `WARNING_*` constant in `resolver.rs`. The skipped file's own error still appears in `validation_errors`.
@@ -108,11 +105,12 @@ Each string is a `WARNING_*` constant in `resolver.rs`. The skipped file's own e
 
 - **Text:** four lines directly after `agent_trace.auto_sync` and before `otel.*`:
   - `- auth.mode: <mode> (source: …[, config_source: …])` (the effective mode and its deciding layer)
-  - `- telemetry.enabled: <bool> (source: …[, config_source: …])` (the configured merged value)
+  - `- telemetry.enabled: <bool> (source: …[, config_source: …])` (the deciding layer's configured value)
   - `- telemetry.effective: enabled`, or `- telemetry.effective: disabled (reason: <reason>)`
-  - only when disabled: `- telemetry.note: Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.`
-- **JSON:** `result.resolved.auth.mode` and `result.resolved.telemetry.enabled` use the usual `{value, source, config_source}` shape. `result.resolved.telemetry.effective` is `{state, reason}`, where `reason` is `null` when the state is enabled. `result.resolved.telemetry.note` is the fixed note string, or `null` when enabled.
-- **Reason strings** (`TelemetryDisabledReason::as_str`): `not_enabled`, `user_opt_out`, `no_user_consent`, `repository_opt_out`, `auth_disabled`, `invalid_config`.
+  - only when disabled with reason `not_enabled`: `- telemetry.note: Set telemetry.enabled: true in the repository SCE config to enable SCE telemetry for this repository. Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.`
+  - only when disabled with any other reason: `- telemetry.note: Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.`
+- **JSON:** `result.resolved.auth.mode` and `result.resolved.telemetry.enabled` use the usual `{value, source, config_source}` shape. `result.resolved.telemetry.effective` is `{state, reason}`, where `reason` is `null` when the state is enabled. `result.resolved.telemetry.note` is the same fixed note string as the text line, or `null` when enabled.
+- **Reason strings** (`TelemetryDisabledReason::as_str`): `not_enabled`, `user_opt_out`, `repository_opt_out`, `auth_disabled`, `invalid_config`.
 - **Warnings:** the contradiction warnings appear in `show` warnings after any `Skipped invalid config: …` entries. In `validate` they appear in `warnings` / `Validation warnings`. `validate` adds no policy fields.
 
 The note documents a coverage limit: a repository or explicit-layer opt-out does not remove Claude-native telemetry settings already written to user-level Claude settings. Only a global withdrawal does, on the next `sce setup` run (see Enforcement).

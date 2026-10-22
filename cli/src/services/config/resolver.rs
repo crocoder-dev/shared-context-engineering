@@ -39,7 +39,6 @@ pub(crate) const WORKOS_CLIENT_ID_KEY: AuthConfigKeySpec = AuthConfigKeySpec {
 const CONTROL_PLANE_BASE_URL_ENV: &str = "SCE_CONTROL_PLANE_BASE_URL";
 const CONTROL_PLANE_BASE_URL_BAKED_DEFAULT: &str = "https://sce.crocoderlab.dev";
 
-pub(crate) const WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT: &str = "telemetry.enabled is true in the repository config but not in the user config; SCE telemetry stays disabled until the user config sets telemetry.enabled to true.";
 pub(crate) const WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED: &str =
     "telemetry.enabled is true but auth.mode resolves to disabled; SCE telemetry is disabled.";
 pub(crate) const WARNING_AUTO_SYNC_WITH_AUTH_DISABLED: &str =
@@ -749,34 +748,18 @@ pub(super) fn resolve_access_policy(
     let auth_mode = resolve_effective_auth_mode(user, repository, explicit);
     let auth_disabled = auth_mode.value == AuthMode::Disabled;
 
-    let telemetry_enabled = match explicit
-        .telemetry_enabled
-        .as_ref()
-        .or(repository.telemetry_enabled.as_ref())
-        .or(user.telemetry_enabled.as_ref())
-    {
-        Some(value) => ResolvedValue {
-            value: value.value,
-            source: ValueSource::ConfigFile(value.source),
-        },
-        None => ResolvedValue {
-            value: false,
-            source: ValueSource::Default,
-        },
-    };
+    let telemetry_enabled = resolve_telemetry_enabled(user, repository, explicit);
 
     let telemetry = if degraded {
         TelemetryPolicyState::Disabled(TelemetryDisabledReason::InvalidConfig)
     } else if auth_disabled {
         TelemetryPolicyState::Disabled(TelemetryDisabledReason::AuthDisabled)
-    } else if user_telemetry_opt_out(user, explicit) {
+    } else if user.telemetry() == Some(false) || explicit.telemetry() == Some(false) {
         TelemetryPolicyState::Disabled(TelemetryDisabledReason::UserOptOut)
     } else if repository.telemetry() == Some(false) {
         TelemetryPolicyState::Disabled(TelemetryDisabledReason::RepositoryOptOut)
-    } else if user_telemetry_consent(user, explicit) {
+    } else if telemetry_enabled.value {
         TelemetryPolicyState::Enabled
-    } else if repository.telemetry() == Some(true) {
-        TelemetryPolicyState::Disabled(TelemetryDisabledReason::NoUserConsent)
     } else {
         TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled)
     };
@@ -789,12 +772,29 @@ pub(super) fn resolve_access_policy(
     }
 }
 
-fn user_telemetry_opt_out(user: &AccessPolicyLayer, explicit: &AccessPolicyLayer) -> bool {
-    user.telemetry() == Some(false) || explicit.telemetry() == Some(false)
-}
-
-fn user_telemetry_consent(user: &AccessPolicyLayer, explicit: &AccessPolicyLayer) -> bool {
-    user.telemetry() == Some(true) || explicit.telemetry() == Some(true)
+fn resolve_telemetry_enabled(
+    user: &AccessPolicyLayer,
+    repository: &AccessPolicyLayer,
+    explicit: &AccessPolicyLayer,
+) -> ResolvedValue<bool> {
+    let opt_out = [explicit, user, repository]
+        .into_iter()
+        .filter_map(|layer| layer.telemetry_enabled.as_ref())
+        .find(|value| !value.value);
+    let consent = [explicit, repository, user]
+        .into_iter()
+        .filter_map(|layer| layer.telemetry_enabled.as_ref())
+        .find(|value| value.value);
+    match opt_out.or(consent) {
+        Some(value) => ResolvedValue {
+            value: value.value,
+            source: ValueSource::ConfigFile(value.source),
+        },
+        None => ResolvedValue {
+            value: false,
+            source: ValueSource::Default,
+        },
+    }
 }
 
 fn build_access_policy_warnings(
@@ -808,9 +808,6 @@ fn build_access_policy_warnings(
     let auth_disabled = policy.auth_mode.value == AuthMode::Disabled;
     let layers = [user, repository, explicit];
     let mut warnings = Vec::new();
-    if repository.telemetry() == Some(true) && !user_telemetry_consent(user, explicit) {
-        warnings.push(WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT.to_string());
-    }
     if auth_disabled && layers.iter().any(|layer| layer.telemetry() == Some(true)) {
         warnings.push(WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED.to_string());
     }
@@ -1415,5 +1412,147 @@ mod tests {
             runtime.control_plane_base_url.source,
             Some(ValueSource::Env)
         );
+    }
+
+    fn access_layer(
+        auth_mode: Option<AuthMode>,
+        telemetry_enabled: Option<bool>,
+        source: ConfigPathSource,
+    ) -> AccessPolicyLayer {
+        AccessPolicyLayer {
+            auth_mode: auth_mode.map(|value| schema::FileConfigValue { value, source }),
+            telemetry_enabled: telemetry_enabled
+                .map(|value| schema::FileConfigValue { value, source }),
+        }
+    }
+
+    fn telemetry_layers(
+        user: Option<bool>,
+        repository: Option<bool>,
+        explicit: Option<bool>,
+    ) -> [AccessPolicyLayer; 3] {
+        [
+            access_layer(None, user, ConfigPathSource::DefaultDiscoveredGlobal),
+            access_layer(None, repository, ConfigPathSource::DefaultDiscoveredLocal),
+            access_layer(None, explicit, ConfigPathSource::Flag),
+        ]
+    }
+
+    fn repository_config_exists(path: &Path) -> bool {
+        path == Path::new("/tmp/repo/.git") || path == Path::new("/tmp/repo/.sce/config.json")
+    }
+
+    #[test]
+    fn repository_telemetry_true_alone_enables_telemetry() {
+        let [user, repository, explicit] = telemetry_layers(None, Some(true), None);
+
+        let policy = resolve_access_policy(&user, &repository, &explicit, false);
+
+        assert_eq!(policy.telemetry, TelemetryPolicyState::Enabled);
+        assert_eq!(
+            policy.telemetry_enabled,
+            ResolvedValue {
+                value: true,
+                source: ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal),
+            }
+        );
+        assert!(
+            build_access_policy_warnings(&user, &repository, &explicit, &policy, false, false)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn any_telemetry_false_disables_telemetry_with_layer_reason() {
+        let cases = [
+            (
+                telemetry_layers(Some(false), Some(true), None),
+                TelemetryDisabledReason::UserOptOut,
+                ConfigPathSource::DefaultDiscoveredGlobal,
+            ),
+            (
+                telemetry_layers(None, Some(true), Some(false)),
+                TelemetryDisabledReason::UserOptOut,
+                ConfigPathSource::Flag,
+            ),
+            (
+                telemetry_layers(Some(true), Some(false), None),
+                TelemetryDisabledReason::RepositoryOptOut,
+                ConfigPathSource::DefaultDiscoveredLocal,
+            ),
+        ];
+
+        for ([user, repository, explicit], reason, source) in cases {
+            let policy = resolve_access_policy(&user, &repository, &explicit, false);
+
+            assert_eq!(policy.telemetry, TelemetryPolicyState::Disabled(reason));
+            assert_eq!(
+                policy.telemetry_enabled,
+                ResolvedValue {
+                    value: false,
+                    source: ValueSource::ConfigFile(source),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn telemetry_without_any_value_is_not_enabled() {
+        let [user, repository, explicit] = telemetry_layers(None, None, None);
+
+        let policy = resolve_access_policy(&user, &repository, &explicit, false);
+
+        assert_eq!(
+            policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled)
+        );
+        assert_eq!(policy.telemetry_enabled.source, ValueSource::Default);
+    }
+
+    #[test]
+    fn auth_disabled_and_degraded_config_still_disable_repository_consent() {
+        let user = access_layer(
+            Some(AuthMode::Disabled),
+            None,
+            ConfigPathSource::DefaultDiscoveredGlobal,
+        );
+        let repository = access_layer(None, Some(true), ConfigPathSource::DefaultDiscoveredLocal);
+        let explicit = AccessPolicyLayer::default();
+
+        let policy = resolve_access_policy(&user, &repository, &explicit, false);
+        assert_eq!(
+            policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::AuthDisabled)
+        );
+        assert_eq!(
+            build_access_policy_warnings(&user, &repository, &explicit, &policy, false, false),
+            vec![WARNING_TELEMETRY_ENABLED_WITH_AUTH_DISABLED.to_string()]
+        );
+
+        let policy =
+            resolve_access_policy(&AccessPolicyLayer::default(), &repository, &explicit, true);
+        assert_eq!(
+            policy.telemetry,
+            TelemetryPolicyState::Disabled(TelemetryDisabledReason::InvalidConfig)
+        );
+    }
+
+    #[test]
+    fn repository_config_telemetry_true_resolves_enabled_runtime_policy() {
+        let runtime = resolve_runtime_config_with(
+            &empty_request(),
+            Path::new("/tmp/repo"),
+            |_| None,
+            |_| Ok(r#"{"telemetry":{"enabled":true}}"#.to_string()),
+            repository_config_exists,
+            || Ok(PathBuf::from("/tmp/missing-global-sce-config.json")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtime.access_policy.telemetry,
+            TelemetryPolicyState::Enabled
+        );
+        assert!(runtime.validation_warnings.is_empty());
     }
 }

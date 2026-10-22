@@ -158,7 +158,6 @@ impl TelemetryPolicyState {
 pub(crate) enum TelemetryDisabledReason {
     NotEnabled,
     UserOptOut,
-    NoUserConsent,
     RepositoryOptOut,
     AuthDisabled,
     InvalidConfig,
@@ -169,7 +168,6 @@ impl TelemetryDisabledReason {
         match self {
             Self::NotEnabled => "not_enabled",
             Self::UserOptOut => "user_opt_out",
-            Self::NoUserConsent => "no_user_consent",
             Self::RepositoryOptOut => "repository_opt_out",
             Self::AuthDisabled => "auth_disabled",
             Self::InvalidConfig => "invalid_config",

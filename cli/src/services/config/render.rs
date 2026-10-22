@@ -13,6 +13,7 @@ use super::types::{
 use super::{ConfigPathSource, ReportFormat, ResolvedOptionalValue, ResolvedValue, ValueSource};
 
 const TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE: &str = "Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.";
+const TELEMETRY_NOT_ENABLED_NOTE: &str = "Set telemetry.enabled: true in the repository SCE config to enable SCE telemetry for this repository. Claude Code telemetry settings written by sce setup are removed by the next sce setup run after the global SCE config sets telemetry.enabled to false or auth.mode to disabled; repository-level opt-outs leave them in place.";
 
 #[allow(clippy::too_many_lines)]
 pub(super) fn format_show_output(runtime: &RuntimeConfig, report_format: ReportFormat) -> String {
@@ -180,7 +181,10 @@ fn telemetry_policy_note(policy: &ResolvedAccessPolicy) -> Option<&'static str> 
     policy
         .telemetry
         .disabled_reason()
-        .map(|_| TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE)
+        .map(|reason| match reason {
+            TelemetryDisabledReason::NotEnabled => TELEMETRY_NOT_ENABLED_NOTE,
+            _ => TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE,
+        })
 }
 
 fn otel_fields(runtime: &RuntimeConfig) -> [(&'static str, &ResolvedValue<String>); 5] {
@@ -661,4 +665,56 @@ fn format_database_retry_json(value: &ResolvedOptionalValue<DatabaseRetryConfig>
         "source": value.source.map(ValueSource::as_str),
         "config_source": value.source.and_then(ValueSource::config_source).map(ConfigPathSource::as_str),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::config::types::{AuthMode, TelemetryPolicyState};
+
+    fn policy_with(telemetry: TelemetryPolicyState) -> ResolvedAccessPolicy {
+        ResolvedAccessPolicy {
+            auth_mode: ResolvedValue {
+                value: AuthMode::Optional,
+                source: ValueSource::Default,
+            },
+            telemetry_enabled: ResolvedValue {
+                value: false,
+                source: ValueSource::Default,
+            },
+            telemetry,
+            background_cloud_allowed: true,
+        }
+    }
+
+    #[test]
+    fn telemetry_note_points_at_repository_config_when_not_enabled() {
+        let policy = policy_with(TelemetryPolicyState::Disabled(
+            TelemetryDisabledReason::NotEnabled,
+        ));
+
+        assert_eq!(
+            format_telemetry_policy_json(&policy)["note"],
+            json!(TELEMETRY_NOT_ENABLED_NOTE)
+        );
+        assert!(TELEMETRY_NOT_ENABLED_NOTE.starts_with(
+            "Set telemetry.enabled: true in the repository SCE config to enable SCE telemetry for this repository."
+        ));
+    }
+
+    #[test]
+    fn telemetry_note_keeps_claude_settings_note_for_opt_outs_and_is_absent_when_enabled() {
+        let opted_out = policy_with(TelemetryPolicyState::Disabled(
+            TelemetryDisabledReason::RepositoryOptOut,
+        ));
+
+        assert_eq!(
+            telemetry_policy_note(&opted_out),
+            Some(TELEMETRY_DISABLED_CLAUDE_SETTINGS_NOTE)
+        );
+        assert_eq!(
+            telemetry_policy_note(&policy_with(TelemetryPolicyState::Enabled)),
+            None
+        );
+    }
 }
