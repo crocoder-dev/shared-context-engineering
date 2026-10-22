@@ -1,10 +1,13 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
+use crate::services::auth_command;
+use crate::services::config::{self, AuthMode, ResolvedAccessPolicy};
 
 use super::{
     current_unix_time_ms, normalize_claude_model_id, prefixed_diff_trace_session_id,
@@ -16,6 +19,8 @@ const POST_MODEL_SWITCH_EVENT: &str = "PostModelSwitch";
 const ERROR_EVENT: &str = "sce.hooks.claude_model_state.error";
 const DB_OPEN_FAILED_EVENT: &str = "sce.hooks.claude_model_state.agent_trace_db_open_failed";
 const DB_WRITE_FAILED_EVENT: &str = "sce.hooks.claude_model_state.agent_trace_db_write_failed";
+const SESSION_LOGIN_REQUIRED_MESSAGE: &str =
+    "SCE login required for this repository. Run 'sce auth login'.";
 
 struct BridgeInheritanceCandidate {
     session: String,
@@ -41,19 +46,66 @@ pub(super) async fn run_claude_model_state_subcommand<
     };
     crate::services::managed_telemetry::trace_export::record_claude_hook_payload(&stdin_payload);
     let session_id = fail_open_session_id(&stdin_payload);
+    let notice = session_login_notice(
+        repository_root,
+        &stdin_payload,
+        resolve_access_policy,
+        auth_command::repository_telemetry_authorized,
+    )
+    .await;
 
     let observed_at_ms = match current_unix_time_ms() {
         Ok(observed_at_ms) => observed_at_ms,
         Err(error) => {
             log_fail_open(logger, ERROR_EVENT, &error, session_id.as_deref());
-            return String::new();
+            return notice.unwrap_or_default();
         }
     };
 
-    run_claude_model_state_from_payload(repository_root, &stdin_payload, logger, || {
-        Ok(observed_at_ms)
-    })
-    .await
+    let output =
+        run_claude_model_state_from_payload(repository_root, &stdin_payload, logger, || {
+            Ok(observed_at_ms)
+        })
+        .await;
+
+    notice.unwrap_or(output)
+}
+
+fn resolve_access_policy(repository_root: &Path) -> Result<ResolvedAccessPolicy> {
+    config::resolve_auth_runtime_config(repository_root).map(|config| config.access_policy)
+}
+
+async fn session_login_notice<'a, R, A, Fut>(
+    repository_root: &'a Path,
+    stdin_payload: &str,
+    resolve_policy: R,
+    authorized: A,
+) -> Option<String>
+where
+    R: FnOnce(&Path) -> Result<ResolvedAccessPolicy>,
+    A: FnOnce(&'a Path) -> Fut,
+    Fut: Future<Output = bool>,
+{
+    if !is_session_start_payload(stdin_payload) {
+        return None;
+    }
+    let policy = resolve_policy(repository_root).ok()?;
+    if policy.auth_mode.value != AuthMode::Mandatory || authorized(repository_root).await {
+        return None;
+    }
+    Some(json!({ "systemMessage": SESSION_LOGIN_REQUIRED_MESSAGE }).to_string())
+}
+
+fn is_session_start_payload(stdin_payload: &str) -> bool {
+    serde_json::from_str::<Value>(stdin_payload)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("hook_event_name")
+                .and_then(Value::as_str)
+                .map(|event| event.trim() == SESSION_START_EVENT)
+        })
+        .unwrap_or(false)
 }
 
 async fn run_claude_model_state_from_payload<L: crate::services::observability::traits::Logger, F>(
@@ -412,5 +464,116 @@ fn log_fail_open<L: crate::services::observability::traits::Logger>(
 ) {
     if let Some(log) = logger {
         log.error(event_id, &format!("{error:#}"), &[], session_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use anyhow::{anyhow, Result};
+    use serde_json::{json, Value};
+
+    use crate::services::config::{
+        AuthMode, ResolvedAccessPolicy, ResolvedValue, TelemetryDisabledReason,
+        TelemetryPolicyState, ValueSource,
+    };
+
+    use super::session_login_notice;
+
+    const SESSION_START_PAYLOAD: &str =
+        r#"{"hook_event_name":"SessionStart","session_id":"s1","source":"startup"}"#;
+
+    fn policy(auth_mode: AuthMode) -> ResolvedAccessPolicy {
+        ResolvedAccessPolicy {
+            auth_mode: ResolvedValue {
+                value: auth_mode,
+                source: ValueSource::Default,
+            },
+            telemetry_enabled: ResolvedValue {
+                value: false,
+                source: ValueSource::Default,
+            },
+            telemetry: TelemetryPolicyState::Disabled(TelemetryDisabledReason::NotEnabled),
+            background_cloud_allowed: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn session_start_under_mandatory_without_login_emits_one_system_message() {
+        let notice = session_login_notice(
+            Path::new("/repo"),
+            SESSION_START_PAYLOAD,
+            |_| Ok(policy(AuthMode::Mandatory)),
+            |_| async { false },
+        )
+        .await
+        .expect("notice");
+
+        let parsed: Value = serde_json::from_str(&notice).unwrap();
+        assert_eq!(
+            parsed,
+            json!({ "systemMessage": "SCE login required for this repository. Run 'sce auth login'." })
+        );
+    }
+
+    #[tokio::test]
+    async fn session_start_under_mandatory_with_login_emits_nothing() {
+        let notice = session_login_notice(
+            Path::new("/repo"),
+            SESSION_START_PAYLOAD,
+            |_| Ok(policy(AuthMode::Mandatory)),
+            |_| async { true },
+        )
+        .await;
+
+        assert_eq!(notice, None);
+    }
+
+    #[tokio::test]
+    async fn session_start_without_mandatory_skips_credential_lookup() {
+        for auth_mode in [AuthMode::Optional, AuthMode::Disabled] {
+            let notice = session_login_notice(
+                Path::new("/repo"),
+                SESSION_START_PAYLOAD,
+                |_| Ok(policy(auth_mode)),
+                |_| async { panic!("credential lookup must not run") },
+            )
+            .await;
+
+            assert_eq!(notice, None, "{auth_mode:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn non_session_start_payloads_skip_policy_resolution() {
+        for payload in [
+            r#"{"hook_event_name":"PostModelSwitch","session_id":"s1"}"#,
+            r#"{"session_id":"s1"}"#,
+            "not json",
+        ] {
+            let notice = session_login_notice(
+                Path::new("/repo"),
+                payload,
+                |_| -> Result<ResolvedAccessPolicy> { panic!("policy must not resolve") },
+                |_| async { panic!("credential lookup must not run") },
+            )
+            .await;
+
+            assert_eq!(notice, None, "{payload}");
+        }
+    }
+
+    #[tokio::test]
+    async fn session_start_with_policy_resolution_failure_emits_nothing() {
+        let notice = session_login_notice(
+            Path::new("/repo"),
+            SESSION_START_PAYLOAD,
+            |_| Err(anyhow!("invalid config")),
+            |_| async { panic!("credential lookup must not run") },
+        )
+        .await;
+
+        assert_eq!(notice, None);
     }
 }
