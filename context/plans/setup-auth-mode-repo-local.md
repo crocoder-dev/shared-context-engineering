@@ -107,13 +107,18 @@ This replaces the 2026-10-21 decision "Setup writes access-policy answers to the
   - Context impact: none — internal helper with no behavior change until T03 wires it; durable context updates belong to T07.
   - Context synchronization: synced
 
-- [ ] T02: `Let repository telemetry.enabled grant consent` (status:todo)
+- [x] T02: `Let repository telemetry.enabled grant consent` (status:done)
   - Task ID: T02
   - Scope: In — `resolve_access_policy` telemetry state (any `false` disables, otherwise any `true` enables), removal of `TelemetryDisabledReason::NoUserConsent` and its contradiction warning, the `sce config show` telemetry note text, resolver and render tests. Out — `auth.mode` precedence, setup, doctor.
   - Dependencies: none
   - Done when: AC5 holds; the remaining contradiction warnings and reason strings are unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml resolver`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config`.
-  - Context synchronization: pending
+  - Completed: 2026-10-22
+  - Files changed: `cli/src/services/config/resolver.rs`, `cli/src/services/config/types.rs`, `cli/src/services/config/render.rs`
+  - Result: `resolve_access_policy` now checks in this order: `invalid_config`, then `auth_disabled`, then user/explicit `false` → `user_opt_out`, then repository `false` → `repository_opt_out`, then any `true` → `Enabled`, otherwise `not_enabled`. A new helper, `resolve_telemetry_enabled`, sets the reported `telemetry.enabled` value and source from the layer that decides the outcome: the first `false` across explicit, user, repository, otherwise the first `true` across explicit, repository, user. Before, it was the first layer with any value. Removed `TelemetryDisabledReason::NoUserConsent`, `WARNING_REPOSITORY_TELEMETRY_WITHOUT_USER_CONSENT`, and the `user_telemetry_*` helpers. The other warnings and reason strings are unchanged. For `not_enabled`, `sce config show` now uses the new `TELEMETRY_NOT_ENABLED_NOTE`, which begins `Set telemetry.enabled: true in the repository SCE config to enable SCE telemetry for this repository.` and then repeats the unchanged Claude-settings removal text. Every other disabled reason keeps the existing note. Added 5 resolver tests and 2 render tests.
+  - Verify outcome: `resolver` filter passed (25 passed); `config` filter passed (91 passed). Extra checks: `setup` filter passed (69 passed); `clippy --all-targets --all-features -- -D warnings` was clean; the built `sce config show --format json` in a temp repository with only a repository `telemetry.enabled: true` (isolated `XDG_CONFIG_HOME`) gave `effective.state` `enabled`, `enabled.config_source` `default_discovered_local`, `note` null, and no warnings.
+  - Context impact: behavior change to the effective access policy — `no_user_consent` and its warning are gone, a repository `true` grants consent, the reported `telemetry.enabled` source is the deciding layer, and there is a new `not_enabled` note. Affects `context/cli/access-policy.md` (resolution flow, contradiction warnings, reason strings, `telemetry.note`); the ADR supersession belongs to T07.
+  - Context synchronization: synced
 
 - [ ] T03: `Save and read setup access answers in the repository layer` (status:todo)
   - Task ID: T03
