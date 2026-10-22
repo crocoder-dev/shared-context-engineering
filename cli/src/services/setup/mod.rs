@@ -475,11 +475,11 @@ pub struct PersistedSetupConfirmations {
     pub attribution_hooks_enabled: Option<bool>,
     pub auth_mode: Option<AuthMode>,
     pub telemetry_enabled: Option<bool>,
-    pub global_config_invalid: bool,
+    pub repository_config_invalid: bool,
 }
 
 impl PersistedSetupConfirmations {
-    pub(crate) fn with_global_access_preferences(
+    pub(crate) fn with_repository_access_preferences(
         self,
         preferences: access_preferences::AccessPreferences,
     ) -> Self {
@@ -496,7 +496,7 @@ impl PersistedSetupConfirmations {
                 ..self
             },
             AccessPreferences::Invalid => Self {
-                global_config_invalid: true,
+                repository_config_invalid: true,
                 ..self
             },
         }
@@ -528,13 +528,16 @@ impl SetupAccessGate {
     pub(crate) fn from_policy(policy: &ResolvedAccessPolicy, auth_db_present: bool) -> Self {
         let auth_locked_by = policy
             .auth_disabled_config_file()
-            .filter(|file| *file != AuthPolicyConfigFile::Global);
+            .filter(|file| *file != AuthPolicyConfigFile::Repository);
 
         Self {
             auth_locked_by,
             mandatory_locked: policy.auth_mode.value == AuthMode::Mandatory
-                && policy.auth_mode.source
-                    != ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredGlobal),
+                && !matches!(
+                    policy.auth_mode.source,
+                    ValueSource::Default
+                        | ValueSource::ConfigFile(ConfigPathSource::DefaultDiscoveredLocal)
+                ),
             auth_db_present,
         }
     }
@@ -1202,15 +1205,15 @@ where
         return Ok(Some(choices));
     }
 
-    let global_writable = !persisted.global_config_invalid;
+    let repository_writable = !persisted.repository_config_invalid;
 
-    if global_writable && (reconfigure || persisted.auth_mode.is_none()) {
+    if repository_writable && (reconfigure || persisted.auth_mode.is_none()) {
         let default = persisted.auth_mode.unwrap_or(FIRST_RUN_AUTH_MODE_DEFAULT);
         let Some(mode) = prompter.prompt_auth_mode(default)? else {
             return Ok(None);
         };
         choices.auth_mode = Some(mode);
-    } else if global_writable {
+    } else if repository_writable {
         choices.prompts_suppressed = true;
     }
 
@@ -1228,7 +1231,7 @@ where
         return Ok(Some(choices));
     }
 
-    if global_writable && (reconfigure || persisted.telemetry_enabled.is_none()) {
+    if repository_writable && (reconfigure || persisted.telemetry_enabled.is_none()) {
         let default = persisted
             .telemetry_enabled
             .unwrap_or(FIRST_RUN_TELEMETRY_CONSENT_DEFAULT);
@@ -1236,7 +1239,7 @@ where
             return Ok(None);
         };
         choices.telemetry_enabled = Some(consent);
-    } else if global_writable {
+    } else if repository_writable {
         choices.prompts_suppressed = true;
     }
 

@@ -92,7 +92,7 @@ pub(super) fn prompt_attribution_hooks_enabled(default: bool) -> Result<Option<b
     )
 }
 
-const AUTH_MODE_PROMPT_TITLE: &str = "SCE account mode for this machine";
+const AUTH_MODE_PROMPT_TITLE: &str = "SCE account mode for this repository";
 
 const AUTH_MODE_PROMPT_ROWS: [AuthMode; 3] =
     [AuthMode::Optional, AuthMode::Mandatory, AuthMode::Disabled];
@@ -103,7 +103,7 @@ const AUTH_MODE_MANDATORY_LABEL: &str = "Mandatory: require an SCE login when se
 const AUTH_MODE_DISABLED_LABEL: &str =
     "Disabled: local only; no SCE login, cloud sync, or telemetry";
 
-const TELEMETRY_CONSENT_PROMPT_LABEL: &str = "Share SCE telemetry?\n(Sends SCE usage telemetry to SCE servers using your SCE login. If Claude is\nselected, also configures Claude Code's native telemetry export. Separate from\nAgent Trace sync. Applies to all repositories on this machine.)";
+const TELEMETRY_CONSENT_PROMPT_LABEL: &str = "Share SCE telemetry?\n(Sends SCE usage telemetry to SCE servers using your SCE login. If Claude is\nselected, also configures Claude Code's native telemetry export. Separate from\nAgent Trace sync. Applies only to this repository.)";
 
 const LOGIN_PROMPT_LABEL: &str = "Log in to SCE now?\n(Opens a device login in your browser. An existing login on this machine is\nreused. You can log in later with 'sce auth login'.)";
 
