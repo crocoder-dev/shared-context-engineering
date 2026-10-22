@@ -77,6 +77,7 @@ pub enum HealthProblemKind {
     MutationScopeHealthBlocked,
     MutationScopeHealthInvalid,
     ManagedTelemetryUnavailable,
+    SceLoginRequired,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

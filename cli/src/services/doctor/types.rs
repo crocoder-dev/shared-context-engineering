@@ -284,6 +284,7 @@ pub(super) enum DoctorDisplayDetail {
         remediation: String,
     },
     Note(&'static str),
+    Source(&'static str),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -471,6 +472,7 @@ pub(crate) enum ProblemKind {
     MutationScopeHealthBlocked,
     MutationScopeHealthInvalid,
     ManagedTelemetryUnavailable,
+    SceLoginRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

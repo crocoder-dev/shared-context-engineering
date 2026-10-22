@@ -5,6 +5,7 @@ use crate::services::managed_telemetry::{
     ManagedTelemetryHealth, TelemetryFallbackReason, CREDENTIAL_LOOKUP_DEADLINE,
 };
 
+use super::access::DoctorAccess;
 use super::types::{
     DoctorProblem, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
 };
@@ -16,7 +17,7 @@ const STATE_DISABLED_BY_CONFIG: &str = "disabled_by_config";
 const SEVERITY_WARNING: &str = "warning";
 const NEXT_ACTION_AUTH_LOGIN: &str = "auth_login";
 const NEXT_ACTION_MANUAL_STEPS: &str = "manual_steps";
-pub(super) const OPT_IN_NOTE: &str = "Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the global SCE config to resume it.";
+pub(super) const OPT_IN_NOTE: &str = "Managed telemetry export is off because telemetry.enabled is not true; set telemetry.enabled: true in the repository SCE config to enable it for this repository.";
 pub(super) const HOOK_IMPACT: &str =
     "Claude Code hooks continue working, but telemetry export is disabled.";
 const MACOS_INACCESSIBLE_SUMMARY: &str =
@@ -161,7 +162,13 @@ pub(super) fn problem(health: ManagedTelemetryHealth) -> Option<DoctorProblem> {
     })
 }
 
-pub(super) fn json(health: ManagedTelemetryHealth) -> Value {
+pub(super) fn json(health: ManagedTelemetryHealth, access: DoctorAccess) -> Value {
+    let mut payload = health_json(health);
+    payload["policy"] = access.telemetry_policy_json();
+    payload
+}
+
+fn health_json(health: ManagedTelemetryHealth) -> Value {
     match (health, diagnostic(health)) {
         (_, Some(diagnostic)) => json!({
             "state": STATE_DISABLED,
