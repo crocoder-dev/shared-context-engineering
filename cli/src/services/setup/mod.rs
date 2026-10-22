@@ -481,13 +481,13 @@ pub struct PersistedSetupConfirmations {
 impl PersistedSetupConfirmations {
     pub(crate) fn with_global_access_preferences(
         self,
-        preferences: access_preferences::GlobalAccessPreferences,
+        preferences: access_preferences::AccessPreferences,
     ) -> Self {
-        use access_preferences::GlobalAccessPreferences;
+        use access_preferences::AccessPreferences;
 
         match preferences {
-            GlobalAccessPreferences::Missing => self,
-            GlobalAccessPreferences::Valid {
+            AccessPreferences::Missing => self,
+            AccessPreferences::Valid {
                 auth_mode,
                 telemetry_enabled,
             } => Self {
@@ -495,7 +495,7 @@ impl PersistedSetupConfirmations {
                 telemetry_enabled,
                 ..self
             },
-            GlobalAccessPreferences::Invalid => Self {
+            AccessPreferences::Invalid => Self {
                 global_config_invalid: true,
                 ..self
             },

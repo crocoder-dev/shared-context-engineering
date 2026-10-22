@@ -11,8 +11,8 @@ use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
 use crate::services::setup::access_preferences::{
-    persist_global_access_preferences, read_global_access_preferences, GlobalAccessPreferences,
-    GlobalAccessPreferencesError, GlobalWriteOutcome,
+    persist_global_access_preferences, read_global_access_preferences, AccessPreferences,
+    AccessWriteOutcome, GlobalAccessPreferencesError,
 };
 use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
 use crate::services::{config, managed_telemetry, setup};
@@ -238,7 +238,7 @@ struct SetupAccessSave {
     global_config_path: PathBuf,
     auth_mode: Option<AuthMode>,
     telemetry_enabled: Option<bool>,
-    outcome: GlobalWriteOutcome,
+    outcome: AccessWriteOutcome,
     prompts_suppressed: bool,
 }
 
@@ -451,7 +451,7 @@ fn render_setup_access_section(
             .telemetry_enabled
             .map(|enabled| ("telemetry.enabled", enabled.to_string())),
     ];
-    if access_save.outcome == GlobalWriteOutcome::Written {
+    if access_save.outcome == AccessWriteOutcome::Written {
         lines.extend(saved_values.into_iter().flatten().map(|(key, saved)| {
             format!(
                 "- {key}: {saved} (saved to global SCE config '{global_config_path}'; {SAVED_ACCESS_SCOPE})"
@@ -536,13 +536,13 @@ enum ClaudeTelemetryAction {
     SkipDisabled,
 }
 
-fn global_consent_withdrawn(global: GlobalAccessPreferences) -> bool {
+fn global_consent_withdrawn(global: AccessPreferences) -> bool {
     matches!(
         global,
-        GlobalAccessPreferences::Valid {
+        AccessPreferences::Valid {
             telemetry_enabled: Some(false),
             ..
-        } | GlobalAccessPreferences::Valid {
+        } | AccessPreferences::Valid {
             auth_mode: Some(AuthMode::Disabled),
             ..
         }
@@ -550,7 +550,7 @@ fn global_consent_withdrawn(global: GlobalAccessPreferences) -> bool {
 }
 
 fn claude_telemetry_action(
-    global: GlobalAccessPreferences,
+    global: AccessPreferences,
     effective_enabled: bool,
     claude_selected: bool,
     interactive: bool,
@@ -585,7 +585,7 @@ fn non_interactive_claude_telemetry_action(
         return None;
     }
     let global = config::resolver::resolve_default_global_config_path()
-        .map_or(GlobalAccessPreferences::Invalid, |path| {
+        .map_or(AccessPreferences::Invalid, |path| {
             read_global_preferences(&path)
         });
     claude_telemetry_action(
@@ -596,8 +596,8 @@ fn non_interactive_claude_telemetry_action(
     )
 }
 
-fn read_global_preferences(global_config_path: &Path) -> GlobalAccessPreferences {
-    read_global_access_preferences(global_config_path).unwrap_or(GlobalAccessPreferences::Invalid)
+fn read_global_preferences(global_config_path: &Path) -> AccessPreferences {
+    read_global_access_preferences(global_config_path).unwrap_or(AccessPreferences::Invalid)
 }
 
 fn effective_telemetry_enabled(repository_root: &Path) -> bool {
@@ -1045,7 +1045,7 @@ mod tests {
     fn claude_telemetry_action_follows_global_withdrawal_only() {
         use ClaudeTelemetryAction::{Install, Remove, SkipDisabled};
 
-        let valid = |auth_mode, telemetry_enabled| GlobalAccessPreferences::Valid {
+        let valid = |auth_mode, telemetry_enabled| AccessPreferences::Valid {
             auth_mode,
             telemetry_enabled,
         };
@@ -1060,8 +1060,8 @@ mod tests {
             valid(Some(AuthMode::Optional), Some(true)),
             valid(Some(AuthMode::Mandatory), None),
             valid(None, None),
-            GlobalAccessPreferences::Missing,
-            GlobalAccessPreferences::Invalid,
+            AccessPreferences::Missing,
+            AccessPreferences::Invalid,
         ];
         let modes = [(true, true), (true, false), (false, true), (false, false)];
 
@@ -1251,7 +1251,7 @@ mod tests {
             install_sce_claude_settings(&settings);
 
             let action = claude_telemetry_action(
-                GlobalAccessPreferences::Valid {
+                AccessPreferences::Valid {
                     auth_mode: None,
                     telemetry_enabled: Some(false),
                 },
