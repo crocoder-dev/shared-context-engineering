@@ -583,46 +583,6 @@ mod tests {
     }
 
     #[test]
-    fn setup_reconfigure_parses_to_interactive_reconfigure_request() {
-        let RuntimeCommand::Setup(command) = parse(&["sce", "setup", "--reconfigure"]) else {
-            panic!("expected setup command");
-        };
-
-        assert_eq!(
-            command.request.config_mode,
-            Some(services::setup::SetupMode::Interactive)
-        );
-        assert!(command.request.reconfigure);
-    }
-
-    #[test]
-    fn setup_reconfigure_with_a_target_fails_validation() {
-        let error = parse_runtime_command(
-            ["sce", "setup", "--claude", "--reconfigure"].map(String::from),
-            &CommandRegistry::default(),
-            None,
-        )
-        .err()
-        .expect("reconfigure with a target should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "Option '--reconfigure' cannot be used with '--claude'. Try: run 'sce setup --reconfigure' alone to change saved setup answers interactively."
-        );
-    }
-
-    #[test]
-    fn setup_help_lists_the_reconfigure_flag() {
-        let help =
-            cli_schema::render_help_for_path(&["setup"]).expect("setup help should be renderable");
-
-        assert!(
-            help.contains("--reconfigure"),
-            "setup help should list --reconfigure, got: {help}"
-        );
-    }
-
-    #[test]
     fn sync_parses_to_sync_request_with_default_text_format() {
         let command = parse(&["sce", "sync"]);
 

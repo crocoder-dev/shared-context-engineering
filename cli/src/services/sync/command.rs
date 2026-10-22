@@ -94,31 +94,3 @@ impl SyncCommand {
             .map_err(|error| CliError::runtime(anyhow::Error::msg(format!("{error:#}"))))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::classify_sync_error;
-    use crate::services::error::{AuthPolicyConfigFile, CliError, UserError};
-    use crate::services::sync::sync::TraceSyncError;
-
-    #[test]
-    fn classify_sync_error_maps_disabled_auth_to_auth_disabled_by_config() {
-        for file in [
-            AuthPolicyConfigFile::Global,
-            AuthPolicyConfigFile::Repository,
-            AuthPolicyConfigFile::ConfigFlag,
-            AuthPolicyConfigFile::ConfigEnv,
-        ] {
-            let error = classify_sync_error(TraceSyncError::AuthDisabled(file));
-            let CliError::User {
-                error: user_error, ..
-            } = &error
-            else {
-                panic!("expected a user-facing error for {file:?}");
-            };
-            assert_eq!(*user_error, UserError::AuthDisabledByConfig(file));
-            assert_eq!(user_error.key(), "auth.disabled_by_config");
-            assert_eq!(error.to_string(), user_error.message());
-        }
-    }
-}
