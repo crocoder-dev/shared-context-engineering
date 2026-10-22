@@ -34,39 +34,6 @@ pub(crate) enum AccessWriteOutcome {
 }
 
 #[derive(Debug)]
-pub(crate) enum GlobalAccessPreferencesError {
-    InvalidGlobalConfig { path: PathBuf, reason: String },
-    ConcurrentModification { path: PathBuf },
-    SymlinkManaged { path: PathBuf },
-    Io(anyhow::Error),
-}
-
-impl fmt::Display for GlobalAccessPreferencesError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidGlobalConfig { path, reason } => write!(
-                f,
-                "Global SCE config '{}' is invalid and was left unchanged: {reason}",
-                path.display()
-            ),
-            Self::ConcurrentModification { path } => write!(
-                f,
-                "Global SCE config '{}' changed while setup was updating it and was left unchanged.",
-                path.display()
-            ),
-            Self::SymlinkManaged { path } => write!(
-                f,
-                "Global SCE config '{}' is a symlink and was left unchanged; SCE cannot modify a symlink-managed global config. Update the file's source directly (for example, your Nix or Home Manager configuration).",
-                path.display()
-            ),
-            Self::Io(error) => write!(f, "{error:#}"),
-        }
-    }
-}
-
-impl std::error::Error for GlobalAccessPreferencesError {}
-
-#[derive(Debug)]
 pub(crate) enum RepositoryAccessPreferencesError {
     InvalidRepositoryConfig { path: PathBuf, reason: String },
     ConcurrentModification { path: PathBuf },
@@ -144,7 +111,6 @@ pub(crate) fn read_global_access_preferences(path: &Path) -> anyhow::Result<Acce
     read_access_preferences(path, ConfigLayer::Global)
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn read_repository_access_preferences(path: &Path) -> anyhow::Result<AccessPreferences> {
     read_access_preferences(path, ConfigLayer::Repository)
 }
@@ -166,36 +132,6 @@ fn read_access_preferences(path: &Path, layer: ConfigLayer) -> anyhow::Result<Ac
     })
 }
 
-pub(crate) fn persist_global_access_preferences(
-    path: &Path,
-    auth_mode: Option<AuthMode>,
-    telemetry_enabled: Option<bool>,
-) -> Result<AccessWriteOutcome, GlobalAccessPreferencesError> {
-    persist_access_preferences_with(
-        path,
-        ConfigLayer::Global,
-        auth_mode,
-        telemetry_enabled,
-        |path| read_optional(path, ConfigLayer::Global),
-    )
-    .map_err(|failure| match failure {
-        WriteFailure::Invalid(reason) => GlobalAccessPreferencesError::InvalidGlobalConfig {
-            path: path.to_path_buf(),
-            reason,
-        },
-        WriteFailure::ConcurrentModification => {
-            GlobalAccessPreferencesError::ConcurrentModification {
-                path: path.to_path_buf(),
-            }
-        }
-        WriteFailure::SymlinkManaged => GlobalAccessPreferencesError::SymlinkManaged {
-            path: path.to_path_buf(),
-        },
-        WriteFailure::Io(error) => GlobalAccessPreferencesError::Io(error),
-    })
-}
-
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) fn persist_repository_access_preferences(
     path: &Path,
     auth_mode: Option<AuthMode>,

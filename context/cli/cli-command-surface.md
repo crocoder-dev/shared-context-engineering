@@ -62,7 +62,7 @@ Record SCE involvement in Git commits?
 
 The confirmations are independent and default to Yes, so Enter persists `true`; an explicit `n` changes only its corresponding value. Successful target setup records the answers at `agent_trace.auto_sync` and `policies.attribution_hooks.enabled` in repo-local `.sce/config.json` while retaining the existing JSON merge and newline behavior.
 
-After those confirmations, interactive setup asks the SCE access prompts (account mode, telemetry consent, login offer), saves the answers to the global user config, and, after the install, runs `sce auth login` from the repository root when the effective mode requires it or the user accepted. A failed mandatory login exits with `auth.setup_login_required`. See [setup local bootstrap: setup login](../sce/setup-repo-local-config-bootstrap.md#setup-login).
+After those confirmations, interactive setup asks the SCE access prompts (account mode, telemetry consent, login offer), saves the answers to the repository `.sce/config.json`, and, after the install, runs `sce auth login` from the repository root when the effective mode requires it or the user accepted. A failed mandatory login exits with `auth.setup_login_required`. See [setup local bootstrap: setup login](../sce/setup-repo-local-config-bootstrap.md#setup-login).
 
 Saved answers skip their prompts on reruns. `sce setup --reconfigure` asks all four saved answers again (auto-sync, attribution, account mode, telemetry consent) with the saved values as defaults; it is interactive-only and fails validation alongside a target flag, `--non-interactive`, `--hooks`, `--repo`, or `--bootstrap-context`. See [setup local bootstrap: reconfigure](../sce/setup-repo-local-config-bootstrap.md#reconfigure).
 
