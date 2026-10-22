@@ -21,7 +21,7 @@ Status: the resolver computes and exposes the policy, and `sce config show` / `v
   - `telemetry`: the effective state, `TelemetryPolicyState` (`Enabled`, or `Disabled(reason)`).
   - `background_cloud_allowed`.
 - **Degraded:** at least one default-discovered file was skipped as invalid.
-- **Setup global access preferences** (`GlobalAccessPreferences`): the `auth.mode` / `telemetry.enabled` values in the global user config that interactive setup reads to suppress its access prompts and writes from new answers. Read as `Missing`, `Valid { auth_mode, telemetry_enabled }` (an absent key means not asked yet), or `Invalid`. See [Setup](#setup).
+- **Setup global access preferences** (`AccessPreferences`, read by `read_global_access_preferences`): the `auth.mode` / `telemetry.enabled` values in the global user config that interactive setup reads to suppress its access prompts and writes from new answers. Read as `Missing`, `Valid { auth_mode, telemetry_enabled }` (an absent key means not asked yet), or `Invalid`. See [Setup](#setup).
 
 ## Repository discovery
 
