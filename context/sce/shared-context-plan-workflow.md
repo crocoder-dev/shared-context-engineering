@@ -44,6 +44,39 @@ context-load phase and continues with the original request in the same session.
 - Durable repository context is read, not synchronized, during planning.
 - A ready plan ends with an exact `/next-task {plan-path} {task-id}` handoff; the workflow does not request implementation approval itself.
 
+## Plan format
+
+`references/plan-template.md`, rendered from `changeToPlanPlanTemplate`, is the
+only owner of the persisted plan schema and its rules. Alongside the compact
+task, completion, and synchronization-lifecycle fields, it defines an optional
+structured layer:
+
+- `## Design decisions` with `D1..Dn` entries, each carrying `Boundary:`,
+  `Rationale:`, `Rejected:`, and `Trade-offs:`.
+- One-line reference fields: `Decisions:` and `Scenarios:` on each acceptance
+  criterion, and `Covers:` on each task.
+- `### Verification scenarios` with `S1..Sn` entries, each carrying `Given:`,
+  `When:`, `Then:`, and `Check:`.
+
+The template's `Reference rules` make the relationships extractable by line
+matching. Each ID is defined once. Decision, criterion, and scenario IDs are
+never renumbered or reused. Every reference resolves. Every criterion has
+`Scenarios:` (IDs or `none (inspection)`), is covered by a task, and every
+scenario is referenced by a criterion. A planned `Check:` is not evidence.
+
+A plan is **structured** when it has a `### Verification scenarios` heading or
+any task carries `Covers:`; every other plan is **legacy** and keeps the prior
+format. A revision keeps a legacy plan legacy unless the correction explicitly
+asks to adopt the structured format.
+
+```mermaid
+flowchart LR
+    D["D{n} design decision"] -->|"Decisions:"| AC["AC{n} acceptance criterion"]
+    AC -->|"Scenarios:"| S["S{n} verification scenario"]
+    T["T{nn} task"] -->|"Covers:"| AC
+    S -->|"Check:"| C["planned test, command, or inspection"]
+```
+
 ## Continuation contract
 
 Same-session waits preserve one of two explicit continuation shapes inside the

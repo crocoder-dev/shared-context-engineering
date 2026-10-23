@@ -152,6 +152,9 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/compact-plan-template-schema-check.pkl" \
   "generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields"
 expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/structured-plan-template-schema-check.pkl" \
+  "generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules"
+expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-compact-completion-writing-check.pkl" \
   "sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record"
 expect_pkl_fixture_failure \

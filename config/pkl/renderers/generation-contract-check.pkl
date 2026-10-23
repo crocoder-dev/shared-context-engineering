@@ -1001,6 +1001,34 @@ hidden assertCompactPlanTemplateSchema = (documents: Mapping) ->
   ) "generated plan template: compact task/completion schema present, legacy fields absent"
   else throw("generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields")
 
+local requiredStructuredPlanTemplateTokens = new Listing {
+  "## Design decisions"
+  "  - Boundary: "
+  "  - Rationale: "
+  "  - Rejected: "
+  "  - Trade-offs: "
+  "  - Decisions: "
+  "  - Scenarios: "
+  "### Verification scenarios"
+  "  - Given: "
+  "  - When: "
+  "  - Then: "
+  "  - Check: "
+  "  - Covers: "
+  "## Design decision rules"
+  "## Verification scenario rules"
+  "## Reference rules"
+}
+
+hidden assertStructuredPlanTemplateSchema = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")
+      || requiredStructuredPlanTemplateTokens.every((token) -> text.contains(token))
+    )
+  ) "generated plan template: design decisions, verification scenarios, coverage fields, and reference rules present"
+  else throw("generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules")
+
 local planTemplateOwnedPolicyTokens = new Listing {
   "Acceptance criteria describe the finished system, not the work."
   "Every criterion carries a `Validate:` line."
@@ -1010,6 +1038,13 @@ local planTemplateOwnedPolicyTokens = new Listing {
   "Split any candidate task that would require multiple independent commits"
   "The last task in the stack is an ordinary implementation task."
   "Preserve completed tasks, their `(status:done)` markers"
+  "Record a design decision only for a real architectural choice the plan"
+  "`Then:` states an exact observable result or invariant, not an intention."
+  "A plan is structured when it has a `### Verification scenarios` heading or"
+  "Never renumber or reuse a decision, criterion, or scenario ID"
+  "Every acceptance criterion is named by at least one task's `Covers:`."
+  "A planned `Check:` is not execution evidence."
+  "A legacy plan stays legacy."
 }
 
 local requiredPlanAuthoringTemplateReferences = new Listing {
@@ -1331,6 +1366,7 @@ contractChecks {
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
   ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
   ["compact-plan-template-schema"] = assertCompactPlanTemplateSchema.apply(workflowDocuments)
+  ["structured-plan-template-schema"] = assertStructuredPlanTemplateSchema.apply(workflowDocuments)
   ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
   ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
   ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
