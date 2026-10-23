@@ -11,7 +11,7 @@ pub enum PlanEntryKind {
 }
 
 impl PlanEntryKind {
-    fn of_id(id: &str) -> Self {
+    pub fn of_id(id: &str) -> Self {
         if id.starts_with("AC") {
             Self::AcceptanceCriterion
         } else if id.starts_with('D') {

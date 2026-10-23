@@ -248,37 +248,65 @@ expect_plan_structure_failure() {
 structured_plan_result="structured plan: reference integrity holds"
 legacy_plan_result="legacy plan: structured reference rules do not apply"
 
-expect_plan_structure_pass "valid-structured-plan.md" "$structured_plan_result"
-expect_plan_structure_pass "inspection-only-plan.md" "$structured_plan_result"
-expect_plan_structure_pass "fenced-example-plan.md" "$structured_plan_result"
-expect_plan_structure_pass "legacy-plan.md" "$legacy_plan_result"
-expect_plan_structure_pass "legacy-plan-with-fenced-structured-example.md" "$legacy_plan_result"
+plan_structure_manifest="$plan_structure_fixtures/expectations.tsv"
+listed_plan_structure_fixtures=()
 
-expect_plan_structure_failure "duplicate-id.md" \
-  "\`S1\` is defined more than once"
-expect_plan_structure_failure "undefined-references.md" \
-  "\`Decisions:\` on \`AC1\` references undefined \`D2\`" \
-  "\`Scenarios:\` on \`AC1\` references undefined \`S9\`" \
-  "\`Covers:\` on \`T01\` references undefined \`AC3\`"
-expect_plan_structure_failure "unreferenced-scenario.md" \
-  "\`S2\` is not referenced by any acceptance criterion's \`Scenarios:\`"
-expect_plan_structure_failure "uncovered-ac.md" \
-  "\`AC2\` is not covered by any task's \`Covers:\`"
-expect_plan_structure_failure "missing-scenarios-field.md" \
-  "\`AC1\` is missing \`Scenarios:\`"
-expect_plan_structure_failure "misplaced-field.md" \
-  "\`Check:\` on \`D1\` is misplaced; it belongs to a verification scenario" \
-  "\`Covers:\` on \`AC1\` is misplaced; it belongs to a task"
-expect_plan_structure_failure "misplaced-definition.md" \
-  "\`Scenarios:\` on \`AC1\` references undefined \`S1\`; it appears only outside \`### Verification scenarios\`"
-expect_plan_structure_failure "wrong-heading-context.md" \
-  "heading \`### Verification scenarios\` is not inside \`## Acceptance criteria\`"
-expect_plan_structure_failure "keywords-only-in-examples.md" \
-  "\`Scenarios:\` on \`AC1\` references undefined \`S1\`; it appears only inside a fenced code block"
-expect_plan_structure_failure "task-missing-covers.md" \
-  "\`T02\` is missing \`Covers:\`"
-expect_plan_structure_failure "task-empty-covers.md" \
-  "\`Covers:\` on \`T02\` is not a comma-separated ID list"
+while IFS=$'\t' read -r -u 3 -a manifest_columns; do
+  if [[ "${#manifest_columns[@]}" -eq 0 || "${manifest_columns[0]}" == \#* ]]; then
+    continue
+  fi
+
+  fixture_name="${manifest_columns[0]}"
+  fixture_verdict="${manifest_columns[1]:-}"
+  expected_diagnostics=("${manifest_columns[@]:2}")
+
+  if [[ ! -f "$plan_structure_fixtures/$fixture_name" ]]; then
+    printf 'Plan structure manifest lists a missing fixture: %s\n' "$fixture_name" >&2
+    exit 1
+  fi
+  listed_plan_structure_fixtures+=("$fixture_name")
+
+  case "$fixture_verdict" in
+    structured | legacy)
+      if [[ "${#expected_diagnostics[@]}" -ne 0 ]]; then
+        printf 'Plan structure manifest pass row must not list diagnostics: %s\n' "$fixture_name" >&2
+        exit 1
+      fi
+      if [[ "$fixture_verdict" == "structured" ]]; then
+        expect_plan_structure_pass "$fixture_name" "$structured_plan_result"
+      else
+        expect_plan_structure_pass "$fixture_name" "$legacy_plan_result"
+      fi
+      ;;
+    fail)
+      if [[ "${#expected_diagnostics[@]}" -eq 0 ]]; then
+        printf 'Plan structure manifest fail row must list diagnostics: %s\n' "$fixture_name" >&2
+        exit 1
+      fi
+      expect_plan_structure_failure "$fixture_name" "${expected_diagnostics[@]}"
+      ;;
+    *)
+      printf 'Plan structure manifest has an unknown verdict for %s: %s\n' \
+        "$fixture_name" "$fixture_verdict" >&2
+      exit 1
+      ;;
+  esac
+done 3<"$plan_structure_manifest"
+
+for fixture_path in "$plan_structure_fixtures"/*.md; do
+  fixture_name="$(basename "$fixture_path")"
+  listed_count=0
+  for listed_fixture in "${listed_plan_structure_fixtures[@]}"; do
+    if [[ "$listed_fixture" == "$fixture_name" ]]; then
+      listed_count=$((listed_count + 1))
+    fi
+  done
+  if [[ "$listed_count" -ne 1 ]]; then
+    printf 'Plan structure fixture must be listed exactly once in %s: %s\n' \
+      "$plan_structure_manifest" "$fixture_name" >&2
+    exit 1
+  fi
+done
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"
