@@ -77,6 +77,18 @@ flowchart LR
     S -->|"Check:"| C["planned test, command, or inspection"]
 ```
 
+The plan-authoring phase writes this layer in a fixed order: design decisions,
+then acceptance criteria with their `Decisions:` and `Scenarios:`, then
+verification scenarios, then tasks with `Covers:`. It records only real
+architectural choices and omits `## Design decisions` when there are none. It
+writes scenarios only for the case kinds (normal, boundary, failure,
+cancellation, concurrency, recovery) the change makes relevant, and a `Check:`
+never names a test that neither exists nor is created by a task. Before writing
+a structured plan, a reference-consistency pass applies every `Reference rules`
+entry to the full draft and fixes each defect first. A legacy-plan revision
+skips this structured work. The phase cites the template's rule sections by
+name and does not restate them.
+
 ## Continuation contract
 
 Same-session waits preserve one of two explicit continuation shapes inside the

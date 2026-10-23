@@ -274,9 +274,16 @@ This phase owns the planning process:
 - Write or revise exactly one `context/plans/{plan_name}.md`.
 
 `references/plan-template.md` is the sole owner of the persisted plan schema.
-Read its `Acceptance criteria rules`, `Task rules` and `No validation task` rules,
-and `Updating an existing plan` rules before authoring or revising. Apply those
-rules rather than restating them here.
+Read its `Acceptance criteria rules`, `Design decision rules`,
+`Verification scenario rules`, `Reference rules`, `Task rules` and
+`No validation task` rules, and `Updating an existing plan` rules before
+authoring or revising. Apply those rules rather than restating them here.
+
+Author plan content in this order: design decisions, then acceptance criteria,
+then verification scenarios, then tasks. When revising a legacy plan, skip the
+design decision, verification scenario, `Covers:`, and reference-check work
+unless the `Updating an existing plan` rules let the correction adopt the
+structured format.
 
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
@@ -397,18 +404,39 @@ the repository does not yet have.
 
 Do not explore the entire repository by default.
 
-## 2.5 Author the acceptance criteria
+## 2.5 Record design decisions
+
+Record the architectural choices this plan commits to under `## Design decisions`,
+applying the `Design decision rules` in `references/plan-template.md`. Do not
+manufacture a decision to fill the section. When the change commits to no such
+choice, omit the section.
+
+## 2.6 Author the acceptance criteria
 
 Derive the plan-specific success outcomes and checks before slicing tasks, then
 apply the `Acceptance criteria rules` and exact section shape in
 `references/plan-template.md`. The template owns their generic validation
 semantics and placement.
 
-## 2.6 Author the task stack
+Give each criterion its `Decisions:` and `Scenarios:` fields as the
+`Reference rules` define them.
 
-Slice and order the plan-specific work after the acceptance criteria, applying the
-`Task rules` and `No validation task` rules in `references/plan-template.md`.
+## 2.7 Author the verification scenarios
+
+Write the scenarios the acceptance criteria depend on under
+`### Verification scenarios`, applying the `Verification scenario rules` in
+`references/plan-template.md`. Cover normal, boundary, failure, cancellation,
+concurrency, and recovery cases only where the change makes them relevant.
+Do not invent test names: a `Check:` names an existing test, a test a task in
+the stack creates, a command, or a named inspection.
+
+## 2.8 Author the task stack
+
+Slice and order the plan-specific work after the acceptance criteria and
+verification scenarios, applying the `Task rules` and `No validation task` rules in `references/plan-template.md`.
 Do not restate those generic task rules here.
+
+Give each task its `Covers:` field as the `Reference rules` define it.
 
 A finished stack always leaves at least one incomplete task, so the workflow can
 always hand off to `/next-task`. When the request resolves to a plan but produces
@@ -416,12 +444,19 @@ no incomplete task, because the change is already implemented or already covered
 by completed tasks, set internal status `blocked` with category
 `no_actionable_work` instead of writing the plan.
 
-## 2.7 Write the plan
+## 2.9 Check references
+
+Before writing a structured plan, run a reference-consistency pass over the
+complete draft that applies every `Reference rules` entry in
+`references/plan-template.md`. Fix each defect in the draft before writing. Do
+not write a plan that fails this pass.
+
+## 2.10 Write the plan
 
 Write `context/plans/{plan_name}.md` by applying `references/plan-template.md`
 exactly. For revisions, apply its `Updating an existing plan` rules.
 
-## 2.8 Return the result
+## 2.11 Return the result
 
 Return one internal result with one of these statuses:
 

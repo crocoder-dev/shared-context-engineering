@@ -260,7 +260,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: `context/sce/shared-context-plan-workflow.md` (structured plan format and reference rules), `context/sce/config-generation.md` (new contract check and fixture).
   - Context synchronization: synced
 
-- [ ] T02: `Author decisions, scenarios, and coverage in the plan-authoring phase` (status:todo)
+- [x] T02: `Author decisions, scenarios, and coverage in the plan-authoring phase` (status:done)
   - Task ID: T02
   - Covers: AC3
   - Scope: In — `changeToPlanPlanAuthoring`:
@@ -274,8 +274,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Out — the template schema (T01) and the summary or output layouts.
   - Dependencies: T01
   - Done when: The generated `plan-authoring.md` states the D→AC→S→T order and the consistency pass, cites the template rule sections, and restates no template-owned rule. The checks pass, and the fixture fails as expected.
-  - Verify: `nix run .#pkl-check-generated`.
-  - Context synchronization: pending
+  - Verify: `nix run .#pkl-check-generated` — passed (145 files; `plan-template-policy-ownership` with the extended `requiredPlanAuthoringTemplateReferences` and the new `plan-authoring-structured-references` check both pass; the new fixture fails with its exact diagnostic). The generated `plan-authoring.md` is byte-identical across the OpenCode, Claude, Pi, and Codex targets.
+  - Completed: 2026-10-23
+  - Files changed: config/pkl/base/workflow-change-to-plan.pkl, config/pkl/renderers/generation-contract-check.pkl, config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl, config/pkl/check-generated.sh, context/plans/plan-decisions-and-verification-scenarios.md
+  - Result: `changeToPlanPlanAuthoring` now cites `Design decision rules`, `Verification scenario rules`, and `Reference rules`. It states the decisions → criteria → scenarios → tasks order, with a legacy-revision skip, and adds steps 2.5 `Record design decisions` (no manufactured decisions), 2.7 `Author the verification scenarios` (relevant case kinds only, no invented test names), and 2.9 `Check references` (a pre-write reference-consistency pass). The AC and task steps now author `Decisions:`/`Scenarios:` and `Covers:`. The write and return steps were renumbered to 2.10 and 2.11. Added the three citations to `requiredPlanAuthoringTemplateReferences`, the `plan-authoring-structured-references` assertion, and one registered negative fixture.
+  - Context impact: `context/sce/shared-context-plan-workflow.md` (plan-authoring order and reference-consistency pass), `context/sce/config-generation.md` (new contract check and fixture).
+  - Context synchronization: synced
 
 - [ ] T03: `Surface covered criteria, scenarios, and decisions in /next-task review, gate, and execution` (status:todo)
   - Task ID: T03
