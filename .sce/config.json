@@ -3,6 +3,9 @@
   "agent_trace": {
     "auto_sync": true
   },
+  "auth": {
+    "mode": "mandatory"
+  },
   "integrations": {
     "optional_workflows": [],
     "target": [
@@ -214,5 +217,8 @@
       ],
       "presets": []
     }
+  },
+  "telemetry": {
+    "enabled": true
   }
 }

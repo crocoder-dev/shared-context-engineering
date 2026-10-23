@@ -97,6 +97,8 @@ Every detected issue must map to exactly one stable problem category:
 
 Each problem record must also include stable severity and fixability classes.
 
+JSON problem records also carry `kind` (a stable snake_case problem identifier such as `claude_integration_files_missing` or `required_hook_missing`) and `target` (`claude`, `opencode`, `pi`, or `codex` when the problem is scoped to one integration or adapter mutation-scope runtime; `null` for repository-wide problems such as git hooks or login). Consumers filter on these fields rather than parsing `summary` text.
+
 ### Severity classes
 
 - `error`: blocks readiness and requires repair or explicit manual action

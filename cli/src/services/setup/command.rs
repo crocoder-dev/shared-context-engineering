@@ -6,23 +6,25 @@ use anyhow::Context;
 use crate::app::ContextWithRepoRoot;
 use crate::services::auth_command::{self, AuthFormat, LoginReport};
 use crate::services::config::{AuthMode, ResolvedAccessPolicy, ValueSource};
+use crate::services::default_paths::RepoPaths;
 use crate::services::error::{AuthPolicyConfigFile, CliError, UserError};
 use crate::services::lifecycle::{
     lifecycle_providers, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
 };
 use crate::services::setup::access_preferences::{
-    persist_global_access_preferences, read_global_access_preferences, GlobalAccessPreferences,
-    GlobalAccessPreferencesError, GlobalWriteOutcome,
+    persist_repository_access_preferences, read_global_access_preferences,
+    read_repository_access_preferences, AccessPreferences, AccessWriteOutcome,
+    RepositoryAccessPreferencesError,
 };
 use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
 use crate::services::{config, managed_telemetry, setup};
 
 const SCE_ACCESS_HEADING: &str = "SCE access:";
-const SAVED_ACCESS_SCOPE: &str = "applies to all repositories on this machine";
+const SAVED_ACCESS_SCOPE: &str = "applies only to this repository";
 const AUTH_LOGOUT_HINT_LINE: &str =
     "- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.";
-const GLOBAL_ACCESS_WRITE_REMEDIATION: &str = "No repository files were changed. Run 'sce config validate' to check the file, then rerun 'sce setup'.";
-const GLOBAL_ACCESS_SYMLINK_REMEDIATION: &str =
+const REPOSITORY_ACCESS_WRITE_REMEDIATION: &str = "No repository files were changed. Run 'sce config validate' to check the file, then rerun 'sce setup'.";
+const REPOSITORY_ACCESS_SYMLINK_REMEDIATION: &str =
     "No repository files were changed. Rerun 'sce setup' after updating the config source.";
 const SETUP_LOGIN_DISABLED_LINE: &str =
     "SCE login: skipped; SCE authentication is disabled by config.";
@@ -31,6 +33,7 @@ const SETUP_LOGIN_NOT_REQUESTED_LINE: &str =
 const SETUP_LOGIN_DECLINED_LINE: &str = "SCE login: skipped; run 'sce auth login' to log in.";
 const SETUP_LOGIN_FAILED_PREFIX: &str = "SCE login: failed: ";
 const SETUP_LOGIN_RETRY_LINE: &str = "Run 'sce auth login' to retry.";
+const SETUP_LOGIN_REMINDER_LINE: &str = "SCE login: required by auth.mode: mandatory for this repository; run 'sce auth login' if you are not logged in.";
 const RECONFIGURE_HINT_LINE: &str =
     "- Run 'sce setup --reconfigure' to change saved setup answers.";
 
@@ -134,7 +137,7 @@ impl SetupCommand {
 
                 let (removal_action, deferred_action) =
                     split_pre_login_removal(claude_telemetry_action(
-                        read_global_preferences(&access_save.global_config_path),
+                        default_global_preferences(),
                         policy.telemetry_enabled(),
                         claude_telemetry_selected,
                         true,
@@ -149,7 +152,7 @@ impl SetupCommand {
                 sections.push(render_setup_login_section(&login_status));
                 deferred_action
             } else {
-                non_interactive_claude_telemetry_action(&repository_root, claude_telemetry_selected)
+                non_interactive_followup(&repository_root, claude_telemetry_selected, &mut sections)
             };
 
             sections.extend(render_claude_telemetry(deferred_telemetry_action).await);
@@ -198,8 +201,6 @@ impl SetupCommand {
             });
         }
 
-        let global_config_path =
-            config::resolver::resolve_default_global_config_path().map_err(unexpected_failure)?;
         let auth_db_present = managed_telemetry::auth_db_present();
 
         Ok(
@@ -207,7 +208,6 @@ impl SetupCommand {
                 repository_root,
                 &setup::InquireSetupTargetPrompter,
                 &optional_workflow_defaults,
-                &global_config_path,
                 resolve_access_policy,
                 auth_db_present,
                 self.request.reconfigure,
@@ -235,10 +235,10 @@ enum PreparedSetup {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SetupAccessSave {
-    global_config_path: PathBuf,
+    repository_config_path: PathBuf,
     auth_mode: Option<AuthMode>,
     telemetry_enabled: Option<bool>,
-    outcome: GlobalWriteOutcome,
+    outcome: AccessWriteOutcome,
     prompts_suppressed: bool,
 }
 
@@ -259,7 +259,6 @@ fn prepare_interactive_setup<P, R>(
     repository_root: &Path,
     prompter: &P,
     optional_workflow_defaults: &[String],
-    global_config_path: &Path,
     resolve_policy: R,
     auth_db_present: bool,
     reconfigure: bool,
@@ -269,10 +268,11 @@ where
     R: Fn(&Path) -> anyhow::Result<ResolvedAccessPolicy>,
 {
     let policy = resolve_policy(repository_root).map_err(unexpected_failure)?;
-    let global_preferences =
-        read_global_access_preferences(global_config_path).map_err(unexpected_failure)?;
+    let repository_config_path = RepoPaths::new(repository_root).sce_config_file();
+    let repository_preferences =
+        read_repository_access_preferences(&repository_config_path).map_err(unexpected_failure)?;
     let persisted_confirmations = setup::persisted_setup_confirmations(repository_root)
-        .with_global_access_preferences(global_preferences);
+        .with_repository_access_preferences(repository_preferences);
 
     let dispatch = setup::resolve_setup_dispatch(
         setup::SetupMode::Interactive,
@@ -297,7 +297,7 @@ where
 
     let access_save = SetupAccessSave {
         prompts_suppressed,
-        ..persist_setup_access_preferences(global_config_path, auth_mode, telemetry_enabled)?
+        ..persist_setup_access_preferences(&repository_config_path, auth_mode, telemetry_enabled)?
     };
 
     Ok(InteractiveSetup::Ready {
@@ -307,16 +307,16 @@ where
 }
 
 fn persist_setup_access_preferences(
-    global_config_path: &Path,
+    repository_config_path: &Path,
     auth_mode: Option<AuthMode>,
     telemetry_enabled: Option<bool>,
 ) -> Result<SetupAccessSave, CliError> {
     let outcome =
-        persist_global_access_preferences(global_config_path, auth_mode, telemetry_enabled)
-            .map_err(|source| global_access_write_failure(global_config_path, &source))?;
+        persist_repository_access_preferences(repository_config_path, auth_mode, telemetry_enabled)
+            .map_err(|source| repository_access_write_failure(repository_config_path, &source))?;
 
     Ok(SetupAccessSave {
-        global_config_path: global_config_path.to_path_buf(),
+        repository_config_path: repository_config_path.to_path_buf(),
         auth_mode,
         telemetry_enabled,
         outcome,
@@ -324,17 +324,19 @@ fn persist_setup_access_preferences(
     })
 }
 
-fn global_access_write_failure(
-    global_config_path: &Path,
-    source: &GlobalAccessPreferencesError,
+fn repository_access_write_failure(
+    repository_config_path: &Path,
+    source: &RepositoryAccessPreferencesError,
 ) -> CliError {
     let remediation = match source {
-        GlobalAccessPreferencesError::SymlinkManaged { .. } => GLOBAL_ACCESS_SYMLINK_REMEDIATION,
-        _ => GLOBAL_ACCESS_WRITE_REMEDIATION,
+        RepositoryAccessPreferencesError::SymlinkManaged { .. } => {
+            REPOSITORY_ACCESS_SYMLINK_REMEDIATION
+        }
+        _ => REPOSITORY_ACCESS_WRITE_REMEDIATION,
     };
     CliError::runtime(anyhow::anyhow!(
-        "Failed to save SCE access preferences to the global SCE config '{}'.\n{source}\n{remediation}",
-        global_config_path.display()
+        "Failed to save SCE access preferences to the repository SCE config '{}'.\n{source}\n{remediation}",
+        repository_config_path.display()
     ))
 }
 
@@ -390,6 +392,19 @@ fn setup_login_action(
     }
 }
 
+fn non_interactive_login_reminder<R>(
+    repository_root: &Path,
+    resolve_policy: R,
+) -> Option<&'static str>
+where
+    R: Fn(&Path) -> anyhow::Result<ResolvedAccessPolicy>,
+{
+    resolve_policy(repository_root)
+        .ok()
+        .filter(|policy| policy.auth_mode.value == AuthMode::Mandatory)
+        .map(|_| SETUP_LOGIN_REMINDER_LINE)
+}
+
 async fn run_setup_login_step<L, LF>(
     action: SetupLoginAction,
     login: L,
@@ -440,7 +455,7 @@ fn render_setup_access_section(
     policy: &ResolvedAccessPolicy,
     auth_db_present: bool,
 ) -> String {
-    let global_config_path = access_save.global_config_path.display();
+    let repository_config_path = access_save.repository_config_path.display();
     let mut lines = vec![SCE_ACCESS_HEADING.to_string()];
 
     let saved_values = [
@@ -451,15 +466,15 @@ fn render_setup_access_section(
             .telemetry_enabled
             .map(|enabled| ("telemetry.enabled", enabled.to_string())),
     ];
-    if access_save.outcome == GlobalWriteOutcome::Written {
+    if access_save.outcome == AccessWriteOutcome::Written {
         lines.extend(saved_values.into_iter().flatten().map(|(key, saved)| {
             format!(
-                "- {key}: {saved} (saved to global SCE config '{global_config_path}'; {SAVED_ACCESS_SCOPE})"
+                "- {key}: {saved} (saved to repository SCE config '{repository_config_path}'; {SAVED_ACCESS_SCOPE})"
             )
         }));
     } else {
         lines.push(format!(
-            "- saved access preferences: unchanged (global SCE config '{global_config_path}')"
+            "- saved access preferences: unchanged (repository SCE config '{repository_config_path}')"
         ));
     }
 
@@ -536,13 +551,13 @@ enum ClaudeTelemetryAction {
     SkipDisabled,
 }
 
-fn global_consent_withdrawn(global: GlobalAccessPreferences) -> bool {
+fn global_consent_withdrawn(global: AccessPreferences) -> bool {
     matches!(
         global,
-        GlobalAccessPreferences::Valid {
+        AccessPreferences::Valid {
             telemetry_enabled: Some(false),
             ..
-        } | GlobalAccessPreferences::Valid {
+        } | AccessPreferences::Valid {
             auth_mode: Some(AuthMode::Disabled),
             ..
         }
@@ -550,7 +565,7 @@ fn global_consent_withdrawn(global: GlobalAccessPreferences) -> bool {
 }
 
 fn claude_telemetry_action(
-    global: GlobalAccessPreferences,
+    global: AccessPreferences,
     effective_enabled: bool,
     claude_selected: bool,
     interactive: bool,
@@ -577,6 +592,17 @@ fn split_pre_login_removal(
     }
 }
 
+fn non_interactive_followup(
+    repository_root: &Path,
+    claude_selected: bool,
+    sections: &mut Vec<String>,
+) -> Option<ClaudeTelemetryAction> {
+    sections.extend(
+        non_interactive_login_reminder(repository_root, resolve_access_policy).map(str::to_string),
+    );
+    non_interactive_claude_telemetry_action(repository_root, claude_selected)
+}
+
 fn non_interactive_claude_telemetry_action(
     repository_root: &Path,
     claude_selected: bool,
@@ -584,20 +610,23 @@ fn non_interactive_claude_telemetry_action(
     if !claude_selected {
         return None;
     }
-    let global = config::resolver::resolve_default_global_config_path()
-        .map_or(GlobalAccessPreferences::Invalid, |path| {
-            read_global_preferences(&path)
-        });
     claude_telemetry_action(
-        global,
+        default_global_preferences(),
         effective_telemetry_enabled(repository_root),
         claude_selected,
         false,
     )
 }
 
-fn read_global_preferences(global_config_path: &Path) -> GlobalAccessPreferences {
-    read_global_access_preferences(global_config_path).unwrap_or(GlobalAccessPreferences::Invalid)
+fn default_global_preferences() -> AccessPreferences {
+    config::resolver::resolve_default_global_config_path()
+        .map_or(AccessPreferences::Invalid, |path| {
+            read_global_preferences(&path)
+        })
+}
+
+fn read_global_preferences(global_config_path: &Path) -> AccessPreferences {
+    read_global_access_preferences(global_config_path).unwrap_or(AccessPreferences::Invalid)
 }
 
 fn effective_telemetry_enabled(repository_root: &Path) -> bool {
@@ -777,6 +806,7 @@ mod tests {
         targets: Option<Vec<ConcreteSetupTarget>>,
         auth_mode: Option<AuthMode>,
         telemetry_consent: bool,
+        asked: std::cell::RefCell<Vec<String>>,
     }
 
     impl FakePrompter {
@@ -785,7 +815,20 @@ mod tests {
                 targets,
                 auth_mode: None,
                 telemetry_consent: false,
+                asked: std::cell::RefCell::default(),
             }
+        }
+
+        fn answering(auth_mode: Option<AuthMode>, telemetry_consent: bool) -> Self {
+            Self {
+                auth_mode,
+                telemetry_consent,
+                ..Self::with_targets(Some(Vec::new()))
+            }
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.borrow().clone()
         }
     }
 
@@ -810,14 +853,21 @@ mod tests {
         }
 
         fn prompt_auth_mode(&self, default: AuthMode) -> Result<Option<AuthMode>> {
+            self.asked
+                .borrow_mut()
+                .push(format!("auth.mode={}", default.as_str()));
             Ok(Some(self.auth_mode.unwrap_or(default)))
         }
 
-        fn prompt_telemetry_consent(&self, _default: bool) -> Result<Option<bool>> {
+        fn prompt_telemetry_consent(&self, default: bool) -> Result<Option<bool>> {
+            self.asked
+                .borrow_mut()
+                .push(format!("telemetry.enabled={default}"));
             Ok(Some(self.telemetry_consent))
         }
 
         fn prompt_login(&self) -> Result<Option<bool>> {
+            self.asked.borrow_mut().push("login".to_string());
             Ok(Some(false))
         }
     }
@@ -1045,7 +1095,7 @@ mod tests {
     fn claude_telemetry_action_follows_global_withdrawal_only() {
         use ClaudeTelemetryAction::{Install, Remove, SkipDisabled};
 
-        let valid = |auth_mode, telemetry_enabled| GlobalAccessPreferences::Valid {
+        let valid = |auth_mode, telemetry_enabled| AccessPreferences::Valid {
             auth_mode,
             telemetry_enabled,
         };
@@ -1060,8 +1110,8 @@ mod tests {
             valid(Some(AuthMode::Optional), Some(true)),
             valid(Some(AuthMode::Mandatory), None),
             valid(None, None),
-            GlobalAccessPreferences::Missing,
-            GlobalAccessPreferences::Invalid,
+            AccessPreferences::Missing,
+            AccessPreferences::Invalid,
         ];
         let modes = [(true, true), (true, false), (false, true), (false, false)];
 
@@ -1251,7 +1301,7 @@ mod tests {
             install_sce_claude_settings(&settings);
 
             let action = claude_telemetry_action(
-                GlobalAccessPreferences::Valid {
+                AccessPreferences::Valid {
                     auth_mode: None,
                     telemetry_enabled: Some(false),
                 },
@@ -1317,5 +1367,331 @@ mod tests {
         fn policy(&self) -> ResolvedAccessPolicy {
             self.resolve_policy()(&self.repo).unwrap()
         }
+
+        fn repo_config_path(&self) -> std::path::PathBuf {
+            self.repo.join(".sce").join("config.json")
+        }
+
+        fn prepare(
+            &self,
+            prompter: &FakePrompter,
+            reconfigure: bool,
+        ) -> Result<InteractiveSetup, CliError> {
+            prepare_interactive_setup(
+                &self.repo,
+                prompter,
+                &[],
+                self.resolve_policy(),
+                false,
+                reconfigure,
+            )
+        }
+    }
+
+    fn ready_access_save(setup: InteractiveSetup) -> SetupAccessSave {
+        match setup {
+            InteractiveSetup::Ready { access_save, .. } => access_save,
+            InteractiveSetup::Cancelled => panic!("setup should not be cancelled"),
+        }
+    }
+
+    #[test]
+    fn interactive_setup_saves_access_answers_to_repository_config_only() {
+        let fixture = AccessFixture::new();
+        fixture.write_repo_config(r#"{"agent_trace":{"auto_sync":false}}"#);
+        let prompter = FakePrompter::answering(Some(AuthMode::Mandatory), true);
+
+        let access_save = ready_access_save(fixture.prepare(&prompter, false).unwrap());
+
+        let written: Value =
+            serde_json::from_slice(&fs::read(fixture.repo_config_path()).unwrap()).unwrap();
+        assert_eq!(
+            written["agent_trace"],
+            serde_json::json!({ "auto_sync": false })
+        );
+        assert_eq!(written["auth"], serde_json::json!({ "mode": "mandatory" }));
+        assert_eq!(written["telemetry"], serde_json::json!({ "enabled": true }));
+        assert!(!fixture.global.exists());
+
+        let (section, _) =
+            setup_access_report(&fixture.repo, &access_save, fixture.resolve_policy(), false)
+                .unwrap();
+        let path = fixture.repo_config_path();
+        let path = path.display();
+        assert_eq!(
+            section,
+            format!(
+                "SCE access:\n\
+                 - auth.mode: mandatory (saved to repository SCE config '{path}'; applies only to this repository)\n\
+                 - telemetry.enabled: true (saved to repository SCE config '{path}'; applies only to this repository)\n\
+                 - effective auth.mode: mandatory (source: config_file, config_source: default_discovered_local)\n\
+                 - effective telemetry: enabled\n\
+                 {RECONFIGURE_HINT_LINE}"
+            )
+        );
+
+        let rerun = FakePrompter::answering(Some(AuthMode::Optional), false);
+        let unchanged = ready_access_save(fixture.prepare(&rerun, false).unwrap());
+        let (section, _) =
+            setup_access_report(&fixture.repo, &unchanged, fixture.resolve_policy(), false)
+                .unwrap();
+        assert!(section.contains(&format!(
+            "- saved access preferences: unchanged (repository SCE config '{path}')"
+        )));
+        assert!(section.ends_with(RECONFIGURE_HINT_LINE));
+    }
+
+    type PromptCase = (
+        &'static str,
+        Option<&'static str>,
+        Option<&'static str>,
+        bool,
+        &'static [&'static str],
+    );
+
+    #[test]
+    fn interactive_setup_access_prompts_follow_repository_saved_answers() {
+        let cases: [PromptCase; 6] = [
+            (
+                "repository answers suppress prompts",
+                None,
+                Some(r#"{"auth":{"mode":"optional"},"telemetry":{"enabled":false}}"#),
+                false,
+                &["login"],
+            ),
+            (
+                "global answers no longer suppress prompts",
+                Some(r#"{"auth":{"mode":"optional"},"telemetry":{"enabled":true}}"#),
+                None,
+                false,
+                &["auth.mode=optional", "telemetry.enabled=false", "login"],
+            ),
+            (
+                "reconfigure defaults to repository answers",
+                Some(r#"{"auth":{"mode":"optional"},"telemetry":{"enabled":false}}"#),
+                Some(r#"{"auth":{"mode":"mandatory"},"telemetry":{"enabled":true}}"#),
+                true,
+                &["auth.mode=mandatory", "telemetry.enabled=true"],
+            ),
+            (
+                "repository disabled is only a prompt default",
+                None,
+                Some(r#"{"auth":{"mode":"disabled"}}"#),
+                true,
+                &["auth.mode=disabled"],
+            ),
+            (
+                "global disabled locks the access prompts",
+                Some(r#"{"auth":{"mode":"disabled"}}"#),
+                None,
+                true,
+                &[],
+            ),
+            (
+                "global mandatory suppresses the login offer",
+                Some(r#"{"auth":{"mode":"mandatory"}}"#),
+                None,
+                false,
+                &["auth.mode=optional", "telemetry.enabled=false"],
+            ),
+        ];
+        for (name, global_json, repo_json, reconfigure, expected) in cases {
+            let fixture = AccessFixture::new();
+            if let Some(json) = global_json {
+                fs::write(&fixture.global, json).unwrap();
+            }
+            if let Some(json) = repo_json {
+                fixture.write_repo_config(json);
+            }
+            let global_before = fs::read(&fixture.global).ok();
+            let prompter = FakePrompter::answering(None, false);
+
+            fixture.prepare(&prompter, reconfigure).unwrap();
+
+            assert_eq!(prompter.asked(), expected, "{name}");
+            assert_eq!(fs::read(&fixture.global).ok(), global_before, "{name}");
+        }
+
+        let fixture = AccessFixture::new();
+        let invalid = br#"{"unknown_key":true}"#;
+        fixture.write_repo_config(std::str::from_utf8(invalid).unwrap());
+        let prompter = FakePrompter::answering(None, false);
+        let access_save = ready_access_save(fixture.prepare(&prompter, false).unwrap());
+        assert_eq!(prompter.asked(), ["login"]);
+        assert_eq!(access_save.outcome, AccessWriteOutcome::Unchanged);
+        assert_eq!(fs::read(fixture.repo_config_path()).unwrap(), invalid);
+    }
+
+    #[test]
+    fn setup_access_gate_locks_on_global_and_explicit_layers_only() {
+        for (name, layer, mode, auth_locked_by, mandatory_locked) in [
+            ("repository disabled", "repository", "disabled", None, false),
+            (
+                "repository mandatory",
+                "repository",
+                "mandatory",
+                None,
+                false,
+            ),
+            (
+                "global disabled",
+                "global",
+                "disabled",
+                Some(AuthPolicyConfigFile::Global),
+                false,
+            ),
+            ("global mandatory", "global", "mandatory", None, true),
+            (
+                "explicit disabled",
+                "explicit",
+                "disabled",
+                Some(AuthPolicyConfigFile::ConfigEnv),
+                false,
+            ),
+            ("explicit mandatory", "explicit", "mandatory", None, true),
+        ] {
+            let fixture = AccessFixture::new();
+            let json = format!(r#"{{"auth":{{"mode":"{mode}"}}}}"#);
+            let explicit = fixture.global.with_file_name("explicit.json");
+            match layer {
+                "repository" => fixture.write_repo_config(&json),
+                "global" => fs::write(&fixture.global, &json).unwrap(),
+                _ => fs::write(&explicit, &json).unwrap(),
+            }
+            let policy = config::resolver::resolve_auth_runtime_config_with(
+                &fixture.repo,
+                |key| {
+                    (layer == "explicit" && key == "SCE_CONFIG_FILE")
+                        .then(|| explicit.display().to_string())
+                },
+                |path| fs::read_to_string(path).map_err(anyhow::Error::from),
+                Path::exists,
+                || Ok(fixture.global.clone()),
+            )
+            .unwrap()
+            .access_policy;
+
+            let gate = SetupAccessGate::from_policy(&policy, false);
+
+            assert_eq!(gate.auth_locked_by, auth_locked_by, "{name}");
+            assert_eq!(gate.mandatory_locked, mandatory_locked, "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn interactive_setup_aborts_before_install_when_repository_config_is_symlinked() {
+        let fixture = AccessFixture::new();
+        let target = fixture.global.with_file_name("shared.json");
+        fs::write(&target, r#"{"agent_trace":{"auto_sync":true}}"#).unwrap();
+        let target_before = fs::read(&target).unwrap();
+        fs::create_dir_all(fixture.repo.join(".sce")).unwrap();
+        std::os::unix::fs::symlink(&target, fixture.repo_config_path()).unwrap();
+        let prompter = FakePrompter::answering(Some(AuthMode::Mandatory), true);
+
+        let error = fixture.prepare(&prompter, false).unwrap_err();
+
+        let path = fixture.repo_config_path();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Failed to save SCE access preferences to the repository SCE config '{0}'.\n\
+                 Repository SCE config '{0}' is a symlink and was left unchanged; SCE cannot modify a symlink-managed repository config. Update the file's source directly.\n\
+                 {REPOSITORY_ACCESS_SYMLINK_REMEDIATION}",
+                path.display()
+            )
+        );
+        assert_eq!(fs::read(&target).unwrap(), target_before);
+        assert!(!fixture.global.exists());
+        let entries: Vec<_> = fs::read_dir(&fixture.repo)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 2);
+    }
+    #[test]
+    fn non_interactive_setup_reminds_login_only_under_mandatory() {
+        let mandatory = r#"{"auth":{"mode":"mandatory"}}"#;
+        let cases = [
+            ("repository mandatory", "repository", Some(mandatory), true),
+            ("global mandatory", "global", Some(mandatory), true),
+            ("explicit mandatory", "explicit", Some(mandatory), true),
+            (
+                "repository optional",
+                "repository",
+                Some(r#"{"auth":{"mode":"optional"}}"#),
+                false,
+            ),
+            (
+                "repository disabled",
+                "repository",
+                Some(r#"{"auth":{"mode":"disabled"}}"#),
+                false,
+            ),
+            ("default", "repository", None, false),
+        ];
+        for (name, layer, json, reminded) in cases {
+            let fixture = AccessFixture::new();
+            let explicit = fixture.global.with_file_name("explicit.json");
+            if let Some(json) = json {
+                match layer {
+                    "repository" => fixture.write_repo_config(json),
+                    "global" => fs::write(&fixture.global, json).unwrap(),
+                    _ => fs::write(&explicit, json).unwrap(),
+                }
+            }
+            let resolve_policy = |root: &Path| {
+                config::resolver::resolve_auth_runtime_config_with(
+                    root,
+                    |key| {
+                        (layer == "explicit" && key == "SCE_CONFIG_FILE")
+                            .then(|| explicit.display().to_string())
+                    },
+                    |path| fs::read_to_string(path).map_err(anyhow::Error::from),
+                    Path::exists,
+                    || Ok(fixture.global.clone()),
+                )
+                .map(|config| config.access_policy)
+            };
+
+            assert_eq!(
+                non_interactive_login_reminder(&fixture.repo, resolve_policy),
+                reminded.then_some(
+                    "SCE login: required by auth.mode: mandatory for this repository; run 'sce auth login' if you are not logged in."
+                ),
+                "{name}"
+            );
+            let auth_files: Vec<_> = walk_files(fixture.repo.parent().unwrap())
+                .into_iter()
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with("auth"))
+                })
+                .collect();
+            assert!(auth_files.is_empty(), "{name}: {auth_files:?}");
+        }
+    }
+
+    #[test]
+    fn non_interactive_setup_skips_login_reminder_when_policy_resolution_fails() {
+        assert_eq!(
+            non_interactive_login_reminder(Path::new("/nonexistent"), |_| {
+                Err(anyhow::anyhow!("resolution failed"))
+            }),
+            None
+        );
+    }
+
+    fn walk_files(root: &Path) -> Vec<std::path::PathBuf> {
+        let mut files = Vec::new();
+        for entry in fs::read_dir(root).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(walk_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 }

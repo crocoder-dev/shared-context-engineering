@@ -13,8 +13,10 @@ Human text output renders these sections in this exact order:
 3. `Integrations`
 
 The `Environment` domain contains `State`, `Configuration`, `Repository
-identity`, and `Managed telemetry` (read-only credential health; rows, JSON, and
-remediation in [telemetry-credential.md](telemetry-credential.md#doctor-health-check)).
+identity`, `SCE login` (see [SCE login row](#sce-login-row)), and `Managed
+telemetry` (read-only credential health plus the repository's effective
+telemetry state; rows, JSON, and remediation in
+[telemetry-credential.md](telemetry-credential.md#doctor-health-check)).
 A warning row expands into `Reason: <reason>`, the summary, the hook-impact line,
 and a `To fix:` step list. The `Repository` domain contains `Git repository`, `Post-commit Agent
 Trace auto-sync`, and `Git hooks`.
@@ -24,6 +26,31 @@ unusable), plain `sce doctor` additionally renders an additive `Snapshot ref
 reconciliation` section; it is omitted otherwise. `sce doctor --fix` appends one
 `mutation_scope_health` fix-result row for its reconciliation pass. Details in
 [../cli/doctor-ref-reconciliation.md](../cli/doctor-ref-reconciliation.md).
+
+## SCE login row
+
+The row makes a missing login under `auth.mode: mandatory` visible without
+blocking local SCE features.
+
+- Effective mode not `mandatory`: `[PASS] SCE login (not required)`. No
+  credential lookup runs.
+- `mandatory` with a valid stored credential: `[PASS] SCE login`.
+- `mandatory` without one: `[FAIL] SCE login`, expanded into
+  `Problem: auth.mode: mandatory is set in the <config file>, but no valid SCE
+  login was found.` and `Remediation: Run 'sce auth login'.`. The config file is
+  the layer that decided the mode (repository `.sce/config.json`, global SCE
+  config, `--config` file, or `SCE_CONFIG_FILE` file). The problem is
+  `global_state`, severity `error` (blocking), `manual_only`, next action
+  `auth_login`, so `--fix` reports it as a `manual` fix result and never logs in.
+- "Valid stored credential" uses the setup login check
+  (`auth_command::repository_telemetry_authorized`): a repository-bound
+  credential that the current session owns. It is looked up only when `auth.db`
+  exists, non-interactively, under `CREDENTIAL_LOOKUP_DEADLINE`, and it fails
+  closed: an unavailable store counts as not logged in. Doctor never creates
+  `auth.db` or a credential-store key.
+- JSON adds a top-level `sce_login` object: `state` (`not_required`,
+  `logged_in`, `not_logged_in`), `auth_mode`, `source`, and `config_source`.
+- Code: `cli/src/services/doctor/access.rs`.
 
 ## Header and status vocabulary
 
