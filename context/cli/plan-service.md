@@ -69,7 +69,7 @@
 
 ## Divergences from the Pkl line scanner
 
-The extractor follows CommonMark/GFM nesting. The Pkl checker requires fields at exactly `entry indent + 2` and accepts definitions at any indentation. Indentation-only nesting differences, `[X]` checkboxes, and multi-line field values can therefore extract differently. Agreement is pinned by the shared fixtures under `config/pkl/renderers/fixtures/plan-structure/`.
+The extractor follows CommonMark/GFM nesting. The Pkl checker requires fields at exactly `entry indent + 2` and accepts definitions at any indentation. Indentation-only nesting differences, `[X]` checkboxes, and multi-line field values can therefore extract differently. Agreement is pinned by the shared fixtures under `config/pkl/renderers/fixtures/plan-structure/`. The full divergence list and the shared rules live in the [plan structure contract](../sce/plan-structure-contract.md).
 
 ## Tests
 

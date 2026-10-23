@@ -112,6 +112,8 @@ selected plan, the shipped `sce plan check <path>` command (see
 checker stays the generation-time reference implementation and is still
 runnable with
 `pkl eval -p planPath=<plan> config/pkl/renderers/plan-structure-check.pkl`.
+The two checkers share one rule set, wording, and fixture manifest; see the
+[plan structure contract](plan-structure-contract.md).
 
 `/change-to-plan` (after writing) and `/validate` (step 4, before scenario
 verification) run `sce plan check {plan-path}` on structured plans only;
