@@ -7,11 +7,11 @@ use crate::services::style::{heading, label, supports_color, value, OwoColorize}
 use super::access::{DoctorAccess, LoginState};
 use super::types::{
     fix_result_outcome, mutation_scope_health_status, mutation_scope_target_id, problem_category,
-    problem_fixability, problem_severity, DoctorDisplayDetail, DoctorDisplayNode,
-    DoctorDisplayNodeKind, DoctorDisplayStatus, HookContentState, HookDoctorReport, HookFileHealth,
-    HookPathSource, IntegrationArea, IntegrationChildHealth, IntegrationContentState,
-    IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget, MutationScopeHealthRow,
-    PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
+    problem_fixability, problem_kind, problem_severity, problem_target, DoctorDisplayDetail,
+    DoctorDisplayNode, DoctorDisplayNodeKind, DoctorDisplayStatus, HookContentState,
+    HookDoctorReport, HookFileHealth, HookPathSource, IntegrationArea, IntegrationChildHealth,
+    IntegrationContentState, IntegrationGroupHealth, IntegrationGroupKey, IntegrationTarget,
+    MutationScopeHealthRow, PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
 };
 use super::{managed_telemetry, DoctorExecution, DoctorFormat, DoctorMode, DoctorRequest, NAME};
 use crate::services::config::{TelemetryDisabledReason, TelemetryPolicyState};
@@ -1005,6 +1005,8 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         "sce_login": execution.access.login_json(),
         "managed_telemetry": managed_telemetry::json(execution.managed_telemetry, execution.access),
         "problems": report.problems.iter().map(|problem| json!({
+            "kind": problem_kind(problem.kind),
+            "target": problem_target(problem),
             "category": problem_category(problem.category),
             "severity": problem_severity(problem.severity),
             "fixability": problem_fixability(problem.fixability),
@@ -1619,5 +1621,78 @@ mod access_render_tests {
                 "config_source": "default_discovered_global",
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod problem_json_tests {
+    use super::{problem_kind, problem_target};
+    use crate::services::doctor::types::{
+        DoctorProblem, IntegrationArea, IntegrationGroupKey, IntegrationTarget, ProblemCategory,
+        ProblemFixability, ProblemKind, ProblemSeverity,
+    };
+
+    fn problem(
+        kind: ProblemKind,
+        category: ProblemCategory,
+        scope: Option<IntegrationGroupKey>,
+        mutation_scope_target: Option<IntegrationTarget>,
+    ) -> DoctorProblem {
+        DoctorProblem {
+            kind,
+            category,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: String::new(),
+            remediation: String::new(),
+            next_action: "manual_steps",
+            scope,
+            mutation_scope_target,
+        }
+    }
+
+    #[test]
+    fn problem_json_identifies_kind_and_claude_target_for_integration_scoped_problems() {
+        let missing = problem(
+            ProblemKind::ClaudeIntegrationFilesMissing,
+            ProblemCategory::RepoAssets,
+            Some(IntegrationGroupKey::new(
+                IntegrationTarget::ClaudeCode,
+                IntegrationArea::Skills,
+            )),
+            None,
+        );
+
+        assert_eq!(
+            problem_kind(missing.kind),
+            "claude_integration_files_missing"
+        );
+        assert_eq!(problem_target(&missing), Some("claude"));
+    }
+
+    #[test]
+    fn problem_json_uses_mutation_scope_target_when_no_integration_scope_exists() {
+        let blocked = problem(
+            ProblemKind::MutationScopeHealthBlocked,
+            ProblemCategory::MutationScopeHealth,
+            None,
+            Some(IntegrationTarget::ClaudeCode),
+        );
+
+        assert_eq!(problem_kind(blocked.kind), "mutation_scope_health_blocked");
+        assert_eq!(problem_target(&blocked), Some("claude"));
+    }
+
+    #[test]
+    fn problem_json_leaves_target_null_for_repository_wide_problems() {
+        let hook = problem(
+            ProblemKind::RequiredHookMissing,
+            ProblemCategory::HookRollout,
+            None,
+            None,
+        );
+
+        assert_eq!(problem_kind(hook.kind), "required_hook_missing");
+        assert_eq!(problem_target(&hook), None);
     }
 }

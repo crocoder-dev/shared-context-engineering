@@ -3,10 +3,12 @@ import "common.pkl" as common
 import "claude-metadata.pkl" as metadata
 import "workflow-composite.pkl" as workflowResults
 
+local sceVersion = read("../../../.version").text.trim()
+
 sceInfoRuntimeFiles = new Mapping<String, String> {
   ["sce-info/.claude-plugin/plugin.json"] = read("../../lib/sce-info/.claude-plugin/plugin.json").text
   ["sce-info/hooks/hooks.json"] = read("../../lib/sce-info/hooks/hooks.json").text
-  ["sce-info/hooks/register.ts"] = read("../../lib/sce-info/hooks/register.ts").text
+  ["sce-info/hooks/register.ts"] = read("../../lib/sce-info/hooks/register.ts").text.replaceAll("__SCE_VERSION__", sceVersion)
 }
 
 local missingSceInstallMessage = "sce CLI not found. Install it from https://sce.crocoder.dev/docs/getting-started#install-cli"

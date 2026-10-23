@@ -1,16 +1,18 @@
+import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { DOCTOR_ARGV, LOGIN_REQUIRED } from '../hooks/register'
+import { DOCTOR_ARGV, LOGIN_REQUIRED, VERSION_ARGV, VERSION_TIMEOUT_MS } from '../hooks/register'
 
 const START = { cwd: '/repo', surface: 'terminal', isInteractive: true } as const
 
-function answerDoctor(on: Parameters<Parameters<typeof test>[1]>[1], stdout: string, calls: unknown[] = []) {
+function answerDoctor(on: On, stdout: string, calls: unknown[] = []) {
   on('process.run', ($, e) => {
     calls.push(e)
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    const output = e.argv[1] === '--version' ? 'shared-context-engineering 0.0.0\n' : stdout
+    return { value: { exitCode: 0, stdout: output, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
 }
 
-function collectLog(on: Parameters<Parameters<typeof test>[1]>[1]): string[] {
+function collectLog(on: On): string[] {
   const lines: string[] = []
   on('ui.log', ($, e) => {
     lines.push(e.text)
@@ -26,7 +28,10 @@ test('session start logs the login notice once when doctor reports not_logged_in
   const lines = collectLog(on)
   await $.session.start(START)
   expect(lines).toEqual([LOGIN_REQUIRED])
-  expect(calls).toEqual([{ argv: DOCTOR_ARGV, init: { cwd: '/repo' } }])
+  expect(calls).toEqual([
+    { argv: VERSION_ARGV, init: { cwd: '/repo', timeoutMs: VERSION_TIMEOUT_MS } },
+    { argv: DOCTOR_ARGV, init: { cwd: '/repo' } },
+  ])
 })
 
 test('session start logs nothing when already logged in', async ($, on) => {
@@ -44,22 +49,29 @@ test('session start logs nothing when login is not mandatory', async ($, on) => 
 })
 
 test('session start logs nothing when the doctor command cannot run', async ($, on) => {
-  on('process.run', () => ({ deny: 'sce not found' }))
+  on('process.run', ($, e) => {
+    if (e.argv[1] === '--version') {
+      return { value: { exitCode: 0, stdout: 'sce\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    return { deny: 'doctor timed out' }
+  })
   const lines = collectLog(on)
   await $.session.start(START)
   expect(lines).toEqual([])
 })
 
 test('session start logs nothing when doctor output is unusable', async ($, on) => {
-  answerDoctor(on, 'sce CLI not found')
+  answerDoctor(on, 'not json')
   const lines = collectLog(on)
   await $.session.start(START)
   expect(lines).toEqual([])
 })
 
 test('non-interactive sessions skip the notice', async ($, on) => {
-  answerDoctor(on, JSON.stringify({ sce_login: { state: 'not_logged_in' } }))
+  const calls: unknown[] = []
+  answerDoctor(on, JSON.stringify({ sce_login: { state: 'not_logged_in' } }), calls)
   const lines = collectLog(on)
   await $.session.start({ ...START, surface: null, isInteractive: false })
   expect(lines).toEqual([])
+  expect(calls).toEqual([])
 })

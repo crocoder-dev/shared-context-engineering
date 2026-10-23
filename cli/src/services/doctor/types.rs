@@ -532,6 +532,59 @@ pub(super) fn mutation_scope_target_id(target: IntegrationTarget) -> &'static st
     }
 }
 
+pub(super) fn problem_kind(kind: ProblemKind) -> &'static str {
+    match kind {
+        ProblemKind::GitUnavailable => "git_unavailable",
+        ProblemKind::BareRepository => "bare_repository",
+        ProblemKind::NotInsideGitRepository => "not_inside_git_repository",
+        ProblemKind::UnableToResolveGitHooksDirectory => "unable_to_resolve_git_hooks_directory",
+        ProblemKind::UnableToResolveStateRoot => "unable_to_resolve_state_root",
+        ProblemKind::GlobalConfigValidationFailed => "global_config_validation_failed",
+        ProblemKind::UnableToResolveGlobalConfigPath => "unable_to_resolve_global_config_path",
+        ProblemKind::LocalConfigValidationFailed => "local_config_validation_failed",
+        ProblemKind::HooksDirectoryMissing => "hooks_directory_missing",
+        ProblemKind::HooksPathNotDirectory => "hooks_path_not_directory",
+        ProblemKind::RequiredHookMissing => "required_hook_missing",
+        ProblemKind::HookNotExecutable => "hook_not_executable",
+        ProblemKind::HookContentStale => "hook_content_stale",
+        ProblemKind::NoIntegrationsInstalled => "no_integrations_installed",
+        ProblemKind::OpenCodeIntegrationFilesMissing => "opencode_integration_files_missing",
+        ProblemKind::OpenCodeIntegrationContentMismatch => "opencode_integration_content_mismatch",
+        ProblemKind::ClaudeIntegrationFilesMissing => "claude_integration_files_missing",
+        ProblemKind::ClaudeIntegrationContentMismatch => "claude_integration_content_mismatch",
+        ProblemKind::PiIntegrationFilesMissing => "pi_integration_files_missing",
+        ProblemKind::PiIntegrationContentMismatch => "pi_integration_content_mismatch",
+        ProblemKind::CodexIntegrationFilesMissing => "codex_integration_files_missing",
+        ProblemKind::CodexIntegrationContentMismatch => "codex_integration_content_mismatch",
+        ProblemKind::OpenCodePluginRegistryInvalid => "opencode_plugin_registry_invalid",
+        ProblemKind::OpenCodeAssetMissingOrInvalid => "opencode_asset_missing_or_invalid",
+        ProblemKind::HookReadFailed => "hook_read_failed",
+        ProblemKind::OpenCodeAssetReadFailed => "opencode_asset_read_failed",
+        ProblemKind::ClaudeAssetReadFailed => "claude_asset_read_failed",
+        ProblemKind::PiAssetReadFailed => "pi_asset_read_failed",
+        ProblemKind::CodexAssetReadFailed => "codex_asset_read_failed",
+        ProblemKind::CodexHookRegistrationMalformed => "codex_hook_registration_malformed",
+        ProblemKind::CodexHookRegistrationNotTrusted => "codex_hook_registration_not_trusted",
+        ProblemKind::CodexHookRegistrationPolicyBlocked => "codex_hook_registration_policy_blocked",
+        ProblemKind::CodexHookRegistrationPolicyUnknown => "codex_hook_registration_policy_unknown",
+        ProblemKind::AgentTraceDbConnectionFailed => "agent_trace_db_connection_failed",
+        ProblemKind::AgentTraceDbSchemaNotReady => "agent_trace_db_schema_not_ready",
+        ProblemKind::MutationScopeHealthRecovering => "mutation_scope_health_recovering",
+        ProblemKind::MutationScopeHealthBlocked => "mutation_scope_health_blocked",
+        ProblemKind::MutationScopeHealthInvalid => "mutation_scope_health_invalid",
+        ProblemKind::ManagedTelemetryUnavailable => "managed_telemetry_unavailable",
+        ProblemKind::SceLoginRequired => "sce_login_required",
+    }
+}
+
+pub(super) fn problem_target(problem: &DoctorProblem) -> Option<&'static str> {
+    problem
+        .scope
+        .map(|scope| scope.target)
+        .or(problem.mutation_scope_target)
+        .map(mutation_scope_target_id)
+}
+
 pub(super) fn compute_readiness(problems: &[DoctorProblem]) -> Readiness {
     if problems
         .iter()

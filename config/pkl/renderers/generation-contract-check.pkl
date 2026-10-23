@@ -61,10 +61,14 @@ hidden generatedArtifacts = new Mapping {
   }
 }
 
+local sceInfoVersion = read("../../../.version").text.trim()
+
+local sceInfoRegisterSource = read("../../lib/sce-info/hooks/register.ts").text
+
 local sceInfoExpectedSources = new Mapping {
   ["config/.claude/skills/sce-info/.claude-plugin/plugin.json"] = read("../../lib/sce-info/.claude-plugin/plugin.json").text
   ["config/.claude/skills/sce-info/hooks/hooks.json"] = read("../../lib/sce-info/hooks/hooks.json").text
-  ["config/.claude/skills/sce-info/hooks/register.ts"] = read("../../lib/sce-info/hooks/register.ts").text
+  ["config/.claude/skills/sce-info/hooks/register.ts"] = sceInfoRegisterSource.replaceAll("__SCE_VERSION__", sceInfoVersion)
 }
 
 local assertSceInfoRuntimeContract = (artifacts: Mapping) ->
@@ -73,8 +77,11 @@ local assertSceInfoRuntimeContract = (artifacts: Mapping) ->
     && artifacts.every((path, _) -> !path.contains("/sce-info/") || sceInfoExpectedSources.containsKey(path))
     && artifacts["config/.claude/skills/sce-info/.claude-plugin/plugin.json"].contains("\"name\": \"SCE\"")
     && artifacts["config/.claude/skills/sce-info/hooks/hooks.json"].contains("\"./register.ts\"")
-  ) "sce-info: exactly three unchanged Claude-only runtime assets; development files excluded"
-  else throw("sce-info runtime allowlist, source contents, or target isolation violated")
+    && sceInfoRegisterSource.contains("export const EXPECTED_SCE_VERSION = '__SCE_VERSION__'")
+    && artifacts["config/.claude/skills/sce-info/hooks/register.ts"].contains("export const EXPECTED_SCE_VERSION = '\(sceInfoVersion)'")
+    && !artifacts["config/.claude/skills/sce-info/hooks/register.ts"].contains("__SCE_VERSION__")
+  ) "sce-info: exactly three Claude-only runtime assets with the expected SCE version stamped; development files excluded"
+  else throw("sce-info runtime allowlist, source contents, version stamp, or target isolation violated")
 
 local assertCodexHookInvocationContract = (artifacts: Mapping) ->
   let (text = artifacts["config/.codex/hooks.json"])
