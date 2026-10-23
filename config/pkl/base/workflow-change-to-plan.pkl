@@ -774,6 +774,9 @@ invent one: `None.` is the expected answer for a well-specified change.}
 - Every acceptance criterion carries `Scenarios:`, with scenario IDs or the
   literal `none (inspection)` when only an inspection can prove it. Omit
   `Decisions:` when no decision applies.
+- Every task in a structured plan carries `Covers:` naming at least one
+  acceptance criterion defined in the plan. A task without `Covers:` or with an
+  empty `Covers:` is a defect even when other tasks cover every criterion.
 - Every acceptance criterion is named by at least one task's `Covers:`.
 - Every scenario is referenced by at least one acceptance criterion's
   `Scenarios:`.

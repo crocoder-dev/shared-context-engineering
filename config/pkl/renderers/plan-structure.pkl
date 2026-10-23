@@ -63,7 +63,7 @@ local requiredFields = Map(
   "D", List("Boundary", "Rationale", "Rejected", "Trade-offs"),
   "AC", List("Validate", "Scenarios"),
   "S", List("Given", "When", "Then", "Check"),
-  "T", List()
+  "T", List("Covers")
 )
 
 local referenceKinds = Map(
@@ -313,9 +313,6 @@ local function exampleShapeDefects(sample: String): List<String> =
     if (defined.any((entry) -> entry.kind == "AC" && fieldOf(entry, "Scenarios")?.value == inspectionOnly)) List()
     else List("no acceptance criterion carries `Scenarios: \(inspectionOnly)`")
   )
-  + defined
-    .filter((entry) -> entry.kind == "T" && fieldOf(entry, "Covers") == null)
-    .map((entry) -> "`\(entry.id)` is missing `Covers:`")
 
 local function sampleDefects(label: String, sample: String?, skeleton: Boolean): List<String> =
   (

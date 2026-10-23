@@ -275,6 +275,17 @@ expect_plan_structure_failure "wrong-heading-context.md" \
   "heading \`### Verification scenarios\` is not inside \`## Acceptance criteria\`"
 expect_plan_structure_failure "keywords-only-in-examples.md" \
   "\`Scenarios:\` on \`AC1\` references undefined \`S1\`; it appears only inside a fenced code block"
+expect_plan_structure_failure "task-missing-covers.md" \
+  "\`T02\` is missing \`Covers:\`"
+expect_plan_structure_failure "task-empty-covers.md" \
+  "\`Covers:\` on \`T02\` is not a comma-separated ID list"
+
+plans_glob="$repo_root/context/plans/*.md"
+if ! plans_output="$(pkl eval -p "planPath=$plans_glob" "$plan_structure_check" 2>&1)"; then
+  printf 'Repository plans failed the structural plan check (%s):\n%s\n' \
+    "$plans_glob" "$plans_output" >&2
+  exit 1
+fi
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"

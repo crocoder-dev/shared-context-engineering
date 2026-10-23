@@ -269,6 +269,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
       definition in the plan.
     - An acceptance criterion without `Scenarios:`.
     - An acceptance criterion that no task's `Covers:` names.
+    - A task without `Covers:` or with an empty `Covers:`.
     - A scenario that no acceptance criterion's `Scenarios:` references.
 
     Record each defect as a failed check under **Failed checks and follow-ups**,
