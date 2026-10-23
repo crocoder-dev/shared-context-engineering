@@ -156,7 +156,7 @@ expect_pkl_fixture_failure \
   "generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl" \
-  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing"
+  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing a structured plan with the checker trust rule, manual Reference rules fallback, and legacy skip, and keep sce plan check out of every sce-next-task document"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-structured-references-check.pkl" \
   "generated sce-next-task plan-review.md, output.md, and task-execution.md must detect structured plans, carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, keep legacy plans unchanged, and never check an acceptance criterion or record a scenario status during task execution"
@@ -186,7 +186,7 @@ expect_pkl_fixture_failure \
   "generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl" \
-  "generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged"
+  "generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, keep sce plan check out of every sce-next-task document, and keep legacy plans unchanged"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validation-report-scenario-section-check.pkl" \
   "generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, list unverified scenarios under What failed, and omit the section for legacy plans"

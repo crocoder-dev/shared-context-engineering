@@ -1095,7 +1095,18 @@ local requiredPlanAuthoringStructuredTokens = new Listing {
   "Give each task its `Covers:` field"
   "## 2.9 Check references"
   "run a reference-consistency pass over the\ncomplete draft that applies every `Reference rules` entry"
+  "After writing a structured plan, run `sce plan check {plan-path}`."
+  "Do\nnot set internal status `plan_ready` until the checker passes."
+  "Skip the checker\nfor a legacy plan."
+  "Trust the checker only when it actually ran:"
+  "`structured plan: reference integrity holds`"
+  "`legacy plan: structured reference rules do not apply`"
+  "Any other outcome means the checker is unavailable;"
+  "manual `Reference rules` pass from step 2.9"
 }
+
+local noNextTaskPlanCheckReference = (documents: Mapping) ->
+  documents.every((path, text) -> !path.contains("/skills/sce-next-task/") || !text.contains("sce plan check"))
 
 hidden assertPlanAuthoringStructuredReferences = (documents: Mapping) ->
   if (
@@ -1103,8 +1114,9 @@ hidden assertPlanAuthoringStructuredReferences = (documents: Mapping) ->
       !path.endsWith("/skills/sce-change-to-plan/references/plan-authoring.md")
       || requiredPlanAuthoringStructuredTokens.every((token) -> text.contains(token))
     )
+    && noNextTaskPlanCheckReference.apply(documents)
   ) "sce-change-to-plan plan-authoring: decisions, criteria, scenarios, and tasks authored in order with a reference-consistency pass"
-  else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing")
+  else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing a structured plan with the checker trust rule, manual Reference rules fallback, and legacy skip, and keep sce plan check out of every sce-next-task document")
 
 local requiredNextTaskStructuredReferenceTokens = new Listing {
   Pair("/skills/sce-next-task/references/plan-review.md", "Read plan structure only outside fenced code blocks;")
@@ -1359,6 +1371,13 @@ local requiredValidateScenarioEvidenceTokens = new Listing {
   "- `Not verified` when"
   "Only evidence gathered by this run counts. Task completion, a task's recorded\n`Verify` outcomes, a planned `Check:` line, and the plan's own claims are never\nevidence."
   "an acceptance criterion is met only when its `Validate:`\ncheck passes and every scenario its `Scenarios:` names is `Verified`."
+  "For a structured plan, run `sce plan check {plan-path}` before scenario\nverification."
+  "Record each reported diagnostic as a failed check"
+  "Trust the checker only when it actually ran:"
+  "`structured plan: reference integrity holds`"
+  "`legacy plan: structured reference rules do not apply`"
+  "Any other outcome means the checker is unavailable;"
+  "apply the manual pass below instead."
 }
 
 hidden assertValidateScenarioEvidence = (documents: Mapping) ->
@@ -1368,8 +1387,9 @@ hidden assertValidateScenarioEvidence = (documents: Mapping) ->
       !path.endsWith("/skills/sce-validate/references/validation.md")
       || requiredValidateScenarioEvidenceTokens.every((token) -> text.contains(token))
     )
+    && noNextTaskPlanCheckReference.apply(documents)
   ) "sce-validate validation: structured plans get relationship integrity and scenario evidence; legacy plans keep the legacy path"
-  else throw("generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged")
+  else throw("generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, keep sce plan check out of every sce-next-task document, and keep legacy plans unchanged")
 
 local requiredValidationReportScenarioTokens = new Listing {
   "### Scenario verification"

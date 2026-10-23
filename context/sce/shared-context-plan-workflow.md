@@ -94,8 +94,10 @@ writes scenarios only for the case kinds (normal, boundary, failure,
 cancellation, concurrency, recovery) the change makes relevant, and a `Check:`
 never names a test that neither exists nor is created by a task. Before writing
 a structured plan, a reference-consistency pass applies every `Reference rules`
-entry to the full draft and fixes each defect first. A legacy-plan revision
-skips this structured work. The phase cites the template's rule sections by
+entry to the full draft and fixes each defect first. After writing a structured
+plan, it runs `sce plan check {plan-path}`, fixes every reported diagnostic, and
+re-runs the checker before returning `plan_ready`. A legacy-plan revision
+skips this structured work, including the checker. The phase cites the template's rule sections by
 name and does not restate them.
 
 Responsibility for structural consistency is split by surface. Generation checks
@@ -104,9 +106,23 @@ template and the behavior of the structural checker
 `config/pkl/renderers/plan-structure-check.pkl` against fixtures only; they never
 read `context/plans/`, so an incomplete or malformed working plan cannot fail Nix
 CI. Plan authoring produces structurally consistent plans. Plan validation checks
-the selected plan's references and its actual verification evidence; the
-structural checker remains available for one selected plan with
+the selected plan's references and its actual verification evidence. For one
+selected plan, the shipped `sce plan check <path>` command (see
+[plan service](../cli/plan-service.md)) is the deterministic checker; the Pkl
+checker stays the generation-time reference implementation and is still
+runnable with
 `pkl eval -p planPath=<plan> config/pkl/renderers/plan-structure-check.pkl`.
+
+`/change-to-plan` (after writing) and `/validate` (step 4, before scenario
+verification) run `sce plan check {plan-path}` on structured plans only;
+`/validate` records each diagnostic as a failed check. Both trust a result only
+when the checker actually ran: exit `0` with
+`structured plan: reference integrity holds` or
+`legacy plan: structured reference rules do not apply` on stdout, or exit `3`
+with diagnostics. Any other outcome, such as an older `sce` that answers the
+unknown `plan` command with help and exit `0`, means the checker is unavailable,
+and the workflow applies the manual `Reference rules` pass instead and records
+the fallback. `/next-task` never invokes the checker.
 
 ## Continuation contract
 
