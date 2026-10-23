@@ -113,6 +113,13 @@ Describe the smallest coherent implementation approach with enough detail for ap
 - Include only risks relevant to approving this task.
 - Omit this section when there are no meaningful risks.
 
+## Acceptance coverage
+
+- Include only when the plan is structured; omit this section for a legacy plan.
+- List each covered acceptance criterion `{AC id}: {outcome}` with its
+  scenarios `{S id}: {Then}` (`{Check}`) and related decisions `{D id}: {decision}`.
+- Report dangling references under **Risks or trade-offs**.
+
 ## Verification
 
 - {task.verification}

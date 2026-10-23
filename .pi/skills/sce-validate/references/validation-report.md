@@ -31,8 +31,14 @@ writes it.
 
 ### Success-criteria verification
 
-- [x] AC1: {criterion statement} -> {evidence}
-- [ ] AC2: {criterion statement} -> {evidence of failure or not checked}
+- [x] AC1: {criterion statement} -> {evidence}; scenarios: S1
+- [ ] AC2: {criterion statement} -> {evidence of failure or not checked}; scenarios: S2, S3
+
+### Scenario verification
+
+{Only for a structured plan:}
+
+- S1 (AC1): {test | command | inspection} `{exact test, command, or inspected location}` -> {actual result}; status: {Verified | Partially verified | Not verified}
 
 ### Failed checks and follow-ups
 
@@ -61,7 +67,15 @@ After repairs, rerun:
   run**. Preserve its exit code and concise outcome; do not invent either.
 - Under **Success-criteria verification**, render the acceptance-criterion
   checkbox state and evidence already established by validation execution. Do
-  not independently re-evaluate or reclassify criteria here.
+  not independently re-evaluate or reclassify criteria here. For a structured
+  plan, end each acceptance-criterion line with the scenario IDs its
+  `Scenarios:` field names, or `none (inspection)`.
+- Include **Scenario verification** only for a structured plan, with exactly
+  one entry per scenario in plan order. Each entry gives the scenario ID, the
+  acceptance-criterion IDs that reference it, the evidence kind (`test`,
+  `command`, or `inspection`), the exact test, command, or inspected location,
+  the actual result, and the scenario status already established by validation
+  execution. Omit the section for a legacy plan.
 - Under **Failed checks and follow-ups**, render every failure and follow-up
   supplied by validation execution. Write `None.` when status is `validated`.
 - When status is `failed`, always include **Retry** with the exact
