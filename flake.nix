@@ -344,7 +344,6 @@
           root = workspaceRoot;
           fileset = pkgs.lib.fileset.unions [
             ./config/pkl
-            ./context/plans
             ./.version
             ./config/pkl/renderers/fixtures/atomic-commit-content-check.pkl
             ./config/pkl/renderers/fixtures/opencode-decision-gate-template-ownership-check.pkl

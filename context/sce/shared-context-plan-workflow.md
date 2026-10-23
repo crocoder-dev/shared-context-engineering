@@ -98,6 +98,16 @@ entry to the full draft and fixes each defect first. A legacy-plan revision
 skips this structured work. The phase cites the template's rule sections by
 name and does not restate them.
 
+Responsibility for structural consistency is split by surface. Generation checks
+(`nix run .#pkl-check-generated`, also run by `nix flake check`) verify the plan
+template and the behavior of the structural checker
+`config/pkl/renderers/plan-structure-check.pkl` against fixtures only; they never
+read `context/plans/`, so an incomplete or malformed working plan cannot fail Nix
+CI. Plan authoring produces structurally consistent plans. Plan validation checks
+the selected plan's references and its actual verification evidence; the
+structural checker remains available for one selected plan with
+`pkl eval -p planPath=<plan> config/pkl/renderers/plan-structure-check.pkl`.
+
 ## Continuation contract
 
 Same-session waits preserve one of two explicit continuation shapes inside the
