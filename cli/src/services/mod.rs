@@ -29,6 +29,11 @@ pub mod observability;
 pub mod output_format;
 pub mod parse;
 pub mod patch;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "wired into the CLI by the plan check command")
+)]
+pub mod plan;
 pub mod repository_identity;
 pub mod resilience;
 pub mod security;

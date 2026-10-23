@@ -50,6 +50,7 @@ tracing = "0.1"
 
 uuid = { version = "1", features = ["v4", "v7"] }
 murmur3 = "0.5.2"
+markdown = "1"
 opentelemetry-otlp = { version = "=0.33.1", default-features = false, features = ["http-proto", "trace", "logs"] }
 opentelemetry-http = "=0.33.1"
 tracing-opentelemetry = "=0.34.0"
