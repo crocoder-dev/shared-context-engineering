@@ -26,8 +26,26 @@ export function gradientColor(col: number): string {
 export const SITE = 'sce.crocoder.dev'
 export const FOOTER = `Visit ${SITE} to learn more.`
 export const LOADED = 'loaded.'
+export const LOGIN_REQUIRED = "Login required for this repository. Run 'sce auth login'."
+export const DOCTOR_ARGV = ['sce', 'doctor', '--format', 'json'] as const
+
+export function loginRequired(doctorJson: string): boolean {
+  try {
+    return JSON.parse(doctorJson)?.sce_login?.state === 'not_logged_in'
+  } catch {
+    return false
+  }
+}
 
 export function register(on: On) {
+  on('session.start', async ($, e, next) => {
+    const result = await next(e)
+    if (!e.isInteractive) return result
+    const doctor = await $.process.run(DOCTOR_ARGV, { cwd: e.cwd }).catch(() => undefined)
+    if (doctor && loginRequired(doctor.stdout)) $.ui.log(LOGIN_REQUIRED)
+    return result
+  })
+
   on('prompt.submit', async ($, e, next) => {
     if (!started) {
       started = true

@@ -3,7 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { ART, FOOTER, LOADED, SITE } from '../hooks/register'
 
 const BAND = {
-  plugin: 'sce-splash',
+  plugin: 'SCE',
   surface: 'terminal',
   component: 'AbovePrompt',
   props: {

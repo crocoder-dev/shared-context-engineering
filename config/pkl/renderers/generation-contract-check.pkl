@@ -71,7 +71,7 @@ local assertSceInfoRuntimeContract = (artifacts: Mapping) ->
   if (
     sceInfoExpectedSources.every((path, source) -> artifacts.containsKey(path) && artifacts[path] == source)
     && artifacts.every((path, _) -> !path.contains("/sce-info/") || sceInfoExpectedSources.containsKey(path))
-    && artifacts["config/.claude/skills/sce-info/.claude-plugin/plugin.json"].contains("\"name\": \"sce-splash\"")
+    && artifacts["config/.claude/skills/sce-info/.claude-plugin/plugin.json"].contains("\"name\": \"SCE\"")
     && artifacts["config/.claude/skills/sce-info/hooks/hooks.json"].contains("\"./register.ts\"")
   ) "sce-info: exactly three unchanged Claude-only runtime assets; development files excluded"
   else throw("sce-info runtime allowlist, source contents, or target isolation violated")
