@@ -187,6 +187,9 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl" \
   "generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validation-report-scenario-section-check.pkl" \
+  "generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, list unverified scenarios under What failed, and omit the section for legacy plans"
 
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/plan-template-misplaced-field-check.pkl" \

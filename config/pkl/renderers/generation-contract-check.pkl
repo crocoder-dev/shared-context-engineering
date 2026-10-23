@@ -1370,6 +1370,36 @@ hidden assertValidateScenarioEvidence = (documents: Mapping) ->
   ) "sce-validate validation: structured plans get relationship integrity and scenario evidence; legacy plans keep the legacy path"
   else throw("generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged")
 
+local requiredValidationReportScenarioTokens = new Listing {
+  "### Scenario verification"
+  "- S1 (AC1): {test | command | inspection} `{exact test, command, or inspected location}` -> {actual result}; status: {Verified | Partially verified | Not verified}"
+  "; scenarios: S1"
+  "- Include **Scenario verification** only for a structured plan, with exactly\n  one entry per scenario in plan order."
+  "Omit the section for a legacy plan."
+}
+
+local requiredValidationResultScenarioTokens = new Listing {
+  "## Scenario verification"
+  "; status: Verified"
+  "- `{scenario id}` ({AC ids}): {Partially verified | Not verified}"
+  "In the failed variant, list\n  every `Partially verified` or `Not verified` scenario under **What failed**."
+  "- Omit **Scenario verification** and the scenario citations for a legacy plan."
+}
+
+hidden assertValidationReportScenarioSection = (documents: Mapping) ->
+  if (
+    documents.any((path, _) -> path.endsWith("/skills/sce-validate/references/validation-report.md"))
+    && documents.any((path, _) -> path.endsWith("/skills/sce-validate/references/validation.md"))
+    && documents.every((path, text) ->
+      if (path.endsWith("/skills/sce-validate/references/validation-report.md"))
+        requiredValidationReportScenarioTokens.every((token) -> text.contains(token))
+      else if (path.endsWith("/skills/sce-validate/references/validation.md"))
+        requiredValidationResultScenarioTokens.every((token) -> text.contains(token))
+      else true
+    )
+  ) "sce-validate reports: structured plans get a scenario verification section; legacy plans omit it"
+  else throw("generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, list unverified scenarios under What failed, and omit the section for legacy plans")
+
 hidden assertWorkflowLanguageConsistency =(artifacts: Mapping) ->
   let (targets = generatedTargetRoots)
     if (
@@ -1474,4 +1504,5 @@ contractChecks {
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
   ["validate-decision-sync-boundary"] = assertValidateExcludesDecisionAndPlanSync.apply(workflowDocuments)
   ["validate-scenario-evidence"] = assertValidateScenarioEvidence.apply(workflowDocuments)
+  ["validation-report-scenario-section"] = assertValidationReportScenarioSection.apply(workflowDocuments)
 }
