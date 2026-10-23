@@ -53,6 +53,10 @@ pub const SYNC_TOP_LEVEL_PURPOSE: &str =
     "Synchronize the current repository's Agent Trace database";
 pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
+pub const PLAN_CLAP_ABOUT: &str = "Check the structure and reference integrity of one SCE plan";
+pub const PLAN_TOP_LEVEL_PURPOSE: &str = "Check the structure of one SCE plan";
+pub const PLAN_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
     TopLevelCommandMetadata {
         name: crate::services::auth_command::NAME,
@@ -93,6 +97,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::completion::NAME,
         purpose: COMPLETION_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: COMPLETION_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::plan::NAME,
+        purpose: PLAN_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: PLAN_SHOW_IN_TOP_LEVEL_HELP,
     },
     TopLevelCommandMetadata {
         name: crate::services::sync::NAME,
@@ -234,6 +243,12 @@ pub enum Commands {
         shell: CompletionShell,
     },
 
+    #[command(about = PLAN_CLAP_ABOUT, hide = !PLAN_SHOW_IN_TOP_LEVEL_HELP)]
+    Plan {
+        #[command(subcommand)]
+        subcommand: PlanSubcommand,
+    },
+
     #[command(about = SYNC_CLAP_ABOUT, hide = !SYNC_SHOW_IN_TOP_LEVEL_HELP)]
     Sync {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -359,6 +374,15 @@ pub enum HooksSubcommand {
         hide = true
     )]
     ExternalMutationGuard,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum PlanSubcommand {
+    #[command(about = "Validate one plan file without executing any of its commands")]
+    Check {
+        /// Path to the plan Markdown file to check
+        path: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

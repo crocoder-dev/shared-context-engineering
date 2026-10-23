@@ -13,6 +13,7 @@ const DEFAULT_COMMAND_NAMES: &[&str] = &[
     services::help::NAME,
     services::hooks::NAME,
     services::bash_policy::NAME,
+    services::plan::NAME,
     services::setup::NAME,
     services::sync::NAME,
     services::version::NAME,
@@ -35,6 +36,7 @@ pub enum RuntimeCommand {
     Version(services::version::command::VersionCommand),
     Completion(services::completion::command::CompletionCommand),
     Sync(services::sync::command::SyncCommand),
+    Plan(services::plan::command::PlanCommand),
 }
 
 impl RuntimeCommand {
@@ -51,6 +53,7 @@ impl RuntimeCommand {
             Self::Version(_) => Cow::Borrowed(services::version::NAME),
             Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
             Self::Sync(_) => Cow::Borrowed(services::sync::NAME),
+            Self::Plan(_) => Cow::Borrowed(services::plan::NAME),
         }
     }
 
@@ -75,6 +78,7 @@ impl RuntimeCommand {
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
             Self::Sync(command) => command.execute_with_stderr(context, stderr).await,
+            Self::Plan(command) => command.execute(),
         }
     }
 }

@@ -73,6 +73,13 @@ const HELP_SECTIONS: &[HelpSection] = &[
         }],
     },
     HelpSection {
+        title: "Plan Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce plan",
+            suffix: " check <path>",
+        }],
+    },
+    HelpSection {
         title: "Completion Usage:",
         body: &[HelpSectionBodyLine::Command {
             cmd: "  sce completion",

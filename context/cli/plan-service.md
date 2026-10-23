@@ -6,7 +6,7 @@
 
 - `extract.rs` is the only plan-service code that touches `markdown::mdast::Node`. It parses the source with `markdown-rs` (`markdown` crate, `to_mdast(source, &ParseOptions::gfm())`) and returns an owned `Plan` model. It never scans lines to find structure.
 - `validate.rs` holds the pure `validate(&Plan) -> PlanReport` rules. It has no I/O and never touches `mdast` types.
-- The `sce plan check` CLI command is not implemented yet (plan `context/plans/sce-plan-check.md`, T03). The module is not reachable from the CLI.
+- `command.rs` owns the `sce plan check <path>` command (see [Command contract](#command-contract)).
 
 ## Plan model
 
@@ -50,9 +50,21 @@
   - Misplaced and reference defects point at their field.
   - Missing-field, uncovered-AC, and unreferenced-S defects point at their definition.
 
+## Command contract
+
+`sce plan check <path>` checks exactly the file at `<path>`, relative or absolute. It is synchronous, uses no database or repository root, and never runs `Check:`, `Validate:`, or `Verify:` content.
+
+- Valid structured plan: stdout `structured plan: reference integrity holds`, exit `0`.
+- Valid legacy plan: stdout `legacy plan: structured reference rules do not apply`, exit `0`.
+- Structurally invalid plan: `CliError::validation` (exit `3`, `SCE-ERR-VALIDATION`). The stderr message is a `Plan structure check failed for '{path}':` header, one `{path}:{line}: {message}` line per diagnostic (`{path}: {message}` when the diagnostic has no line) in `validate` order, and a closing `Try:` line. `{path}` is printed as given.
+- Missing or unreadable file: `CliError::runtime` (exit `4`, `SCE-ERR-RUNTIME`) with `Failed to read plan file '{path}'` context, and no diagnostics.
+
+`plan` is a visible top-level command and appears in `sce --help` (including a `Plan Usage:` line) and in generated Bash/Zsh/Fish completions.
+
 ## Terms
 
 - `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `structured`, `legacy`, or `fail`, then the expected defect substrings for `fail` rows. Every `*.md` fixture in the directory must be listed exactly once.
+- `sce plan check`: The read-only CLI command that runs `extract` then `validate` on one plan file and reports through the exit `0`/`3`/`4` contract above.
 - `plan diagnostic`: One `PlanDiagnostic` from `validate`, with Pkl defect wording and an optional 1-based source line.
 
 ## Divergences from the Pkl line scanner
@@ -63,4 +75,4 @@ The extractor follows CommonMark/GFM nesting. The Pkl checker requires fields at
 
 `cli/src/services/plan/extract.rs` unit tests (`plan::extract`) read the shared plan-structure fixtures through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. They cover fenced examples, misplaced definitions, legacy plans with fenced structured examples, source-sliced field values with lines, and the ID grammar.
 
-Module-level tests in `cli/src/services/plan/mod.rs` make the shared contract mechanical. `plan::fixture_expectations_match_manifest` runs every manifest row through `extract` and `validate` and requires that every fixture is listed. `plan::diagnostic_lines_match_source_positions` asserts exact diagnostic lines, and checks that a missing heading has no line.
+Module-level tests in `cli/src/services/plan/mod.rs` make the shared contract mechanical. `plan::fixture_expectations_match_manifest` runs every manifest row through `extract` and `validate` and requires that every fixture is listed. `plan::diagnostic_lines_match_source_positions` asserts exact diagnostic lines, and checks that a missing heading has no line. The `plan::command_*` tests drive `sce plan check` through the parser and stdout/stderr renderer for valid plans (by relative and absolute path), an invalid plan, a missing file, and a plan whose commands would create a marker file. `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` cover help and completion.

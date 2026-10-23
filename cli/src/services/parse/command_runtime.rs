@@ -323,12 +323,23 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 },
             },
         )),
+        cli_schema::Commands::Plan { subcommand } => Ok(convert_plan_subcommand(subcommand)),
         cli_schema::Commands::Sync { format } => {
             Ok(RuntimeCommand::Sync(services::sync::command::SyncCommand {
                 request: services::sync::SyncRequest { format },
             }))
         }
     }
+}
+
+fn convert_plan_subcommand(subcommand: cli_schema::PlanSubcommand) -> RuntimeCommand {
+    let request = match subcommand {
+        cli_schema::PlanSubcommand::Check { path } => {
+            services::plan::command::PlanCheckRequest { path }
+        }
+    };
+
+    RuntimeCommand::Plan(services::plan::command::PlanCommand { request })
 }
 
 fn convert_doctor_command(
