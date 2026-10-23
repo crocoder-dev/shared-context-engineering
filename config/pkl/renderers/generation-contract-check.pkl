@@ -5,6 +5,7 @@ import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
 import "codex-content.pkl" as codex
 import "codex-metadata.pkl" as codexMetadata
+import "plan-structure.pkl" as planStructure
 
 /// Build the expected inventory from each target's independently checked
 /// document inventory plus the retained non-workflow assets. This deliberately
@@ -1029,6 +1030,17 @@ hidden assertStructuredPlanTemplateSchema = (documents: Mapping) ->
   ) "generated plan template: design decisions, verification scenarios, coverage fields, and reference rules present"
   else throw("generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules")
 
+hidden assertPlanTemplateStructure = (documents: Mapping) ->
+  let (defects = documents
+    .fold(List(), (acc, path, text) ->
+      if (!path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")) acc
+      else acc + planStructure.templateDefects(text).map((defect) -> "\(path): \(defect)")))
+  if (
+    defects.isEmpty
+    && documents.any((path, _) -> path.endsWith("/skills/sce-change-to-plan/references/plan-template.md"))
+  ) "generated plan template: headings, definitions, fields, and references are structurally valid outside fenced examples"
+  else throw("generated plan-template.md failed the structural reference-integrity check: " + defects.join("; "))
+
 local planTemplateOwnedPolicyTokens = new Listing {
   "Acceptance criteria describe the finished system, not the work."
   "Every criterion carries a `Validate:` line."
@@ -1040,7 +1052,10 @@ local planTemplateOwnedPolicyTokens = new Listing {
   "Preserve completed tasks, their `(status:done)` markers"
   "Record a design decision only for a real architectural choice the plan"
   "`Then:` states an exact observable result or invariant, not an intention."
-  "A plan is structured when it has a `### Verification scenarios` heading or"
+  "Read plan structure only from Markdown outside fenced code blocks."
+  "A plan is structured when, outside fenced code blocks, it has a"
+  "A section runs from its heading to the next heading of any level outside"
+  "To check a fenced example itself, extract the block's content and apply these"
   "Never renumber or reuse a decision, criterion, or scenario ID"
   "Every acceptance criterion is named by at least one task's `Covers:`."
   "A planned `Check:` is not execution evidence."
@@ -1091,7 +1106,9 @@ hidden assertPlanAuthoringStructuredReferences = (documents: Mapping) ->
   else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing")
 
 local requiredNextTaskStructuredReferenceTokens = new Listing {
-  Pair("/skills/sce-next-task/references/plan-review.md", "A plan is structured when it has a `### Verification scenarios` heading or any\ntask carries `Covers:`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "Read plan structure only outside fenced code blocks;")
+  Pair("/skills/sce-next-task/references/plan-review.md", "A definition counts only\nin its own section:")
+  Pair("/skills/sce-next-task/references/plan-review.md", "A plan is structured when, outside fenced code blocks, it has a\n`### Verification scenarios` heading or any task under `## Task stack` carries\n`Covers:`.")
   Pair("/skills/sce-next-task/references/plan-review.md", "review it exactly as\ndescribed here, with no coverage lookup and no coverage fields in the result.")
   Pair("/skills/sce-next-task/references/plan-review.md", "Record it as a review risk;\nit does not make the task `blocked`.")
   Pair("/skills/sce-next-task/references/plan-review.md", "For a structured plan, a `ready` result also identifies:")
@@ -1323,7 +1340,9 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
 
 
 local requiredValidateScenarioEvidenceTokens = new Listing {
-  "A plan is structured when it has a `### Verification scenarios` heading or any\ntask carries `Covers:`."
+  "Read plan structure only outside fenced code blocks;"
+  "A definition counts only\nin its own section:"
+  "A plan is structured when, outside fenced code blocks, it has a\n`### Verification scenarios` heading or any task under `## Task stack` carries\n`Covers:`."
   "validate it exactly\nas described here, with no scenario collection, no reference check, and no\nscenario statuses."
   "Skip this step for a legacy plan."
   "`Reference rules` to the plan."
@@ -1440,6 +1459,7 @@ contractChecks {
   ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
   ["compact-plan-template-schema"] = assertCompactPlanTemplateSchema.apply(workflowDocuments)
   ["structured-plan-template-schema"] = assertStructuredPlanTemplateSchema.apply(workflowDocuments)
+  ["plan-template-structure"] = assertPlanTemplateStructure.apply(workflowDocuments)
   ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
   ["plan-authoring-structured-references"] = assertPlanAuthoringStructuredReferences.apply(workflowDocuments)
   ["next-task-structured-references"] = assertNextTaskStructuredReferences.apply(workflowDocuments)

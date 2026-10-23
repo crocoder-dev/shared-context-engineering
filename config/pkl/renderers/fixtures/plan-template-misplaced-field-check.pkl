@@ -1,0 +1,15 @@
+import "../generation-contract-check.pkl" as contract
+import "../../base/workflow-change-to-plan.pkl" as changeToPlan
+
+local template = changeToPlan.changeToPlanPlanTemplate
+  .replaceFirst("  - Task ID: T01\n  - Covers: AC1, AC2\n", "  - Task ID: T01\n")
+  .replaceLast("  - Scenarios: none (inspection)\n", "  - Scenarios: none (inspection)\n  - Covers: AC1, AC2\n")
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-change-to-plan/references/plan-template.md"] = template
+}
+
+result =
+  contract.assertStructuredPlanTemplateSchema.apply(documents)
+  + "; "
+  + contract.assertPlanTemplateStructure.apply(documents)

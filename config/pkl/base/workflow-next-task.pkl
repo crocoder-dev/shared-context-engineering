@@ -1537,8 +1537,15 @@ architecture, shared terminology, or cross-domain interfaces.
 
 Do not explore the entire repository by default.
 
-A plan is structured when it has a `### Verification scenarios` heading or any
-task carries `Covers:`. Every other plan is a legacy plan; review it exactly as
+Read plan structure only outside fenced code blocks; headings, definitions, and
+fields inside a fenced example are not plan structure. A definition counts only
+in its own section: `D` entries under `## Design decisions`, `AC` entries under
+`## Acceptance criteria`, `S` entries under `### Verification scenarios`, and
+`T` entries under `## Task stack`.
+
+A plan is structured when, outside fenced code blocks, it has a
+`### Verification scenarios` heading or any task under `## Task stack` carries
+`Covers:`. Every other plan is a legacy plan; review it exactly as
 described here, with no coverage lookup and no coverage fields in the result.
 
 For a structured plan, read the selected task's `Covers:` IDs. For each covered

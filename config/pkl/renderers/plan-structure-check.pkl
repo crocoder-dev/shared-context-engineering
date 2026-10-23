@@ -1,0 +1,10 @@
+import "plan-structure.pkl" as planStructure
+
+local planPath = read("prop:planPath")
+local report = planStructure.check(read("file:\(planPath)").text)
+
+result =
+  if (!report.defects.isEmpty)
+    throw("plan failed the structural reference-integrity check: " + report.defects.join("; "))
+  else if (report.structured) "structured plan: reference integrity holds"
+  else "legacy plan: structured reference rules do not apply"

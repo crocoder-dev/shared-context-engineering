@@ -1,0 +1,14 @@
+import "../generation-contract-check.pkl" as contract
+import "../../base/workflow-change-to-plan.pkl" as changeToPlan
+
+local template = changeToPlan.changeToPlanPlanTemplate
+  .replaceFirst("\n## Reference rules\n", "\n```markdown\n## Reference rules\n```\n")
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-change-to-plan/references/plan-template.md"] = template
+}
+
+result =
+  contract.assertStructuredPlanTemplateSchema.apply(documents)
+  + "; "
+  + contract.assertPlanTemplateStructure.apply(documents)

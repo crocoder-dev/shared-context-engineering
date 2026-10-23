@@ -188,6 +188,91 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl" \
   "generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged"
 
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-template-misplaced-field-check.pkl" \
+  "structured example: \`Covers:\` on \`AC2\` is misplaced; it belongs to a task"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-template-keywords-in-examples-check.pkl" \
+  "heading \`## Reference rules\` is missing outside fenced code blocks"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-template-dangling-reference-check.pkl" \
+  "structured example: \`Scenarios:\` on \`AC1\` references undefined \`S2\`"
+
+plan_structure_check="config/pkl/renderers/plan-structure-check.pkl"
+plan_structure_fixtures="config/pkl/renderers/fixtures/plan-structure"
+
+expect_plan_structure_pass() {
+  local fixture_name="$1"
+  local expected_result="$2"
+  local output
+
+  if ! output="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_check" 2>&1)"; then
+    printf 'Plan structure fixture unexpectedly failed: %s\n%s\n' \
+      "$fixture_name" "$output" >&2
+    exit 1
+  fi
+
+  if [[ "$output" != *"$expected_result"* ]]; then
+    printf 'Plan structure fixture passed with the wrong classification: %s\n%s\n' \
+      "$fixture_name" "$output" >&2
+    exit 1
+  fi
+}
+
+expect_plan_structure_failure() {
+  local fixture_name="$1"
+  shift
+  local diagnostic
+  local expected_diagnostic
+
+  if diagnostic="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_check" 2>&1 >/dev/null)"; then
+    printf 'Negative plan structure fixture unexpectedly passed: %s\n' \
+      "$fixture_name" >&2
+    exit 1
+  fi
+
+  for expected_diagnostic in "$@"; do
+    if [[ "$diagnostic" != *"$expected_diagnostic"* ]]; then
+      printf 'Negative plan structure fixture failed without the expected diagnostic: %s\nexpected: %s\n%s\n' \
+        "$fixture_name" "$expected_diagnostic" "$diagnostic" >&2
+      exit 1
+    fi
+  done
+}
+
+structured_plan_result="structured plan: reference integrity holds"
+legacy_plan_result="legacy plan: structured reference rules do not apply"
+
+expect_plan_structure_pass "valid-structured-plan.md" "$structured_plan_result"
+expect_plan_structure_pass "inspection-only-plan.md" "$structured_plan_result"
+expect_plan_structure_pass "fenced-example-plan.md" "$structured_plan_result"
+expect_plan_structure_pass "legacy-plan.md" "$legacy_plan_result"
+expect_plan_structure_pass "legacy-plan-with-fenced-structured-example.md" "$legacy_plan_result"
+
+expect_plan_structure_failure "duplicate-id.md" \
+  "\`S1\` is defined more than once"
+expect_plan_structure_failure "undefined-references.md" \
+  "\`Decisions:\` on \`AC1\` references undefined \`D2\`" \
+  "\`Scenarios:\` on \`AC1\` references undefined \`S9\`" \
+  "\`Covers:\` on \`T01\` references undefined \`AC3\`"
+expect_plan_structure_failure "unreferenced-scenario.md" \
+  "\`S2\` is not referenced by any acceptance criterion's \`Scenarios:\`"
+expect_plan_structure_failure "uncovered-ac.md" \
+  "\`AC2\` is not covered by any task's \`Covers:\`"
+expect_plan_structure_failure "missing-scenarios-field.md" \
+  "\`AC1\` is missing \`Scenarios:\`"
+expect_plan_structure_failure "misplaced-field.md" \
+  "\`Check:\` on \`D1\` is misplaced; it belongs to a verification scenario" \
+  "\`Covers:\` on \`AC1\` is misplaced; it belongs to a task"
+expect_plan_structure_failure "misplaced-definition.md" \
+  "\`Scenarios:\` on \`AC1\` references undefined \`S1\`; it appears only outside \`### Verification scenarios\`"
+expect_plan_structure_failure "wrong-heading-context.md" \
+  "heading \`### Verification scenarios\` is not inside \`## Acceptance criteria\`"
+expect_plan_structure_failure "keywords-only-in-examples.md" \
+  "\`Scenarios:\` on \`AC1\` references undefined \`S1\`; it appears only inside a fenced code block"
+
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"
 

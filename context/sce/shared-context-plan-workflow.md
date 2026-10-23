@@ -64,9 +64,18 @@ never renumbered or reused. Every reference resolves. Every criterion has
 `Scenarios:` (IDs or `none (inspection)`), is covered by a task, and every
 scenario is referenced by a criterion. A planned `Check:` is not evidence.
 
-A plan is **structured** when it has a `### Verification scenarios` heading or
-any task carries `Covers:`; every other plan is **legacy** and keeps the prior
-format. A revision keeps a legacy plan legacy unless the correction explicitly
+Plan structure is read only outside fenced code blocks, so a fenced example that
+repeats real IDs or headings defines nothing and stays in place. A definition
+counts only in its own section (`D` under `## Design decisions`, `AC` under
+`## Acceptance criteria`, `S` under `### Verification scenarios`, `T` under
+`## Task stack`, each ending at the next heading), and its fields are the lines
+indented under it. To check a fenced example itself, its content is extracted
+and checked as a separate sample document. `/change-to-plan`, `/next-task`, and
+`/validate` all read plans this way.
+
+A plan is **structured** when, outside fenced code blocks, it has a
+`### Verification scenarios` heading or any task under `## Task stack` carries
+`Covers:`; every other plan is **legacy** and keeps the prior format. A revision keeps a legacy plan legacy unless the correction explicitly
 asks to adopt the structured format.
 
 ```mermaid
