@@ -26,7 +26,7 @@
 `sce setup --claude` and `sce setup --all` install the three runtime files in
 `.claude/skills/sce-info`: `.claude-plugin/plugin.json`, `hooks/hooks.json`, and
 `hooks/register.ts`. The package uses the `SCE` manifest identity
-and supplied startup-rendering behavior, plus the Claude session login notice. Packaging does not add a workflow
+and supplied startup-rendering behavior, plus the Claude session login notice, missing-CLI install guidance stamped with the expected CLI version, a single missing-git-hooks notice, a single outdated-Claude-skills notice, and other Claude doctor problem notices. Packaging does not add a workflow
 entrypoint or change plugin activation. Individual OpenCode, Pi, and Codex
 setup targets install no `sce-info` assets.
 
