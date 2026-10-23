@@ -281,7 +281,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: `context/sce/shared-context-plan-workflow.md` (plan-authoring order and reference-consistency pass), `context/sce/config-generation.md` (new contract check and fixture).
   - Context synchronization: synced
 
-- [ ] T03: `Surface covered criteria, scenarios, and decisions in /next-task review, gate, and execution` (status:todo)
+- [x] T03: `Surface covered criteria, scenarios, and decisions in /next-task review, gate, and execution` (status:done)
   - Task ID: T03
   - Covers: AC4, AC5, AC9
   - Scope: In —
@@ -292,8 +292,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Out — readiness criteria, approval wording, sync-debt recovery, continuation, and context-sync references.
   - Dependencies: T01
   - Done when: The generated next-task references carry the coverage contract and the legacy sentence. All existing next-task semantic checks pass unchanged, and the new fixture fails as expected.
-  - Verify: `nix run .#pkl-check-generated`; `git diff` review confirming that no readiness bullet, approval sentence, or status changed.
-  - Context synchronization: pending
+  - Verify: `nix run .#pkl-check-generated` — passed (145 files; the new `next-task-structured-references` check reports success, all existing next-task semantic checks including `next-task-compact-completion-writing` and `plan-review-reads-completed-record` still pass, and the new fixture fails with its exact diagnostic). The generated `plan-review.md`, `output.md`, and `task-execution.md` are byte-identical across the OpenCode, Claude, Pi, and Codex targets. `git diff` review — passed: the diff only adds lines (0 removed), so no readiness bullet, approval sentence, status, sync-debt rule, or continuation changed.
+  - Completed: 2026-10-23
+  - Files changed: config/pkl/base/workflow-next-task.pkl, config/pkl/renderers/generation-contract-check.pkl, config/pkl/renderers/fixtures/next-task-structured-references-check.pkl, config/pkl/check-generated.sh, context/plans/plan-decisions-and-verification-scenarios.md
+  - Result: `nextTaskPlanReviewReference` 1.3 now detects structured plans, reads the selected task's covered ACs with their scenarios and decisions, and treats dangling references as review risks rather than blockers. 1.5 lists the structured `ready` coverage fields, and a legacy-plan sentence leaves legacy review unchanged. Both copies of the implementation gate gained an optional `## Acceptance coverage` section before `## Verification`, omitted for legacy plans. `nextTaskTaskExecutionReference` 2.6 lets covered scenarios shape `Verify` checks and states that execution never checks an AC checkbox or records a scenario status. 2.7 keeps `Covers:` as authored. Added the `next-task-structured-references` assertion and one registered negative fixture.
+  - Context impact: `context/sce/shared-context-code-workflow.md` (`/next-task` coverage consumption and the execution boundary), `context/sce/config-generation.md` (new contract check and fixture).
+  - Context synchronization: synced
 
 - [ ] T04: `Verify scenarios and relationship integrity in the /validate phase` (status:todo)
   - Task ID: T04

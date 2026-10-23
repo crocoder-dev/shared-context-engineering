@@ -1436,6 +1436,13 @@ local renderImplementationGate = (mode: model.WorkflowRenderMode) -> """
     - Include only risks relevant to approving this task.
     - Omit this section when there are no meaningful risks.
     
+    ## Acceptance coverage
+    
+    - Include only when the plan is structured; omit this section for a legacy plan.
+    - List each covered acceptance criterion `{AC id}: {outcome}` with its
+      scenarios `{S id}: {Then}` (`{Check}`) and related decisions `{D id}: {decision}`.
+    - Report dangling references under **Risks or trade-offs**.
+    
     ## Verification
     
     - {task.verification}
@@ -1530,6 +1537,16 @@ architecture, shared terminology, or cross-domain interfaces.
 
 Do not explore the entire repository by default.
 
+A plan is structured when it has a `### Verification scenarios` heading or any
+task carries `Covers:`. Every other plan is a legacy plan; review it exactly as
+described here, with no coverage lookup and no coverage fields in the result.
+
+For a structured plan, read the selected task's `Covers:` IDs. For each covered
+acceptance criterion, read its `Scenarios:` and `Decisions:` fields and the
+scenario and decision definitions they name. A covered ID or referenced ID with
+no definition in the plan is a dangling reference. Record it as a review risk;
+it does not make the task `blocked`.
+
 ## 1.4 Determine readiness
 
 A task is `ready` when:
@@ -1583,6 +1600,16 @@ A `ready` result must identify:
 - Verification expectations.
 - Relevant files and context.
 - Review assumptions.
+
+For a structured plan, a `ready` result also identifies:
+
+- The covered acceptance criteria: each `Covers:` ID with its outcome and
+  `Validate:` check.
+- Their verification scenarios: each scenario ID with its `Then:` and `Check:`.
+- Their related design decisions: each decision ID with its decision text.
+- Every dangling reference, as a review risk.
+
+A `ready` result for a legacy plan carries none of these coverage fields.
 
 A `sync_debt` result must identify:
 
@@ -1744,6 +1771,12 @@ Run the narrowest authoritative checks that demonstrate the done checks.
 Start with verification supplied by the readiness result. Add nearby or directly
 relevant checks only when needed.
 
+For a structured plan, the covered scenarios' `Then:` and `Check:` may shape
+the task's own `Verify` checks. Running a scenario's check during the task is
+task-level evidence only. Task execution never checks an acceptance-criterion
+checkbox and never records a scenario status; only `/validate` verifies
+acceptance criteria and scenarios.
+
 Verification may include:
 
 - Targeted tests.
@@ -1779,6 +1812,7 @@ Only after successful implementation and task-level verification:
   facts above and before the synchronization phase is invoked.
 - Record material deviations or approved assumptions.
 - Preserve the plan's existing structure and terminology.
+- Keep the task's `Covers:` field as authored.
 
 Do not mark the task complete when returning `declined`, `blocked`, or
 `incomplete`.
@@ -1949,6 +1983,13 @@ Describe the smallest coherent implementation approach with enough detail for ap
 
 - Include only risks relevant to approving this task.
 - Omit this section when there are no meaningful risks.
+
+## Acceptance coverage
+
+- Include only when the plan is structured; omit this section for a legacy plan.
+- List each covered acceptance criterion `{AC id}: {outcome}` with its
+  scenarios `{S id}: {Then}` (`{Check}`) and related decisions `{D id}: {decision}`.
+- Report dangling references under **Risks or trade-offs**.
 
 ## Verification
 

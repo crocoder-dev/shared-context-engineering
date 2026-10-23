@@ -1090,6 +1090,27 @@ hidden assertPlanAuthoringStructuredReferences = (documents: Mapping) ->
   ) "sce-change-to-plan plan-authoring: decisions, criteria, scenarios, and tasks authored in order with a reference-consistency pass"
   else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing")
 
+local requiredNextTaskStructuredReferenceTokens = new Listing {
+  Pair("/skills/sce-next-task/references/plan-review.md", "A plan is structured when it has a `### Verification scenarios` heading or any\ntask carries `Covers:`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "review it exactly as\ndescribed here, with no coverage lookup and no coverage fields in the result.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "Record it as a review risk;\nit does not make the task `blocked`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "For a structured plan, a `ready` result also identifies:")
+  Pair("/skills/sce-next-task/references/plan-review.md", "each scenario ID with its `Then:` and `Check:`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "A `ready` result for a legacy plan carries none of these coverage fields.")
+  Pair("/skills/sce-next-task/references/output.md", "## Acceptance coverage\n\n- Include only when the plan is structured; omit this section for a legacy plan.")
+  Pair("/skills/sce-next-task/references/task-execution.md", "Task execution never checks an acceptance-criterion\ncheckbox and never records a scenario status")
+  Pair("/skills/sce-next-task/references/task-execution.md", "- Keep the task's `Covers:` field as authored.")
+}
+
+hidden assertNextTaskStructuredReferences = (documents: Mapping) ->
+  if (
+    requiredNextTaskStructuredReferenceTokens.every((entry) ->
+      documents.any((path, _) -> path.endsWith(entry.first))
+      && documents.every((path, text) -> !path.endsWith(entry.first) || text.contains(entry.second))
+    )
+  ) "sce-next-task structured references: review, gate, and execution consume coverage and keep the legacy path"
+  else throw("generated sce-next-task plan-review.md, output.md, and task-execution.md must detect structured plans, carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, keep legacy plans unchanged, and never check an acceptance criterion or record a scenario status during task execution")
+
 local requiredNextTaskCompletionWritingTokens = new Listing {
   "Record directly on the completed task:"
   "`Files changed`"
@@ -1392,6 +1413,7 @@ contractChecks {
   ["structured-plan-template-schema"] = assertStructuredPlanTemplateSchema.apply(workflowDocuments)
   ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
   ["plan-authoring-structured-references"] = assertPlanAuthoringStructuredReferences.apply(workflowDocuments)
+  ["next-task-structured-references"] = assertNextTaskStructuredReferences.apply(workflowDocuments)
   ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
   ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
   ["context-sync-validates-task-record"] = assertContextSyncValidatesTaskRecord.apply(workflowDocuments)

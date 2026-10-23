@@ -158,6 +158,9 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl" \
   "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing"
 expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/next-task-structured-references-check.pkl" \
+  "generated sce-next-task plan-review.md, output.md, and task-execution.md must detect structured plans, carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, keep legacy plans unchanged, and never check an acceptance criterion or record a scenario status during task execution"
+expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-compact-completion-writing-check.pkl" \
   "sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record"
 expect_pkl_fixture_failure \
