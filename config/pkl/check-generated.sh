@@ -184,6 +184,9 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-decision-sync-boundary-check.pkl" \
   "generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl" \
+  "generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged"
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"

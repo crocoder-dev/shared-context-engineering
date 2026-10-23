@@ -69,6 +69,9 @@ A context-sync blocker does not undo successful implementation: the task remains
 `/validate {plan-name-or-path}`
 
 1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, records leftover debug/temp artifacts as failure evidence without deleting or repairing them, and writes the Validation Report.
+   - For a structured plan (see `shared-context-plan-workflow.md`), it also collects decisions, scenarios, and `Covers:`, then checks plan references against the template's `Reference rules`: a duplicate ID, a dangling `Decisions:`/`Scenarios:`/`Covers:` ID, an acceptance criterion without `Scenarios:` or with no covering task, and an unreferenced scenario are each a failed check that makes the result `failed`.
+   - It runs or performs every scenario's `Check:` itself and gives each scenario exactly one status: `Verified`, `Partially verified`, or `Not verified`. Only evidence from this run counts; task completion, recorded task `Verify` outcomes, planned `Check:` lines, and plan claims never do. An acceptance criterion is met only when its `Validate:` check passes and every scenario it names is `Verified` (a `none (inspection)` criterion needs only `Validate:`).
+   - A legacy plan gets no scenario collection, reference check, or scenario statuses.
 2. Failed or blocked validation ends the session without repair edits; repair occurs in a later implementation session and retry uses `/validate {plan-path}`.
 3. A validated result is reported directly with the Validation Report path; `/validate` does not invoke plan-level context synchronization or persist a plan-sync lifecycle handoff.
 

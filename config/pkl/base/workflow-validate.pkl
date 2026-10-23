@@ -229,22 +229,74 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     - Every acceptance criterion and its `Validate:` check.
     - The `Full validation` command list.
-    
+
+    A plan is structured when it has a `### Verification scenarios` heading or any
+    task carries `Covers:`. Every other plan is a legacy plan; validate it exactly
+    as described here, with no scenario collection, no reference check, and no
+    scenario statuses.
+
+    For a structured plan, also collect:
+
+    - Every design decision.
+    - Every acceptance criterion's `Decisions:` and `Scenarios:` fields.
+    - Every verification scenario with its `Then:` and `Check:`.
+    - Every task's `Covers:` field.
+
     \(returnUpper.render.apply(mode)) `blocked` when the plan has no usable acceptance criteria, or when no
     validation commands can be determined from the plan or repository conventions.
-    
+
     Prefer the plan's authored checks. Fall back to repository-primary test, lint,
     and format commands only when `Full validation` is absent, and record that
     fallback under notes on a `validated` or `failed` result.
-    
-    \(validationHeadings.stepHeading.apply(mode, 4, "Run full validation and acceptance checks"))
-    
+
+    \(validationHeadings.stepHeading.apply(mode, 4, "Check plan references"))
+
+    Skip this step for a legacy plan.
+
+    For a structured plan, apply every entry of the plan template's
+    `Reference rules` to the plan. Each of these is a relationship-integrity
+    defect:
+
+    - An ID defined more than once.
+    - A dangling reference: a `Decisions:`, `Scenarios:`, or `Covers:` ID with no
+      definition in the plan.
+    - An acceptance criterion without `Scenarios:`.
+    - An acceptance criterion that no task's `Covers:` names.
+    - A scenario that no acceptance criterion's `Scenarios:` references.
+
+    Record each defect as a failed check under **Failed checks and follow-ups**,
+    naming the IDs involved. A relationship-integrity defect makes the result
+    `failed`; never tolerate one silently. Continue gathering the remaining
+    evidence.
+
+    \(validationHeadings.stepHeading.apply(mode, 5, "Run full validation and acceptance checks"))
+
     Run the plan's `Full validation` commands.
-    
+
     Then verify each acceptance criterion using its `Validate:` line. Prefer a
     runnable command. Use a named inspection only when the criterion authorizes it,
     and say exactly what was inspected.
-    
+
+    For a structured plan, run or perform every scenario's `Check:` yourself in
+    this run, and compare the observed result with the scenario's `Then:`. Give
+    each scenario exactly one status:
+
+    - `Verified` when this run's evidence proves its `Then:` in full.
+    - `Partially verified` when the check ran but proves `Then:` only in part, for
+      example at a narrower level than `Then:` requires.
+    - `Not verified` when the check failed, could not be run or located, or was
+      not performed.
+
+    Only evidence gathered by this run counts. Task completion, a task's recorded
+    `Verify` outcomes, a planned `Check:` line, and the plan's own claims are never
+    evidence. Record every `Partially verified` or `Not verified` scenario as a
+    failed check with the gap and a required action.
+
+    In a structured plan, an acceptance criterion is met only when its `Validate:`
+    check passes and every scenario its `Scenarios:` names is `Verified`. An
+    acceptance criterion marked `none (inspection)` is met by its `Validate:` check
+    alone.
+
     Treat leftover debug-only flags, temporary files, intermediate artifacts, or
     local scaffolding as a failed validation check. Record the path and evidence
     under **Failed checks and follow-ups**; never delete or repair it during
@@ -260,7 +312,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     Do not run task-by-task implementation work for incomplete tasks. That belongs
     to `/next-task`.
     
-    \(validationHeadings.stepHeading.apply(mode, 5, "Update the plan"))
+    \(validationHeadings.stepHeading.apply(mode, 6, "Update the plan"))
     
     For `validated` and `failed` outcomes:
     
@@ -274,7 +326,7 @@ local renderValidationSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     For `blocked`, leave the plan file unchanged.
     
-    \(validationHeadings.stepHeading.apply(mode, 6, "Return the \(markdownResult.render.apply(mode))"))
+    \(validationHeadings.stepHeading.apply(mode, 7, "Return the \(markdownResult.render.apply(mode))"))
     
     \(returnExactlyOneMarkdownResult.render.apply(mode)):
     

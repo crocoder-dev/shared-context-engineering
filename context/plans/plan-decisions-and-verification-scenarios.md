@@ -299,7 +299,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: `context/sce/shared-context-code-workflow.md` (`/next-task` coverage consumption and the execution boundary), `context/sce/config-generation.md` (new contract check and fixture).
   - Context synchronization: synced
 
-- [ ] T04: `Verify scenarios and relationship integrity in the /validate phase` (status:todo)
+- [x] T04: `Verify scenarios and relationship integrity in the /validate phase` (status:done)
   - Task ID: T04
   - Covers: AC6, AC7, AC9
   - Scope: In — `renderValidationSkillBody` in `config/pkl/base/workflow-validate.pkl`:
@@ -312,8 +312,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Out — report formats (T05) and any repair or synchronization behavior.
   - Dependencies: T01
   - Done when: The generated `validation.md` carries the integrity rules, the evidence rules, the three statuses, the AC rule, and the legacy sentence. The `validation-repair` and `validate-decision-sync-boundary` checks still pass, and the new fixture fails as expected.
-  - Verify: `nix run .#pkl-check-generated`.
-  - Context synchronization: pending
+  - Verify: `nix run .#pkl-check-generated` — passed (exit 0, 145 files). Running `pkl eval` on `generation-contract-check.pkl` directly reports success for the new `validate-scenario-evidence` check and for the existing `validation-observational` (`validation-repair` fixture), `validate-decision-sync-boundary`, and `validation-report-policy-ownership` checks. The new fixture fails with its exact diagnostic. The generated `validation.md` is byte-identical across the OpenCode, Claude, Pi, and Codex targets.
+  - Completed: 2026-10-23
+  - Files changed: config/pkl/base/workflow-validate.pkl, config/pkl/renderers/generation-contract-check.pkl, config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl, config/pkl/check-generated.sh, context/plans/plan-decisions-and-verification-scenarios.md
+  - Result: In `renderValidationSkillBody`, step 3 now detects structured plans with a legacy-plan sentence and collects decisions, AC `Decisions:`/`Scenarios:`, scenarios with `Then:`/`Check:`, and task `Covers:`. A new step 4 `Check plan references` applies the template's `Reference rules` and lists the five relationship-integrity defects; each is recorded as a failed check and makes the result `failed`. Step 5 runs or performs every scenario's `Check:` and assigns `Verified`, `Partially verified`, or `Not verified`. It excludes task completion, recorded `Verify` outcomes, planned `Check:` lines, and plan claims as evidence, and it meets an AC only when its `Validate:` check passes and all of its scenarios are `Verified` (`none (inspection)` ACs need only `Validate:`). The update and return steps were renumbered to 6 and 7. Added the `validate-scenario-evidence` assertion and one registered negative fixture.
+  - Context impact: `context/sce/shared-context-code-workflow.md` (`/validate` scenario evidence and integrity rules), `context/sce/config-generation.md` (new contract check and fixture).
+  - Context synchronization: synced
 
 - [ ] T05: `Add scenario verification to the Validation Report formats` (status:todo)
   - Task ID: T05

@@ -1322,7 +1322,36 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
     else throw("generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording")
 
 
-hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
+local requiredValidateScenarioEvidenceTokens = new Listing {
+  "A plan is structured when it has a `### Verification scenarios` heading or any\ntask carries `Covers:`."
+  "validate it exactly\nas described here, with no scenario collection, no reference check, and no\nscenario statuses."
+  "Skip this step for a legacy plan."
+  "`Reference rules` to the plan."
+  "- An ID defined more than once."
+  "- A dangling reference:"
+  "- An acceptance criterion without `Scenarios:`."
+  "- An acceptance criterion that no task's `Covers:` names."
+  "- A scenario that no acceptance criterion's `Scenarios:` references."
+  "A relationship-integrity defect makes the result\n`failed`; never tolerate one silently."
+  "run or perform every scenario's `Check:` yourself"
+  "- `Verified` when"
+  "- `Partially verified` when"
+  "- `Not verified` when"
+  "Only evidence gathered by this run counts. Task completion, a task's recorded\n`Verify` outcomes, a planned `Check:` line, and the plan's own claims are never\nevidence."
+  "an acceptance criterion is met only when its `Validate:`\ncheck passes and every scenario its `Scenarios:` names is `Verified`."
+}
+
+hidden assertValidateScenarioEvidence = (documents: Mapping) ->
+  if (
+    documents.any((path, _) -> path.endsWith("/skills/sce-validate/references/validation.md"))
+    && documents.every((path, text) ->
+      !path.endsWith("/skills/sce-validate/references/validation.md")
+      || requiredValidateScenarioEvidenceTokens.every((token) -> text.contains(token))
+    )
+  ) "sce-validate validation: structured plans get relationship integrity and scenario evidence; legacy plans keep the legacy path"
+  else throw("generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, and keep legacy plans unchanged")
+
+hidden assertWorkflowLanguageConsistency =(artifacts: Mapping) ->
   let (targets = generatedTargetRoots)
     if (
       targets.every((target) ->
@@ -1424,4 +1453,5 @@ contractChecks {
   ["validation-report-policy-ownership"] = assertValidationReportPolicyOwnership.apply(workflowDocuments)
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
   ["validate-decision-sync-boundary"] = assertValidateExcludesDecisionAndPlanSync.apply(workflowDocuments)
+  ["validate-scenario-evidence"] = assertValidateScenarioEvidence.apply(workflowDocuments)
 }
