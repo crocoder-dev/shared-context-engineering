@@ -9,6 +9,10 @@ pub const HEADING: &str = "## Intent review";
 pub const PLANS_LABEL: &str = "**Plans:**";
 pub const DECISIONS_HEADING: &str = "**Decisions requiring review**";
 pub const NO_FLAGGED_DECISIONS: &str = "No decisions explicitly flagged for review.";
+pub const DECISION_BRIEF_HEADING: &str = "## Decision Brief";
+pub const REVIEW_REQUESTED_LABEL: &str = "**Review requested:**";
+pub const PROPOSED_LABEL: &str = "**Proposed:**";
+pub const REVIEW_LINK_SUFFIX: &str = "rationale, alternatives and trade-offs";
 pub const MAX_REVIEW_QUESTIONS: usize = 3;
 pub const SHA_LENGTH: usize = 40;
 pub const PLAN_PATH_PREFIX: &str = "context/plans/";
@@ -27,6 +31,13 @@ pub struct PrDescriptionArguments {
     pub paths: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BriefFormat {
+    IntentReview,
+    #[cfg_attr(not(test), expect(dead_code))]
+    DecisionBrief,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanInput {
     pub path: String,
@@ -39,6 +50,7 @@ struct ReviewQuestion<'a> {
     decision_id: &'a str,
     line: usize,
     question: &'a str,
+    statement: &'a str,
 }
 
 pub fn parse_arguments(
@@ -112,7 +124,16 @@ fn is_safe_segment(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+#[cfg(test)]
 pub fn render(arguments: &PrDescriptionArguments, plans: &[PlanInput]) -> Result<String, CliError> {
+    render_format(arguments, plans, BriefFormat::IntentReview)
+}
+
+pub fn render_format(
+    arguments: &PrDescriptionArguments,
+    plans: &[PlanInput],
+    format: BriefFormat,
+) -> Result<String, CliError> {
     let mut sorted: Vec<&PlanInput> = plans.iter().collect();
     sorted.sort_by(|left, right| left.path.cmp(&right.path));
 
@@ -142,12 +163,24 @@ pub fn render(arguments: &PrDescriptionArguments, plans: &[PlanInput]) -> Result
             )
         })
         .collect();
+    let plans_line = format!("{PLANS_LABEL} {}", plan_links.join(", "));
 
+    match format {
+        BriefFormat::IntentReview => Ok(render_intent_review(arguments, &plans_line, &questions)),
+        BriefFormat::DecisionBrief => render_decision_brief(arguments, &plans_line, &questions),
+    }
+}
+
+fn render_intent_review(
+    arguments: &PrDescriptionArguments,
+    plans_line: &str,
+    questions: &[ReviewQuestion],
+) -> String {
     let mut lines = vec![
         START_MARKER.to_string(),
         HEADING.to_string(),
         String::new(),
-        format!("{PLANS_LABEL} {}", plan_links.join(", ")),
+        plans_line.to_string(),
         String::new(),
     ];
     if questions.is_empty() {
@@ -170,7 +203,70 @@ pub fn render(arguments: &PrDescriptionArguments, plans: &[PlanInput]) -> Result
     lines.push(String::new());
     lines.push(END_MARKER.to_string());
 
-    Ok(lines.join("\n"))
+    lines.join("\n")
+}
+
+fn render_decision_brief(
+    arguments: &PrDescriptionArguments,
+    plans_line: &str,
+    questions: &[ReviewQuestion],
+) -> Result<String, CliError> {
+    if let Some(question) = questions
+        .iter()
+        .find(|question| question.statement.is_empty())
+    {
+        return Err(CliError::validation(format!(
+            "Decision {} in plan '{}' is marked 'Review: required' but has no proposed decision statement. Try: write the proposed decision after '- {}:' in {}.",
+            question.decision_id,
+            plan_label(question.path),
+            question.decision_id,
+            question.path
+        )));
+    }
+
+    let count_noun = if questions.len() == 1 {
+        "decision"
+    } else {
+        "decisions"
+    };
+    let mut blocks = vec![
+        DECISION_BRIEF_HEADING.to_string(),
+        format!("{REVIEW_REQUESTED_LABEL} {} {count_noun}", questions.len()),
+        plans_line.to_string(),
+    ];
+    if questions.is_empty() {
+        blocks.push(NO_FLAGGED_DECISIONS.to_string());
+    }
+    for (index, question) in questions.iter().enumerate() {
+        blocks.push(format!(
+            "### {}. {}",
+            index + 1,
+            escape_markdown(question.question)
+        ));
+        blocks.push(format!(
+            "{PROPOSED_LABEL} {}",
+            escape_markdown(question.statement)
+        ));
+        blocks.push(format!(
+            "[Review {} {} — {REVIEW_LINK_SUFFIX}]({}#L{})",
+            escape_markdown(plan_label(question.path)),
+            question.decision_id,
+            blob_url(arguments, question.path),
+            question.line
+        ));
+    }
+    Ok(format!(
+        "{START_MARKER}\n{}\n\n{END_MARKER}\n",
+        blocks.join("\n\n")
+    ))
+}
+
+#[cfg_attr(not(test), expect(dead_code))]
+pub fn decision_brief_stdout_payload(mut brief: String) -> String {
+    if brief.ends_with('\n') {
+        brief.pop();
+    }
+    brief
 }
 
 fn review_questions(input: &PlanInput) -> Vec<ReviewQuestion<'_>> {
@@ -191,6 +287,7 @@ fn review_questions(input: &PlanInput) -> Vec<ReviewQuestion<'_>> {
                 decision_id: &decision.id,
                 line: decision.line,
                 question: &question.value,
+                statement: &decision.statement,
             })
         })
         .collect()

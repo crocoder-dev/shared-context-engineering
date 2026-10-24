@@ -6,7 +6,9 @@ use anyhow::Context;
 use crate::services::error::CliError;
 use crate::services::plan::extract::{extract, Plan};
 use crate::services::plan::init::{create, resolve_repository_root, PlanName};
-use crate::services::plan::pr_description::{parse_arguments, render, PlanInput};
+use crate::services::plan::pr_description::{
+    parse_arguments, render_format, BriefFormat, PlanInput,
+};
 use crate::services::plan::validate::{validate, PlanDiagnostic};
 
 pub const STRUCTURED_PLAN_PASS: &str = "structured plan: reference integrity holds";
@@ -88,7 +90,7 @@ fn pr_description(
             })
         })
         .collect::<Result<Vec<_>, CliError>>()?;
-    render(&arguments, &plans)
+    render_format(&arguments, &plans, BriefFormat::IntentReview)
 }
 
 fn load_valid_plan(path: &Path, label: &str) -> Result<Plan, CliError> {

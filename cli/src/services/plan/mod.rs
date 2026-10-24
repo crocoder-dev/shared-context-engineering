@@ -1388,3 +1388,330 @@ fn completion_scripts_include_plan_pr_description() {
         assert!(script.contains("pr-description"), "{shell:?}");
     }
 }
+
+#[cfg(test)]
+fn decision_brief_plan_source(name: &str, decisions: &[(&str, Option<&str>)]) -> String {
+    use std::fmt::Write;
+
+    let mut source = format!("# Plan: {name}\n\n## Design decisions\n\n");
+    for (index, (statement, question)) in decisions.iter().enumerate() {
+        if statement.is_empty() {
+            writeln!(source, "- D{}:", index + 1)
+        } else {
+            writeln!(source, "- D{}: {statement}", index + 1)
+        }
+        .expect("writing to String should not fail");
+        source.push_str(
+            "  - Boundary: One module.\n  - Rationale: It is simple.\n  - Rejected: Two modules — they split ownership.\n  - Trade-offs: None.\n",
+        );
+        if let Some(question) = question {
+            write!(
+                source,
+                "  - Review: required\n  - Review question: {question}\n"
+            )
+            .expect("writing to String should not fail");
+        }
+    }
+    source.push_str(
+        "\n## Acceptance criteria\n\n- [ ] AC1: It works.\n  - Validate: `true`\n  - Scenarios: none (inspection)\n\n## Task stack\n\n- [ ] T01: `Do it` (status:todo)\n  - Task ID: T01\n  - Covers: AC1\n",
+    );
+    source
+}
+
+#[cfg(test)]
+fn render_decision_brief(
+    paths: &[&str],
+    plans: &[pr_description::PlanInput],
+) -> Result<String, crate::services::error::CliError> {
+    pr_description::render_format(
+        &pr_arguments(paths),
+        plans,
+        pr_description::BriefFormat::DecisionBrief,
+    )
+}
+
+#[test]
+fn decision_brief_golden_two_decisions() {
+    let plan = pr_plan_input(
+        "context/plans/brief.md",
+        &decision_brief_plan_source(
+            "brief",
+            &[
+                ("Keep one store.", Some("Is one store enough?")),
+                ("Log every read.", None),
+                (
+                    "Read plans from the\n  head commit   only.",
+                    Some("Should reads ignore the working tree?"),
+                ),
+            ],
+        ),
+    );
+
+    let output = render_decision_brief(&["context/plans/brief.md"], &[plan])
+        .expect("decision brief should render");
+
+    let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
+    let expected = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Decision Brief\n\
+\n\
+**Review requested:** 2 decisions\n\
+\n\
+**Plans:** [brief]({blob}/context/plans/brief.md)\n\
+\n\
+### 1. Is one store enough?\n\
+\n\
+**Proposed:** Keep one store.\n\
+\n\
+[Review brief D1 — rationale, alternatives and trade-offs]({blob}/context/plans/brief.md#L5)\n\
+\n\
+### 2. Should reads ignore the working tree?\n\
+\n\
+**Proposed:** Read plans from the head commit only.\n\
+\n\
+[Review brief D3 — rationale, alternatives and trade-offs]({blob}/context/plans/brief.md#L17)\n\
+\n\
+<!-- sce:intent-review:end -->\n"
+    );
+    assert_eq!(output, expected);
+    assert!(!output.contains("\n\n\n"), "{output:?}");
+    assert!(!output.ends_with("\n\n"), "{output:?}");
+}
+
+#[test]
+fn decision_brief_golden_one_decision() {
+    let plan = pr_plan_input(
+        "context/plans/example.md",
+        &decision_brief_plan_source(
+            "example",
+            &[(
+                "Use one shared store for all sessions.",
+                Some("Is this architectural choice acceptable?"),
+            )],
+        ),
+    );
+
+    let output = render_decision_brief(&["context/plans/example.md"], &[plan])
+        .expect("decision brief should render");
+
+    let plan_url = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/example.md";
+    let expected = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Decision Brief\n\
+\n\
+**Review requested:** 1 decision\n\
+\n\
+**Plans:** [example]({plan_url})\n\
+\n\
+### 1. Is this architectural choice acceptable?\n\
+\n\
+**Proposed:** Use one shared store for all sessions.\n\
+\n\
+[Review example D1 — rationale, alternatives and trade-offs]({plan_url}#L5)\n\
+\n\
+<!-- sce:intent-review:end -->\n"
+    );
+    assert_eq!(output, expected);
+    assert!(!output.contains("\n\n\n"), "{output:?}");
+    assert!(!output.ends_with("\n\n"), "{output:?}");
+}
+
+#[test]
+fn decision_brief_stdout_ends_with_one_newline() {
+    let plan = pr_plan_input(
+        "context/plans/example.md",
+        &decision_brief_plan_source(
+            "example",
+            &[(
+                "Use one shared store for all sessions.",
+                Some("Is this architectural choice acceptable?"),
+            )],
+        ),
+    );
+    let brief = render_decision_brief(&["context/plans/example.md"], &[plan])
+        .expect("decision brief should render");
+
+    let run = render_plan_result(
+        Ok(pr_description::decision_brief_stdout_payload(brief.clone())),
+        Vec::new(),
+    );
+
+    assert_eq!(run.exit_code, std::process::ExitCode::SUCCESS);
+    assert_eq!(run.stdout, brief);
+    assert!(run.stdout.ends_with('\n'), "{:?}", run.stdout);
+    assert!(!run.stdout.ends_with("\n\n"), "{:?}", run.stdout);
+}
+
+#[test]
+fn decision_brief_no_marked_decisions() {
+    let plan = pr_plan_input(
+        "context/plans/quiet.md",
+        &decision_brief_plan_source("quiet", &[("Keep it.", None), ("Log it.", None)]),
+    );
+
+    let output = render_decision_brief(&["context/plans/quiet.md"], &[plan])
+        .expect("decision brief should render");
+
+    assert_eq!(
+        output,
+        "<!-- sce:intent-review:start -->\n## Decision Brief\n\n**Review requested:** 0 decisions\n\n**Plans:** [quiet](https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/quiet.md)\n\nNo decisions explicitly flagged for review.\n\n<!-- sce:intent-review:end -->\n"
+    );
+    assert!(!output.contains("###"), "{output}");
+    let lowered = output.to_lowercase();
+    for claim in ["approv", "safe", "verified"] {
+        assert!(!lowered.contains(claim), "{output}");
+    }
+}
+
+#[test]
+fn decision_brief_escapes_markdown() {
+    let statement = r"Use `x` *y* _z_ [a] <b> |c| d:\e now";
+    let question = r"Is `q` *ok* _here_ [x] <y> |z| a:\b?";
+    let escaped_statement = r"Use \`x\` \*y\* \_z\_ \[a\] \<b\> \|c\| d:\\e now";
+    let escaped_question = r"Is \`q\` \*ok\* \_here\_ \[x\] \<y\> \|z\| a:\\b?";
+
+    let unescape = |text: &str| {
+        let mut unescaped = String::new();
+        let mut characters = text.chars().peekable();
+        while let Some(character) = characters.next() {
+            let escapes_next = character == '\\'
+                && characters
+                    .peek()
+                    .is_some_and(|next| r"\`*_[]<>|".contains(*next));
+            if !escapes_next {
+                unescaped.push(character);
+            } else if let Some(next) = characters.next() {
+                unescaped.push(next);
+            }
+        }
+        unescaped
+    };
+    assert_eq!(unescape(escaped_statement), statement);
+    assert_eq!(unescape(escaped_question), question);
+
+    let plan = pr_plan_input(
+        "context/plans/escape.md",
+        &decision_brief_plan_source("escape", &[(statement, Some(question))]),
+    );
+    let output = render_decision_brief(&["context/plans/escape.md"], &[plan])
+        .expect("decision brief should render");
+
+    assert!(
+        output.contains("\n\n**Review requested:** 1 decision\n\n"),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("\n\n### 1. {escaped_question}\n\n")),
+        "{output}"
+    );
+    assert!(
+        output.contains(&format!("\n\n**Proposed:** {escaped_statement}\n\n")),
+        "{output}"
+    );
+}
+
+#[test]
+fn decision_brief_orders_plans_deterministically() {
+    let zeta = || {
+        pr_plan_input(
+            "context/plans/zeta.md",
+            &decision_brief_plan_source("zeta", &[("Z one.", Some("Is Z one right?"))]),
+        )
+    };
+    let alpha = || {
+        pr_plan_input(
+            "context/plans/alpha.md",
+            &decision_brief_plan_source(
+                "alpha",
+                &[
+                    ("A one.", None),
+                    ("A two.", Some("Is A two right?")),
+                    ("A three.", Some("Is A three right?")),
+                ],
+            ),
+        )
+    };
+    let reverse_paths = ["context/plans/zeta.md", "context/plans/alpha.md"];
+    let sorted_paths = ["context/plans/alpha.md", "context/plans/zeta.md"];
+
+    let first = render_decision_brief(&reverse_paths, &[zeta(), alpha()])
+        .expect("decision brief should render");
+    let second = render_decision_brief(&reverse_paths, &[zeta(), alpha()])
+        .expect("decision brief should render");
+    let sorted = render_decision_brief(&sorted_paths, &[alpha(), zeta()])
+        .expect("decision brief should render");
+
+    assert_eq!(first, second);
+    assert_eq!(first, sorted);
+    assert!(
+        first.contains("\n\n**Review requested:** 3 decisions\n\n"),
+        "{first}"
+    );
+
+    let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
+    assert!(
+        first.contains(&format!(
+            "**Plans:** [alpha]({blob}/context/plans/alpha.md), [zeta]({blob}/context/plans/zeta.md)\n"
+        )),
+        "{first}"
+    );
+    let ordered = [
+        "### 1. Is A two right?",
+        "[Review alpha D2 — rationale, alternatives and trade-offs]",
+        "alpha.md#L10)",
+        "### 2. Is A three right?",
+        "[Review alpha D3 — rationale, alternatives and trade-offs]",
+        "alpha.md#L17)",
+        "### 3. Is Z one right?",
+        "[Review zeta D1 — rationale, alternatives and trade-offs]",
+        "zeta.md#L5)",
+    ];
+    let mut cursor = 0;
+    for needle in ordered {
+        let found = first[cursor..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("missing {needle:?} after byte {cursor}: {first}"));
+        cursor += found + needle.len();
+    }
+}
+
+#[test]
+fn decision_brief_rejects_empty_statement() {
+    let source = decision_brief_plan_source(
+        "empty",
+        &[
+            ("Keep one store.", Some("Is one store enough?")),
+            ("", Some("Is the blank decision right?")),
+        ],
+    );
+    assert!(source.contains("\n- D2:\n"), "{source}");
+
+    let directory = tempfile::tempdir().expect("temporary directory should be created");
+    let plan_path = directory.path().join("empty.md");
+    std::fs::write(&plan_path, &source).expect("plan should be written");
+    let check = run_plan_check(plan_path.to_str().expect("path should be UTF-8"));
+    assert_eq!(
+        check.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        check.stderr
+    );
+
+    let plan = pr_plan_input("context/plans/empty.md", &source);
+    let paths = ["context/plans/empty.md"];
+
+    let error = render_decision_brief(&paths, std::slice::from_ref(&plan))
+        .expect_err("empty statement should fail the decision brief");
+    assert_eq!(error.class().exit_code(), 3);
+    let message = error.to_string();
+    assert!(message.contains("'empty'"), "{message}");
+    assert!(message.contains("D2"), "{message}");
+    assert!(!message.contains("D1"), "{message}");
+
+    let intent_review = pr_description::render(&pr_arguments(&paths), &[plan])
+        .expect("intent review should still render");
+    assert!(
+        intent_review.contains("2. Is the blank decision right? — [empty D2]("),
+        "{intent_review}"
+    );
+}

@@ -35,7 +35,7 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `pr_description::render` with `BriefFormat::DecisionBrief` prints the start marker, `## Decision Brief`, `**Review requested:** N decisions`, the `**Plans:**` link line, one `### N. {question}` subsection per marked decision with its `**Proposed:** {statement}` line and `[Review {label} {Dn} — rationale, alternatives and trade-offs]({url}#L{line})` link, and the end marker. Elements are separated by one blank line, and the output ends with exactly one newline.
+- [ ] AC1: `pr_description::render` with `BriefFormat::DecisionBrief` prints the shared `<!-- sce:intent-review:start -->` marker, followed on the next line by `## Decision Brief`, then `**Review requested:** N decisions`, the `**Plans:**` link line, one `### N. {question}` subsection per marked decision with its `**Proposed:** {statement}` line and `[Review {label} {Dn} — rationale, alternatives and trade-offs]({url}#L{line})` link, and the shared `<!-- sce:intent-review:end -->` marker. Every element after the heading is separated from the one before it by one blank line. No three newlines appear in a row, and the output ends with exactly one newline. `sce plan decision-brief` stdout also ends with exactly one newline.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_`
   - Decisions: D1, D2
   - Scenarios: S1, S2, S3
@@ -75,8 +75,8 @@ performs final validation.
 - S1: Golden Decision Brief for two marked decisions
   - Given: One in-memory structured plan with two marked decisions, one of which has a wrapped opening paragraph.
   - When: `render` runs with `BriefFormat::DecisionBrief`.
-  - Then: The output equals the expected string byte for byte, including both questions, both folded statements, both decision IDs, both `#L{line}` anchors, the blank lines, the markers, and one trailing newline.
-  - Check: `plan::decision_brief_golden_two_decisions`, created by T02.
+  - Then: The output equals the expected string byte for byte, including both questions, both folded statements, both decision IDs, both `#L{line}` anchors, the blank lines, the shared `sce:intent-review` markers with the heading on the line after the start marker, and one trailing newline.
+  - Check: `plan::decision_brief_golden_two_decisions` and the one-decision variant `plan::decision_brief_golden_one_decision`, created by T02.
 - S2: No marked decisions
   - Given: Valid plans with no `Review: required` decision.
   - When: `render` runs with `BriefFormat::DecisionBrief`.
@@ -197,21 +197,27 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. The plan model gains a `statement` field that later tasks consume. `context/cli/plan-service.md` documents this field in T06.
   - Context synchronization: synced
 
-- [ ] T02: `Render the Decision Brief layout through BriefFormat` (status:todo)
+- [x] T02: `Render the Decision Brief layout through BriefFormat` (status:done)
   - Task ID: T02
   - Covers: AC1, AC2, AC5
   - Scope: In — `BriefFormat::{IntentReview, DecisionBrief}` in `pr_description.rs`, one shared selection pass that carries the statement, the Decision Brief layout, the empty-statement validation error, the `pr-description` call site passing `IntentReview`, and the S1, S2, S3, S4, and S6 tests. Out — Git reads, CLI wiring, and help or completion changes.
   - Dependencies: T01
   - Done when: The new render tests pass, and every `plan::pr_description_` test from baseline `7cb9552f99e8d815850bdca8c89d0c68e8586004` passes with its original golden expectations unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`, and `git diff 7cb9552f99e8d815850bdca8c89d0c68e8586004 -- cli/src/services/plan/mod.rs` shows no changed or removed line in an existing `pr_description_` test.
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/services/plan/pr_description.rs`, `cli/src/services/plan/command.rs`, `cli/src/services/plan/mod.rs`
+  - Result: Added `BriefFormat::{IntentReview, DecisionBrief}` and `render_format(arguments, plans, format)`. `ReviewQuestion` carries `statement`, so one selection pass and the shared three-question limit serve both layouts. `IntentReview` output is byte-identical to the baseline. `DecisionBrief` uses the shared `START_MARKER` and `END_MARKER` (`<!-- sce:intent-review:start/end -->`). It puts `## Decision Brief` on the line after the start marker, joins the remaining blocks with one blank line, and ends with one `\n`: `## Decision Brief`, `**Review requested:** N decision(s)` (singular for 1), the plans line, then per decision `### N. {question}`, `**Proposed:** {statement}`, and `[Review {label} {Dn} — rationale, alternatives and trade-offs]({url}#L{line})`, or `No decisions explicitly flagged for review.`, then `<!-- sce:intent-review:end -->`. A marked decision with an empty statement fails only `DecisionBrief` with a validation error (exit `3`) naming the decision and plan. `command.rs` passes `BriefFormat::IntentReview`. Added tests `decision_brief_golden_two_decisions`, `decision_brief_no_marked_decisions`, `decision_brief_escapes_markdown`, `decision_brief_orders_plans_deterministically`, and `decision_brief_rejects_empty_statement`. Review fixes added `decision_brief_golden_one_decision`, `decision_brief_stdout_payload` (removes exactly one trailing `\n`), and `decision_brief_stdout_ends_with_one_newline`, which passes that payload through the shared stdout writer.
+  - Deviations: AC5 forbids editing baseline tests, which call `pr_description::render(&arguments, &plans)`, so `render` keeps that signature as a `#[cfg(test)]` wrapper for `render_format(..., BriefFormat::IntentReview)`; the format-selecting entry is `render_format`. `DecisionBrief` carries `#[cfg_attr(not(test), expect(dead_code))]` until T03 constructs it in the CLI; T03 must remove that attribute, because the unfulfilled `expect` then fails clippy. `render_format` returns the Decision Brief with one trailing newline and `write_stdout_payload` appends another through `writeln!`, so T03 must pass the rendered brief through `pr_description::decision_brief_stdout_payload`, which removes exactly one `\n`. T03 must also remove that helper's `#[cfg_attr(not(test), expect(dead_code))]` attribute.
+  - Verify outcome: `plan::` passed: 43 passed, 0 failed, including the five new tests and every baseline `pr_description_` test. `git diff 7cb9552f99e8d815850bdca8c89d0c68e8586004 -- cli/src/services/plan/mod.rs` has 0 removed lines, so no existing `pr_description_` test or expected string changed. Clippy with `-D warnings` passed for the bin and for `--all-targets`. `cargo fmt` autofix applied.
+  - Context impact: localized. The plan service gains `BriefFormat`, `render_format`, and the Decision Brief layout, with no CLI surface yet. `context/cli/plan-service.md` documents these in T06.
+  - Context synchronization: synced
 
 - [ ] T03: `Add the hidden commit-backed plan decision-brief command` (status:todo)
   - Task ID: T03
   - Covers: AC2, AC3, AC4, AC8
-  - Scope: In — the hidden `PlanSubcommand::DecisionBrief` Clap variant, its `command_runtime.rs` mapping, a `PlanRequest::DecisionBrief` variant, the D3 Git reads, reuse of the shared extract, validate, and diagnostic path, and the S5, S7, S8, S9, and S10 help tests. Out — completion pruning and documentation.
+  - Scope: In — the hidden `PlanSubcommand::DecisionBrief` Clap variant, its `command_runtime.rs` mapping, a `PlanRequest::DecisionBrief` variant, the D3 Git reads, reuse of the shared extract, validate, and diagnostic path, the S5, S7, S8, S9, and S10 help tests, and one command-level test that runs `sce plan decision-brief` and asserts that stdout ends in `\n` but not `\n\n`. Out — completion pruning and documentation.
   - Dependencies: T02
-  - Done when: The command prints the brief from committed content, every S8 case fails with the stated exit code and empty stdout, the command is absent from `sce --help` and `sce plan --help`, and the AC8 dogfood command over all five plans prints the expected three-decision brief.
+  - Done when: The command prints the brief from committed content through `decision_brief_stdout_payload`, so stdout ends with exactly one newline, every S8 case fails with the stated exit code and empty stdout, the command is absent from `sce --help` and `sce plan --help`, and the AC8 dogfood command over all five plans prints the expected three-decision brief.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`, and the AC8 dogfood command.
   - Context synchronization: pending
 
