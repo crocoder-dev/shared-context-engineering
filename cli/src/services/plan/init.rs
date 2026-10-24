@@ -1,6 +1,6 @@
 use std::fs::OpenOptions;
 use std::io::{ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context};
@@ -58,7 +58,23 @@ fn invalid_name(value: &str, remedy: &str) -> CliError {
     ))
 }
 
-pub fn create(name: &PlanName, start: &Path) -> Result<String, CliError> {
+pub fn create(name: &PlanName, start: &Path, stderr: &mut impl Write) -> Result<String, CliError> {
+    create_with(
+        name,
+        start,
+        stderr,
+        |temporary, destination| std::fs::hard_link(temporary, destination),
+        |temporary| std::fs::remove_file(temporary),
+    )
+}
+
+pub(super) fn create_with(
+    name: &PlanName,
+    start: &Path,
+    stderr: &mut impl Write,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    remove: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<String, CliError> {
     let root = resolve_repository_root(start)?;
     let context_dir = Path::new(&root).join("context");
     let plans_dir = Path::new(&root).join(PLANS_RELATIVE_DIR);
@@ -68,7 +84,16 @@ pub fn create(name: &PlanName, start: &Path) -> Result<String, CliError> {
     let file_name = format!("{}{PLAN_EXTENSION}", name.as_str());
     let relative_path = format!("{PLANS_RELATIVE_DIR}/{file_name}");
     let content = SCAFFOLD.replacen(SCAFFOLD_PLAN_NAME_TOKEN, name.as_str(), 1);
-    publish(&plans_dir, &file_name, &relative_path, &content)?;
+    if let Some(warning) = publish(
+        &plans_dir,
+        &file_name,
+        &relative_path,
+        &content,
+        link,
+        remove,
+    )? {
+        let _ = writeln!(stderr, "{warning}");
+    }
 
     let absolute_path = format!("{root}/{relative_path}");
     Ok([
@@ -137,13 +162,19 @@ fn not_a_directory(path: &Path) -> CliError {
     ))
 }
 
+pub(super) fn temporary_path(plans_dir: &Path, file_name: &str) -> PathBuf {
+    plans_dir.join(format!(".{file_name}.{}.tmp", std::process::id()))
+}
+
 fn publish(
     plans_dir: &Path,
     file_name: &str,
     relative_path: &str,
     content: &str,
-) -> Result<(), CliError> {
-    let temporary = plans_dir.join(format!(".{file_name}.{}.tmp", std::process::id()));
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+    remove: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<Option<String>, CliError> {
+    let temporary = temporary_path(plans_dir, file_name);
     let destination = plans_dir.join(file_name);
 
     let mut file = OpenOptions::new()
@@ -159,7 +190,7 @@ fn publish(
     drop(file);
 
     let published = written.map_err(CliError::runtime).and_then(|()| {
-        std::fs::hard_link(&temporary, &destination).map_err(|error| {
+        link(&temporary, &destination).map_err(|error| {
             if error.kind() == ErrorKind::AlreadyExists {
                 CliError::validation(format!(
                     "Plan already exists: {relative_path}. Try: choose another plan name; existing plans are never overwritten."
@@ -172,16 +203,24 @@ fn publish(
             }
         })
     });
-    let removed = remove_temporary(&temporary);
+    let removed = remove(&temporary);
 
-    published?;
-    removed
-}
-
-fn remove_temporary(temporary: &Path) -> Result<(), CliError> {
-    std::fs::remove_file(temporary)
-        .with_context(|| format!("Failed to remove temporary file '{}'", temporary.display()))
-        .map_err(CliError::runtime)
+    match (published, removed) {
+        (Ok(()), Ok(())) => Ok(None),
+        (Ok(()), Err(error)) => Ok(Some(format!(
+            "Warning: Created plan {relative_path}, but failed to remove temporary file '{}': {error}. Try: remove '{}' manually; the plan was created and does not need to be initialized again.",
+            temporary.display(),
+            temporary.display()
+        ))),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => Err(CliError::internal(
+            error.class(),
+            anyhow!(
+                "{error}\nCleanup also failed: could not remove temporary file '{}': {cleanup}. Try: remove it manually.",
+                temporary.display()
+            ),
+        )),
+    }
 }
 
 fn shell_quote(value: &str) -> String {

@@ -78,7 +78,7 @@ impl RuntimeCommand {
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
             Self::Sync(command) => command.execute_with_stderr(context, stderr).await,
-            Self::Plan(command) => command.execute(),
+            Self::Plan(command) => command.execute_with_stderr(stderr),
         }
     }
 }

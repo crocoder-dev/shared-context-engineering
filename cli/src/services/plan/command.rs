@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -30,13 +31,14 @@ pub struct PlanCommand {
 }
 
 impl PlanCommand {
-    pub fn execute(&self) -> Result<String, CliError> {
-        self.execute_with(std::env::current_dir)
+    pub fn execute_with_stderr(&self, stderr: &mut impl Write) -> Result<String, CliError> {
+        self.execute_with(std::env::current_dir, stderr)
     }
 
     pub(crate) fn execute_with(
         &self,
         current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
+        stderr: &mut impl Write,
     ) -> Result<String, CliError> {
         match &self.request {
             PlanRequest::Check(request) => check(&request.path),
@@ -45,7 +47,7 @@ impl PlanCommand {
                 let start = current_dir()
                     .context("Failed to read the current directory")
                     .map_err(CliError::runtime)?;
-                create(&name, &start)
+                create(&name, &start, stderr)
             }
         }
     }

@@ -198,6 +198,7 @@ struct CommandRun {
 
 #[cfg(test)]
 fn run_plan_args(args: &[&str], start: &std::path::Path) -> CommandRun {
+    let mut stderr = Vec::new();
     let result = crate::services::parse::command_runtime::parse_runtime_command(
         std::iter::once("sce")
             .chain(args.iter().copied())
@@ -209,10 +210,17 @@ fn run_plan_args(args: &[&str], start: &std::path::Path) -> CommandRun {
         let crate::services::command_registry::RuntimeCommand::Plan(command) = command else {
             panic!("expected plan command");
         };
-        command.execute_with(|| Ok(start.to_path_buf()))
+        command.execute_with(|| Ok(start.to_path_buf()), &mut stderr)
     });
+    render_plan_result(result, stderr)
+}
+
+#[cfg(test)]
+fn render_plan_result(
+    result: Result<String, crate::services::error::CliError>,
+    mut stderr: Vec<u8>,
+) -> CommandRun {
     let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
     let exit_code = crate::services::app_support::render_run_outcome(
         crate::services::app_support::RunOutcome {
             result,
@@ -598,6 +606,136 @@ fn init_never_overwrites_existing_entry() {
         std::path::PathBuf::from("missing-target.md")
     );
     assert_eq!(sorted_entries(&plans), vec!["linked.md", "taken.md"]);
+}
+
+#[cfg(test)]
+fn run_init_with(
+    root: &std::path::Path,
+    name: &str,
+    link: impl FnOnce(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
+    remove: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> CommandRun {
+    let mut stderr = Vec::new();
+    let plan_name = init::PlanName::parse(name).expect("name should be valid");
+    let result = init::create_with(&plan_name, root, &mut stderr, link, remove);
+    render_plan_result(result, stderr)
+}
+
+#[cfg(test)]
+fn injected(message: &str) -> std::io::Error {
+    std::io::Error::other(message.to_string())
+}
+
+#[test]
+fn init_cleanup_failure_after_publication_warns_and_succeeds() {
+    let (_directory, root) = temp_repository();
+    let plans = root.join("context/plans");
+    let temporary = init::temporary_path(&plans, "published.md");
+
+    let run = run_init_with(
+        &root,
+        "published",
+        |temporary, destination| std::fs::hard_link(temporary, destination),
+        |_| Err(injected("injected cleanup failure")),
+    );
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stdout, expected_init_stdout(&root, "published"));
+    assert_eq!(
+        run.stderr,
+        format!(
+            "Warning: Created plan context/plans/published.md, but failed to remove temporary file '{0}': injected cleanup failure. Try: remove '{0}' manually; the plan was created and does not need to be initialized again.\n",
+            temporary.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(plans.join("published.md")).expect("plan should exist"),
+        SCAFFOLD.replacen(SCAFFOLD_PLAN_NAME_TOKEN, "published", 1)
+    );
+    assert!(temporary.is_file());
+}
+
+#[test]
+fn init_publication_failure_removes_temporary_and_keeps_error() {
+    let (_directory, root) = temp_repository();
+    let plans = root.join("context/plans");
+
+    let run = run_init_with(
+        &root,
+        "unpublished",
+        |_, _| Err(injected("injected link failure")),
+        |temporary| std::fs::remove_file(temporary),
+    );
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(4),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(run.stderr.contains("SCE-ERR-RUNTIME"), "{}", run.stderr);
+    assert!(run.stderr.contains("Failed to publish"), "{}", run.stderr);
+    assert!(
+        run.stderr.contains("injected link failure"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        !run.stderr.contains("Cleanup also failed"),
+        "{}",
+        run.stderr
+    );
+    assert!(sorted_entries(&plans).is_empty());
+}
+
+#[test]
+fn init_publication_and_cleanup_failure_keeps_original_error_and_destination() {
+    let (_directory, root) = temp_repository();
+    let plans = root.join("context/plans");
+    std::fs::create_dir_all(&plans).expect("plans directory should be created");
+    std::fs::write(plans.join("taken.md"), b"known bytes\n").expect("taken should be written");
+    let temporary = init::temporary_path(&plans, "taken.md");
+
+    let run = run_init_with(
+        &root,
+        "taken",
+        |temporary, destination| std::fs::hard_link(temporary, destination),
+        |_| Err(injected("injected cleanup failure")),
+    );
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(3),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(run.stderr.contains("SCE-ERR-VALIDATION"), "{}", run.stderr);
+    assert!(
+        run.stderr
+            .contains("Plan already exists: context/plans/taken.md"),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains(&format!(
+            "Cleanup also failed: could not remove temporary file '{}': injected cleanup failure",
+            temporary.display()
+        )),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("Warning:"), "{}", run.stderr);
+    assert_eq!(
+        std::fs::read(plans.join("taken.md")).expect("taken should be readable"),
+        b"known bytes\n"
+    );
 }
 
 #[test]
