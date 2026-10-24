@@ -56,6 +56,10 @@ structured layer:
   optional review pair `Review: required` and a one-line `Review question:`.
   The planning agent marks only a decision that needs senior engineering
   judgment. An unmarked decision carries neither field and no placeholder value.
+  The template's `Design decision rules` require one specific question that a
+  reviewer can accept or reject. The question names the architectural choice
+  and its consequence. Each concern appears in one marked decision only, and
+  one question carries one concern.
 - One-line reference fields: `Decisions:` and `Scenarios:` on each acceptance
   criterion, and `Covers:` on each task.
 - `### Verification scenarios` with `S1..Sn` entries, each carrying `Given:`,

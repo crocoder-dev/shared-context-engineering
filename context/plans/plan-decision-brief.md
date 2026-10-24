@@ -241,14 +241,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. Completion rendering prunes hidden subcommands under `plan` only. `context/cli/cli-command-surface.md` records this through the plan's context sync.
   - Context synchronization: synced
 
-- [ ] T05: `Add review-question authoring guidance to the plan template rules` (status:todo)
+- [x] T05: `Add review-question authoring guidance to the plan template rules` (status:done)
   - Task ID: T05
   - Covers: AC7
   - Scope: In — the `## Design decision rules` text in `config/pkl/base/workflow-change-to-plan.pkl`, with the request's preferred and rejected question examples. Out — new plan fields, structural rule changes, and edits to existing plans.
   - Dependencies: none
   - Done when: The rules state the AC7 guidance, and the generated-output parity check passes.
   - Verify: `nix run .#pkl-check-generated`
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `config/pkl/base/workflow-change-to-plan.pkl`
+  - Result: `## Design decision rules` gains two bullets after the senior-judgment marking bullet. The first bullet tells authors to write one specific question that a reviewer can accept or reject, naming the architectural choice and its consequence. It prefers "Is reading plans from the working tree instead of the `--head` commit acceptable for stable links?" over "Is this design OK?" and "Any concerns about plan reads?". The second bullet says to ask about each concern once: do not mark a second decision that raises the same concern, and do not combine two concerns in one question. The existing marking bullet still says to mark only decisions that need senior judgment. The review-pair structural bullets are unchanged.
+  - Verify outcome: `nix run .#pkl-check-generated` passed: 146 files, inventory sha256 `4c597096a71298d1732b49bcc569e9b6782384737163ffa892da0a7f118a7345`.
+  - Deviations: The original change request's example questions are not stored in the repository. The preferred example reuses the existing `plan-pr-description` D5 question, and the rejected examples are vague prompts.
+  - Context impact: localized. The planning workflow's authoring guidance changes. `context/sce/shared-context-plan-workflow.md` records this through the plan's context sync.
+  - Context synchronization: synced
 
 - [ ] T06: `Document the Decision Brief command contract` (status:todo)
   - Task ID: T06
