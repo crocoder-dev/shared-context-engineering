@@ -4,11 +4,13 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::services::error::CliError;
-use crate::services::plan::extract::extract;
-use crate::services::plan::init::{create, PlanName};
+use crate::services::plan::extract::{extract, Plan};
+use crate::services::plan::init::{create, resolve_repository_root, PlanName};
+use crate::services::plan::pr_description::{parse_arguments, render, PlanInput};
 use crate::services::plan::validate::{validate, PlanDiagnostic};
 
 pub const STRUCTURED_PLAN_PASS: &str = "structured plan: reference integrity holds";
+const PR_DESCRIPTION_COMMAND: &str = "sce plan pr-description";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanCheckRequest {
@@ -21,9 +23,17 @@ pub struct PlanInitRequest {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanPrDescriptionRequest {
+    pub repo: String,
+    pub head: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlanRequest {
     Check(PlanCheckRequest),
     Init(PlanInitRequest),
+    PrDescription(PlanPrDescriptionRequest),
 }
 
 pub struct PlanCommand {
@@ -49,11 +59,39 @@ impl PlanCommand {
                     .map_err(CliError::runtime)?;
                 create(&name, &start, stderr)
             }
+            PlanRequest::PrDescription(request) => pr_description(request, current_dir),
         }
     }
 }
 
 fn check(path: &Path) -> Result<String, CliError> {
+    load_valid_plan(path, &path.display().to_string())?;
+    Ok(STRUCTURED_PLAN_PASS.to_string())
+}
+
+fn pr_description(
+    request: &PlanPrDescriptionRequest,
+    current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Result<String, CliError> {
+    let arguments = parse_arguments(&request.repo, &request.head, &request.paths)?;
+    let start = current_dir()
+        .context("Failed to read the current directory")
+        .map_err(CliError::runtime)?;
+    let root = resolve_repository_root(&start, PR_DESCRIPTION_COMMAND)?;
+    let plans = arguments
+        .paths
+        .iter()
+        .map(|path| {
+            Ok(PlanInput {
+                path: path.clone(),
+                plan: load_valid_plan(&Path::new(&root).join(path), path)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    render(&arguments, &plans)
+}
+
+fn load_valid_plan(path: &Path, label: &str) -> Result<Plan, CliError> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read plan file '{}'", path.display()))
         .map_err(CliError::runtime)?;
@@ -64,12 +102,12 @@ fn check(path: &Path) -> Result<String, CliError> {
 
     if !report.diagnostics.is_empty() {
         return Err(CliError::validation(render_diagnostics(
-            &path.display().to_string(),
+            label,
             &report.diagnostics,
         )));
     }
 
-    Ok(STRUCTURED_PLAN_PASS.to_string())
+    Ok(plan)
 }
 
 fn render_diagnostics(path: &str, diagnostics: &[PlanDiagnostic]) -> String {

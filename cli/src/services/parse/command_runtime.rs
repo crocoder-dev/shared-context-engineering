@@ -344,6 +344,11 @@ fn convert_plan_subcommand(subcommand: cli_schema::PlanSubcommand) -> RuntimeCom
                 name,
             })
         }
+        cli_schema::PlanSubcommand::PrDescription { repo, head, paths } => {
+            services::plan::command::PlanRequest::PrDescription(
+                services::plan::command::PlanPrDescriptionRequest { repo, head, paths },
+            )
+        }
     };
 
     RuntimeCommand::Plan(services::plan::command::PlanCommand { request })

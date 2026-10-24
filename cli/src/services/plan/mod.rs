@@ -1,6 +1,7 @@
 pub mod command;
 pub mod extract;
 pub mod init;
+pub mod pr_description;
 pub mod validate;
 
 pub const NAME: &str = "plan";
@@ -977,5 +978,413 @@ fn completion_scripts_include_plan_init() {
             script.contains("plan") && script.contains("init"),
             "{shell:?}"
         );
+    }
+}
+
+#[cfg(test)]
+const PR_REPO: &str = "crocoder-dev/shared-context-engineering";
+
+#[cfg(test)]
+const PR_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+#[cfg(test)]
+fn review_plan_source(name: &str, questions: [Option<&str>; 3]) -> String {
+    use std::fmt::Write;
+
+    let mut source = format!("# Plan: {name}\n\n## Design decisions\n\n");
+    for (index, question) in questions.iter().enumerate() {
+        write!(
+            source,
+            "- D{}: Decision {}.\n  - Boundary: One module.\n  - Rationale: It is simple.\n  - Rejected: Two modules — they split ownership.\n  - Trade-offs: None.\n",
+            index + 1,
+            index + 1
+        )
+        .expect("writing to String should not fail");
+        if let Some(question) = question {
+            write!(
+                source,
+                "  - Review: required\n  - Review question: {question}\n"
+            )
+            .expect("writing to String should not fail");
+        }
+    }
+    source.push_str(
+        "\n## Acceptance criteria\n\n- [ ] AC1: It works.\n  - Validate: `true`\n  - Scenarios: none (inspection)\n\n## Task stack\n\n- [ ] T01: `Do it` (status:todo)\n  - Task ID: T01\n  - Covers: AC1\n",
+    );
+    source
+}
+
+#[cfg(test)]
+fn pr_plan_input(path: &str, source: &str) -> pr_description::PlanInput {
+    let report = validate_source(source);
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    pr_description::PlanInput {
+        path: path.to_string(),
+        plan: extract::extract(source).expect("plan should parse"),
+    }
+}
+
+#[cfg(test)]
+fn pr_arguments(paths: &[&str]) -> pr_description::PrDescriptionArguments {
+    pr_description::PrDescriptionArguments {
+        repo: PR_REPO.to_string(),
+        head: PR_HEAD.to_string(),
+        paths: paths.iter().map(ToString::to_string).collect(),
+    }
+}
+
+#[cfg(test)]
+fn write_repository_plan(root: &std::path::Path, path: &str, source: &str) {
+    let destination = root.join(path);
+    std::fs::create_dir_all(
+        destination
+            .parent()
+            .expect("plan path should have a parent"),
+    )
+    .expect("plans directory should be created");
+    std::fs::write(destination, source).expect("plan should be written");
+}
+
+#[cfg(test)]
+fn run_pr_description(root: &std::path::Path, paths: &[&str]) -> CommandRun {
+    let mut args = vec![NAME, "pr-description", "--repo", PR_REPO, "--head", PR_HEAD];
+    args.extend_from_slice(paths);
+    run_plan_args(&args, root)
+}
+
+#[test]
+fn pr_description_golden_multiple_plans() {
+    let zeta = pr_plan_input(
+        "context/plans/zeta_notes.md",
+        &review_plan_source(
+            "zeta_notes",
+            [None, Some("Is the zeta store shared?"), None],
+        ),
+    );
+    let alpha = pr_plan_input(
+        "context/plans/alpha-plan.md",
+        &review_plan_source(
+            "alpha-plan",
+            [Some("Is A acceptable?"), Some("Is B acceptable?"), None],
+        ),
+    );
+    let arguments = pr_arguments(&["context/plans/zeta_notes.md", "context/plans/alpha-plan.md"]);
+
+    let output = pr_description::render(&arguments, &[zeta, alpha]).expect("brief should render");
+
+    let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
+    let expected = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Intent review\n\
+\n\
+**Plans:** [alpha-plan]({blob}/context/plans/alpha-plan.md), [zeta\\_notes]({blob}/context/plans/zeta_notes.md)\n\
+\n\
+**Decisions requiring review**\n\
+\n\
+1. Is A acceptable? — [alpha-plan D1]({blob}/context/plans/alpha-plan.md#L5)\n\
+\n\
+2. Is B acceptable? — [alpha-plan D2]({blob}/context/plans/alpha-plan.md#L12)\n\
+\n\
+3. Is the zeta store shared? — [zeta\\_notes D2]({blob}/context/plans/zeta_notes.md#L10)\n\
+\n\
+<!-- sce:intent-review:end -->"
+    );
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn pr_description_no_flagged_decisions() {
+    let plan = pr_plan_input(
+        "context/plans/quiet.md",
+        &review_plan_source("quiet", [None, None, None]),
+    );
+
+    let output = pr_description::render(&pr_arguments(&["context/plans/quiet.md"]), &[plan])
+        .expect("brief should render");
+
+    assert_eq!(
+        output,
+        "<!-- sce:intent-review:start -->\n## Intent review\n\n**Plans:** [quiet](https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/quiet.md)\n\nNo decisions explicitly flagged for review.\n\n<!-- sce:intent-review:end -->"
+    );
+    assert!(!output.contains("**Decisions requiring review**"));
+}
+
+#[test]
+fn pr_description_escapes_markdown() {
+    let question = r"Keep `code` *bold* _it_ [l] <t> !b |p| ~s & c:\path # (ok) — fine?";
+    let expected =
+        r"Keep \`code\` \*bold\* \_it\_ \[l\] \<t\> \!b \|p\| \~s \& c:\\path # (ok) — fine?";
+
+    assert_eq!(pr_description::escape_markdown(question), expected);
+
+    let mut unescaped = String::new();
+    let mut characters = expected.chars().peekable();
+    while let Some(character) = characters.next() {
+        let escapes_next = character == '\\'
+            && characters
+                .peek()
+                .is_some_and(|next| r"\`*_[]<>!|~&".contains(*next));
+        if !escapes_next {
+            unescaped.push(character);
+        } else if let Some(next) = characters.next() {
+            unescaped.push(next);
+        }
+    }
+    assert_eq!(unescaped, question);
+
+    let plan = pr_plan_input(
+        "context/plans/escape.md",
+        &review_plan_source("escape", [Some(question), None, None]),
+    );
+    let output = pr_description::render(&pr_arguments(&["context/plans/escape.md"]), &[plan])
+        .expect("brief should render");
+    assert!(
+        output.contains(&format!("\n1. {expected} — [escape D1](")),
+        "{output}"
+    );
+}
+
+#[test]
+fn pr_description_repeated_runs_are_identical() {
+    let (_directory, root) = temp_repository();
+    write_repository_plan(
+        &root,
+        "context/plans/beta.md",
+        &review_plan_source("beta", [None, None, Some("Is beta safe?")]),
+    );
+    write_repository_plan(
+        &root,
+        "context/plans/alpha.md",
+        &review_plan_source("alpha", [Some("Is alpha safe?"), None, None]),
+    );
+
+    let forward = run_pr_description(&root, &["context/plans/alpha.md", "context/plans/beta.md"]);
+    let reverse = run_pr_description(&root, &["context/plans/beta.md", "context/plans/alpha.md"]);
+
+    assert_eq!(
+        forward.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        forward.stderr
+    );
+    assert_eq!(
+        reverse.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        reverse.stderr
+    );
+    assert_eq!(forward.stdout, reverse.stdout);
+    assert!(forward
+        .stdout
+        .starts_with("<!-- sce:intent-review:start -->\n"));
+    assert!(
+        forward
+            .stdout
+            .ends_with("#L15)\n\n<!-- sce:intent-review:end -->\n"),
+        "{:?}",
+        forward.stdout
+    );
+    assert!(forward.stdout.contains("1. Is alpha safe? — [alpha D1]("));
+    assert!(forward.stdout.contains("2. Is beta safe? — [beta D3]("));
+}
+
+#[test]
+fn pr_description_rejects_invalid_arguments() {
+    let (_directory, root) = temp_repository();
+    let valid_path = "context/plans/missing.md";
+    let mut cases: Vec<(Vec<&str>, &str)> = Vec::new();
+    for repo in [
+        "owner",
+        "owner/",
+        "/name",
+        "a/b/c",
+        "owner/..",
+        "owner/.",
+        "own_er/name",
+        "owner/na me",
+    ] {
+        cases.push((vec!["--repo", repo, "--head", PR_HEAD, valid_path], repo));
+    }
+    let short = &PR_HEAD[..39];
+    let long = format!("{PR_HEAD}0");
+    let upper = PR_HEAD.to_uppercase();
+    let non_hex = format!("{}g", &PR_HEAD[..39]);
+    for head in [short, long.as_str(), upper.as_str(), non_hex.as_str()] {
+        cases.push((vec!["--repo", PR_REPO, "--head", head, valid_path], head));
+    }
+    let absolute = format!("{}/context/plans/plan.md", root.display());
+    for path in [
+        absolute.as_str(),
+        "docs/plan.md",
+        "context/plans/nested/plan.md",
+        "context/plans/plan",
+        "context/plans/../plan.md",
+        "context/plans/..md",
+        "context/plans/.md",
+        "context/plans/pl@n.md",
+    ] {
+        cases.push((vec!["--repo", PR_REPO, "--head", PR_HEAD, path], path));
+    }
+    cases.push((
+        vec!["--repo", PR_REPO, "--head", PR_HEAD, valid_path, valid_path],
+        valid_path,
+    ));
+
+    for (arguments, rejected) in cases {
+        let mut args = vec![NAME, "pr-description"];
+        args.extend(arguments);
+        let run = run_plan_args(&args, &root);
+
+        assert_eq!(
+            run.exit_code,
+            std::process::ExitCode::from(3),
+            "{args:?}: {}",
+            run.stderr
+        );
+        assert!(run.stdout.is_empty(), "{args:?}: {}", run.stdout);
+        assert!(
+            run.stderr.contains("SCE-ERR-VALIDATION"),
+            "{args:?}: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains(&format!("'{rejected}'")),
+            "{args:?}: {}",
+            run.stderr
+        );
+    }
+
+    let accepted = run_plan_args(
+        &[
+            NAME,
+            "pr-description",
+            "--repo",
+            "a-1/x.y_z-1",
+            "--head",
+            PR_HEAD,
+            "context/plans/a.b_c-1.md",
+        ],
+        &root,
+    );
+    assert_eq!(
+        accepted.exit_code,
+        std::process::ExitCode::from(4),
+        "{}",
+        accepted.stderr
+    );
+}
+
+#[test]
+fn pr_description_rejects_more_than_three_questions() {
+    let (_directory, root) = temp_repository();
+    write_repository_plan(
+        &root,
+        "context/plans/beta.md",
+        &review_plan_source("beta", [Some("One?"), Some("Two?"), None]),
+    );
+    write_repository_plan(
+        &root,
+        "context/plans/alpha.md",
+        &review_plan_source("alpha", [Some("Three?"), None, Some("Four?")]),
+    );
+
+    let run = run_pr_description(&root, &["context/plans/beta.md", "context/plans/alpha.md"]);
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(3),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(run.stderr.contains("Found 4 decisions"), "{}", run.stderr);
+    assert!(
+        run.stderr.contains("alpha D1, alpha D3, beta D1, beta D2."),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
+fn pr_description_rejects_invalid_plan() {
+    let (_directory, root) = temp_repository();
+    let path = "context/plans/duplicate-id.md";
+    let source = std::fs::read_to_string(fixture_dir().join("duplicate-id.md"))
+        .expect("fixture should be readable");
+    write_repository_plan(&root, path, &source);
+
+    let run = run_pr_description(&root, &[path]);
+    let absolute = root.join(path).display().to_string();
+    let check = run_plan_check(&absolute);
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(3),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    let defects = |stderr: &str, label: &str| -> Vec<String> {
+        stderr
+            .lines()
+            .filter_map(|line| line.strip_prefix(&format!("{label}:")))
+            .map(str::to_string)
+            .collect()
+    };
+    assert_eq!(
+        defects(&run.stderr, path),
+        vec!["29: `S1` is defined more than once".to_string()]
+    );
+    assert_eq!(
+        defects(&run.stderr, path),
+        defects(&check.stderr, &absolute)
+    );
+
+    let missing = run_pr_description(&root, &["context/plans/absent.md"]);
+    assert_eq!(
+        missing.exit_code,
+        std::process::ExitCode::from(4),
+        "{}",
+        missing.stderr
+    );
+    assert!(missing.stdout.is_empty(), "{}", missing.stdout);
+    assert!(
+        missing.stderr.contains("SCE-ERR-RUNTIME"),
+        "{}",
+        missing.stderr
+    );
+}
+
+#[test]
+fn plan_pr_description_appears_in_help() {
+    let root_help = strip_ansi(&crate::services::help::help_text());
+    assert!(
+        root_help.contains("sce plan pr-description --repo <owner/name> --head <sha> <path>..."),
+        "{root_help}"
+    );
+    let plan_help = strip_ansi(
+        &crate::cli_schema::render_help_for_path(&[NAME]).expect("plan help should be renderable"),
+    );
+    assert!(plan_help.contains("pr-description"), "{plan_help}");
+    let help = strip_ansi(
+        &crate::cli_schema::render_help_for_path(&[NAME, "pr-description"])
+            .expect("plan pr-description help should be renderable"),
+    );
+    assert!(help.contains("--repo <OWNER/NAME>"), "{help}");
+    assert!(help.contains("--head <SHA>"), "{help}");
+    assert!(help.contains("<PATHS>..."), "{help}");
+}
+
+#[test]
+fn completion_scripts_include_plan_pr_description() {
+    use crate::services::completion::{render_completion, CompletionRequest, CompletionShell};
+
+    for shell in [
+        CompletionShell::Bash,
+        CompletionShell::Zsh,
+        CompletionShell::Fish,
+    ] {
+        let script = render_completion(CompletionRequest { shell });
+        assert!(script.contains("pr-description"), "{shell:?}");
     }
 }

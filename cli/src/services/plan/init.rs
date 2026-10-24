@@ -13,6 +13,7 @@ pub const PLANS_RELATIVE_DIR: &str = "context/plans";
 const PLAN_EXTENSION: &str = ".md";
 const CREATED_PREFIX: &str = "Created plan: ";
 const NEXT_LINE: &str = "Next: complete the plan and run";
+const INIT_COMMAND: &str = "sce plan init";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanName(String);
@@ -75,7 +76,7 @@ pub(super) fn create_with(
     link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
     remove: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<String, CliError> {
-    let root = resolve_repository_root(start)?;
+    let root = resolve_repository_root(start, INIT_COMMAND)?;
     let context_dir = Path::new(&root).join("context");
     let plans_dir = Path::new(&root).join(PLANS_RELATIVE_DIR);
     ensure_directory(&context_dir)?;
@@ -104,16 +105,16 @@ pub(super) fn create_with(
     .join("\n"))
 }
 
-fn resolve_repository_root(start: &Path) -> Result<String, CliError> {
+pub(super) fn resolve_repository_root(start: &Path, command: &str) -> Result<String, CliError> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(start)
         .output()
-        .context("Failed to run 'git rev-parse --show-toplevel'. Try: install Git and rerun 'sce plan init'.")
+        .with_context(|| format!("Failed to run 'git rev-parse --show-toplevel'. Try: install Git and rerun '{command}'."))
         .map_err(CliError::runtime)?;
     if !output.status.success() {
         return Err(CliError::runtime(anyhow!(
-            "Not inside a Git repository: '{}' ({}). Try: run 'sce plan init' inside a Git repository.",
+            "Not inside a Git repository: '{}' ({}). Try: run '{command}' inside a Git repository.",
             start.display(),
             String::from_utf8_lossy(&output.stderr).trim()
         )));

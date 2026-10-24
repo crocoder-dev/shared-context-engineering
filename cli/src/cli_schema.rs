@@ -54,8 +54,9 @@ pub const SYNC_TOP_LEVEL_PURPOSE: &str =
 pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
 pub const PLAN_CLAP_ABOUT: &str =
-    "Create an SCE plan scaffold or check the structure and reference integrity of one SCE plan";
-pub const PLAN_TOP_LEVEL_PURPOSE: &str = "Create or check the structure of one SCE plan";
+    "Create an SCE plan scaffold, check the structure and reference integrity of one SCE plan, or print an intent-review brief";
+pub const PLAN_TOP_LEVEL_PURPOSE: &str =
+    "Create or check the structure of one SCE plan, or print an intent-review brief";
 pub const PLAN_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
@@ -381,7 +382,7 @@ pub enum HooksSubcommand {
 pub enum PlanSubcommand {
     #[command(about = "Validate one plan file without executing any of its commands")]
     Check {
-        /// Path to the plan Markdown file to check
+        #[arg(help = "Path to the plan Markdown file to check")]
         path: PathBuf,
     },
 
@@ -389,8 +390,36 @@ pub enum PlanSubcommand {
         about = "Create context/plans/<NAME>.md at the Git repository root from the plan scaffold"
     )]
     Init {
-        /// Plan name: lowercase letters and digits separated by single hyphens, without `.md`
+        #[arg(
+            help = "Plan name: lowercase letters and digits separated by single hyphens, without `.md`"
+        )]
         name: String,
+    },
+
+    #[command(
+        name = "pr-description",
+        about = "Print a Markdown intent-review brief for the given plans, offline and without writing files"
+    )]
+    PrDescription {
+        #[arg(
+            long,
+            value_name = "OWNER/NAME",
+            help = "GitHub repository as <OWNER>/<NAME>"
+        )]
+        repo: String,
+
+        #[arg(
+            long,
+            value_name = "SHA",
+            help = "Full 40-character lowercase commit SHA that contains the plan files"
+        )]
+        head: String,
+
+        #[arg(
+            required = true,
+            help = "Plan paths relative to the Git repository root, each context/plans/<FILE>.md"
+        )]
+        paths: Vec<String>,
     },
 }
 
