@@ -35,38 +35,38 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `pr_description::render` with `BriefFormat::DecisionBrief` prints the shared `<!-- sce:intent-review:start -->` marker, followed on the next line by `## Decision Brief`, then `**Review requested:** N decisions`, the `**Plans:**` link line, one `### N. {question}` subsection per marked decision with its `**Proposed:** {statement}` line and `[Review {label} {Dn} — rationale, alternatives and trade-offs]({url}#L{line})` link, and the shared `<!-- sce:intent-review:end -->` marker. Every element after the heading is separated from the one before it by one blank line. No three newlines appear in a row, and the output ends with exactly one newline. `sce plan decision-brief` stdout also ends with exactly one newline.
+- [x] AC1: `pr_description::render` with `BriefFormat::DecisionBrief` prints the shared `<!-- sce:intent-review:start -->` marker, followed on the next line by `## Decision Brief`, then `**Review requested:** N decisions`, the `**Plans:**` link line, one `### N. {question}` subsection per marked decision with its `**Proposed:** {statement}` line and `[Review {label} {Dn} — rationale, alternatives and trade-offs]({url}#L{line})` link, and the shared `<!-- sce:intent-review:end -->` marker. Every element after the heading is separated from the one before it by one blank line. No three newlines appear in a row, and the output ends with exactly one newline. `sce plan decision-brief` stdout also ends with exactly one newline.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_`
   - Decisions: D1, D2
   - Scenarios: S1, S2, S3
-- [ ] AC2: Both commands select the same decisions. A decision is selected only when it carries `Review: required` and `Review question:`. Plans are sorted by path, decisions keep source order, and numbering starts at 1. Four or more marked decisions fail with exit `3`, name every marked decision, and print nothing on stdout. A marked decision with an empty statement fails the Decision Brief with exit `3`.
+- [x] AC2: Both commands select the same decisions. A decision is selected only when it carries `Review: required` and `Review question:`. Plans are sorted by path, decisions keep source order, and numbering starts at 1. Four or more marked decisions fail with exit `3`, name every marked decision, and print nothing on stdout. A marked decision with an empty statement fails the Decision Brief with exit `3`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_`
   - Decisions: D2
   - Scenarios: S4, S5, S6
-- [ ] AC3: `sce plan decision-brief` parses and links the plan content at the `--head` commit, never the working tree. A missing commit, a missing blob, a non-regular tree entry, and non-UTF-8 content fail with exit `4`. Invalid arguments, duplicate paths, and structurally invalid plans fail with exit `3`. Stdout is empty on every failure.
+- [x] AC3: `sce plan decision-brief` parses and links the plan content at the `--head` commit, never the working tree. A missing commit, a missing blob, a non-regular tree entry, and non-UTF-8 content fail with exit `4`. Invalid arguments, duplicate paths, and structurally invalid plans fail with exit `3`. Stdout is empty on every failure.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_`
   - Decisions: D3
   - Scenarios: S7, S8
-- [ ] AC4: `sce plan decision-brief` and `sce plan decision-brief --help` run directly. The command is absent from `sce --help`, from `sce plan --help`, from the custom `Plan Usage:` lines, and from the Bash, Zsh, and Fish completion scripts. The existing hidden `hooks` adapters keep their completion output.
+- [x] AC4: `sce plan decision-brief` and `sce plan decision-brief --help` run directly. The command is absent from `sce --help`, from `sce plan --help`, from the custom `Plan Usage:` lines, and from the Bash, Zsh, and Fish completion scripts. The existing hidden `hooks` adapters keep their completion output.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_hidden`
   - Decisions: D4
   - Scenarios: S9, S10
-- [ ] AC5: `sce plan pr-description` keeps its working-tree reads and its exact output, identical to the baseline implementation at `7cb9552f99e8d815850bdca8c89d0c68e8586004`. Every `plan::pr_description_` test that exists at that baseline passes with its original golden expectations unchanged. New Decision Brief tests may be added to `cli/src/services/plan/mod.rs`.
+- [x] AC5: `sce plan pr-description` keeps its working-tree reads and its exact output, identical to the baseline implementation at `7cb9552f99e8d815850bdca8c89d0c68e8586004`. Every `plan::pr_description_` test that exists at that baseline passes with its original golden expectations unchanged. New Decision Brief tests may be added to `cli/src/services/plan/mod.rs`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::pr_description_`, and `git diff 7cb9552f99e8d815850bdca8c89d0c68e8586004 -- cli/src/services/plan/mod.rs` shows no removed or changed line inside an existing `pr_description_` test, including its expected strings. Added `decision_brief_` tests are allowed.
   - Decisions: D2
   - Scenarios: S11
-- [ ] AC6: Every extracted entry carries a `statement` equal to its whitespace-folded opening paragraph after `ID:`. Entry order, lines, authoritative sections, and fenced-example handling are unchanged.
+- [x] AC6: Every extracted entry carries a `statement` equal to its whitespace-folded opening paragraph after `ID:`. Entry order, lines, authoritative sections, and fenced-example handling are unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::extract`
   - Decisions: D1
   - Scenarios: S12
-- [ ] AC7: The canonical `Design decision rules` tell plan authors to ask one specific accept-or-reject question about an architectural choice and its consequence, to mark only decisions that need senior judgment, and to not repeat a concern. The structural review-pair rules do not change.
+- [x] AC7: The canonical `Design decision rules` tell plan authors to ask one specific accept-or-reject question about an architectural choice and its consequence, to mark only decisions that need senior judgment, and to not repeat a concern. The structural review-pair rules do not change.
   - Validate: inspection of `config/pkl/base/workflow-change-to-plan.pkl` under `## Design decision rules`, and `nix run .#pkl-check-generated`.
   - Scenarios: none (inspection)
-- [ ] AC8: The dogfood brief for all five PR #342 plans, `plan-decisions-and-verification-scenarios.md`, `sce-plan-check.md`, `sce-plan-init.md`, `plan-pr-description.md`, and `plan-decision-brief.md`, at `git rev-parse HEAD` links all five plans and shows `**Review requested:** 3 decisions` with exactly three subsections in sorted plan order and source decision order: `plan-pr-description` D5 (line 31), `sce-plan-init` D4 (line 50), and `sce-plan-init` D6 (line 72). `plan-decision-brief.md` contributes no marked decision. Each decision link line is the line of that `- Dn:` definition in `git show <sha>:<path>`. `HEAD` must be a commit that contains the removal of the D3 and D4 review markers from `plan-decision-brief.md`; at `7ca0a187` the brief would have five marked decisions and fail the limit.
+- [x] AC8: The dogfood brief for all five PR #342 plans, `plan-decisions-and-verification-scenarios.md`, `sce-plan-check.md`, `sce-plan-init.md`, `plan-pr-description.md`, and `plan-decision-brief.md`, at `git rev-parse HEAD` links all five plans and shows `**Review requested:** 3 decisions` with exactly three subsections in sorted plan order and source decision order: `plan-pr-description` D5 (line 31), `sce-plan-init` D4 (line 50), and `sce-plan-init` D6 (line 72). `plan-decision-brief.md` contributes no marked decision. Each decision link line is the line of that `- Dn:` definition in `git show <sha>:<path>`. `HEAD` must be a commit that contains the removal of the D3 and D4 review markers from `plan-decision-brief.md`; at `7ca0a187` the brief would have five marked decisions and fail the limit.
   - Validate: `nix run .#sce -- plan decision-brief --repo crocoder-dev/shared-context-engineering --head "$(git rev-parse HEAD)" context/plans/plan-decisions-and-verification-scenarios.md context/plans/sce-plan-check.md context/plans/sce-plan-init.md context/plans/plan-pr-description.md context/plans/plan-decision-brief.md`
   - Decisions: D3
   - Scenarios: S13
-- [ ] AC9: `context/cli/plan-service.md` documents the hidden command, its reviewer audience, its exact output, its relation to `pr-description`, the three-question limit, commit-backed reads, its offline read-only behavior, that hiding is not access control, and that review intent is not verified implementation evidence. It also states the D3 link limitation: `--repo` is caller-supplied and `--head` must be a local commit; the command guarantees that parsed content and line numbers match the local commit, but it does not verify that the commit was pushed to GitHub or exists in `--repo`, so published links work only when that commit is available in the named repository.
+- [x] AC9: `context/cli/plan-service.md` documents the hidden command, its reviewer audience, its exact output, its relation to `pr-description`, the three-question limit, commit-backed reads, its offline read-only behavior, that hiding is not access control, and that review intent is not verified implementation evidence. It also states the D3 link limitation: `--repo` is caller-supplied and `--head` must be a local commit; the command guarantees that parsed content and line numbers match the local commit, but it does not verify that the commit was pushed to GitHub or exists in `--repo`, so published links work only when that commit is available in the named repository.
   - Validate: inspection of the `Decision brief command contract` section in `context/cli/plan-service.md`.
   - Scenarios: none (inspection)
 
@@ -256,15 +256,77 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. The planning workflow's authoring guidance changes. `context/sce/shared-context-plan-workflow.md` records this through the plan's context sync.
   - Context synchronization: synced
 
-- [ ] T06: `Document the Decision Brief command contract` (status:todo)
+- [x] T06: `Document the Decision Brief command contract` (status:done)
   - Task ID: T06
   - Covers: AC9
   - Scope: In — a `Decision brief command contract` section with the D3 local-integrity versus remote-link-availability limitation, the `statement` field, `BriefFormat`, and the new tests in `context/cli/plan-service.md`. Out — context files that this change does not affect.
   - Dependencies: T03, T04
   - Done when: The section records every AC9 item, and the plan model and Tests sections name the new field and tests.
   - Verify: inspection of `context/cli/plan-service.md`.
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `context/cli/plan-service.md`
+  - Result: Earlier context syncs had already added the `Decision brief command contract` section, the `statement` field in `Plan model`, `BriefFormat` in `Brief formats`, and every `decision_brief_*` test in `Tests`. T06 adds the missing AC9 items to that section: the senior-reviewer audience with a pointer to the exact `DecisionBrief` layout, the relation to `pr-description` (shared grammar, selection, limit, URLs, and escaping, with a different layout and commit-backed reads), the explicit three-question limit, the full D3 link limitation (caller-supplied `--repo`, local `--head`, local source integrity guaranteed, remote link availability not checked, so a wrong `--repo` or an unpushed commit gives links that do not resolve), and the statement that review intent is not verified implementation evidence. The existing bullets already cover commit-backed reads, offline read-only behavior, and that hiding is not access control.
+  - Verify outcome: inspection of `context/cli/plan-service.md` passed. The `Decision brief command contract` section records every AC9 item, `Plan model` names `PlanEntry.statement`, and `Tests` names every `decision_brief_*` test and `definition_statement_is_folded_source_text`.
+  - Context impact: localized. Only `context/cli/plan-service.md` changes. It is the plan service's own domain contract, and no root context file changes.
+  - Context synchronization: synced
 
 ## Open questions
 
 - The escaping contract turns inline code in proposed statements into literal backticks, for example `` \`sce plan init\` ``. This plan follows the request's section 10 escaping rule, not its layout example. Inline code can stay intact if statements keep their authored Markdown, but authored brackets could then create links.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-24
+
+### Commands run
+
+- `nix run .#sce -- plan check context/plans/plan-decision-brief.md` -> exit 0 (`structured plan: reference integrity holds`)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` -> exit 0 (50 passed, 0 failed)
+- `nix run .#pkl-check-generated` -> exit 0 (146 files, inventory sha256 `4c597096a71298d1732b49bcc569e9b6782384737163ffa892da0a7f118a7345`)
+- `nix flake check` -> exit 0 (all 6 flake checks passed, including `cli-tests`, `cli-clippy`, and `cli-fmt`)
+- `nix build .#default --no-link` -> exit 0
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_` -> exit 0 (12 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_hidden` -> exit 0 (2 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::pr_description_` -> exit 0 (7 passed, 0 failed; the same 7 tests exist at baseline `7cb9552f`)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::extract` -> exit 0 (7 passed, 0 failed)
+- `git diff 7cb9552f99e8d815850bdca8c89d0c68e8586004 -- cli/src/services/plan/mod.rs` -> exit 0 (668 insertions, 0 removed lines)
+- `nix run .#sce -- plan decision-brief --repo crocoder-dev/shared-context-engineering --head "$(git rev-parse HEAD)" <five PR #342 plans>` at `8ad37761cccf2eb944011422490effe2c07a2f64` -> exit 0 (3-decision brief, stdout ends with exactly one newline)
+- `git show 8ad37761:<path> | sed -n '<n>p'` for `plan-pr-description.md` L31, `sce-plan-init.md` L50 and L72 -> exit 0 (lines start `- D5:`, `- D4:`, `- D6:`)
+
+### Success-criteria verification
+
+- [x] AC1: Decision Brief layout, blank-line separation, and single trailing newline -> `plan::decision_brief_` passed, including both golden tests and `decision_brief_stdout_ends_with_one_newline`; scenarios: S1, S2, S3
+- [x] AC2: Shared selection, ordering, three-question limit, and empty-statement rejection -> `plan::decision_brief_` passed; scenarios: S4, S5, S6
+- [x] AC3: Commit-backed reads with exit `4` Git failures and exit `3` argument and plan failures, empty stdout -> `plan::decision_brief_` passed; scenarios: S7, S8
+- [x] AC4: Hidden from help, `Plan Usage:`, and completions, directly invocable, `hooks` completions kept -> `plan::decision_brief_hidden` passed (2 tests); scenarios: S9, S10
+- [x] AC5: `pr-description` output and baseline tests unchanged -> `plan::pr_description_` passed with all 7 baseline tests; the baseline diff of `mod.rs` has 0 removed lines; scenarios: S11
+- [x] AC6: Every entry carries its folded `statement` -> `plan::extract` passed, including `definition_statement_is_folded_source_text`; scenarios: S12
+- [x] AC7: Review-question authoring guidance -> inspection of `## Design decision rules` in `config/pkl/base/workflow-change-to-plan.pkl` shows the specific accept-or-reject question bullet with preferred and rejected examples, the ask-each-concern-once bullet, and the unchanged senior-judgment and review-pair bullets; `nix run .#pkl-check-generated` passed; scenarios: none (inspection)
+- [x] AC8: Dogfood brief over the five PR #342 plans -> the AC8 command at `8ad37761` exited `0`, linked all five plans in sorted order, and printed `**Review requested:** 3 decisions` with `plan-pr-description` D5 `#L31`, `sce-plan-init` D4 `#L50`, and `sce-plan-init` D6 `#L72`; `plan-decision-brief.md` contributed no decision; scenarios: S13
+- [x] AC9: Decision brief command contract documentation -> inspection of `## Decision brief command contract` in `context/cli/plan-service.md` shows the hidden command, the senior-reviewer audience, the exact `DecisionBrief` layout reference, the relation to `pr-description`, the three-question limit, commit-backed reads, offline read-only behavior, hiding is not access control, review intent is not evidence, and the full D3 link limitation; scenarios: none (inspection)
+
+### Scenario verification
+
+- S1 (AC1): test `plan::decision_brief_golden_two_decisions`, `plan::decision_brief_golden_one_decision` -> both passed; status: Verified
+- S2 (AC1): test `plan::decision_brief_no_marked_decisions` -> passed; status: Verified
+- S3 (AC1): test `plan::decision_brief_escapes_markdown` -> passed; status: Verified
+- S4 (AC2): test `plan::decision_brief_orders_plans_deterministically` -> passed; status: Verified
+- S5 (AC2): test `plan::decision_brief_question_limit` -> passed; status: Verified
+- S6 (AC2): test `plan::decision_brief_rejects_empty_statement` -> passed; the test asserts `sce plan check` success, Decision Brief exit `3` naming `'empty'` and `D2`, and a successful intent review render; status: Verified
+- S7 (AC3): test `plan::decision_brief_reads_committed_plan` -> passed; status: Verified
+- S8 (AC3): test `plan::decision_brief_rejects_invalid_git_inputs` -> passed; covers invalid repo, short and uppercase head, outside plans, duplicate, and invalid plan (exit `3`), and unknown commit, absent path, symlink, and non-UTF-8 (exit `4`), each with empty stdout; status: Verified
+- S9 (AC4): test `plan::decision_brief_hidden_but_directly_invocable` -> passed; status: Verified
+- S10 (AC4): test `plan::decision_brief_hidden_from_help_and_completions` -> passed; covers root help, `plan` help, and the Bash, Zsh, and Fish scripts with `pr-description`, `claude-mutation-scope`, and `telemetry-headers` still present; status: Verified
+- S11 (AC5): command `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::pr_description_` and `git diff 7cb9552f99e8d815850bdca8c89d0c68e8586004 -- cli/src/services/plan/mod.rs` -> 7 passed, matching the 7 baseline `pr_description_` test names; 0 removed lines; status: Verified
+- S12 (AC6): test `plan::extract::tests::definition_statement_is_folded_source_text` -> passed; status: Verified
+- S13 (AC8): command the AC8 dogfood command at `8ad37761`, plus `git show 8ad37761:<path> | sed -n '<n>p'` -> exit `0`, five plans linked, `3 decisions` in the order D5, D4, D6, and each anchor line is the matching `- Dn:` definition; status: Verified
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- T06's documentation edit to `context/cli/plan-service.md` and this plan's T06 and validation updates are uncommitted in the working tree. The AC8 dogfood ran at `8ad37761`, which already contains the D3 and D4 review-marker removal.
+- Published brief links resolve only when the `--head` commit is pushed to the named `--repo`, as D3 accepts.

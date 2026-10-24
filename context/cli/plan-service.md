@@ -98,11 +98,15 @@
 
 `sce plan decision-brief --repo <owner/name> --head <sha> <path>...` prints the [Decision Brief](#brief-formats) for one or more plans. It is hidden, synchronous, and offline. It uses no database, network, or AI, and it never writes files.
 
+- Audience: a senior reviewer who judges the marked architectural choices of a pull request in two to three minutes, without reading the diff. The exact output is the `DecisionBrief` layout in [Brief formats](#brief-formats).
+- Relation to `pr-description`: both commands share the argument grammar, the selection pass, the three-question limit, the URL builder, and Markdown escaping, so they select the same decisions. They differ only in the layout and the source of plan text: `pr-description` reads the working tree and keeps its intent review output, while `decision-brief` reads the `--head` commit.
 - Arguments use the same `parse_arguments` grammar as `pr-description`, and they are checked before any Git call.
+- At most three marked decisions across all plans are allowed. Four or more fail with the shared `pr-description` limit error, which states the count and names every `<label> <decision-id>`. The command never truncates.
 - Every plan comes from the `--head` commit, never from the working tree. Git runs as a direct process at the repository root, with no shell.
 - `git rev-parse --verify --quiet <sha>^{commit}` must succeed. For each path, `git ls-tree -z <sha> -- <path>` must give an entry with that exact name, type `blob`, and mode `100644` or `100755`. `git cat-file blob <oid>` gives the bytes, which must be UTF-8.
 - Each plan then passes the same `extract` and `validate` checks as `sce plan check`, labeled with its relative path.
-- The parsed text and the `#L{line}` anchors match the local `--head` commit. The command does not check that the commit exists in the `--repo` repository on GitHub.
+- Link limitation: `--repo` is a caller-supplied GitHub repository identifier, and `--head` must be a commit available in the local repository. The command guarantees local source integrity: the parsed text and the `#L{line}` anchors match the local `--head` commit. It does not guarantee remote link availability: it does not check that the commit was pushed to GitHub or exists in `--repo`. Published links work only when that commit is available in the named repository, so a wrong `--repo` or an unpushed commit gives a well-formed brief whose links do not resolve.
+- Review intent is not evidence: the brief shows what the plan author asks reviewers to judge. It does not show that the implementation follows those decisions, and it is not a substitute for verification.
 - Failures: invalid arguments, a duplicate path, an invalid plan, more than three marked decisions, and an empty marked statement are `CliError::validation` (exit `3`). A missing commit, a missing path, a symlink or other non-regular entry, non-UTF-8 content, and a failed `git` are `CliError::runtime` (exit `4`). Stdout is empty on every failure.
 - `PlanSubcommand::DecisionBrief` has `hide = true`, so `sce --help` and `sce plan --help` omit it, and it has no `Plan Usage:` line. The Bash, Zsh, and Fish completion scripts also omit it. Direct invocation and `sce plan decision-brief --help` work. Hiding controls discoverability only, not access.
 
