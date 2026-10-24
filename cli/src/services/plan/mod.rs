@@ -2032,6 +2032,8 @@ fn decision_brief_hidden_but_directly_invocable() {
 
 #[test]
 fn decision_brief_hidden_from_help_and_completions() {
+    use crate::services::completion::{render_completion, CompletionRequest, CompletionShell};
+
     let root_help = strip_ansi(&crate::services::help::help_text());
     assert!(!root_help.contains("decision-brief"), "{root_help}");
     assert!(root_help.contains("pr-description"), "{root_help}");
@@ -2041,4 +2043,16 @@ fn decision_brief_hidden_from_help_and_completions() {
     );
     assert!(!plan_help.contains("decision-brief"), "{plan_help}");
     assert!(plan_help.contains("pr-description"), "{plan_help}");
+
+    for shell in [
+        CompletionShell::Bash,
+        CompletionShell::Zsh,
+        CompletionShell::Fish,
+    ] {
+        let script = render_completion(CompletionRequest { shell });
+        assert!(!script.contains("decision-brief"), "{shell:?}");
+        assert!(script.contains("pr-description"), "{shell:?}");
+        assert!(script.contains("claude-mutation-scope"), "{shell:?}");
+        assert!(script.contains("telemetry-headers"), "{shell:?}");
+    }
 }

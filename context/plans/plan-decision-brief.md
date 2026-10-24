@@ -227,14 +227,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. The CLI gains a hidden `plan decision-brief` subcommand with commit-backed reads. `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` describe this surface in T06 and the plan's context sync.
   - Context synchronization: synced
 
-- [ ] T04: `Omit hidden plan subcommands from completion scripts` (status:todo)
+- [x] T04: `Omit hidden plan subcommands from completion scripts` (status:done)
   - Task ID: T04
   - Covers: AC4
   - Scope: In — `render_completion` rebuilds the `plan` subcommand without its hidden subcommands, and the S10 completion assertions for Bash, Zsh, and Fish. Out — hidden subcommands of other commands.
   - Dependencies: T03
   - Done when: No completion script contains `decision-brief`, each still contains `pr-description` and `claude-mutation-scope`, and the existing completion tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml completion`, and `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/services/completion/mod.rs`, `cli/src/services/plan/mod.rs`
+  - Result: `render_completion` builds `Cli::command()` and replaces only the `plan` subcommand, through `mut_subcommands`, with `plan_without_hidden_subcommands`. That function rebuilds `plan` as `Command::new(PLAN_COMMAND_NAME)` and copies the hide flag, the arguments, the about and long-about text, and every subcommand whose `is_hide_set()` is false. `mut_subcommands` keeps `plan` in its original position. `mut_subcommand` was rejected because it appends the replaced subcommand at the end and reorders the top-level completion lists. `decision_brief_hidden_from_help_and_completions` now also checks that the Bash, Zsh, and Fish scripts contain no `decision-brief` and still contain `pr-description`, `claude-mutation-scope`, and `telemetry-headers`.
+  - Verify outcome: `completion` passed: 5 passed, 0 failed. `plan::` passed: 50 passed, 0 failed. Clippy with `-D warnings` passed for the bin and for `--all-targets`. `cargo fmt` autofix applied. The completion scripts for all three shells were compared before and after the change: every difference removes `decision-brief` content, and the hidden `hooks` and `auth` completion output is byte-identical. `git diff 7cb9552f99e8d815850bdca8c89d0c68e8586004 -- cli/src/services/plan/mod.rs` has 0 removed lines.
+  - Context impact: localized. Completion rendering prunes hidden subcommands under `plan` only. `context/cli/cli-command-surface.md` records this through the plan's context sync.
+  - Context synchronization: synced
 
 - [ ] T05: `Add review-question authoring guidance to the plan template rules` (status:todo)
   - Task ID: T05
