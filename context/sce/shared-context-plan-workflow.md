@@ -52,7 +52,10 @@ task, completion, and synchronization-lifecycle fields, it defines an optional
 structured layer:
 
 - `## Design decisions` with `D1..Dn` entries, each carrying `Boundary:`,
-  `Rationale:`, `Rejected:`, and `Trade-offs:`.
+  `Rationale:`, `Rejected:`, and `Trade-offs:`. A decision can also carry the
+  optional review pair `Review: required` and a one-line `Review question:`.
+  The planning agent marks only a decision that needs senior engineering
+  judgment. An unmarked decision carries neither field and no placeholder value.
 - One-line reference fields: `Decisions:` and `Scenarios:` on each acceptance
   criterion, and `Covers:` on each task.
 - `### Verification scenarios` with `S1..Sn` entries, each carrying `Given:`,

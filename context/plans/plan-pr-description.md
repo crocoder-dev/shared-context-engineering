@@ -209,14 +209,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: durable — the plan structure contract gains the review pair rules, six new defect messages, and five fixtures (`context/sce/plan-structure-contract.md`, `context/cli/plan-service.md`).
   - Context synchronization: synced
 
-- [ ] T02: `Document the review pair in the plan template and authoring rules` (status:todo)
+- [x] T02: `Document the review pair in the plan template and authoring rules` (status:done)
   - Task ID: T02
   - Covers: AC3
   - Scope: In — the decision template entry, `Design decision rules`, and `Reference rules` field list in `config/pkl/base/workflow-change-to-plan.pkl`, with a rule to mark only decisions that need senior engineering judgment and to add no placeholder value. Out — the plan init scaffold content, `/next-task`, and `/validate`.
   - Dependencies: T01
   - Done when: The generated `plan-template.md` shows the optional pair and the marking rule, and the skeleton and generation contract checks still pass.
   - Verify: `nix run .#pkl-check-generated`.
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `config/pkl/base/workflow-change-to-plan.pkl`
+  - Result: The structured plan template (`changeToPlanPlanTemplate`) has two changes. First, its D1 entry shows the optional lines `- Review: required` and a single-line `- Review question:` placeholder, which says to remove both lines when no review is needed. Second, the `Design decision rules` gain three bullets: mark only a decision that needs senior engineering judgment; the pair is all or nothing, with `Review:` exactly `required` and a nonempty one-line question; and an unmarked decision carries no review field and no placeholder value such as `Review: none`. The `Reference rules` field list now names `Review:` and `Review question:` as fields that belong to a design decision. The compact package template and the plan init scaffold are unchanged.
+  - Verify outcomes: `nix run .#pkl-check-generated` passed (146 files). This run includes the plan-template structure, structured schema, and plan-init scaffold contract checks. An ephemeral `pkl-generate` into the scratchpad confirmed that the generated `sce-change-to-plan/references/plan-template.md` contains the review pair and the marking rules.
+  - Context impact: durable — the plan workflow's authoring rules now include the optional review pair and its marking rule (`context/sce/shared-context-plan-workflow.md`).
+  - Context synchronization: synced
 
 - [ ] T03: `Add the sce plan pr-description command` (status:todo)
   - Task ID: T03
