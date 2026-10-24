@@ -241,11 +241,12 @@ expect_plan_structure_report() {
   local report
   local actual_diagnostics
   local expected_diagnostics
+  local report_stderr="$tmp_dir/plan-structure-report.stderr"
 
   if ! report="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
-    "$plan_structure_report" 2>&1)"; then
-    printf 'Plan structure report failed to evaluate: %s\n%s\n' \
-      "$fixture_name" "$report" >&2
+    "$plan_structure_report" 2>"$report_stderr")"; then
+    printf 'Plan structure report failed to evaluate: %s\n%s\n%s\n' \
+      "$fixture_name" "$report" "$(cat "$report_stderr")" >&2
     exit 1
   fi
 
