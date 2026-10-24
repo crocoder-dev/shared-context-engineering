@@ -47,35 +47,35 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: The Rust and Pkl checkers accept decisions with and without a complete review pair, and both report identical diagnostics for a missing pair, an invalid `Review:` value, an empty question, a multi-line question, a duplicate review field, and a misplaced review field.
+- [x] AC1: The Rust and Pkl checkers accept decisions with and without a complete review pair, and both report identical diagnostics for a missing pair, an invalid `Review:` value, an empty question, a multi-line question, a duplicate review field, and a misplaced review field.
   - Validate: `nix run .#pkl-check-generated` and `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` pass with the new review-field fixtures listed in `expectations.tsv`.
   - Decisions: D1
   - Scenarios: S1, S2, S3
-- [ ] AC2: Every structured plan that passed `sce plan check` before this change still passes it without edits.
+- [x] AC2: Every structured plan that passed `sce plan check` before this change still passes it without edits.
   - Validate: `sce plan check` built from this branch passes on `context/plans/plan-decisions-and-verification-scenarios.md` and `context/plans/sce-plan-check.md`, and every existing `pass` fixture keeps its `pass` row.
   - Decisions: D1
   - Scenarios: S4
-- [ ] AC3: The canonical plan template and authoring rules document the optional review pair, and tell the planning agent to mark only decisions that need senior engineering judgment.
+- [x] AC3: The canonical plan template and authoring rules document the optional review pair, and tell the planning agent to mark only decisions that need senior engineering judgment.
   - Validate: inspection of the `Design decision rules`, the decision template entry, and the `Reference rules` field list in `config/pkl/base/workflow-change-to-plan.pkl`, plus a passing `nix run .#pkl-check-generated`.
   - Decisions: D1
   - Scenarios: none (inspection)
-- [ ] AC4: `sce plan pr-description` prints the brief between the `<!-- sce:intent-review:start -->` and `<!-- sce:intent-review:end -->` markers, with sorted plan links, marked questions in plan order, escaped question text, exact decision-line links, and byte-identical output on repeated runs.
+- [x] AC4: `sce plan pr-description` prints the brief between the `<!-- sce:intent-review:start -->` and `<!-- sce:intent-review:end -->` markers, with sorted plan links, marked questions in plan order, escaped question text, exact decision-line links, and byte-identical output on repeated runs.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::pr_description`
   - Decisions: D2, D4
   - Scenarios: S5, S6, S7, S8
-- [ ] AC5: `sce plan pr-description` rejects invalid repository, SHA, and plan-path arguments, duplicate plan paths, structurally invalid plans, and more than three marked questions, and it writes nothing to stdout in each case.
+- [x] AC5: `sce plan pr-description` rejects invalid repository, SHA, and plan-path arguments, duplicate plan paths, structurally invalid plans, and more than three marked questions, and it writes nothing to stdout in each case.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::pr_description`
   - Decisions: D3, D5, D6
   - Scenarios: S9, S10, S11
-- [ ] AC6: The command runs offline and adds no dependency, trait, `dyn` dispatch, async runtime, database access, GitHub API call, network call, or file write.
+- [x] AC6: The command runs offline and adds no dependency, trait, `dyn` dispatch, async runtime, database access, GitHub API call, network call, or file write.
   - Validate: inspection of the branch diff for `cli/Cargo.toml`, `cli/Cargo.lock`, and `cli/src/services/plan/`.
   - Decisions: D2, D5
   - Scenarios: none (inspection)
-- [ ] AC7: The PR #342 preview over its three plans contains exactly the two questions marked on `sce-plan-init` D4 and D6, links to the D4 and D6 entry lines, and links to all three plans.
+- [x] AC7: The PR #342 preview over its three plans contains exactly the two questions marked on `sce-plan-init` D4 and D6, links to the D4 and D6 entry lines, and links to all three plans.
   - Validate: `sce plan pr-description --repo crocoder-dev/shared-context-engineering --head "$(git rev-parse HEAD)" context/plans/plan-decisions-and-verification-scenarios.md context/plans/sce-plan-check.md context/plans/sce-plan-init.md`, built from this branch, prints the brief that S12 describes.
   - Decisions: D5
   - Scenarios: S12
-- [ ] AC8: `sce --help`, `sce plan --help`, and the generated Bash, Zsh, and Fish completions list `pr-description`.
+- [x] AC8: `sce --help`, `sce plan --help`, and the generated Bash, Zsh, and Fish completions list `pr-description`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::plan_pr_description_appears_in_help`
   - Decisions: D2
   - Scenarios: S13
@@ -238,15 +238,75 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: durable — new `sce plan pr-description` command contract, `pr_description.rs` module, `PlanRequest::PrDescription`, shared `resolve_repository_root`, and help surface (`context/cli/plan-service.md`, `context/cli/cli-command-surface.md`, `context/glossary.md`).
   - Context synchronization: synced
 
-- [ ] T04: `Mark PR #342 review decisions and record the preview` (status:todo)
+- [x] T04: `Mark PR #342 review decisions and record the preview` (status:done)
   - Task ID: T04
   - Covers: AC7
   - Scope: In — the review pair on D4 and D6 in `context/plans/sce-plan-init.md` with the exact AC7 questions, and the generated three-plan preview recorded in this task's completion evidence. Out — other decisions, completed tasks, validation reports, historical records, and the real pull request description.
   - Dependencies: T03
   - Done when: `sce plan check` passes on `sce-plan-init.md`, and the AC7 command prints exactly the two questions with links to the D4 and D6 entry lines and to the three plans.
   - Verify: `nix run .#sce -- plan check context/plans/sce-plan-init.md`; the AC7 command through `nix run .#sce --`; `git diff context/plans/sce-plan-init.md` shows only the four added field lines.
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `context/plans/sce-plan-init.md`, `context/plans/plan-pr-description.md`
+  - Result: `sce-plan-init.md` D4 and D6 each gain `Review: required` and a `Review question:` line after their `Trade-offs` field, with the exact AC7 questions. No other decision, task, validation report, or historical record changed. The AC7 preview at `--head cc8a30f565ca580d65d32e83897131ea0d09a199` printed the start marker, `## Intent review`, a `**Plans:**` line linking `plan-decisions-and-verification-scenarios`, `sce-plan-check`, and `sce-plan-init` in sorted order, `**Decisions requiring review**`, then `1. Are hard-link-only publication and its filesystem limitations acceptable? — [sce-plan-init D4](https://github.com/crocoder-dev/shared-context-engineering/blob/cc8a30f565ca580d65d32e83897131ea0d09a199/context/plans/sce-plan-init.md#L50)` and `2. Is workflow-only completeness enforcement acceptable? — [sce-plan-init D6](https://github.com/crocoder-dev/shared-context-engineering/blob/cc8a30f565ca580d65d32e83897131ea0d09a199/context/plans/sce-plan-init.md#L72)`, and the end marker.
+  - Verify outcomes: `nix run .#sce -- plan check context/plans/sce-plan-init.md` exited `0` with `structured plan: reference integrity holds`. The AC7 command through `nix run .#sce --` exited `0` with three plan links and exactly two numbered questions. `#L50` and `#L72` match `grep -n -E '^- D(4|6):' context/plans/sce-plan-init.md`. `git diff --numstat context/plans/sce-plan-init.md` shows `4 0`, and the diff contains only the four field lines.
+  - Deviations: The preview used the uncommitted working tree, as D5 allows. Both added pairs come after their decision lines, so the D4 and D6 anchors are the same at `HEAD`.
+  - Context impact: none — this task changes only plan content. The command and format contracts were synchronized in T01 to T03.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The change request specifies the format, rules, and limits. The one material trade-off, reading plans from the working tree, is marked for review on D5.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-24
+
+### Commands run
+
+- `nix run .#sce -- plan check context/plans/plan-pr-description.md` -> exit 0 (`structured plan: reference integrity holds`)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 146 files; every manifest row matched)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` -> exit 0 (37 passed, 0 failed)
+- `nix flake check` -> exit 0 (all 6 checks passed: cli tests, clippy, fmt, generated-input, pkl-generated, codex-hook-command)
+- `nix build .#default --no-link` -> exit 0
+- `nix run .#sce -- plan check` on `plan-decisions-and-verification-scenarios.md`, `sce-plan-check.md`, and `sce-plan-init.md` -> exit 0 each (`structured plan: reference integrity holds`)
+- `nix run .#sce -- plan pr-description --repo crocoder-dev/shared-context-engineering --head "$(git rev-parse HEAD)" context/plans/plan-decisions-and-verification-scenarios.md context/plans/sce-plan-check.md context/plans/sce-plan-init.md` -> exit 0 (three plan links, two numbered questions linked to `#L50` and `#L72`)
+- `grep -n -E '^- D(4|6):' context/plans/sce-plan-init.md` -> exit 0 (D4 at line 50, D6 at line 72)
+- `nix run .#sce -- --help`, `nix run .#sce -- plan --help`, `nix run .#sce -- completion --shell {bash,zsh,fish}` -> exit 0 (each output contains `pr-description`)
+- `git diff 61f88b3b -- cli/Cargo.toml cli/Cargo.lock config/pkl/renderers/fixtures/plan-structure/expectations.tsv cli/src/services/plan/` -> exit 0 (inspected; baseline is the commit before this plan)
+
+### Success-criteria verification
+
+- [x] AC1: Rust and Pkl checkers accept and reject review pairs with identical diagnostics -> `pkl-check-generated` and `plan::` (including `fixture_expectations_match_manifest` and `diagnostic_lines_match_source_positions`) passed with the five `review-fields-*.md` manifest rows; scenarios: S1, S2, S3
+- [x] AC2: Existing structured plans still pass -> `sce plan check` exited `0` on `plan-decisions-and-verification-scenarios.md` and `sce-plan-check.md`; the `expectations.tsv` diff since `61f88b3b` only adds the five review rows, so every existing `pass` row is unchanged; scenarios: S4
+- [x] AC3: Template and authoring rules document the review pair -> inspected `config/pkl/base/workflow-change-to-plan.pkl` lines 620-621 (decision template entry), 782-790 (`Design decision rules`, including the senior-engineering-judgment marking rule and no placeholder value), and 833 (`Reference rules` field list); `pkl-check-generated` passed; scenarios: none (inspection)
+- [x] AC4: Brief rendering, sorting, escaping, links, and determinism -> `plan::pr_description` tests passed; scenarios: S5, S6, S7, S8
+- [x] AC5: Invalid arguments, duplicates, invalid plans, and more than three questions are rejected with empty stdout -> `plan::pr_description` tests passed; scenarios: S9, S10, S11
+- [x] AC6: Offline, no new dependency, trait, `dyn`, async, database, network, or file write -> `git diff 61f88b3b -- cli/Cargo.toml cli/Cargo.lock` is empty; the `cli/src/services/plan/` diff adds no `trait`, `dyn`, `async`, network, or database code; `pr_description.rs` has no `std::fs`, `std::process`, or `std::net` use; the only added `fs::write` and `create_dir_all` calls are in `#[cfg(test)]` helpers in `mod.rs`; scenarios: none (inspection)
+- [x] AC7: PR #342 preview contains exactly the D4 and D6 questions and three plan links -> AC7 command printed both questions linked to `#L50` and `#L72`, matching the D4 and D6 entry lines, plus links to all three plans; scenarios: S12
+- [x] AC8: Help and completions list `pr-description` -> `plan::plan_pr_description_appears_in_help` and `plan::completion_scripts_include_plan_pr_description` passed; the real binary help and Bash, Zsh, and Fish completions contain `pr-description`; scenarios: S13
+
+### Scenario verification
+
+- S1 (AC1): test `review-fields-valid.md` `pass` row via `plan::fixture_expectations_match_manifest` and `nix run .#pkl-check-generated` -> both passed; status: Verified
+- S2 (AC1): test `review-fields-missing-pair.md`, `review-fields-malformed.md`, `review-fields-duplicate.md` `fail` rows via `plan::fixture_expectations_match_manifest` and `nix run .#pkl-check-generated` -> both checkers matched every manifest message; status: Verified
+- S3 (AC1): test `review-fields-misplaced.md` `fail` row and `plan::diagnostic_lines_match_source_positions` -> both passed; status: Verified
+- S4 (AC2): command `nix run .#pkl-check-generated`, test `plan::fixture_expectations_match_manifest`, and `nix run .#sce -- plan check` on both PR #342 plans -> all passed, both plans exited `0`; status: Verified
+- S5 (AC4): test `plan::pr_description_golden_multiple_plans` -> passed; status: Verified
+- S6 (AC4): test `plan::pr_description_no_flagged_decisions` -> passed; status: Verified
+- S7 (AC4): test `plan::pr_description_escapes_markdown` -> passed; status: Verified
+- S8 (AC4): test `plan::pr_description_repeated_runs_are_identical` -> passed; status: Verified
+- S9 (AC5): test `plan::pr_description_rejects_invalid_arguments` -> passed; status: Verified
+- S10 (AC5): test `plan::pr_description_rejects_more_than_three_questions` -> passed; status: Verified
+- S11 (AC5): test `plan::pr_description_rejects_invalid_plan` -> passed; status: Verified
+- S12 (AC7): command AC7 `sce plan pr-description` at `--head cc8a30f565ca580d65d32e83897131ea0d09a199` -> three plan links; `Are hard-link-only publication and its filesystem limitations acceptable?` linked to `#L50` and `Is workflow-only completeness enforcement acceptable?` linked to `#L72`, matching `grep -n -E '^- D(4|6):'`; status: Verified
+- S13 (AC8): test `plan::plan_pr_description_appears_in_help` and `plan::completion_scripts_include_plan_pr_description` -> passed; real binary `sce --help` shows the `sce plan pr-description` usage line and each completion script contains `pr-description`; status: Verified
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The AC7 preview read the uncommitted working tree (`sce-plan-init.md` is staged, not committed) at `--head` `cc8a30f5`. The D4 and D6 lines are the same at `HEAD`, but the review fields are not in that commit yet, so the links resolve correctly only after the change is committed and the SHA that contains it is passed (D5 trade-off).
+- `nix flake check` covered only `x86_64-linux`; other systems were omitted.
