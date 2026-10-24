@@ -357,7 +357,89 @@ None.
 **Status:** validated  
 **Date:** 2026-10-24
 
-### Commands run
+The current status comes from the revalidation below. It covers AC1–AC8 and
+S1–S16, including AC8 and S16, which T04 added after the original validation.
+The original validation covered only AC1–AC7 and S1–S15. It is kept as a
+historical record and is not evidence for AC8 or S16.
+
+### Revalidation after T04 (AC1–AC8, S1–S16)
+
+Run on 2026-10-24 at PR #342 head `69e617c03aa80eebff49c896cbf521672b01ef55`.
+The tree was clean apart from edits to `context/plans/`, which Nix and
+generation checks do not read.
+
+#### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` -> exit 0 (28 passed, 610 filtered out)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::init` -> exit 0 (8 passed: the five S1–S5 tests and the three S16 tests)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::scaffold` -> exit 0 (2 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::plan_init` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::completion_scripts_include_plan_init` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml services::plan::<name> -- --exact`, once for each S16 test (`init_cleanup_failure_after_publication_warns_and_succeeds`, `init_publication_failure_removes_temporary_and_keeps_error`, and `init_publication_and_cleanup_failure_keeps_original_error_and_destination`) -> exit 0 each (1 passed)
+- Observation run: the three S16 tests ran with `-- --nocapture --test-threads=1` and a temporary `eprintln!` of exit code, stdout, stderr, and `context/plans/` entries. The instrumentation was reverted with `git checkout -- cli/src/services/plan/mod.rs`, and `git status` was clean afterwards. Observed results:
+  - (a) Exit `0`. Stdout is the three D5 lines. Stderr is exactly one `Warning: Created plan context/plans/published.md, but failed to remove temporary file '<root>/context/plans/.published.md.<pid>.tmp': injected cleanup failure. Try: remove '…' manually; the plan was created and does not need to be initialized again.` line. Entries are `.published.md.<pid>.tmp` and `published.md`.
+  - (b) Exit `4`. Stdout is empty. Stderr is `Error [SCE-ERR-RUNTIME]: Failed to publish '<root>/context/plans/unpublished.md': injected link failure …`, with no `Cleanup also failed` line. Entries are empty.
+  - (c) Exit `3`. Stdout is empty. Stderr is `Error [SCE-ERR-VALIDATION]: Plan already exists: context/plans/taken.md. …`, and the next line is `Cleanup also failed: could not remove temporary file '<root>/context/plans/.taken.md.<pid>.tmp': injected cleanup failure. Try: remove it manually.` No `Warning:` appears. Entries are `.taken.md.<pid>.tmp` (the injected removal left it) and `taken.md`, and `taken.md` keeps `known bytes\n`.
+- `nix flake check` -> exit 1 (first run, concurrent with other Cargo test runs: `cli-tests` 637 passed, 1 failed — `app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline`, "child exited after 8.3714708s", a wall-clock bound outside `services/plan`)
+- `nix flake check` -> exit 0 (rerun with no other load: `cli-tests` 638 passed, 0 failed; all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 146 files, inventory sha256 `087ce623…ef16`)
+- `nix build .#default --no-link` -> exit 0
+- `bash scripts/test-prepare-cli-generated-assets.sh` -> exit 0 (delegation tests passed)
+- Inspection: `config/plan-init-scaffold.md` is absent from the worktree, and `git ls-files` lists no `plan-init-scaffold.md`
+- `nix run .#sce -- --help` -> `Plan Usage:` lists `sce plan init <name>`; `nix run .#sce -- plan --help` -> lists `init`; `nix run .#sce -- completion --shell {bash,zsh,fish}` -> each script contains `init`
+- `nix run .#sce -- plan check context/plans/sce-plan-init.md` -> exit 0 (`structured plan: reference integrity holds`)
+
+#### Success-criteria verification
+
+- [x] AC1: `sce plan init example` creates the scaffold at the repository root with the D5 output -> `plan::init` passed; scenarios: S1
+- [x] AC2: Existing entries never overwritten; validation, Clap, and missing-repository failure classes with no writes -> `plan::init` passed; scenarios: S3, S4, S5
+- [x] AC3: Nested invocation targets the root, and its printed check command works there -> `plan::init` passed; scenarios: S2
+- [x] AC4: Untouched scaffold fails `check` with exactly the reference defects; reference-filled scaffold passes -> `plan::scaffold` passed (2 tests); scenarios: S6, S7
+- [x] AC5: Scaffold generated, contract-pinned, embedded, in the fallback, not committed -> `nix run .#pkl-check-generated`, `nix build .#default`, and the fallback test passed; no committed scaffold; scenarios: S8, S9
+- [x] AC6: Workflow uses `init` for new plans only, blocks on any other result, gates `plan_ready` on completeness and `check`, has no fallbacks -> `nix run .#pkl-check-generated` passed, including the `plan-authoring-plan-init` contract and its negative fixtures; scenarios: S10, S11, S13, S14, S15
+- [x] AC7: Help and completions include `plan init` -> `plan::plan_init` and `plan::completion_scripts_include_plan_init` passed; CLI help and completion output as listed; scenarios: S12
+- [x] AC8: Hard-link publication is the commit point; a cleanup failure after it is a warning with exit `0`; write and publication failures keep their error and class and append a failed cleanup; existing destinations are never overwritten -> the three S16 tests passed in `plan::init`, by exact name, and inside `nix flake check`; the observation run matched each S16 case; scenarios: S16
+
+#### Scenario verification
+
+- S1 (AC1): test `services::plan::init_creates_scaffold_at_repository_root` -> ok; status: Verified
+- S2 (AC3): test `services::plan::init_from_nested_directory_targets_repository_root` -> ok; status: Verified
+- S3 (AC2): test `services::plan::init_never_overwrites_existing_entry` -> ok; status: Verified
+- S4 (AC2): test `services::plan::init_rejects_unsafe_names_without_writing` -> ok; status: Verified
+- S5 (AC2): test `services::plan::init_outside_repository_is_runtime_failure` -> ok; status: Verified
+- S6 (AC4): test `services::plan::scaffold_untouched_fails_check` -> ok; status: Verified
+- S7 (AC4): test `services::plan::scaffold_authored_passes_check` -> ok; status: Verified
+- S8 (AC5): command `nix run .#pkl-check-generated` (`plan-init-scaffold` contract) -> passed, 146 files; no committed scaffold; status: Verified
+- S9 (AC5): commands `bash scripts/test-prepare-cli-generated-assets.sh` and `nix build .#default --no-link` -> both exit 0; status: Verified
+- S10 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract) -> passed; status: Verified
+- S11 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract) -> passed; status: Verified
+- S12 (AC7): tests `services::plan::plan_init_appears_in_help` and `services::plan::completion_scripts_include_plan_init` -> both ok; status: Verified
+- S13 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
+- S14 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
+- S15 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
+- S16 (AC8):
+  - (a) test `services::plan::init_cleanup_failure_after_publication_warns_and_succeeds` -> ok. It asserts exit `0`, exact D5 stdout, the exact warning naming the temporary file, the complete scaffold at the destination, and the temporary file still present.
+  - (b) test `services::plan::init_publication_failure_removes_temporary_and_keeps_error` -> ok. It asserts exit `4`, empty stdout, `SCE-ERR-RUNTIME`, `Failed to publish`, the injected cause, no `Cleanup also failed`, and an empty `context/plans/`.
+  - (c) test `services::plan::init_publication_and_cleanup_failure_keeps_original_error_and_destination` -> ok. It asserts exit `3`, empty stdout, `SCE-ERR-VALIDATION`, `Plan already exists: context/plans/taken.md`, the `Cleanup also failed` line naming the temporary file, no `Warning:`, and unchanged `taken.md` bytes.
+  - The observation run confirmed all three cases.
+  - status: Verified
+
+#### Failed checks and follow-ups
+
+- None. The first `nix flake check` failure is recorded under residual risks.
+
+#### Residual risks
+
+- `app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline` failed under concurrent load and passed on the quiet rerun. It asserts a wall-clock bound on a child process and is flaky under load.
+- S16 (c) says the `Cleanup also failed` line follows the `Plan already exists` error. The test asserts that both lines are present, but not their order. The order is fixed by the `"{error}\nCleanup also failed: …"` format in `cli/src/services/plan/init.rs` and was confirmed only in the observation run. A future reordering would not fail the test.
+- `nix flake check` does not build the release package, so a non-test-only compile failure is caught only by `nix build .#default`.
+
+### Original validation (historical, AC1–AC7 and S1–S15)
+
+Recorded on 2026-10-24, before T04. It did not cover AC8 or S16. Its
+`plan::init` count of five tests predates the three S16 tests.
+
+#### Commands run
 
 - `nix run .#sce -- plan check context/plans/sce-plan-init.md` -> exit 0 (`structured plan: reference integrity holds`)
 - `nix flake check` -> exit 0 (all checks passed)
@@ -369,7 +451,7 @@ None.
 - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::completion_scripts_include_plan_init` -> exit 0 (1 passed)
 - `bash scripts/test-prepare-cli-generated-assets.sh` -> exit 0 (delegation tests passed)
 
-### Success-criteria verification
+#### Success-criteria verification
 
 - [x] AC1: `sce plan init example` creates the scaffold at the repository root with the D5 output -> `plan::init` filter passed (5 tests); scenarios: S1
 - [x] AC2: Existing entries never overwritten; validation, Clap, and missing-repository failure classes with no writes -> `plan::init` filter passed; scenarios: S3, S4, S5
@@ -379,7 +461,7 @@ None.
 - [x] AC6: Workflow uses `init` for new plans only, blocks on any other result, gates `plan_ready` on completeness and `check`, has no fallbacks -> `nix run .#pkl-check-generated` passed, including the `plan-authoring-plan-init` contract and its negative fixtures; scenarios: S10, S11, S13, S14, S15
 - [x] AC7: Help and completions include `plan init` -> `plan::plan_init` filter passed, and `cli-tests` passed inside `nix flake check`; scenarios: S12
 
-### Scenario verification
+#### Scenario verification
 
 - S1 (AC1): test `services::plan::init_creates_scaffold_at_repository_root` -> ok; status: Verified
 - S2 (AC3): test `services::plan::init_from_nested_directory_targets_repository_root` -> ok; status: Verified
@@ -397,12 +479,12 @@ None.
 - S14 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
 - S15 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
 
-### Failed checks and follow-ups
+#### Failed checks and follow-ups
 
 - None at validation time.
 - Post-validation review follow-up (PR #342), recorded as T04 without changing the results above: temporary-file cleanup after a successful hard link no longer fails `init` (AC8, S16), and the resolved symlinked-directory question was removed from Open questions and recorded in D4.
 
-### Residual risks
+#### Residual risks
 
 - `nix flake check` does not build the release package, so a non-test-only compile failure is caught only by `nix build .#default`.
 - The worktree carries an out-of-scope test change in `cli/src/services/hooks/claude_mutation_scope/state.rs`; it is not part of this plan.
