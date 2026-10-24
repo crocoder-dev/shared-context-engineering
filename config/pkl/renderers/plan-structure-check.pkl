@@ -1,0 +1,21 @@
+import "plan-structure.pkl" as planStructure
+
+local planPath = read("prop:planPath")
+local reports = read*("file:\(planPath)").toMap().mapValues((_, plan) -> planStructure.check(plan.text))
+local failures = reports.filter((_, report) -> !report.defects.isEmpty)
+local structuredCount = reports.filter((_, report) -> report.structured).length
+
+result =
+  if (reports.isEmpty) throw("no plan matched `\(planPath)`")
+  else if (!failures.isEmpty)
+    throw(
+      "plan failed the structural reference-integrity check: "
+        + failures
+          .map((uri, report) -> Pair(uri, "\(uri.drop("file:".length)): \(report.defects.join("; "))"))
+          .values
+          .join(" | ")
+    )
+  else if (reports.length > 1)
+    "\(reports.length) plans checked: \(structuredCount) structured with reference integrity, \(reports.length - structuredCount) legacy"
+  else if (structuredCount == 1) "structured plan: reference integrity holds"
+  else "legacy plan: structured reference rules do not apply"

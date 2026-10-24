@@ -5,6 +5,7 @@ import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
 import "codex-content.pkl" as codex
 import "codex-metadata.pkl" as codexMetadata
+import "plan-structure.pkl" as planStructure
 
 /// Build the expected inventory from each target's independently checked
 /// document inventory plus the retained non-workflow assets. This deliberately
@@ -1001,6 +1002,45 @@ hidden assertCompactPlanTemplateSchema = (documents: Mapping) ->
   ) "generated plan template: compact task/completion schema present, legacy fields absent"
   else throw("generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields")
 
+local requiredStructuredPlanTemplateTokens = new Listing {
+  "## Design decisions"
+  "  - Boundary: "
+  "  - Rationale: "
+  "  - Rejected: "
+  "  - Trade-offs: "
+  "  - Decisions: "
+  "  - Scenarios: "
+  "### Verification scenarios"
+  "  - Given: "
+  "  - When: "
+  "  - Then: "
+  "  - Check: "
+  "  - Covers: "
+  "## Design decision rules"
+  "## Verification scenario rules"
+  "## Reference rules"
+}
+
+hidden assertStructuredPlanTemplateSchema = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")
+      || requiredStructuredPlanTemplateTokens.every((token) -> text.contains(token))
+    )
+  ) "generated plan template: design decisions, verification scenarios, coverage fields, and reference rules present"
+  else throw("generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules")
+
+hidden assertPlanTemplateStructure = (documents: Mapping) ->
+  let (defects = documents
+    .fold(List(), (acc, path, text) ->
+      if (!path.endsWith("/skills/sce-change-to-plan/references/plan-template.md")) acc
+      else acc + planStructure.templateDefects(text).map((defect) -> "\(path): \(defect)")))
+  if (
+    defects.isEmpty
+    && documents.any((path, _) -> path.endsWith("/skills/sce-change-to-plan/references/plan-template.md"))
+  ) "generated plan template: headings, definitions, fields, and references are structurally valid outside fenced examples"
+  else throw("generated plan-template.md failed the structural reference-integrity check: " + defects.join("; "))
+
 local planTemplateOwnedPolicyTokens = new Listing {
   "Acceptance criteria describe the finished system, not the work."
   "Every criterion carries a `Validate:` line."
@@ -1010,11 +1050,25 @@ local planTemplateOwnedPolicyTokens = new Listing {
   "Split any candidate task that would require multiple independent commits"
   "The last task in the stack is an ordinary implementation task."
   "Preserve completed tasks, their `(status:done)` markers"
+  "Record a design decision only for a real architectural choice the plan"
+  "`Then:` states an exact observable result or invariant, not an intention."
+  "Read plan structure only from Markdown outside fenced code blocks."
+  "A plan is structured when, outside fenced code blocks, it has a"
+  "A section runs from its heading to the next heading of any level outside"
+  "To check a fenced example itself, extract the block's content and apply these"
+  "Never renumber or reuse a decision, criterion, or scenario ID"
+  "Every task in a structured plan carries `Covers:` naming at least one"
+  "Every acceptance criterion is named by at least one task's `Covers:`."
+  "A planned `Check:` is not execution evidence."
+  "A legacy plan stays legacy."
 }
 
 local requiredPlanAuthoringTemplateReferences = new Listing {
   "`references/plan-template.md` is the sole owner of the persisted plan schema"
   "`Acceptance criteria rules`"
+  "`Design decision rules`"
+  "`Verification scenario rules`"
+  "`Reference rules`"
   "`Task rules` and `No validation task` rules"
   "`Updating an existing plan` rules"
 }
@@ -1031,6 +1085,61 @@ hidden assertPlanTemplatePolicyOwnership = (documents: Mapping) ->
     )
   ) "sce-change-to-plan: plan-template owns persisted schema and generic authoring policy"
   else throw("sce-change-to-plan plan-template.md must own the persisted plan schema and generic acceptance/task/update rules; plan-authoring.md may reference those rules but must not restate them")
+
+local requiredPlanAuthoringStructuredTokens = new Listing {
+  "Author plan content in this order: design decisions, then acceptance criteria,\nthen verification scenarios, then tasks."
+  "## 2.5 Record design decisions"
+  "Do not\nmanufacture a decision to fill the section."
+  "## 2.7 Author the verification scenarios"
+  "Do not invent test names"
+  "Give each task its `Covers:` field"
+  "## 2.9 Check references"
+  "run a reference-consistency pass over the\ncomplete draft that applies every `Reference rules` entry"
+  "After writing a structured plan, run `sce plan check {plan-path}`."
+  "Do\nnot set internal status `plan_ready` until the checker passes."
+  "Skip the checker\nfor a legacy plan."
+  "Trust the checker only when it actually ran:"
+  "`structured plan: reference integrity holds`"
+  "`legacy plan: structured reference rules do not apply`"
+  "Any other outcome means the checker is unavailable;"
+  "manual `Reference rules` pass from step 2.9"
+}
+
+local noNextTaskPlanCheckReference = (documents: Mapping) ->
+  documents.every((path, text) -> !path.contains("/skills/sce-next-task/") || !text.contains("sce plan check"))
+
+hidden assertPlanAuthoringStructuredReferences = (documents: Mapping) ->
+  if (
+    documents.every((path, text) ->
+      !path.endsWith("/skills/sce-change-to-plan/references/plan-authoring.md")
+      || requiredPlanAuthoringStructuredTokens.every((token) -> text.contains(token))
+    )
+    && noNextTaskPlanCheckReference.apply(documents)
+  ) "sce-change-to-plan plan-authoring: decisions, criteria, scenarios, and tasks authored in order with a reference-consistency pass"
+  else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing a structured plan with the checker trust rule, manual Reference rules fallback, and legacy skip, and keep sce plan check out of every sce-next-task document")
+
+local requiredNextTaskStructuredReferenceTokens = new Listing {
+  Pair("/skills/sce-next-task/references/plan-review.md", "Read plan structure only outside fenced code blocks;")
+  Pair("/skills/sce-next-task/references/plan-review.md", "A definition counts only\nin its own section:")
+  Pair("/skills/sce-next-task/references/plan-review.md", "A plan is structured when, outside fenced code blocks, it has a\n`### Verification scenarios` heading or any task under `## Task stack` carries\n`Covers:`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "review it exactly as\ndescribed here, with no coverage lookup and no coverage fields in the result.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "Record it as a review risk;\nit does not make the task `blocked`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "For a structured plan, a `ready` result also identifies:")
+  Pair("/skills/sce-next-task/references/plan-review.md", "each scenario ID with its `Then:` and `Check:`.")
+  Pair("/skills/sce-next-task/references/plan-review.md", "A `ready` result for a legacy plan carries none of these coverage fields.")
+  Pair("/skills/sce-next-task/references/output.md", "## Acceptance coverage\n\n- Include only when the plan is structured; omit this section for a legacy plan.")
+  Pair("/skills/sce-next-task/references/task-execution.md", "Task execution never checks an acceptance-criterion\ncheckbox and never records a scenario status")
+  Pair("/skills/sce-next-task/references/task-execution.md", "- Keep the task's `Covers:` field as authored.")
+}
+
+hidden assertNextTaskStructuredReferences = (documents: Mapping) ->
+  if (
+    requiredNextTaskStructuredReferenceTokens.every((entry) ->
+      documents.any((path, _) -> path.endsWith(entry.first))
+      && documents.every((path, text) -> !path.endsWith(entry.first) || text.contains(entry.second))
+    )
+  ) "sce-next-task structured references: review, gate, and execution consume coverage and keep the legacy path"
+  else throw("generated sce-next-task plan-review.md, output.md, and task-execution.md must detect structured plans, carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, keep legacy plans unchanged, and never check an acceptance criterion or record a scenario status during task execution")
 
 local requiredNextTaskCompletionWritingTokens = new Listing {
   "Record directly on the completed task:"
@@ -1243,7 +1352,76 @@ hidden assertValidateExcludesDecisionAndPlanSync = (documents: Mapping) ->
     else throw("generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording")
 
 
-hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
+local requiredValidateScenarioEvidenceTokens = new Listing {
+  "Read plan structure only outside fenced code blocks;"
+  "A definition counts only\nin its own section:"
+  "A plan is structured when, outside fenced code blocks, it has a\n`### Verification scenarios` heading or any task under `## Task stack` carries\n`Covers:`."
+  "validate it exactly\nas described here, with no scenario collection, no reference check, and no\nscenario statuses."
+  "Skip this step for a legacy plan."
+  "`Reference rules` to the plan."
+  "- An ID defined more than once."
+  "- A dangling reference:"
+  "- An acceptance criterion without `Scenarios:`."
+  "- An acceptance criterion that no task's `Covers:` names."
+  "- A scenario that no acceptance criterion's `Scenarios:` references."
+  "A relationship-integrity defect makes the result\n`failed`; never tolerate one silently."
+  "run or perform every scenario's `Check:` yourself"
+  "- `Verified` when"
+  "- `Partially verified` when"
+  "- `Not verified` when"
+  "Only evidence gathered by this run counts. Task completion, a task's recorded\n`Verify` outcomes, a planned `Check:` line, and the plan's own claims are never\nevidence."
+  "an acceptance criterion is met only when its `Validate:`\ncheck passes and every scenario its `Scenarios:` names is `Verified`."
+  "For a structured plan, run `sce plan check {plan-path}` before scenario\nverification."
+  "Record each reported diagnostic as a failed check"
+  "Trust the checker only when it actually ran:"
+  "`structured plan: reference integrity holds`"
+  "`legacy plan: structured reference rules do not apply`"
+  "Any other outcome means the checker is unavailable;"
+  "apply the manual pass below instead."
+}
+
+hidden assertValidateScenarioEvidence = (documents: Mapping) ->
+  if (
+    documents.any((path, _) -> path.endsWith("/skills/sce-validate/references/validation.md"))
+    && documents.every((path, text) ->
+      !path.endsWith("/skills/sce-validate/references/validation.md")
+      || requiredValidateScenarioEvidenceTokens.every((token) -> text.contains(token))
+    )
+    && noNextTaskPlanCheckReference.apply(documents)
+  ) "sce-validate validation: structured plans get relationship integrity and scenario evidence; legacy plans keep the legacy path"
+  else throw("generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, keep sce plan check out of every sce-next-task document, and keep legacy plans unchanged")
+
+local requiredValidationReportScenarioTokens = new Listing {
+  "### Scenario verification"
+  "- S1 (AC1): {test | command | inspection} `{exact test, command, or inspected location}` -> {actual result}; status: {Verified | Partially verified | Not verified}"
+  "; scenarios: S1"
+  "- Include **Scenario verification** only for a structured plan, with exactly\n  one entry per scenario in plan order."
+  "Omit the section for a legacy plan."
+}
+
+local requiredValidationResultScenarioTokens = new Listing {
+  "## Scenario verification"
+  "; status: Verified"
+  "- `{scenario id}` ({AC ids}): {Partially verified | Not verified}"
+  "In the failed variant, list\n  every `Partially verified` or `Not verified` scenario under **What failed**."
+  "- Omit **Scenario verification** and the scenario citations for a legacy plan."
+}
+
+hidden assertValidationReportScenarioSection = (documents: Mapping) ->
+  if (
+    documents.any((path, _) -> path.endsWith("/skills/sce-validate/references/validation-report.md"))
+    && documents.any((path, _) -> path.endsWith("/skills/sce-validate/references/validation.md"))
+    && documents.every((path, text) ->
+      if (path.endsWith("/skills/sce-validate/references/validation-report.md"))
+        requiredValidationReportScenarioTokens.every((token) -> text.contains(token))
+      else if (path.endsWith("/skills/sce-validate/references/validation.md"))
+        requiredValidationResultScenarioTokens.every((token) -> text.contains(token))
+      else true
+    )
+  ) "sce-validate reports: structured plans get a scenario verification section; legacy plans omit it"
+  else throw("generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, list unverified scenarios under What failed, and omit the section for legacy plans")
+
+hidden assertWorkflowLanguageConsistency =(artifacts: Mapping) ->
   let (targets = generatedTargetRoots)
     if (
       targets.every((target) ->
@@ -1331,7 +1509,11 @@ contractChecks {
   ["no-stale-sync-debt-text"] = assertNoStaleSyncDebtText.apply(generatedArtifacts)
   ["plan-review-sync-debt-recovery"] = assertPlanReviewSyncDebtRecovery.apply(workflowDocuments)
   ["compact-plan-template-schema"] = assertCompactPlanTemplateSchema.apply(workflowDocuments)
+  ["structured-plan-template-schema"] = assertStructuredPlanTemplateSchema.apply(workflowDocuments)
+  ["plan-template-structure"] = assertPlanTemplateStructure.apply(workflowDocuments)
   ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
+  ["plan-authoring-structured-references"] = assertPlanAuthoringStructuredReferences.apply(workflowDocuments)
+  ["next-task-structured-references"] = assertNextTaskStructuredReferences.apply(workflowDocuments)
   ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
   ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
   ["context-sync-validates-task-record"] = assertContextSyncValidatesTaskRecord.apply(workflowDocuments)
@@ -1342,4 +1524,6 @@ contractChecks {
   ["validation-report-policy-ownership"] = assertValidationReportPolicyOwnership.apply(workflowDocuments)
   ["validation-observational"] = assertValidationIsObservational.apply(workflowDocuments)
   ["validate-decision-sync-boundary"] = assertValidateExcludesDecisionAndPlanSync.apply(workflowDocuments)
+  ["validate-scenario-evidence"] = assertValidateScenarioEvidence.apply(workflowDocuments)
+  ["validation-report-scenario-section"] = assertValidationReportScenarioSection.apply(workflowDocuments)
 }

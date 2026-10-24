@@ -1,0 +1,18 @@
+# fixture	verdict (structured | legacy | fail)	complete expected diagnostic messages (fail only, one per column, order-insensitive, duplicates counted)
+duplicate-id.md	fail	`S1` is defined more than once
+fenced-example-plan.md	structured
+inspection-only-plan.md	structured
+keywords-only-in-examples.md	fail	`Scenarios:` on `AC1` references undefined `S1`; it appears only inside a fenced code block
+legacy-plan-with-fenced-structured-example.md	legacy
+legacy-plan.md	legacy
+misplaced-definition.md	fail	`S1` is defined under `## Acceptance criteria`; it belongs under `### Verification scenarios`	`Scenarios:` on `AC1` references undefined `S1`; it appears only outside `### Verification scenarios`
+misplaced-field.md	fail	`Check:` on `D1` is misplaced; it belongs to a verification scenario	`Covers:` on `AC1` is misplaced; it belongs to a task	`S1` is missing `Check:`	`T01` is missing `Covers:`	`AC1` is not covered by any task's `Covers:`
+missing-scenarios-field.md	fail	`AC1` is missing `Scenarios:`	`S1` is not referenced by any acceptance criterion's `Scenarios:`
+task-empty-covers.md	fail	`Covers:` on `T02` is not a comma-separated ID list
+task-missing-covers.md	fail	`T02` is missing `Covers:`
+uncovered-ac.md	fail	`AC2` is not covered by any task's `Covers:`
+undefined-references.md	fail	`Decisions:` on `AC1` references undefined `D2`	`Scenarios:` on `AC1` references undefined `S9`	`Covers:` on `T01` references undefined `AC3`
+unreferenced-scenario.md	fail	`S2` is not referenced by any acceptance criterion's `Scenarios:`
+valid-structured-plan.md	structured
+wrong-heading-context.md	fail	heading `## Task stack` must come after `### Verification scenarios`	heading `### Verification scenarios` is not inside `## Acceptance criteria`
+wrong-reference-kind.md	fail	`Covers:` on `T01` names `S1`, which is not an acceptance criterion	`AC1` is not covered by any task's `Covers:`

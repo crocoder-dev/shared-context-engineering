@@ -18,6 +18,17 @@ entirely rather than writing them empty.
 {One or two paragraphs: what changes, where, and why. State whether this
 extends existing behavior, replaces it, or preserves work already in progress.}
 
+## Design decisions
+
+{Optional. Include only real architectural choices this plan commits to. Remove
+the section when there are none.}
+
+- D1: {decision}
+  - Boundary: {architectural boundary the decision governs}
+  - Rationale: {why}
+  - Rejected: {alternative} — {why not}
+  - Trade-offs: {known limitation or cost}
+
 ## Acceptance criteria
 
 How this plan is proven complete. Each criterion is observable and names the
@@ -26,8 +37,19 @@ performs final validation.
 
 - [ ] AC1: {observable outcome, stated as behavior rather than as work done}
   - Validate: `{command, assertion, or inspection that proves AC1}`
+  - Decisions: {decision IDs, e.g. D1; omit the field when no decision applies}
+  - Scenarios: {scenario IDs, e.g. S1, S2}
 - [ ] AC2: {observable outcome}
   - Validate: `{command, assertion, or inspection that proves AC2}`
+  - Scenarios: none (inspection)
+
+### Verification scenarios
+
+- S1: {short title}
+  - Given: {preconditions}
+  - When: {action}
+  - Then: {exact observable result or invariant}
+  - Check: {planned test, command, or named inspection}
 
 ### Full validation
 
@@ -70,6 +92,7 @@ recorded. Remove the section otherwise.}
 
 - [ ] T01: `{single intent title}` (status:todo)
   - Task ID: T01
+  - Covers: {acceptance criterion IDs, e.g. AC1}
   - Scope: In — {tight scope}. Out — {excluded work}.
   - Dependencies: {task IDs, or none}
   - Done when: {clear acceptance for one coherent change}
@@ -78,6 +101,7 @@ recorded. Remove the section otherwise.}
 
 - [ ] T02: `{single intent title}` (status:todo)
   - Task ID: T02
+  - Covers: {acceptance criterion IDs, e.g. AC2}
   - Scope: In — {tight scope}. Out — {excluded work}.
   - Dependencies: T01
   - Done when: {clear acceptance for one coherent change}
@@ -103,10 +127,52 @@ invent one: `None.` is the expected answer for a well-specified change.}
 ```markdown
 - [ ] T02: `Add /auth/refresh endpoint` (status:todo)
   - Task ID: T02
+  - Covers: AC1
   - Scope: In — route handler, token validation logic, response schema. Out — refresh token rotation policy (covered in T03), client-side storage changes.
   - Dependencies: T01
   - Done when: `POST /auth/refresh` returns a signed JWT on valid input and 401 on expired or invalid token; targeted tests pass; OpenAPI spec updated.
   - Verify: `pnpm test src/auth/refresh.test.ts`; `curl -X POST localhost:3000/auth/refresh -d '{"token":"..."}' -w "%{http_code}"`.
+  - Context synchronization: pending
+```
+
+## Filled-in structured plan example
+
+```markdown
+## Design decisions
+
+- D1: The existing session store validates refresh tokens; no new token service is added.
+  - Boundary: `src/auth/` owns token validation; route handlers call it and never read the session store directly.
+  - Rationale: The session store already tracks revocation, so one owner keeps revocation consistent.
+  - Rejected: Stateless refresh tokens — they cannot be revoked before they expire.
+  - Trade-offs: Every refresh costs one session-store read.
+
+## Acceptance criteria
+
+- [ ] AC1: `POST /auth/refresh` returns a signed JWT for a valid refresh token and 401 for an expired or revoked one.
+  - Validate: `pnpm test src/auth/refresh.test.ts`
+  - Decisions: D1
+  - Scenarios: S1
+- [ ] AC2: The OpenAPI spec documents `POST /auth/refresh` with its 200 and 401 responses.
+  - Validate: inspection of `openapi.yaml` under `paths./auth/refresh`.
+  - Scenarios: none (inspection)
+
+### Verification scenarios
+
+- S1: Revoked refresh token is rejected
+  - Given: A refresh token that has not expired but is revoked in the session store.
+  - When: The client calls `POST /auth/refresh` with that token.
+  - Then: The response is 401 and no JWT is issued.
+  - Check: `pnpm test src/auth/refresh.test.ts -t "rejects a revoked token"`, created by T01.
+
+## Task stack
+
+- [ ] T01: `Add /auth/refresh endpoint` (status:todo)
+  - Task ID: T01
+  - Covers: AC1, AC2
+  - Scope: In — route handler, session-store validation call, OpenAPI entry. Out — refresh token rotation policy.
+  - Dependencies: none
+  - Done when: The endpoint returns a JWT or 401 as AC1 states, the revoked-token test exists and passes, and the OpenAPI entry is present.
+  - Verify: `pnpm test src/auth/refresh.test.ts`.
   - Context synchronization: pending
 ```
 
@@ -127,6 +193,25 @@ invent one: `None.` is the expected answer for a well-specified change.}
   change request. If a criterion has no task that could satisfy it, the task
   stack is incomplete.
 
+## Design decision rules
+
+- Record a design decision only for a real architectural choice the plan
+  commits to, such as an ownership boundary, a data shape, an interface, or an
+  alternative a reviewer would otherwise reopen.
+- Every decision carries `Boundary:`, `Rationale:`, `Rejected:`, and
+  `Trade-offs:`.
+- A design decision belongs to this plan only. It does not replace an
+  architecture decision record.
+
+## Verification scenario rules
+
+- A scenario states one behavior that an acceptance criterion depends on, as
+  `Given:`, `When:`, `Then:`, and `Check:`.
+- `Then:` states an exact observable result or invariant, not an intention.
+- `Check:` names the planned test, command, or named inspection that would
+  prove `Then:`. Name a test only when it already exists or a task in the stack
+  creates it.
+
 ## Task rules
 
 - Number tasks sequentially as `T01..T0N`.
@@ -141,6 +226,54 @@ invent one: `None.` is the expected answer for a well-specified change.}
   executable tasks. Convert them into specific outcomes with concrete
   acceptance checks.
 - Order tasks so each one's declared dependencies precede it.
+
+## Reference rules
+
+- Read plan structure only from Markdown outside fenced code blocks. A fenced
+  code block runs from a line that opens a fence of three or more backticks or
+  tildes to its closing fence. Headings, definitions, and fields inside it are
+  example text, not plan structure. Keep fenced examples in place; never delete
+  one to make a plan read correctly.
+- A plan is structured when, outside fenced code blocks, it has a
+  `### Verification scenarios` heading or any task under `## Task stack`
+  carries `Covers:`. Every other plan is a legacy plan, and the remaining rules
+  in this section do not apply to it.
+- A section runs from its heading to the next heading of any level outside
+  fenced code blocks. A definition counts only in its own section: `D` entries
+  under `## Design decisions`, `AC` entries under `## Acceptance criteria`, `S`
+  entries under `### Verification scenarios`, and `T` entries under
+  `## Task stack`. A line shaped like a definition anywhere else, such as in a
+  fenced example or a validation report, defines nothing.
+- A definition's fields are the `- Field:` lines indented one level under its
+  entry line, up to the next entry. `Boundary:`, `Rationale:`, `Rejected:`, and
+  `Trade-offs:` belong to a design decision; `Validate:`, `Decisions:`, and
+  `Scenarios:` to an acceptance criterion; `Given:`, `When:`, `Then:`, and
+  `Check:` to a verification scenario; and `Covers:` to a task.
+- To check a fenced example itself, extract the block's content and apply these
+  rules to it as a separate sample document.
+- IDs are `D1..Dn` for design decisions, `AC1..ACn` for acceptance criteria,
+  `S1..Sn` for verification scenarios, and `T01..T0N` for tasks. Each entry
+  starts its own line with its ID: `- D1:`, `- [ ] AC1:`, `- S1:`, and
+  `- [ ] T01:`.
+- Define each ID exactly once.
+- Number decisions, criteria, and scenarios sequentially in order of first
+  assignment. Never renumber or reuse a decision, criterion, or scenario ID; a
+  withdrawn entry keeps its ID and says that it is withdrawn.
+- Each reference field fits on one line: `Decisions:` and `Scenarios:` on an
+  acceptance criterion, and `Covers:` on a task. Its value is a list of IDs
+  separated by a comma and a space, for example `S1, S2`.
+- Every referenced ID resolves to a definition in the same plan.
+- Every acceptance criterion carries `Scenarios:`, with scenario IDs or the
+  literal `none (inspection)` when only an inspection can prove it. Omit
+  `Decisions:` when no decision applies.
+- Every task in a structured plan carries `Covers:` naming at least one
+  acceptance criterion defined in the plan. A task without `Covers:` or with an
+  empty `Covers:` is a defect even when other tasks cover every criterion.
+- Every acceptance criterion is named by at least one task's `Covers:`.
+- Every scenario is referenced by at least one acceptance criterion's
+  `Scenarios:`.
+- A planned `Check:` is not execution evidence. Only `/validate` running or
+  performing the check verifies a scenario.
 
 ## No validation task
 
@@ -183,3 +316,7 @@ Do not author either while planning.
   run earlier, and never renumber a completed task.
 - Add acceptance criteria for newly planned outcomes rather than rewriting
   criteria already satisfied.
+- A legacy plan stays legacy. Add design decisions, verification scenarios, or
+  `Covers:` only when the correction explicitly asks to adopt the structured
+  format.
+- Give each new decision, criterion, or scenario the next unused ID of its kind.

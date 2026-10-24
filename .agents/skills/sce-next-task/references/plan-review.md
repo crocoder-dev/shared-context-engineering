@@ -74,6 +74,23 @@ architecture, shared terminology, or cross-domain interfaces.
 
 Do not explore the entire repository by default.
 
+Read plan structure only outside fenced code blocks; headings, definitions, and
+fields inside a fenced example are not plan structure. A definition counts only
+in its own section: `D` entries under `## Design decisions`, `AC` entries under
+`## Acceptance criteria`, `S` entries under `### Verification scenarios`, and
+`T` entries under `## Task stack`.
+
+A plan is structured when, outside fenced code blocks, it has a
+`### Verification scenarios` heading or any task under `## Task stack` carries
+`Covers:`. Every other plan is a legacy plan; review it exactly as
+described here, with no coverage lookup and no coverage fields in the result.
+
+For a structured plan, read the selected task's `Covers:` IDs. For each covered
+acceptance criterion, read its `Scenarios:` and `Decisions:` fields and the
+scenario and decision definitions they name. A covered ID or referenced ID with
+no definition in the plan is a dangling reference. Record it as a review risk;
+it does not make the task `blocked`.
+
 ## 1.4 Determine readiness
 
 A task is `ready` when:
@@ -127,6 +144,16 @@ A `ready` result must identify:
 - Verification expectations.
 - Relevant files and context.
 - Review assumptions.
+
+For a structured plan, a `ready` result also identifies:
+
+- The covered acceptance criteria: each `Covers:` ID with its outcome and
+  `Validate:` check.
+- Their verification scenarios: each scenario ID with its `Then:` and `Check:`.
+- Their related design decisions: each decision ID with its decision text.
+- Every dangling reference, as a review risk.
+
+A `ready` result for a legacy plan carries none of these coverage fields.
 
 A `sync_debt` result must identify:
 

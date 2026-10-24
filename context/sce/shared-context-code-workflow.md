@@ -23,11 +23,13 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
    - When the first debt-carrying task has no durable completed-task record (no `Files changed`, `Result`, `Verify`, or `Context impact` recorded — a legacy plan predating that structure, or an incomplete write), it returns `blocked` directly with migration guidance rather than a reconstructed retry.
    - Otherwise it returns `sync_debt`, naming the debt task's ID and title and its own completed record — read directly from the plan by plan path and task ID — and, when its lifecycle is `blocked`, its persisted "Context synchronization blocker".
    - Once every completed task is `synced`, selects the requested task or the first incomplete task whose declared dependencies are complete.
+   - For a structured plan (see `shared-context-plan-workflow.md`), a `ready` result also carries the selected task's `Covers:` acceptance criteria with their `Validate:` checks, their scenarios' `Then:` and `Check:`, and their related design decisions. A dangling reference is a review risk, never a blocker. A legacy plan gets no coverage lookup and no coverage fields.
    - Returns `ready`, `sync_debt`, `blocked`, or `plan_complete`.
    - Sync-debt recovery: an explicit top-level `/next-task` branch — not plan-review behavior — reached on `sync_debt` before normal task selection resumes. It reads `references/context-sync.md`, then runs task context synchronization using the debt task's completed record read directly from the plan by plan path and task ID (and persisted blocker, when present). On `synced`/`no_context_change` it writes `synced` to the plan, clearing blocker fields, and re-invokes plan review to resume normal task selection. On a renewed `blocked` it writes the refreshed blocker, required action, and retry condition to the plan and stops, rendering the **Context synchronization blocked** layout — distinct from plan review's own **Review blocked** layout.
 2. `sce-task-execution`
    - Receives the complete `ready` result.
    - Always presents the implementation gate before editing.
+   - For a structured plan, the gate adds an optional `## Acceptance coverage` section before `## Verification`; it is omitted for a legacy plan.
    - Waits for confirmation unless the user supplied `approved` to the command.
    - Captures a pre-edit Git baseline, then reports `changes.files_changed` by comparing
      post-edit state with that baseline, excluding unchanged unrelated staged, unstaged,
@@ -37,6 +39,7 @@ Phase names below identify canonical modules in `config/pkl/base/workflow-next-t
      plan update, and context impact; stale, invalid, or contradictory handoffs block
      deterministically even under auto-approval.
    - Implements and verifies exactly one task, then records status and evidence in the plan.
+   - Covered scenarios may shape the task's own `Verify` checks, but execution never checks an acceptance-criterion checkbox or records a scenario status, and it keeps `Covers:` as authored; only `/validate` verifies acceptance criteria and scenarios.
    - Returns `declined`, `blocked`, `incomplete`, or `complete`.
 3. `sce-task-context-sync`
    - Runs only from the complete successful execution handoff.
@@ -66,6 +69,10 @@ A context-sync blocker does not undo successful implementation: the task remains
 `/validate {plan-name-or-path}`
 
 1. `sce-validation` verifies that implementation tasks are complete, runs the plan's full validation commands and acceptance checks, records leftover debug/temp artifacts as failure evidence without deleting or repairing them, and writes the Validation Report.
+   - For a structured plan (see `shared-context-plan-workflow.md`), it also collects decisions, scenarios, and `Covers:`, then checks plan references against the template's `Reference rules`: a duplicate ID, a dangling `Decisions:`/`Scenarios:`/`Covers:` ID, an acceptance criterion without `Scenarios:` or with no covering task, and an unreferenced scenario are each a failed check that makes the result `failed`.
+   - It runs or performs every scenario's `Check:` itself and gives each scenario exactly one status: `Verified`, `Partially verified`, or `Not verified`. Only evidence from this run counts; task completion, recorded task `Verify` outcomes, planned `Check:` lines, and plan claims never do. An acceptance criterion is met only when its `Validate:` check passes and every scenario it names is `Verified` (a `none (inspection)` criterion needs only `Validate:`).
+   - Both Validation Report formats (the plan-file `## Validation Report` and the returned validated/failed report) add a scenario-verification section for a structured plan. It has one entry per scenario, in plan order, mapping the scenario to its acceptance criteria, evidence kind (`test`, `command`, or `inspection`), exact evidence, actual result, and status. Acceptance-criterion lines cite their scenario IDs, and the failed report lists every `Partially verified` or `Not verified` scenario under **What failed**.
+   - A legacy plan gets no scenario collection, reference check, scenario statuses, or scenario-verification report section.
 2. Failed or blocked validation ends the session without repair edits; repair occurs in a later implementation session and retry uses `/validate {plan-path}`.
 3. A validated result is reported directly with the Validation Report path; `/validate` does not invoke plan-level context synchronization or persist a plan-sync lifecycle handoff.
 

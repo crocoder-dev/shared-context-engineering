@@ -44,6 +44,88 @@ context-load phase and continues with the original request in the same session.
 - Durable repository context is read, not synchronized, during planning.
 - A ready plan ends with an exact `/next-task {plan-path} {task-id}` handoff; the workflow does not request implementation approval itself.
 
+## Plan format
+
+`references/plan-template.md`, rendered from `changeToPlanPlanTemplate`, is the
+only owner of the persisted plan schema and its rules. Alongside the compact
+task, completion, and synchronization-lifecycle fields, it defines an optional
+structured layer:
+
+- `## Design decisions` with `D1..Dn` entries, each carrying `Boundary:`,
+  `Rationale:`, `Rejected:`, and `Trade-offs:`.
+- One-line reference fields: `Decisions:` and `Scenarios:` on each acceptance
+  criterion, and `Covers:` on each task.
+- `### Verification scenarios` with `S1..Sn` entries, each carrying `Given:`,
+  `When:`, `Then:`, and `Check:`.
+
+The template's `Reference rules` make the relationships extractable by line
+matching. Each ID is defined once. Decision, criterion, and scenario IDs are
+never renumbered or reused. Every reference resolves. Every criterion has
+`Scenarios:` (IDs or `none (inspection)`), is covered by a task, and every
+scenario is referenced by a criterion. A planned `Check:` is not evidence.
+
+Plan structure is read only outside fenced code blocks, so a fenced example that
+repeats real IDs or headings defines nothing and stays in place. A definition
+counts only in its own section (`D` under `## Design decisions`, `AC` under
+`## Acceptance criteria`, `S` under `### Verification scenarios`, `T` under
+`## Task stack`, each ending at the next heading), and its fields are the lines
+indented under it. To check a fenced example itself, its content is extracted
+and checked as a separate sample document. `/change-to-plan`, `/next-task`, and
+`/validate` all read plans this way.
+
+A plan is **structured** when, outside fenced code blocks, it has a
+`### Verification scenarios` heading or any task under `## Task stack` carries
+`Covers:`; every other plan is **legacy** and keeps the prior format. A revision keeps a legacy plan legacy unless the correction explicitly
+asks to adopt the structured format.
+
+```mermaid
+flowchart LR
+    D["D{n} design decision"] -->|"Decisions:"| AC["AC{n} acceptance criterion"]
+    AC -->|"Scenarios:"| S["S{n} verification scenario"]
+    T["T{nn} task"] -->|"Covers:"| AC
+    S -->|"Check:"| C["planned test, command, or inspection"]
+```
+
+The plan-authoring phase writes this layer in a fixed order: design decisions,
+then acceptance criteria with their `Decisions:` and `Scenarios:`, then
+verification scenarios, then tasks with `Covers:`. It records only real
+architectural choices and omits `## Design decisions` when there are none. It
+writes scenarios only for the case kinds (normal, boundary, failure,
+cancellation, concurrency, recovery) the change makes relevant, and a `Check:`
+never names a test that neither exists nor is created by a task. Before writing
+a structured plan, a reference-consistency pass applies every `Reference rules`
+entry to the full draft and fixes each defect first. After writing a structured
+plan, it runs `sce plan check {plan-path}`, fixes every reported diagnostic, and
+re-runs the checker before returning `plan_ready`. A legacy-plan revision
+skips this structured work, including the checker. The phase cites the template's rule sections by
+name and does not restate them.
+
+Responsibility for structural consistency is split by surface. Generation checks
+(`nix run .#pkl-check-generated`, also run by `nix flake check`) verify the plan
+template and the behavior of the structural checker
+`config/pkl/renderers/plan-structure-check.pkl` against fixtures only; they never
+read `context/plans/`, so an incomplete or malformed working plan cannot fail Nix
+CI. Plan authoring produces structurally consistent plans. Plan validation checks
+the selected plan's references and its actual verification evidence. For one
+selected plan, the shipped `sce plan check <path>` command (see
+[plan service](../cli/plan-service.md)) is the deterministic checker; the Pkl
+checker stays the generation-time reference implementation and is still
+runnable with
+`pkl eval -p planPath=<plan> config/pkl/renderers/plan-structure-check.pkl`.
+The two checkers share one rule set, wording, and fixture manifest; see the
+[plan structure contract](plan-structure-contract.md).
+
+`/change-to-plan` (after writing) and `/validate` (step 4, before scenario
+verification) run `sce plan check {plan-path}` on structured plans only;
+`/validate` records each diagnostic as a failed check. Both trust a result only
+when the checker actually ran: exit `0` with
+`structured plan: reference integrity holds` or
+`legacy plan: structured reference rules do not apply` on stdout, or exit `3`
+with diagnostics. Any other outcome, such as an older `sce` that answers the
+unknown `plan` command with help and exit `0`, means the checker is unavailable,
+and the workflow applies the manual `Reference rules` pass instead and records
+the fallback. `/next-task` never invokes the checker.
+
 ## Continuation contract
 
 Same-session waits preserve one of two explicit continuation shapes inside the

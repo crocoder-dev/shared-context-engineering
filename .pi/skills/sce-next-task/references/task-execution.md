@@ -132,6 +132,12 @@ Run the narrowest authoritative checks that demonstrate the done checks.
 Start with verification supplied by the readiness result. Add nearby or directly
 relevant checks only when needed.
 
+For a structured plan, the covered scenarios' `Then:` and `Check:` may shape
+the task's own `Verify` checks. Running a scenario's check during the task is
+task-level evidence only. Task execution never checks an acceptance-criterion
+checkbox and never records a scenario status; only `/validate` verifies
+acceptance criteria and scenarios.
+
 Verification may include:
 
 - Targeted tests.
@@ -167,6 +173,7 @@ Only after successful implementation and task-level verification:
   facts above and before the synchronization phase is invoked.
 - Record material deviations or approved assumptions.
 - Preserve the plan's existing structure and terminology.
+- Keep the task's `Covers:` field as authored.
 
 Do not mark the task complete when returning `declined`, `blocked`, or
 `incomplete`.
