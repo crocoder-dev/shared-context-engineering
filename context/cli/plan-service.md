@@ -36,8 +36,13 @@
   - The nearest preceding depth-1 or depth-2 heading of `### Verification scenarios` must be `## Acceptance criteria`.
 - Definition rules:
   - IDs are unique.
-  - Owned fields appear only on their owning kind: `Boundary`/`Rationale`/`Rejected`/`Trade-offs` → D, `Validate`/`Decisions`/`Scenarios` → AC, `Given`/`When`/`Then`/`Check` → S, `Covers` → T.
+  - Owned fields appear only on their owning kind: `Boundary`/`Rationale`/`Rejected`/`Trade-offs`/`Review`/`Review question` → D, `Validate`/`Decisions`/`Scenarios` → AC, `Given`/`When`/`Then`/`Check` → S, `Covers` → T.
   - Every definition carries its kind's required fields.
+- Review pair rules, per decision:
+  - `Review:` and `Review question:` are optional, but each requires the other.
+  - Every `Review:` value must be `required`.
+  - Every `Review question:` value must be nonempty and must not contain a newline. The source-sliced value keeps lazy continuation lines, so a wrapped question fails.
+  - A repeated `Review:` or `Review question:` key is reported once.
 - Reference rules:
   - `Decisions:`, `Scenarios:`, and `Covers:` on their owning kind must be an exact `ID, ID` list. `Scenarios: none (inspection)` is exempt.
   - Each listed ID must name the right kind and resolve to a definition.
@@ -52,6 +57,7 @@
   - The parent-rule defect points at `### Verification scenarios`.
   - Misplaced and reference defects point at their field.
   - Missing-field, uncovered-AC, and unreferenced-S defects point at their definition.
+  - A missing review-pair half points at its decision. A review value, empty, or single-line defect points at its field. A repeated review key points at its second occurrence.
 
 ## Command contract
 
@@ -80,6 +86,7 @@
 - `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `pass` or `fail`, then the complete expected defect messages for `fail` rows, compared as an exact order-insensitive multiset. Every `*.md` fixture in the directory must be listed exactly once.
 - `sce plan init`: The CLI command that publishes the plan init scaffold as `context/plans/<name>.md` at the repository root through the [init command contract](#init-command-contract). It never overwrites an existing plan.
 - `sce plan check`: The read-only CLI command that runs `extract` then `validate` on one plan file and reports through the exit `0`/`3`/`4` contract above.
+- `review pair`: The optional `Review: required` and one-line `Review question:` fields on a design decision. They mark a decision that needs senior engineering judgment.
 - `plan diagnostic`: One `PlanDiagnostic` from `validate`, with Pkl defect wording and an optional 1-based source line.
 - `plan init scaffold`: The generated `config/plan-init-scaffold.md` plan skeleton rendered by `config/pkl/base/plan-init-scaffold.pkl` and embedded as `SCAFFOLD`. Untouched, it fails `sce plan check` with exactly its `Scenarios: TODO` and `Covers: TODO` reference defects (see the [plan structure contract](../sce/plan-structure-contract.md)).
 

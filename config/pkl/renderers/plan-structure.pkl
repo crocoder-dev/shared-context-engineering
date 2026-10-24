@@ -8,6 +8,7 @@ class PlanLine {
 class PlanField {
   key: String
   value: String
+  continued: List<String>
 }
 
 class PlanEntry {
@@ -26,8 +27,13 @@ local headingPattern = Regex(#"#{1,6}\s+\S.*"#)
 local definitionPattern = Regex(#"( *)-\s+(?:\[[ x]\]\s+)?("# + idPattern + #"):(?:\s.*)?"#)
 local fieldPattern = Regex(#"( *)-\s+([A-Z][A-Za-z -]*):(?:\s+(.*))?"#)
 local idListPattern = Regex(idPattern + "(?:, " + idPattern + ")*")
+local blockStartPattern = Regex(#"\s*(?:[-*+](?:\s.*)?|[0-9]+[.)](?:\s.*)?|>.*|#{1,6}(?:\s.*)?)"#)
 
 local inspectionOnly = "none (inspection)"
+
+local reviewKey = "Review"
+local reviewQuestionKey = "Review question"
+local reviewRequired = "required"
 
 local authoritativeSections = Map(
   "D", "## Design decisions",
@@ -48,6 +54,8 @@ local fieldOwners = Map(
   "Rationale", "D",
   "Rejected", "D",
   "Trade-offs", "D",
+  "Review", "D",
+  "Review question", "D",
   "Validate", "AC",
   "Decisions", "AC",
   "Scenarios", "AC",
@@ -149,6 +157,12 @@ function headingsOf(planLines: List<PlanLine>): List<String> =
 local function endsEntry(line: PlanLine, indent: Int): Boolean =
   !line.fenced && !line.text.isBlank && indentOf(line.text) <= indent
 
+local function continuationOf(following: List<PlanLine>): List<String> =
+  following
+    .takeWhile((next) ->
+      !next.fenced && !next.text.isBlank && blockStartPattern.matchEntire(next.text) == null)
+    .map((next) -> next.text.trim())
+
 function entries(planLines: List<PlanLine>): List<PlanEntry> =
   planLines
     .mapIndexed((index, line) ->
@@ -163,23 +177,56 @@ function entries(planLines: List<PlanLine>): List<PlanEntry> =
           new PlanEntry {
             id = entryId
             kind = entryKind
-            fields = planLines
-              .drop(index + 1)
-              .takeWhile((next) -> !endsEntry(next, indent))
-              .filter((next) -> !next.fenced)
-              .map((next) -> fieldPattern.matchEntire(next.text))
-              .filterNonNull()
-              .filter((field) -> field.groups[1]!!.value.length == indent + 2)
-              .map((field) -> new PlanField {
-                key = field.groups[2]!!.value
-                value = field.groups[3]?.value?.trim() ?? ""
-              })
+            fields =
+              let (body = planLines.drop(index + 1))
+              body
+                .takeWhile((next) -> !endsEntry(next, indent))
+                .mapIndexed((offset, next) ->
+                  let (field = if (next.fenced) null else fieldPattern.matchEntire(next.text))
+                  if (field == null || field.groups[1]!!.value.length != indent + 2) null
+                  else
+                    new PlanField {
+                      key = field.groups[2]!!.value
+                      value = field.groups[3]?.value?.trim() ?? ""
+                      continued = continuationOf(body.drop(offset + 1))
+                    }
+                )
+                .filterNonNull()
           }
     )
     .filterNonNull()
 
 local function fieldOf(entry: PlanEntry, key: String): PlanField? =
   entry.fields.findOrNull((field) -> field.key == key)
+
+local function fieldText(field: PlanField): String =
+  (List(field.value) + field.continued).join("\n").trim()
+
+local function reviewDefects(entry: PlanEntry): List<String> =
+  let (reviews = entry.fields.filter((field) -> field.key == reviewKey))
+  let (questions = entry.fields.filter((field) -> field.key == reviewQuestionKey))
+  List(Pair(reviewKey, reviews), Pair(reviewQuestionKey, questions))
+    .filter((pair) -> pair.second.length > 1)
+    .map((pair) -> "`\(pair.first):` appears more than once on `\(entry.id)`")
+  + (
+    if (!reviews.isEmpty && questions.isEmpty)
+      List("`\(entry.id)` has `\(reviewKey):` without `\(reviewQuestionKey):`")
+    else List()
+  )
+  + (
+    if (!questions.isEmpty && reviews.isEmpty)
+      List("`\(entry.id)` has `\(reviewQuestionKey):` without `\(reviewKey):`")
+    else List()
+  )
+  + reviews
+    .filter((field) -> fieldText(field) != reviewRequired)
+    .map((field) -> "`\(reviewKey):` on `\(entry.id)` must be `\(reviewRequired)`")
+  + questions
+    .map((field) -> fieldText(field))
+    .filter((text) -> text.isEmpty || text.contains("\n"))
+    .map((text) ->
+      if (text.isEmpty) "`\(reviewQuestionKey):` on `\(entry.id)` is empty"
+      else "`\(reviewQuestionKey):` on `\(entry.id)` must be a single line")
 
 local function listedIds(value: String): List<String> =
   if (idListPattern.matchEntire(value) == null) List() else value.split(", ")
@@ -221,6 +268,7 @@ local function definitionDefects(defined: List<PlanEntry>): List<String> =
     + requiredFields[entry.kind]
       .filter((key) -> fieldOf(entry, key) == null)
       .map((key) -> "`\(entry.id)` is missing `\(key):`")
+    + (if (entry.kind == "D") reviewDefects(entry) else List())
   )
 
 local function misplacedDefinitionDefects(planLines: List<PlanLine>): List<String> =

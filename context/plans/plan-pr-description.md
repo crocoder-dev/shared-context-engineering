@@ -194,14 +194,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Validate optional review fields in both plan checkers` (status:todo)
+- [x] T01: `Validate optional review fields in both plan checkers` (status:done)
   - Task ID: T01
   - Covers: AC1, AC2
   - Scope: In — `Review` and `Review question` as decision-owned fields in `validate.rs` and `plan-structure.pkl`, the pair, value, empty, single-line, and duplicate rules with the S2 messages, the five `review-fields-*.md` fixtures and their `expectations.tsv` rows, and extended line assertions in `plan::diagnostic_lines_match_source_positions`. Out — template text, the new command, and edits to existing plans.
   - Dependencies: none
   - Done when: Both checkers agree on every manifest row, the new fixtures cover S1, S2, and S3, and every existing `pass` fixture still passes.
   - Verify: `nix run .#pkl-check-generated`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::fixture`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::diagnostic_lines_match_source_positions`.
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/services/plan/validate.rs`, `cli/src/services/plan/mod.rs`, `config/pkl/renderers/plan-structure.pkl`, `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, `config/pkl/renderers/fixtures/plan-structure/review-fields-valid.md`, `config/pkl/renderers/fixtures/plan-structure/review-fields-missing-pair.md`, `config/pkl/renderers/fixtures/plan-structure/review-fields-malformed.md`, `config/pkl/renderers/fixtures/plan-structure/review-fields-duplicate.md`, `config/pkl/renderers/fixtures/plan-structure/review-fields-misplaced.md`
+  - Result: Both checkers treat `Review` and `Review question` as decision-owned fields, so the existing misplaced rule covers acceptance criteria and tasks. A new per-decision review rule set reports the duplicate key once at its second occurrence, a missing pair half at the decision line, and a non-`required` value, an empty question, and a multi-line question at the field line. The value, empty, and single-line rules run on every occurrence. Rust detects multi-line values through the newline that the extracted lead paragraph keeps. Pkl records each field's lazy continuation lines (until a blank, fenced, heading, list-item, or block-quote line), joins them with the field value, and applies the same three predicates. `extract.rs` is unchanged. Five new fixtures have manifest rows: `review-fields-valid.md` passes (it includes a nested list under a question, which is not a continuation). `review-fields-malformed.md` also covers a multi-line `Review:` value.
+  - Verify outcomes: `nix run .#pkl-check-generated` passed (146 files; every manifest row matched for Pkl). `plan::fixture` passed (`fixture_expectations_match_manifest`). `plan::diagnostic_lines_match_source_positions` passed. Extra checks: all 28 `plan::` tests passed, `run-cli-cargo.sh clippy --all-targets -- -D warnings` was clean, and `nix run .#sce -- plan check` exited `0` on `plan-decisions-and-verification-scenarios.md`, `sce-plan-check.md`, and `plan-pr-description.md` (S4).
+  - Deviations: The S2 messages are written with `D1`. The missing-pair and duplicate fixtures need two decisions, so their second messages name `D2`.
+  - Context impact: durable — the plan structure contract gains the review pair rules, six new defect messages, and five fixtures (`context/sce/plan-structure-contract.md`, `context/cli/plan-service.md`).
+  - Context synchronization: synced
 
 - [ ] T02: `Document the review pair in the plan template and authoring rules` (status:todo)
   - Task ID: T02

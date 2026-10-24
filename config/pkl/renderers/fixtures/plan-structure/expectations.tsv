@@ -6,6 +6,11 @@ keywords-only-in-examples.md	fail	`Scenarios:` on `AC1` references undefined `S1
 misplaced-definition.md	fail	`S1` is defined under `## Acceptance criteria`; it belongs under `### Verification scenarios`	`Scenarios:` on `AC1` references undefined `S1`; it appears only outside `### Verification scenarios`
 misplaced-field.md	fail	`Check:` on `D1` is misplaced; it belongs to a verification scenario	`Covers:` on `AC1` is misplaced; it belongs to a task	`S1` is missing `Check:`	`T01` is missing `Covers:`	`AC1` is not covered by any task's `Covers:`
 missing-scenarios-field.md	fail	`AC1` is missing `Scenarios:`	`S1` is not referenced by any acceptance criterion's `Scenarios:`
+review-fields-duplicate.md	fail	`Review:` appears more than once on `D1`	`Review question:` appears more than once on `D2`
+review-fields-malformed.md	fail	`Review:` on `D1` must be `required`	`Review question:` on `D2` is empty	`Review question:` on `D3` must be a single line	`Review:` on `D4` must be `required`
+review-fields-misplaced.md	fail	`Review:` on `AC1` is misplaced; it belongs to a design decision	`Review question:` on `AC1` is misplaced; it belongs to a design decision	`Review:` on `T01` is misplaced; it belongs to a design decision	`Review question:` on `T01` is misplaced; it belongs to a design decision
+review-fields-missing-pair.md	fail	`D1` has `Review:` without `Review question:`	`D2` has `Review question:` without `Review:`
+review-fields-valid.md	pass
 task-empty-covers.md	fail	`Covers:` on `T02` is not a comma-separated ID list
 task-missing-covers.md	fail	`T02` is missing `Covers:`
 uncovered-ac.md	fail	`AC2` is not covered by any task's `Covers:`

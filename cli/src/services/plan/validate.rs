@@ -5,6 +5,9 @@ use crate::services::plan::extract::{
 const INSPECTION_ONLY: &str = "none (inspection)";
 const VERIFICATION_SCENARIOS_HEADING: &str = "### Verification scenarios";
 const ACCEPTANCE_CRITERIA_HEADING: &str = "## Acceptance criteria";
+const REVIEW_KEY: &str = "Review";
+const REVIEW_QUESTION_KEY: &str = "Review question";
+const REVIEW_REQUIRED: &str = "required";
 const REQUIRED_PLAN_HEADINGS: [&str; 2] = [ACCEPTANCE_CRITERIA_HEADING, "## Task stack"];
 const ORDERED_PLAN_HEADINGS: [&str; 4] = [
     "## Design decisions",
@@ -55,7 +58,9 @@ impl PlanEntryKind {
 
 fn field_owner(key: &str) -> Option<PlanEntryKind> {
     match key {
-        "Boundary" | "Rationale" | "Rejected" | "Trade-offs" => Some(PlanEntryKind::Decision),
+        "Boundary" | "Rationale" | "Rejected" | "Trade-offs" | REVIEW_KEY | REVIEW_QUESTION_KEY => {
+            Some(PlanEntryKind::Decision)
+        }
         "Validate" | "Decisions" | "Scenarios" => Some(PlanEntryKind::AcceptanceCriterion),
         "Given" | "When" | "Then" | "Check" => Some(PlanEntryKind::Scenario),
         "Covers" => Some(PlanEntryKind::Task),
@@ -101,6 +106,7 @@ pub fn validate(plan: &Plan) -> PlanReport {
         .collect();
     let mut diagnostics = heading_diagnostics(&headings);
     diagnostics.extend(definition_diagnostics(plan));
+    diagnostics.extend(review_diagnostics(plan));
     diagnostics.extend(reference_diagnostics(plan));
     diagnostics.sort();
 
@@ -223,6 +229,77 @@ fn definition_diagnostics(plan: &Plan) -> Vec<PlanDiagnostic> {
                     PlanEntryKind::of_id(&outside.id).authoritative_section()
                 ),
             ));
+        }
+    }
+
+    diagnostics
+}
+
+fn review_diagnostics(plan: &Plan) -> Vec<PlanDiagnostic> {
+    let mut diagnostics = Vec::new();
+
+    for entry in plan.entries_of(PlanEntryKind::Decision) {
+        let fields_of = |key: &str| -> Vec<&PlanField> {
+            entry
+                .fields
+                .iter()
+                .filter(|field| field.key == key)
+                .collect()
+        };
+        let reviews = fields_of(REVIEW_KEY);
+        let questions = fields_of(REVIEW_QUESTION_KEY);
+
+        for (key, fields) in [(REVIEW_KEY, &reviews), (REVIEW_QUESTION_KEY, &questions)] {
+            if let Some(repeated) = fields.get(1) {
+                diagnostics.push(diagnostic(
+                    Some(repeated.line),
+                    format!("`{key}:` appears more than once on `{}`", entry.id),
+                ));
+            }
+        }
+
+        for (present_key, present, missing_key, missing) in [
+            (REVIEW_KEY, &reviews, REVIEW_QUESTION_KEY, &questions),
+            (REVIEW_QUESTION_KEY, &questions, REVIEW_KEY, &reviews),
+        ] {
+            if !present.is_empty() && missing.is_empty() {
+                diagnostics.push(diagnostic(
+                    Some(entry.line),
+                    format!(
+                        "`{}` has `{present_key}:` without `{missing_key}:`",
+                        entry.id
+                    ),
+                ));
+            }
+        }
+
+        for review in &reviews {
+            if review.value != REVIEW_REQUIRED {
+                diagnostics.push(diagnostic(
+                    Some(review.line),
+                    format!(
+                        "`{REVIEW_KEY}:` on `{}` must be `{REVIEW_REQUIRED}`",
+                        entry.id
+                    ),
+                ));
+            }
+        }
+
+        for question in &questions {
+            if question.value.is_empty() {
+                diagnostics.push(diagnostic(
+                    Some(question.line),
+                    format!("`{REVIEW_QUESTION_KEY}:` on `{}` is empty", entry.id),
+                ));
+            } else if question.value.contains('\n') {
+                diagnostics.push(diagnostic(
+                    Some(question.line),
+                    format!(
+                        "`{REVIEW_QUESTION_KEY}:` on `{}` must be a single line",
+                        entry.id
+                    ),
+                ));
+            }
         }
     }
 

@@ -140,6 +140,53 @@ fn diagnostic_lines_match_source_positions() {
         )]
     );
     assert_eq!(
+        diagnostic_lines(&validate_fixture("review-fields-missing-pair.md")),
+        vec![
+            (Some(9), "`D1` has `Review:` without `Review question:`"),
+            (Some(15), "`D2` has `Review question:` without `Review:`"),
+        ]
+    );
+    assert_eq!(
+        diagnostic_lines(&validate_fixture("review-fields-malformed.md")),
+        vec![
+            (Some(14), "`Review:` on `D1` must be `required`"),
+            (Some(22), "`Review question:` on `D2` is empty"),
+            (Some(29), "`Review question:` on `D3` must be a single line"),
+            (Some(36), "`Review:` on `D4` must be `required`"),
+        ]
+    );
+    assert_eq!(
+        diagnostic_lines(&validate_fixture("review-fields-duplicate.md")),
+        vec![
+            (Some(16), "`Review:` appears more than once on `D1`"),
+            (
+                Some(24),
+                "`Review question:` appears more than once on `D2`"
+            ),
+        ]
+    );
+    assert_eq!(
+        diagnostic_lines(&validate_fixture("review-fields-misplaced.md")),
+        vec![
+            (
+                Some(21),
+                "`Review:` on `AC1` is misplaced; it belongs to a design decision"
+            ),
+            (
+                Some(22),
+                "`Review question:` on `AC1` is misplaced; it belongs to a design decision"
+            ),
+            (
+                Some(45),
+                "`Review:` on `T01` is misplaced; it belongs to a design decision"
+            ),
+            (
+                Some(46),
+                "`Review question:` on `T01` is misplaced; it belongs to a design decision"
+            ),
+        ]
+    );
+    assert_eq!(
         diagnostic_lines(&validate_source(
             "# Plan\n\n## Acceptance criteria\n\n### Verification scenarios\n"
         )),

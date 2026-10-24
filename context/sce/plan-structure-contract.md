@@ -20,8 +20,14 @@ Both checkers apply the same rules to the plan source outside fenced code blocks
   - `D`, `AC`, `S`, and `T` entries count only in their authoritative section: `## Design decisions`, `## Acceptance criteria`, `### Verification scenarios`, and `## Task stack`, each ending at the next heading.
   - IDs are unique.
   - A top-level list item that defines an ID under another authoritative section is reported at its own line as defined under the wrong section. Nested items, prose outside authoritative sections, and fenced examples are not.
-  - Owned fields appear only on their owning kind. The `D` fields are `Boundary`, `Rationale`, `Rejected`, and `Trade-offs`. The `AC` fields are `Validate`, `Decisions`, and `Scenarios`. The `S` fields are `Given`, `When`, `Then`, and `Check`. The `T` field is `Covers`.
+  - Owned fields appear only on their owning kind. The `D` fields are `Boundary`, `Rationale`, `Rejected`, `Trade-offs`, `Review`, and `Review question`. The `AC` fields are `Validate`, `Decisions`, and `Scenarios`. The `S` fields are `Given`, `When`, `Then`, and `Check`. The `T` field is `Covers`.
   - Each definition carries its kind's required fields.
+- **Review pair.** `Review:` and `Review question:` are optional on a `D` entry, but they appear together or not at all.
+  - `Review:` must be exactly `required`.
+  - `Review question:` must hold one nonempty line of text.
+  - A key that appears more than once on one decision is reported once.
+  - The defects are `` `D1` has `Review:` without `Review question:` ``, `` `D1` has `Review question:` without `Review:` ``, `` `Review:` on `D1` must be `required` ``, `` `Review question:` on `D1` is empty ``, `` `Review question:` on `D1` must be a single line ``, and `` `Review:` appears more than once on `D1` ``.
+  - The `review-fields-*.md` fixtures pin these rules. A misplaced review field uses the ordinary misplaced-field defect.
 - **References.**
   - `Decisions:`, `Scenarios:`, and `Covers:` hold an exact `ID, ID` list. `Scenarios: none (inspection)` is exempt.
   - Each listed ID names the right kind and resolves to a definition.
@@ -63,7 +69,7 @@ The Rust extractor follows the CommonMark/GFM `mdast` tree from `markdown-rs`. T
 - **List-nesting indentation.** Pkl takes a field only at exactly `entry indent + 2` spaces. Rust takes any item of a list nested directly under the definition, so other indentation that CommonMark still nests is accepted.
 - **Checkbox case.** Pkl matches only `[ ]` and `[x]`. With `[X]`, the line is not a definition for Pkl, while GFM accepts `[X]` as checked.
 - **Nested definitions.** Pkl accepts a definition line at any indentation inside its section, including one nested in another list item. Rust takes definitions only from items of root-level lists.
-- **Multi-line values.** Pkl reads a field value from its first line only. Rust slices the field item's whole first paragraph from source, so a wrapped `Covers:`, `Decisions:`, or `Scenarios:` list keeps its continuation lines. A wrapped list then fails the ID-list grammar in Rust, but may pass in Pkl.
+- **Multi-line values.** Rust slices the field item's whole first paragraph from source, so a wrapped value keeps its continuation lines. Pkl reads a reference value from its first line only. A wrapped `Covers:`, `Decisions:`, or `Scenarios:` list then fails the ID-list grammar in Rust, but can pass in Pkl. The review-pair rules are aligned: Pkl joins a review field's lazy continuation lines, which end at a blank, fenced, heading, list-item, or block-quote line. A setext underline or other block start that CommonMark recognizes can still differ.
 - **List markers.** Pkl accepts only `-` bullets. Rust accepts any GFM list (`-`, `*`, `+`, or ordered).
 - **Indented code blocks.** Pkl recognizes only backtick and tilde fences. Rust also ignores indented (four-space) code blocks.
 
