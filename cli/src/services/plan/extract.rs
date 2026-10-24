@@ -57,11 +57,18 @@ pub struct PlanEntry {
     pub fields: Vec<PlanField>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutsideDefinition {
+    pub id: String,
+    pub line: usize,
+    pub section: Option<PlanEntryKind>,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Plan {
     pub headings: Vec<PlanHeading>,
     pub entries: Vec<PlanEntry>,
-    pub outside_section_ids: Vec<String>,
+    pub outside_definitions: Vec<OutsideDefinition>,
     pub fenced_ids: Vec<String>,
 }
 
@@ -91,11 +98,11 @@ pub fn extract(source: &str) -> Result<Plan> {
                 for item in node.children().into_iter().flatten() {
                     match section.and_then(|kind| definition(source, item, kind)) {
                         Some(entry) => plan.entries.push(entry),
-                        None => collect_outside_section_ids(source, item, &mut plan),
+                        None => collect_outside_definitions(source, item, section, &mut plan),
                     }
                 }
             }
-            _ => collect_outside_section_ids(source, node, &mut plan),
+            _ => collect_outside_definitions(source, node, None, &mut plan),
         }
     }
 
@@ -144,20 +151,29 @@ fn field(source: &str, item: &Node) -> Option<PlanField> {
     })
 }
 
-fn collect_outside_section_ids(source: &str, node: &Node, plan: &mut Plan) {
+fn collect_outside_definitions(
+    source: &str,
+    node: &Node,
+    section: Option<PlanEntryKind>,
+    plan: &mut Plan,
+) {
     match node {
         Node::Code(code) => collect_fenced_ids(&code.value, &mut plan.fenced_ids),
         Node::ListItem(_) => {
             if let Some((id, _)) = lead_text(source, node).and_then(parse_id_token) {
-                plan.outside_section_ids.push(id.to_string());
+                plan.outside_definitions.push(OutsideDefinition {
+                    id: id.to_string(),
+                    line: line_of(node),
+                    section,
+                });
             }
             for child in node.children().into_iter().flatten() {
-                collect_outside_section_ids(source, child, plan);
+                collect_outside_definitions(source, child, None, plan);
             }
         }
         _ => {
             for child in node.children().into_iter().flatten() {
-                collect_outside_section_ids(source, child, plan);
+                collect_outside_definitions(source, child, None, plan);
             }
         }
     }
@@ -168,8 +184,13 @@ fn collect_fenced_ids(code: &str, ids: &mut Vec<String>) {
         return;
     };
     let mut nested = Plan::default();
-    collect_outside_section_ids(code, &root, &mut nested);
-    ids.extend(nested.outside_section_ids);
+    collect_outside_definitions(code, &root, None, &mut nested);
+    ids.extend(
+        nested
+            .outside_definitions
+            .into_iter()
+            .map(|outside| outside.id),
+    );
     ids.extend(nested.fenced_ids);
 }
 
@@ -228,7 +249,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use super::{extract, is_id, Plan, PlanEntryKind};
+    use super::{extract, is_id, OutsideDefinition, Plan, PlanEntryKind};
 
     fn fixture(name: &str) -> Plan {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -259,7 +280,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.fenced_ids, vec!["D1", "AC1", "S1", "T01"]);
-        assert!(plan.outside_section_ids.is_empty());
+        assert!(plan.outside_definitions.is_empty());
     }
 
     #[test]
@@ -329,7 +350,14 @@ mod tests {
         let plan = fixture("misplaced-definition.md");
 
         assert_eq!(plan.entries_of(PlanEntryKind::Scenario).count(), 0);
-        assert_eq!(plan.outside_section_ids, vec!["S1"]);
+        assert_eq!(
+            plan.outside_definitions,
+            vec![OutsideDefinition {
+                id: "S1".to_string(),
+                line: 21,
+                section: Some(PlanEntryKind::AcceptanceCriterion),
+            }]
+        );
         let criterion = plan
             .entries_of(PlanEntryKind::AcceptanceCriterion)
             .next()

@@ -19,6 +19,7 @@ Both checkers apply the same rules to the plan source outside fenced code blocks
 - **Definitions.**
   - `D`, `AC`, `S`, and `T` entries count only in their authoritative section: `## Design decisions`, `## Acceptance criteria`, `### Verification scenarios`, and `## Task stack`, each ending at the next heading.
   - IDs are unique.
+  - A top-level list item that defines an ID under another authoritative section is reported at its own line as defined under the wrong section. Nested items, prose outside authoritative sections, and fenced examples are not.
   - Owned fields appear only on their owning kind. The `D` fields are `Boundary`, `Rationale`, `Rejected`, and `Trade-offs`. The `AC` fields are `Validate`, `Decisions`, and `Scenarios`. The `S` fields are `Given`, `When`, `Then`, and `Check`. The `T` field is `Covers`.
   - Each definition carries its kind's required fields.
 - **References.**
@@ -33,9 +34,9 @@ Template-skeleton mode (`templateDefects` in `plan-structure.pkl`) validates gen
 
 The single source of truth is `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`. It covers the `*.md` fixtures in the same directory.
 
-- Each row is tab-separated: the fixture file name, then its verdict (`structured`, `legacy`, or `fail`). `fail` rows then list one expected defect substring per column. Rows starting with `#` are comments.
-- `config/pkl/check-generated.sh` iterates the manifest through `plan-structure-check.pkl`. `structured` and `legacy` rows must print their classification line, and `fail` rows must fail with every listed substring. The run aborts on any of these: a missing fixture, an unknown verdict, a pass row with substrings, a fail row without substrings, or a `*.md` fixture not listed exactly once.
-- The Rust test `plan::fixture_expectations_match_manifest` reads the same manifest and fixtures at test runtime through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. It requires the same verdicts and substrings, and fails on any unlisted fixture.
+- Each row is tab-separated: the fixture file name, then its verdict (`structured`, `legacy`, or `fail`). `fail` rows then list the complete expected defect messages, one per column. Comparison is exact on the sorted multiset of messages: missing, unexpected, or miscounted duplicate defects fail. Source lines are not part of the manifest; Rust tests assert them separately. Rows starting with `#` are comments.
+- `config/pkl/check-generated.sh` iterates the manifest. `structured` and `legacy` rows must print their classification line through `plan-structure-check.pkl`, and `fail` rows must make it fail. Every row is then compared against the structured report from `config/pkl/renderers/fixtures/plan-structure-report.pkl`: classification on the first line, then one defect per line. The run aborts on any of these: a missing fixture, an unknown verdict, a pass row with diagnostics, a fail row without diagnostics, a classification or diagnostic-set mismatch, or a `*.md` fixture not listed exactly once.
+- The Rust test `plan::fixture_expectations_match_manifest` reads the same manifest and fixtures at test runtime through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. It requires the same verdicts and the same exact sorted message multiset, and fails on any unlisted fixture.
 - To add a fixture:
   1. Add the `.md` file to the directory.
   2. Add its manifest row.

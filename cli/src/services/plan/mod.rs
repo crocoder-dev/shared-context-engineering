@@ -44,42 +44,39 @@ fn fixture_expectations_match_manifest() {
         let mut columns = row.split('\t');
         let fixture = columns.next().expect("row should name a fixture");
         let verdict = columns.next().expect("row should carry a verdict");
-        let expected: Vec<&str> = columns.collect();
+        let mut expected: Vec<&str> = columns.collect();
         let report = validate_fixture(fixture);
         listed.push(fixture.to_string());
+        let mut actual: Vec<&str> = report
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
 
         match verdict {
             "structured" | "legacy" => {
                 assert!(
                     expected.is_empty(),
-                    "{fixture}: pass rows take no substrings"
+                    "{fixture}: pass rows take no diagnostics"
                 );
                 assert_eq!(
                     report.structured,
                     verdict == "structured",
                     "{fixture}: wrong classification"
                 );
-                assert!(
-                    report.diagnostics.is_empty(),
-                    "{fixture}: unexpected diagnostics {:?}",
-                    report.diagnostics
-                );
             }
             "fail" => {
-                assert!(!expected.is_empty(), "{fixture}: fail rows need substrings");
-                for substring in expected {
-                    assert!(
-                        report
-                            .diagnostics
-                            .iter()
-                            .any(|diagnostic| diagnostic.message.contains(substring)),
-                        "{fixture}: missing `{substring}` in {:?}",
-                        report.diagnostics
-                    );
-                }
+                assert!(
+                    !expected.is_empty(),
+                    "{fixture}: fail rows need diagnostics"
+                );
+                assert!(report.structured, "{fixture}: wrong classification");
             }
             other => panic!("{fixture}: unknown verdict `{other}`"),
         }
+        assert_eq!(actual, expected, "{fixture}: diagnostics differ");
     }
 
     let mut fixtures: Vec<String> = std::fs::read_dir(fixture_dir())
@@ -121,6 +118,19 @@ fn diagnostic_lines_match_source_positions() {
         ]
     );
     assert_eq!(
+        diagnostic_lines(&validate_fixture("misplaced-definition.md")),
+        vec![
+            (
+                Some(20),
+                "`Scenarios:` on `AC1` references undefined `S1`; it appears only outside `### Verification scenarios`"
+            ),
+            (
+                Some(21),
+                "`S1` is defined under `## Acceptance criteria`; it belongs under `### Verification scenarios`"
+            ),
+        ]
+    );
+    assert_eq!(
         diagnostic_lines(&validate_fixture("duplicate-id.md")),
         vec![(Some(29), "`S1` is defined more than once")]
     );
@@ -136,6 +146,22 @@ fn diagnostic_lines_match_source_positions() {
             "# Plan\n\n## Acceptance criteria\n\n### Verification scenarios\n"
         )),
         vec![(None, "heading `## Task stack` is missing")]
+    );
+}
+
+#[test]
+fn misplaced_definition_ignores_prose_and_fenced_mentions() {
+    let source = "# Plan\n\n## Acceptance criteria\n\n- [ ] AC1: Works.\n  - Validate: `true`\n  - Scenarios: S1\n  - S2: nested prose\n\n### Verification scenarios\n\n- S1: Works\n  - Given: A.\n  - When: B.\n  - Then: C.\n  - Check: `true`\n\n```markdown\n- T02: fenced example\n```\n\n## Task stack\n\n- [ ] T01: `Work` (status:todo)\n  - Covers: AC1\n\n## Open questions\n\n- D1: incidental prose\n";
+
+    assert!(diagnostic_lines(&validate_source(source)).is_empty());
+    assert_eq!(
+        diagnostic_lines(&validate_source(&source.replace("  - S2: nested prose\n", "- S2: misplaced\n"))),
+        vec![
+            (
+                Some(8),
+                "`S2` is defined under `## Acceptance criteria`; it belongs under `### Verification scenarios`"
+            ),
+        ]
     );
 }
 

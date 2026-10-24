@@ -13,7 +13,7 @@
 - `Plan.headings`: one `PlanHeading { depth, text, line }` per root-level heading, where `text` is the heading's plain text.
 - `Plan.entries`: one `PlanEntry { id, kind, checked, line, fields }` per definition, in source order. Use `Plan::entries_of(kind)` to select one kind. `PlanEntryKind` is one of `Decision`, `AcceptanceCriterion`, `Scenario`, or `Task`.
 - `PlanField { key, value, line }`: one per directly nested list item whose first paragraph starts with `Key:`. The key is `[A-Z][A-Za-z -]*`, followed by whitespace or the end of the text. `value` is the trimmed source slice after the colon, so inline code and punctuation are kept verbatim.
-- `Plan.outside_section_ids` and `Plan.fenced_ids` hold the IDs of definition-shaped list items that are not definitions. The first lists items found outside an authoritative position. The second lists items found inside `Code` blocks, which are re-parsed with `to_mdast` rather than scanned by line. They support undefined-reference hints and never create entries.
+- `Plan.outside_definitions` and `Plan.fenced_ids` hold definition-shaped list items that are not definitions. The first holds `OutsideDefinition { id, line, section }` for items found outside an authoritative position. `section` is set only for a top-level list item under an authoritative section of another kind, which marks a definition in the wrong section rather than nested or unrelated prose. The second lists items found inside `Code` blocks, which are re-parsed with `to_mdast` rather than scanned by line. They support undefined-reference hints and never create entries.
 - Lines are 1-based and come from `mdast` positions.
 
 ## Extraction rules
@@ -39,7 +39,8 @@
 - Reference rules:
   - `Decisions:`, `Scenarios:`, and `Covers:` on their owning kind must be an exact `ID, ID` list. `Scenarios: none (inspection)` is exempt.
   - Each listed ID must name the right kind and resolve to a definition.
-  - An unresolved ID gets an `outside_section_ids` or `fenced_ids` hint.
+  - An unresolved ID gets an `outside_definitions` or `fenced_ids` hint.
+  - An `OutsideDefinition` with a `section` is reported at its own line as defined under the wrong section.
   - Every AC must be covered by some task's `Covers:`, and every S must be referenced by some AC's `Scenarios:`.
 - `PlanReport.diagnostics` holds `PlanDiagnostic { line, message }` values, sorted by `(line, message)`. Line-less diagnostics come first, and duplicates are kept.
 - Where a diagnostic's line comes from:
@@ -63,7 +64,7 @@
 
 ## Terms
 
-- `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `structured`, `legacy`, or `fail`, then the expected defect substrings for `fail` rows. Every `*.md` fixture in the directory must be listed exactly once.
+- `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `structured`, `legacy`, or `fail`, then the complete expected defect messages for `fail` rows, compared as an exact order-insensitive multiset. Every `*.md` fixture in the directory must be listed exactly once.
 - `sce plan check`: The read-only CLI command that runs `extract` then `validate` on one plan file and reports through the exit `0`/`3`/`4` contract above.
 - `plan diagnostic`: One `PlanDiagnostic` from `validate`, with Pkl defect wording and an optional 1-based source line.
 

@@ -224,6 +224,19 @@ local function definitionDefects(defined: List<PlanEntry>): List<String> =
       .map((key) -> "`\(entry.id)` is missing `\(key):`")
   )
 
+local function misplacedDefinitionDefects(planLines: List<PlanLine>): List<String> =
+  planLines
+    .map((line) -> if (line.fenced) null else definitionPattern.matchEntire(line.text))
+    .zip(planLines)
+    .filter((pair) ->
+      pair.first != null
+      && pair.first.groups[1]!!.value.isEmpty
+      && authoritativeSections.values.contains(pair.second.section)
+      && pair.second.section != authoritativeSections[kindOf(pair.first.groups[2]!!.value)])
+    .map((pair) ->
+      let (id = pair.first!!.groups[2]!!.value)
+      "`\(id)` is defined under `\(pair.second.section)`; it belongs under `\(authoritativeSections[kindOf(id)])`")
+
 local function undefinedHint(planLines: List<PlanLine>, id: String): String =
   let (candidates = planLines.filter((line) ->
     let (match = definitionPattern.matchEntire(line.text))
@@ -284,7 +297,7 @@ local function inspect(text: String, skeleton: Boolean): PlanReport =
           if (skeleton) templateSkeletonHeadings else orderedPlanHeadings
         )
         + definitionDefects(defined)
-        + (if (skeleton) List() else referenceDefects(planLines, defined))
+        + (if (skeleton) List() else misplacedDefinitionDefects(planLines) + referenceDefects(planLines, defined))
   }
 
 function check(text: String): PlanReport = inspect(text, false)

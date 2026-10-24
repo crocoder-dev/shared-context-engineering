@@ -202,6 +202,7 @@ expect_pkl_fixture_failure \
   "structured example: \`Scenarios:\` on \`AC1\` references undefined \`S2\`"
 
 plan_structure_check="config/pkl/renderers/plan-structure-check.pkl"
+plan_structure_report="config/pkl/renderers/fixtures/plan-structure-report.pkl"
 plan_structure_fixtures="config/pkl/renderers/fixtures/plan-structure"
 
 expect_plan_structure_pass() {
@@ -225,24 +226,46 @@ expect_plan_structure_pass() {
 
 expect_plan_structure_failure() {
   local fixture_name="$1"
-  shift
-  local diagnostic
-  local expected_diagnostic
 
-  if diagnostic="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
-    "$plan_structure_check" 2>&1 >/dev/null)"; then
+  if pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_check" >/dev/null 2>&1; then
     printf 'Negative plan structure fixture unexpectedly passed: %s\n' \
       "$fixture_name" >&2
     exit 1
   fi
+}
 
-  for expected_diagnostic in "$@"; do
-    if [[ "$diagnostic" != *"$expected_diagnostic"* ]]; then
-      printf 'Negative plan structure fixture failed without the expected diagnostic: %s\nexpected: %s\n%s\n' \
-        "$fixture_name" "$expected_diagnostic" "$diagnostic" >&2
-      exit 1
-    fi
-  done
+expect_plan_structure_report() {
+  local fixture_name="$1"
+  local expected_classification="$2"
+  shift 2
+  local report
+  local actual_classification
+  local actual_diagnostics
+  local expected_diagnostics
+
+  if ! report="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_report" 2>&1)"; then
+    printf 'Plan structure report failed to evaluate: %s\n%s\n' \
+      "$fixture_name" "$report" >&2
+    exit 1
+  fi
+
+  actual_classification="$(head -n 1 <<<"$report")"
+  actual_diagnostics="$(tail -n +2 <<<"$report" | LC_ALL=C sort)"
+  expected_diagnostics="$(if [[ "$#" -gt 0 ]]; then printf '%s\n' "$@"; fi | LC_ALL=C sort)"
+
+  if [[ "$actual_classification" != "$expected_classification" ]]; then
+    printf 'Plan structure fixture has the wrong classification: %s\nexpected: %s\nactual: %s\n' \
+      "$fixture_name" "$expected_classification" "$actual_classification" >&2
+    exit 1
+  fi
+
+  if [[ "$actual_diagnostics" != "$expected_diagnostics" ]]; then
+    printf 'Plan structure fixture diagnostics differ from the manifest: %s\nexpected (sorted):\n%s\nactual (sorted):\n%s\n' \
+      "$fixture_name" "$expected_diagnostics" "$actual_diagnostics" >&2
+    exit 1
+  fi
 }
 
 structured_plan_result="structured plan: reference integrity holds"
@@ -277,13 +300,15 @@ while IFS=$'\t' read -r -u 3 -a manifest_columns; do
       else
         expect_plan_structure_pass "$fixture_name" "$legacy_plan_result"
       fi
+      expect_plan_structure_report "$fixture_name" "$fixture_verdict"
       ;;
     fail)
       if [[ "${#expected_diagnostics[@]}" -eq 0 ]]; then
         printf 'Plan structure manifest fail row must list diagnostics: %s\n' "$fixture_name" >&2
         exit 1
       fi
-      expect_plan_structure_failure "$fixture_name" "${expected_diagnostics[@]}"
+      expect_plan_structure_failure "$fixture_name"
+      expect_plan_structure_report "$fixture_name" structured "${expected_diagnostics[@]}"
       ;;
     *)
       printf 'Plan structure manifest has an unknown verdict for %s: %s\n' \

@@ -230,11 +230,29 @@ fn definition_diagnostics(plan: &Plan) -> Vec<PlanDiagnostic> {
         }
     }
 
+    for outside in &plan.outside_definitions {
+        if let Some(section) = outside.section {
+            diagnostics.push(diagnostic(
+                Some(outside.line),
+                format!(
+                    "`{}` is defined under `{}`; it belongs under `{}`",
+                    outside.id,
+                    section.authoritative_section(),
+                    PlanEntryKind::of_id(&outside.id).authoritative_section()
+                ),
+            ));
+        }
+    }
+
     diagnostics
 }
 
 fn undefined_hint(plan: &Plan, id: &str) -> String {
-    if plan.outside_section_ids.iter().any(|other| other == id) {
+    if plan
+        .outside_definitions
+        .iter()
+        .any(|outside| outside.id == id)
+    {
         format!(
             "; it appears only outside `{}`",
             PlanEntryKind::of_id(id).authoritative_section()
