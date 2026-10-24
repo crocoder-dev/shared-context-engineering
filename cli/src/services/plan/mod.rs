@@ -1,16 +1,15 @@
 pub mod command;
 pub mod extract;
+pub mod init;
 pub mod validate;
 
 pub const NAME: &str = "plan";
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) const SCAFFOLD: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/pkl-generated/config/plan-init-scaffold.md"
 ));
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub(crate) const SCAFFOLD_PLAN_NAME_TOKEN: &str = "{plan-name}";
 
 #[cfg(test)]
@@ -198,21 +197,25 @@ struct CommandRun {
 }
 
 #[cfg(test)]
-fn run_plan_check(path: &str) -> CommandRun {
-    let command = crate::services::parse::command_runtime::parse_runtime_command(
-        ["sce", NAME, "check", path].map(String::from),
+fn run_plan_args(args: &[&str], start: &std::path::Path) -> CommandRun {
+    let result = crate::services::parse::command_runtime::parse_runtime_command(
+        std::iter::once("sce")
+            .chain(args.iter().copied())
+            .map(String::from),
         &crate::services::command_registry::CommandRegistry::default(),
         None,
     )
-    .expect("plan check should parse");
-    let crate::services::command_registry::RuntimeCommand::Plan(command) = command else {
-        panic!("expected plan command");
-    };
+    .and_then(|command| {
+        let crate::services::command_registry::RuntimeCommand::Plan(command) = command else {
+            panic!("expected plan command");
+        };
+        command.execute_with(|| Ok(start.to_path_buf()))
+    });
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let exit_code = crate::services::app_support::render_run_outcome(
         crate::services::app_support::RunOutcome {
-            result: command.execute(),
+            result,
             logger: None::<crate::services::observability::traits::NoopLogger>,
             startup_diagnostic: None,
         },
@@ -225,6 +228,11 @@ fn run_plan_check(path: &str) -> CommandRun {
         stdout: String::from_utf8(stdout).expect("stdout should be UTF-8"),
         stderr: String::from_utf8(stderr).expect("stderr should be UTF-8"),
     }
+}
+
+#[cfg(test)]
+fn run_plan_check(path: &str) -> CommandRun {
+    run_plan_args(&[NAME, "check", path], std::path::Path::new("."))
 }
 
 #[test]
@@ -342,6 +350,408 @@ fn completion_scripts_include_plan_check() {
         let script = render_completion(CompletionRequest { shell });
         assert!(
             script.contains("plan") && script.contains("check"),
+            "{shell:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+const SCAFFOLD_CHECK_DEFECTS: [&str; 3] = [
+    "`AC1` is not covered by any task's `Covers:`",
+    "`Covers:` on `T01` is not a comma-separated ID list",
+    "`Scenarios:` on `AC1` is not a comma-separated ID list",
+];
+
+#[cfg(test)]
+fn git_init(root: &std::path::Path) {
+    let output = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .current_dir(root)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(test)]
+fn temp_repository() -> (tempfile::TempDir, std::path::PathBuf) {
+    let directory = tempfile::tempdir().expect("tempdir should be created");
+    let root = directory
+        .path()
+        .canonicalize()
+        .expect("tempdir should canonicalize");
+    git_init(&root);
+    (directory, root)
+}
+
+#[cfg(test)]
+fn tree_listing(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("directory should be readable") {
+            let path = entry.expect("entry should be readable").path();
+            if path.file_name().is_some_and(|name| name == ".git") {
+                continue;
+            }
+            out.push(
+                path.strip_prefix(root)
+                    .expect("path under root")
+                    .to_path_buf(),
+            );
+            if path.symlink_metadata().expect("metadata").is_dir() {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+#[cfg(test)]
+fn sorted_entries(dir: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("directory should be readable")
+        .map(|entry| {
+            entry
+                .expect("entry should be readable")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[cfg(test)]
+fn expected_init_stdout(root: &std::path::Path, name: &str) -> String {
+    let absolute = format!("{}/context/plans/{name}.md", root.display());
+    format!(
+        "Created plan: context/plans/{name}.md\nNext: complete the plan and run\nsce plan check '{}'\n",
+        absolute.replace('\'', "'\\''")
+    )
+}
+
+#[cfg(test)]
+fn check_defects(stderr: &str, path: &str) -> Vec<String> {
+    let prefix = format!("{path}:");
+    let mut defects: Vec<String> = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix(&prefix))
+        .map(|rest| {
+            rest.split_once(": ")
+                .map_or(rest, |(_, message)| message)
+                .to_string()
+        })
+        .collect();
+    defects.sort();
+    defects
+}
+
+#[test]
+fn init_creates_scaffold_at_repository_root() {
+    let (_directory, root) = temp_repository();
+    let run = run_plan_args(&[NAME, "init", "example"], &root);
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stdout, expected_init_stdout(&root, "example"));
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+
+    let plans = root.join("context/plans");
+    assert_eq!(
+        std::fs::read_to_string(plans.join("example.md")).expect("plan should exist"),
+        SCAFFOLD.replacen(SCAFFOLD_PLAN_NAME_TOKEN, "example", 1)
+    );
+    assert!(std::fs::read_to_string(plans.join("example.md"))
+        .expect("plan should exist")
+        .starts_with("# Plan: example\n"));
+    assert_eq!(sorted_entries(&plans), vec!["example.md"]);
+
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&root)
+        .output()
+        .expect("git status should run");
+    assert_eq!(String::from_utf8_lossy(&status.stdout), "?? context/\n");
+}
+
+#[test]
+fn init_from_nested_directory_targets_repository_root() {
+    let directory = tempfile::tempdir().expect("tempdir should be created");
+    let root = directory
+        .path()
+        .canonicalize()
+        .expect("tempdir should canonicalize")
+        .join("repo with 'quote'");
+    std::fs::create_dir(&root).expect("root should be created");
+    git_init(&root);
+    let nested = root.join("a/b");
+    std::fs::create_dir_all(&nested).expect("nested directory should be created");
+
+    let run = run_plan_args(&[NAME, "init", "nested-plan"], &nested);
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        run.stderr
+    );
+    assert_eq!(run.stdout, expected_init_stdout(&root, "nested-plan"));
+    let created = root.join("context/plans/nested-plan.md");
+    assert!(created.is_file());
+    assert!(sorted_entries(&nested).is_empty());
+
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    assert_eq!(lines[0], "Created plan: context/plans/nested-plan.md");
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("sce() {{ printf '%s\\0' \"$@\"; }}\n{}", lines[2]))
+        .current_dir(&nested)
+        .output()
+        .expect("sh should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decoded: Vec<String> = String::from_utf8(output.stdout)
+        .expect("decoded arguments should be UTF-8")
+        .split_terminator('\0')
+        .map(String::from)
+        .collect();
+    let created_path = created.display().to_string();
+    assert_eq!(
+        decoded,
+        vec![NAME.to_string(), "check".to_string(), created_path.clone()]
+    );
+
+    let arguments: Vec<&str> = decoded.iter().map(String::as_str).collect();
+    let check = run_plan_args(&arguments, &nested);
+    assert_eq!(
+        check.exit_code,
+        std::process::ExitCode::from(3),
+        "{}",
+        check.stderr
+    );
+    assert!(
+        check.stderr.contains("SCE-ERR-VALIDATION"),
+        "{}",
+        check.stderr
+    );
+    assert!(
+        !check.stderr.contains("Failed to read plan file"),
+        "{}",
+        check.stderr
+    );
+    assert_eq!(
+        check_defects(&check.stderr, &created_path),
+        SCAFFOLD_CHECK_DEFECTS
+    );
+}
+
+#[test]
+fn init_never_overwrites_existing_entry() {
+    let (_directory, root) = temp_repository();
+    let plans = root.join("context/plans");
+    std::fs::create_dir_all(&plans).expect("plans directory should be created");
+    std::fs::write(plans.join("taken.md"), b"known bytes\n").expect("taken should be written");
+    std::os::unix::fs::symlink("missing-target.md", plans.join("linked.md"))
+        .expect("symlink should be created");
+
+    for name in ["taken", "linked"] {
+        let run = run_plan_args(&[NAME, "init", name], &root);
+        assert_eq!(
+            run.exit_code,
+            std::process::ExitCode::from(3),
+            "{name}: {}",
+            run.stderr
+        );
+        assert!(run.stdout.is_empty(), "{name}: {}", run.stdout);
+        assert!(
+            run.stderr.contains("SCE-ERR-VALIDATION"),
+            "{name}: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr
+                .contains(&format!("Plan already exists: context/plans/{name}.md")),
+            "{name}: {}",
+            run.stderr
+        );
+    }
+
+    assert_eq!(
+        std::fs::read(plans.join("taken.md")).expect("taken should be readable"),
+        b"known bytes\n"
+    );
+    assert_eq!(
+        std::fs::read_link(plans.join("linked.md")).expect("linked should stay a symlink"),
+        std::path::PathBuf::from("missing-target.md")
+    );
+    assert_eq!(sorted_entries(&plans), vec!["linked.md", "taken.md"]);
+}
+
+#[test]
+fn init_rejects_unsafe_names_without_writing() {
+    let (_directory, root) = temp_repository();
+    let before = tree_listing(&root);
+    let too_long = "a".repeat(init::PLAN_NAME_MAX_BYTES + 1);
+
+    for name in [
+        "../escape",
+        "a/b",
+        "Upper",
+        "trailing-",
+        "double--hyphen",
+        "plan.md",
+        "",
+        too_long.as_str(),
+    ] {
+        let run = run_plan_args(&[NAME, "init", name], &root);
+        assert_eq!(
+            run.exit_code,
+            std::process::ExitCode::from(3),
+            "{name:?}: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains("SCE-ERR-VALIDATION"),
+            "{name:?}: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains("Invalid plan name"),
+            "{name:?}: {}",
+            run.stderr
+        );
+    }
+    let run = run_plan_args(&[NAME, "init", "--", "-leading"], &root);
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(3),
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("Invalid plan name '-leading'"),
+        "{}",
+        run.stderr
+    );
+
+    for arguments in [
+        vec![NAME, "init", "-leading"],
+        vec![NAME, "init", "--force", "example"],
+        vec![NAME, "init", "one", "two"],
+    ] {
+        let run = run_plan_args(&arguments, &root);
+        assert_eq!(
+            run.exit_code,
+            std::process::ExitCode::from(2),
+            "{arguments:?}: {}",
+            run.stderr
+        );
+        assert!(
+            run.stderr.contains("SCE-ERR-PARSE"),
+            "{arguments:?}: {}",
+            run.stderr
+        );
+    }
+
+    let run = run_plan_args(&[NAME, "init"], &root);
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(3),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("SCE-ERR-VALIDATION"), "{}", run.stderr);
+    assert!(run.stderr.contains("<NAME>"), "{}", run.stderr);
+
+    assert!(!root.join("context").exists());
+    assert_eq!(tree_listing(&root), before);
+}
+
+#[test]
+fn init_outside_repository_is_runtime_failure() {
+    let directory = tempfile::tempdir().expect("tempdir should be created");
+    let start = directory.path();
+    let run = run_plan_args(&[NAME, "init", "example"], start);
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(4),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(run.stderr.contains("SCE-ERR-RUNTIME"), "{}", run.stderr);
+    assert!(tree_listing(start).is_empty());
+    assert!(!start.join("context").exists());
+}
+
+#[test]
+fn scaffold_authored_passes_check() {
+    let (_directory, root) = temp_repository();
+    let run = run_plan_args(&[NAME, "init", "authored"], &root);
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        run.stderr
+    );
+
+    let path = root.join("context/plans/authored.md");
+    let source = std::fs::read_to_string(&path).expect("plan should exist");
+    assert_eq!(source.matches("Scenarios: TODO").count(), 1);
+    assert_eq!(source.matches("Covers: TODO").count(), 1);
+    let authored = source
+        .replacen("Scenarios: TODO", "Scenarios: none (inspection)", 1)
+        .replacen("Covers: TODO", "Covers: AC1", 1);
+    std::fs::write(&path, &authored).expect("plan should be written");
+
+    let check = run_plan_check(&path.display().to_string());
+    assert_eq!(
+        check.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        check.stderr
+    );
+    assert_eq!(check.stdout, format!("{}\n", command::STRUCTURED_PLAN_PASS));
+    assert!(authored.contains("TODO"));
+}
+
+#[test]
+fn plan_init_appears_in_help() {
+    assert!(crate::services::help::help_text().contains("sce plan init"));
+    let plan_help =
+        crate::cli_schema::render_help_for_path(&[NAME]).expect("plan help should be renderable");
+    assert!(plan_help.contains("init"), "{plan_help}");
+    let help = crate::cli_schema::render_help_for_path(&[NAME, "init"])
+        .expect("plan init help should be renderable");
+    assert!(help.contains("<NAME>"), "{help}");
+}
+
+#[test]
+fn completion_scripts_include_plan_init() {
+    use crate::services::completion::{render_completion, CompletionRequest, CompletionShell};
+
+    for shell in [
+        CompletionShell::Bash,
+        CompletionShell::Zsh,
+        CompletionShell::Fish,
+    ] {
+        let script = render_completion(CompletionRequest { shell });
+        assert!(
+            script.contains("plan") && script.contains("init"),
             "{shell:?}"
         );
     }

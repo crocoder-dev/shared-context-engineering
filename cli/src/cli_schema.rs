@@ -53,8 +53,9 @@ pub const SYNC_TOP_LEVEL_PURPOSE: &str =
     "Synchronize the current repository's Agent Trace database";
 pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
-pub const PLAN_CLAP_ABOUT: &str = "Check the structure and reference integrity of one SCE plan";
-pub const PLAN_TOP_LEVEL_PURPOSE: &str = "Check the structure of one SCE plan";
+pub const PLAN_CLAP_ABOUT: &str =
+    "Create an SCE plan scaffold or check the structure and reference integrity of one SCE plan";
+pub const PLAN_TOP_LEVEL_PURPOSE: &str = "Create or check the structure of one SCE plan";
 pub const PLAN_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
@@ -382,6 +383,14 @@ pub enum PlanSubcommand {
     Check {
         /// Path to the plan Markdown file to check
         path: PathBuf,
+    },
+
+    #[command(
+        about = "Create context/plans/<NAME>.md at the Git repository root from the plan scaffold"
+    )]
+    Init {
+        /// Plan name: lowercase letters and digits separated by single hyphens, without `.md`
+        name: String,
     },
 }
 

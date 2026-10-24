@@ -335,7 +335,14 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
 fn convert_plan_subcommand(subcommand: cli_schema::PlanSubcommand) -> RuntimeCommand {
     let request = match subcommand {
         cli_schema::PlanSubcommand::Check { path } => {
-            services::plan::command::PlanCheckRequest { path }
+            services::plan::command::PlanRequest::Check(services::plan::command::PlanCheckRequest {
+                path,
+            })
+        }
+        cli_schema::PlanSubcommand::Init { name } => {
+            services::plan::command::PlanRequest::Init(services::plan::command::PlanInitRequest {
+                name,
+            })
         }
     };
 

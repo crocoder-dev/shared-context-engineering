@@ -278,7 +278,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: `context/sce/config-generation.md` (new generated artifact, public skeleton function, `plan-init-scaffold` contract, artifact count 146), `context/sce/plan-structure-contract.md` (scaffold and skeleton mode, expected `check` defects), `context/cli/plan-service.md` (embedded scaffold constant and test).
   - Context synchronization: synced
 
-- [ ] T02: `Add the sce plan init command with safe repository-root creation` (status:todo)
+- [x] T02: `Add the sce plan init command with safe repository-root creation` (status:done)
   - Task ID: T02
   - Covers: AC1, AC2, AC3, AC4, AC7
   - Scope: In:
@@ -291,8 +291,12 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Out: Pkl sources, workflow prose, changes to `check` behavior or path resolution, changes to `classify_clap_error`, and Clap parser settings such as `allow_hyphen_values`.
   - Dependencies: T01
   - Done when: `sce plan init <name>` behaves as D4 and D5 state from the repository root and from nested directories. Its printed `check` command works from any directory. Clap-rejected inputs keep their existing exit classes. Argument, name, and repository failures create no file or directory. Existing destinations are never modified. No handled failure publishes a partial plan or leaves a temporary file. All listed tests pass. Help and completions show `init`.
-  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`; `nix develop -c sh -c 'cd cli && cargo fmt'`.
-  - Context synchronization: pending
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` — passed (25 tests, including the eight new S1–S5, S7, and S12 tests); `nix develop -c sh -c 'cd cli && cargo fmt'` — applied. Also: `clippy --all-targets --all-features -- -D warnings` via `run-cli-cargo.sh` — clean; full CLI test suite via `run-cli-cargo.sh test` — 635 passed.
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/command_surface.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/plan/command.rs`, `cli/src/services/plan/init.rs`, `cli/src/services/plan/mod.rs`, `context/plans/sce-plan-init.md`
+  - Result: `PlanSubcommand::Init { name }` maps to `PlanRequest::Init(PlanInitRequest)` beside `PlanRequest::Check(PlanCheckRequest)`. `PlanCommand::execute` delegates to `execute_with(current_dir)`, which validates the name through `init::PlanName::parse` before reading the current directory, so tests pass an explicit start directory without touching process state. `init::create` resolves the root with `git rev-parse --show-toplevel` from the start directory, refuses non-UTF-8 or multi-line roots, requires real (non-symlink) `context` and `context/plans` directories or creates them, writes `.<name>.md.<pid>.tmp` with `create_new`, publishes with `hard_link`, and removes the temporary file after publication and on every handled error after its creation. `AlreadyExists` on the link is `CliError::validation` (`Plan already exists: context/plans/<name>.md`); git, root, and filesystem failures are `CliError::runtime`. Stdout is the D5 three lines with the absolute path in POSIX single quotes. The T01 `dead_code` expectations on `SCAFFOLD` and `SCAFFOLD_PLAN_NAME_TOKEN` were removed. Deviation: `cli/src/command_surface.rs` gained a `sce plan init <name>` line in the top-level `Plan Usage:` help section, and `PLAN_CLAP_ABOUT` / `PLAN_TOP_LEVEL_PURPOSE` now mention creation, because S12 requires top-level help to mention `init`. The symlinked-directory open question follows D4 (refused, exit `4`).
+  - Context impact: `context/cli/plan-service.md` (`init.rs`, `PlanRequest`, `execute_with`, the init command contract, and the new tests), `context/cli/cli-command-surface.md` and `context/sce/cli-shell-completion-contract.md` (the `sce plan init <name>` surface and updated plan help text), `context/architecture.md` and `context/overview.md` (plan service no longer only read-only), `context/glossary.md` (`plan scaffold`).
+  - Context synchronization: synced
 
 - [ ] T03: `Use sce plan init in the change-to-plan workflow and document it` (status:todo)
   - Task ID: T03
