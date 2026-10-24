@@ -54,6 +54,7 @@ pub struct PlanEntry {
     pub kind: PlanEntryKind,
     pub checked: Option<bool>,
     pub line: usize,
+    pub statement: String,
     pub fields: Vec<PlanField>,
 }
 
@@ -118,7 +119,7 @@ fn definition(source: &str, item: &Node, section: PlanEntryKind) -> Option<PlanE
     let Node::ListItem(list_item) = item else {
         return None;
     };
-    let (id, _) = parse_id_token(lead_text(source, item)?)?;
+    let (id, rest) = parse_id_token(lead_text(source, item)?)?;
     let kind = PlanEntryKind::of_id(id);
     if kind != section {
         return None;
@@ -138,6 +139,7 @@ fn definition(source: &str, item: &Node, section: PlanEntryKind) -> Option<PlanE
         kind,
         checked: list_item.checked,
         line: line_of(item),
+        statement: rest.split_whitespace().collect::<Vec<_>>().join(" "),
         fields,
     })
 }
@@ -390,6 +392,44 @@ mod tests {
             .iter()
             .all(|field| field.key != "Covers"));
         assert_eq!(plan.fenced_ids, vec!["S1", "T01"]);
+    }
+
+    #[test]
+    fn definition_statement_is_folded_source_text() {
+        let source = "# Plan: statement\n\
+\n\
+## Design decisions\n\
+\n\
+- D1:   Keep   the extractor authoritative.  \n\
+  - Rationale: One parse.\n\
+- D3: Read plans from the\n\
+  head commit,\tnot the\n\
+     working tree.\n\
+- D2:\n\
+\n\
+```markdown\n\
+- D9: Fenced example.\n\
+```\n";
+        let plan = extract(source).expect("plan should parse");
+        let statements: Vec<(&str, usize, &str)> = plan
+            .entries
+            .iter()
+            .map(|entry| (entry.id.as_str(), entry.line, entry.statement.as_str()))
+            .collect();
+
+        assert_eq!(
+            statements,
+            vec![
+                ("D1", 5, "Keep the extractor authoritative."),
+                (
+                    "D3",
+                    7,
+                    "Read plans from the head commit, not the working tree."
+                ),
+                ("D2", 10, ""),
+            ]
+        );
+        assert_eq!(plan.fenced_ids, vec!["D9"]);
     }
 
     #[test]

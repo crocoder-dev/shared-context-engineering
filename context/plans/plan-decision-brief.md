@@ -183,14 +183,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Extract the definition statement into PlanEntry` (status:todo)
+- [x] T01: `Extract the definition statement into PlanEntry` (status:done)
   - Task ID: T01
   - Covers: AC6
   - Scope: In — `statement: String` on `PlanEntry`, set in `extract::definition` from the `parse_id_token` remainder with whitespace folded, the S12 unit test, and updates to existing tests and callers that build or compare `PlanEntry`. Out — renderer changes and validation rules.
   - Dependencies: none
   - Done when: Every entry carries its folded statement, the S12 test passes, and every existing `plan::extract` and fixture-manifest test passes unchanged.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`
-  - Context synchronization: pending
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/services/plan/extract.rs`
+  - Result: `PlanEntry` gains `statement: String`, which `extract::definition` sets from the `parse_id_token` remainder by folding whitespace with `split_whitespace().join(" ")`. Added `definition_statement_is_folded_source_text`, which covers a one-line statement, a wrapped statement with a tab, an empty `- D2:`, and a fenced `- D9:`. No other code builds `PlanEntry`, and no existing test changed.
+  - Verify outcome: `plan::` passed: 38 passed, 0 failed, including the new test, every `plan::extract` test, and `fixture_expectations_match_manifest`.
+  - Context impact: localized. The plan model gains a `statement` field that later tasks consume. `context/cli/plan-service.md` documents this field in T06.
+  - Context synchronization: synced
 
 - [ ] T02: `Render the Decision Brief layout through BriefFormat` (status:todo)
   - Task ID: T02
