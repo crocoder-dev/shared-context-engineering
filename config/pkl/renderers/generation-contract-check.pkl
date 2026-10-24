@@ -54,6 +54,7 @@ hidden expectedArtifactPaths = new Mapping {
 
   ["config/schema/sce-config.schema.json"] = true
   ["config/optional-workflows.json"] = true
+  ["config/plan-init-scaffold.md"] = true
 }
 
 hidden generatedArtifacts = new Mapping {
@@ -521,10 +522,10 @@ local forbiddenWorkflowReferenceTokens = new Listing {
 /// package and retained non-workflow assets, across OpenCode, Claude, Pi, and
 /// Codex, plus Codex's `.codex/hooks.json`, its install-guidance hook script,
 /// and its six per-workflow `agents/openai.yaml` files (one per catalog
-/// workflow, excluding `sce-decision`). Stating the total as a literal makes
-/// an unintended inventory change fail here instead of silently becoming the
-/// new expectation.
-local expectedArtifactPathCount = 145
+/// workflow, excluding `sce-decision`), plus the plan init scaffold. Stating
+/// the total as a literal makes an unintended inventory change fail here
+/// instead of silently becoming the new expectation.
+local expectedArtifactPathCount = 146
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
@@ -1041,6 +1042,34 @@ hidden assertPlanTemplateStructure = (documents: Mapping) ->
   ) "generated plan template: headings, definitions, fields, and references are structurally valid outside fenced examples"
   else throw("generated plan-template.md failed the structural reference-integrity check: " + defects.join("; "))
 
+local planInitScaffoldPath = "config/plan-init-scaffold.md"
+
+local planInitScaffoldCheckDefects = List(
+  "`Scenarios:` on `AC1` is not a comma-separated ID list",
+  "`Covers:` on `T01` is not a comma-separated ID list",
+  "`AC1` is not covered by any task's `Covers:`"
+)
+
+hidden assertPlanInitScaffold = (artifacts: Mapping) ->
+  let (text = artifacts.getOrNull(planInitScaffoldPath) ?? "")
+  let (checkDefects = planStructure.check(text).defects)
+  let (definedKinds = planStructure.entries(planStructure.annotate(text)).map((entry) -> entry.kind))
+  if (
+    artifacts.containsKey(planInitScaffoldPath)
+    && text.startsWith("# Plan: {plan-name}\n")
+    && text.split("{plan-name}").length == 2
+    && planStructure.skeletonDefects(text).isEmpty
+    && checkDefects.length == planInitScaffoldCheckDefects.length
+    && checkDefects.toSet() == planInitScaffoldCheckDefects.toSet()
+    && !definedKinds.contains("D")
+    && !definedKinds.contains("S")
+    && !text.contains("```")
+    && !text.contains("## Template")
+    && !text.contains("Filled-in")
+    && !text.contains(" rules")
+  ) "plan init scaffold: skeleton headings, single plan-name token, and exact untouched check defects pinned"
+  else throw("generated \(planInitScaffoldPath) must pass plan-template skeleton mode, carry `{plan-name}` exactly once, define no D or S entry, omit authoring rules and examples, and fail check with exactly: " + planInitScaffoldCheckDefects.join("; ") + "; skeleton defects: " + planStructure.skeletonDefects(text).join("; ") + "; check defects: " + checkDefects.join("; "))
+
 local planTemplateOwnedPolicyTokens = new Listing {
   "Acceptance criteria describe the finished system, not the work."
   "Every criterion carries a `Validate:` line."
@@ -1498,6 +1527,7 @@ contractChecks {
   ["compact-plan-template-schema"] = assertCompactPlanTemplateSchema.apply(workflowDocuments)
   ["structured-plan-template-schema"] = assertStructuredPlanTemplateSchema.apply(workflowDocuments)
   ["plan-template-structure"] = assertPlanTemplateStructure.apply(workflowDocuments)
+  ["plan-init-scaffold"] = assertPlanInitScaffold.apply(generatedArtifacts)
   ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
   ["plan-authoring-structured-references"] = assertPlanAuthoringStructuredReferences.apply(workflowDocuments)
   ["next-task-structured-references"] = assertNextTaskStructuredReferences.apply(workflowDocuments)

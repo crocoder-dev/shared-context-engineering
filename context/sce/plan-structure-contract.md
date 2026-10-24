@@ -28,7 +28,7 @@ Both checkers apply the same rules to the plan source outside fenced code blocks
   - An undefined ID that appears only outside its section, or only inside a fenced block, gets a hint saying so.
 - **Coverage.** Every `AC` is covered by some task's `Covers:`, and every `S` is referenced by some `AC`'s `Scenarios:`.
 
-Template-skeleton mode (`templateDefects` in `plan-structure.pkl`) validates generated plan templates, not plans. It stays Pkl-only and is outside this contract.
+Template-skeleton mode (`templateDefects` and the public `skeletonDefects` in `plan-structure.pkl`) validates generated plan templates and the generated plan init scaffold, not plans. It stays Pkl-only and is outside this contract. The scaffold (`config/plan-init-scaffold.md`) is the one generated document checked in both modes: it must pass skeleton mode, and the Pkl `check` path and the Rust `validate` path must both reject it untouched with exactly the two not-an-ID-list defects (`Scenarios:` on `AC1`, `Covers:` on `T01`) and the uncovered-`AC1` defect, so an unedited scaffold can never pass as an authored plan.
 
 ## Shared fixtures and manifest
 

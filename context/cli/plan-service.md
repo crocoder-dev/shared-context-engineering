@@ -7,6 +7,7 @@
 - `extract.rs` is the only plan-service code that touches `markdown::mdast::Node`. It parses the source with `markdown-rs` (`markdown` crate, `to_mdast(source, &ParseOptions::gfm())`) and returns an owned `Plan` model. It never scans lines to find structure.
 - `validate.rs` holds the pure `validate(&Plan) -> PlanReport` rules. It has no I/O and never touches `mdast` types.
 - `command.rs` owns the `sce plan check <path>` command (see [Command contract](#command-contract)).
+- `mod.rs` embeds the generated plan init scaffold as the crate-visible `SCAFFOLD` constant (`include_str!` of `OUT_DIR/pkl-generated/config/plan-init-scaffold.md`) with its `SCAFFOLD_PLAN_NAME_TOKEN` (`{plan-name}`). `cli/build.rs` requires that staged path, so a payload or package fallback without the scaffold fails the build. The binary never renders the scaffold itself.
 
 ## Plan model
 
@@ -66,6 +67,7 @@
 - `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `pass` or `fail`, then the complete expected defect messages for `fail` rows, compared as an exact order-insensitive multiset. Every `*.md` fixture in the directory must be listed exactly once.
 - `sce plan check`: The read-only CLI command that runs `extract` then `validate` on one plan file and reports through the exit `0`/`3`/`4` contract above.
 - `plan diagnostic`: One `PlanDiagnostic` from `validate`, with Pkl defect wording and an optional 1-based source line.
+- `plan init scaffold`: The generated `config/plan-init-scaffold.md` plan skeleton rendered by `config/pkl/base/plan-init-scaffold.pkl` and embedded as `SCAFFOLD`. Untouched, it fails `sce plan check` with exactly its `Scenarios: TODO` and `Covers: TODO` reference defects (see the [plan structure contract](../sce/plan-structure-contract.md)).
 
 ## Divergences from the Pkl line scanner
 
@@ -75,4 +77,4 @@ The extractor follows CommonMark/GFM nesting. The Pkl checker requires fields at
 
 `cli/src/services/plan/extract.rs` unit tests (`plan::extract`) read the shared plan-structure fixtures through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. They cover fenced examples, misplaced definitions, unstructured plans with fenced structured examples, source-sliced field values with lines, and the ID grammar.
 
-Module-level tests in `cli/src/services/plan/mod.rs` make the shared contract mechanical. `plan::fixture_expectations_match_manifest` runs every manifest row through `extract` and `validate` and requires that every fixture is listed. `plan::diagnostic_lines_match_source_positions` asserts exact diagnostic lines, and checks that a missing heading has no line. The `plan::command_*` tests drive `sce plan check` through the parser and stdout/stderr renderer for valid plans (by relative and absolute path), an invalid plan, an unstructured plan, a missing file, and a plan whose commands would create a marker file. `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` cover help and completion.
+Module-level tests in `cli/src/services/plan/mod.rs` make the shared contract mechanical. `plan::fixture_expectations_match_manifest` runs every manifest row through `extract` and `validate` and requires that every fixture is listed. `plan::diagnostic_lines_match_source_positions` asserts exact diagnostic lines, and checks that a missing heading has no line. The `plan::command_*` tests drive `sce plan check` through the parser and stdout/stderr renderer for valid plans (by relative and absolute path), an invalid plan, an unstructured plan, a missing file, and a plan whose commands would create a marker file. `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` cover help and completion. `plan::scaffold_untouched_fails_check` asserts the embedded scaffold has one `{plan-name}` token, defines no decision or scenario entries, and validates to exactly the three untouched-scaffold diagnostics.

@@ -295,6 +295,8 @@ local function inspect(text: String, skeleton: Boolean): PlanReport =
 
 function check(text: String): PlanReport = inspect(text, false)
 
+function skeletonDefects(text: String): List<String> = inspect(text, true).defects
+
 function fencedBlockUnder(text: String, heading: String): String? =
   let (planLines = annotate(text))
   let (start = planLines.findIndexOrNull((line) -> line.fenced && line.section == heading))

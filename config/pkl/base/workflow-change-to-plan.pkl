@@ -512,6 +512,30 @@ Do not:
 
 
 
+planAcceptanceCriteriaIntro = """
+How this plan is proven complete. Each criterion is observable and names the
+check that proves it. `/validate` runs these checks; no task in the stack
+performs final validation.
+"""
+
+planFullValidationIntro = """
+Repository-wide checks `/validate` runs after the last task, regardless of
+which criterion they map to.
+"""
+
+planTaskContextSynchronizationLifecycle = """
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+"""
+
 changeToPlanPlanTemplate = """
 # Internal persisted-document format: Plan template
 
@@ -546,9 +570,7 @@ the section when there are none.}
 
 ## Acceptance criteria
 
-How this plan is proven complete. Each criterion is observable and names the
-check that proves it. `/validate` runs these checks; no task in the stack
-performs final validation.
+\(planAcceptanceCriteriaIntro)
 
 - [ ] AC1: {observable outcome, stated as behavior rather than as work done}
   - Validate: `{command, assertion, or inspection that proves AC1}`
@@ -568,8 +590,7 @@ performs final validation.
 
 ### Full validation
 
-Repository-wide checks `/validate` runs after the last task, regardless of
-which criterion they map to.
+\(planFullValidationIntro)
 
 - `{full check suite command}`
 - `{generated-output or parity check command, when applicable}`
@@ -578,16 +599,7 @@ which criterion they map to.
 
 - {Durable context files that must describe the change once implemented.}
 
-## Task context synchronization lifecycle
-
-Persist this field in every plan; this is durable plan state, not chat state:
-
-- **Task context synchronization:** every task carries `pending | synced | blocked`.
-  A completed task must be `synced` before another task can start or the plan can
-  finish.
-- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
-  beside the status. Never infer `synced` from conversation history; write every
-  lifecycle transition to the plan file.
+\(planTaskContextSynchronizationLifecycle)
 
 ## Constraints and non-goals
 

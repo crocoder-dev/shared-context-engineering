@@ -1,0 +1,65 @@
+import "workflow-change-to-plan.pkl" as changeToPlan
+
+planNameToken = "{plan-name}"
+
+text = """
+# Plan: \(planNameToken)
+
+## Change summary
+
+TODO: Describe what changes, where, and why in one or two paragraphs.
+
+## Design decisions
+
+TODO: Record each real architectural choice with Boundary, Rationale, Rejected, and Trade-offs, or delete this section when there are none.
+
+## Acceptance criteria
+
+\(changeToPlan.planAcceptanceCriteriaIntro)
+
+- [ ] AC1: TODO: State one observable outcome.
+  - Validate: TODO
+  - Scenarios: TODO
+
+### Verification scenarios
+
+TODO: Add the scenarios that acceptance criteria reference, each with Given, When, Then, and Check.
+
+### Full validation
+
+\(changeToPlan.planFullValidationIntro)
+
+- TODO: List the repository-wide check commands.
+
+### Context sync
+
+- TODO: List the durable context files that must describe the change.
+
+\(changeToPlan.planTaskContextSynchronizationLifecycle)
+
+## Constraints and non-goals
+
+- **In scope:** TODO
+- **Out of scope:** TODO
+- **Constraints:** TODO
+- **Non-goal:** TODO
+
+## Assumptions
+
+TODO: Record assumptions and the conventions they rest on, or delete this section when there are none.
+
+## Task stack
+
+- [ ] T01: `TODO` (status:todo)
+  - Task ID: T01
+  - Covers: TODO
+  - Scope: In — TODO. Out — TODO.
+  - Dependencies: none
+  - Done when: TODO
+  - Verify: TODO
+  - Context synchronization: pending
+
+## Open questions
+
+TODO: List non-blocking questions, or write `None.` with a short justification.
+"""

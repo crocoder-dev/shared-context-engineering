@@ -4,6 +4,15 @@ pub mod validate;
 
 pub const NAME: &str = "plan";
 
+#[cfg_attr(not(test), expect(dead_code))]
+pub(crate) const SCAFFOLD: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/pkl-generated/config/plan-init-scaffold.md"
+));
+
+#[cfg_attr(not(test), expect(dead_code))]
+pub(crate) const SCAFFOLD_PLAN_NAME_TOKEN: &str = "{plan-name}";
+
 #[cfg(test)]
 fn fixture_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -153,6 +162,32 @@ fn misplaced_definition_ignores_prose_and_fenced_mentions() {
             ),
         ]
     );
+}
+
+#[test]
+fn scaffold_untouched_fails_check() {
+    assert_eq!(SCAFFOLD.matches(SCAFFOLD_PLAN_NAME_TOKEN).count(), 1);
+    let source = SCAFFOLD.replacen(SCAFFOLD_PLAN_NAME_TOKEN, "untouched", 1);
+    assert!(source.starts_with("# Plan: untouched\n"), "{source}");
+
+    let plan = extract::extract(&source).expect("scaffold should parse");
+    assert_eq!(plan.entries_of(extract::PlanEntryKind::Decision).count(), 0);
+    assert_eq!(plan.entries_of(extract::PlanEntryKind::Scenario).count(), 0);
+
+    let report = validate::validate(&plan);
+    let mut actual: Vec<&str> = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    let mut expected = vec![
+        "`Scenarios:` on `AC1` is not a comma-separated ID list",
+        "`AC1` is not covered by any task's `Covers:`",
+        "`Covers:` on `T01` is not a comma-separated ID list",
+    ];
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
 }
 
 #[cfg(test)]

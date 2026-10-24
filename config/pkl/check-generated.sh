@@ -36,6 +36,7 @@ legacy_paths=(
   "config/.claude"
   "config/.pi"
   "config/schema/sce-config.schema.json"
+  "config/plan-init-scaffold.md"
   "cli/assets/generated"
 )
 
@@ -338,6 +339,7 @@ required_paths=(
   "config/.pi/skills"
   "config/.pi/extensions/sce/index.ts"
   "config/schema/sce-config.schema.json"
+  "config/plan-init-scaffold.md"
 )
 
 for path in "${required_paths[@]}"; do
