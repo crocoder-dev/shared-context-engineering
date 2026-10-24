@@ -83,31 +83,31 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `sce plan init example`, run inside a Git repository, creates `context/plans/example.md` holding the embedded scaffold with the title `# Plan: example`, and creates `context/plans/` when it is missing. It prints the three-line D5 success output: the repository-relative `Created plan:` path, and a `sce plan check` command with the shell-quoted absolute plan path. No temporary file remains in `context/plans/`, and no other repository file is created or modified.
+- [x] AC1: `sce plan init example`, run inside a Git repository, creates `context/plans/example.md` holding the embedded scaffold with the title `# Plan: example`, and creates `context/plans/` when it is missing. It prints the three-line D5 success output: the repository-relative `Created plan:` path, and a `sce plan check` command with the shell-quoted absolute plan path. No temporary file remains in `context/plans/`, and no other repository file is created or modified.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::init`
   - Decisions: D3, D4, D5
   - Scenarios: S1
-- [ ] AC2: Existing destinations, including symlinks, are never overwritten or modified, and a conflict leaves no temporary file behind. Invalid names that reach application validation exit `3`. Inputs that Clap rejects exit `2`, and a missing `<NAME>` keeps the existing Clap mapping (exit `3`). Argument and name-validation rejections create no directory or file. A missing repository exits `4` and leaves the directory unchanged.
+- [x] AC2: Existing destinations, including symlinks, are never overwritten or modified, and a conflict leaves no temporary file behind. Invalid names that reach application validation exit `3`. Inputs that Clap rejects exit `2`, and a missing `<NAME>` keeps the existing Clap mapping (exit `3`). Argument and name-validation rejections create no directory or file. A missing repository exits `4` and leaves the directory unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::init`
   - Decisions: D4, D5
   - Scenarios: S3, S4, S5
-- [ ] AC3: Running `init` from a nested directory of a Git repository, including one whose root path contains a space and an apostrophe, creates `<root>/context/plans/<name>.md`. It prints the same repository-relative `Created plan:` line. Its printed `sce plan check` command, run from that nested directory, checks the created file and fails structural validation with exit `3`, not a missing-file runtime error.
+- [x] AC3: Running `init` from a nested directory of a Git repository, including one whose root path contains a space and an apostrophe, creates `<root>/context/plans/<name>.md`. It prints the same repository-relative `Created plan:` line. Its printed `sce plan check` command, run from that nested directory, checks the created file and fails structural validation with exit `3`, not a missing-file runtime error.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::init`
   - Decisions: D4, D5
   - Scenarios: S2
-- [ ] AC4: The untouched scaffold fails `sce plan check` with exactly the incomplete-reference defects. The same scaffold with only its reference placeholders filled passes, although its other `TODO` placeholders remain, which shows that `check` is structural and not semantic approval.
+- [x] AC4: The untouched scaffold fails `sce plan check` with exactly the incomplete-reference defects. The same scaffold with only its reference placeholders filled passes, although its other `TODO` placeholders remain, which shows that `check` is structural and not semantic approval.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::scaffold`
   - Decisions: D1
   - Scenarios: S6, S7
-- [ ] AC5: The scaffold is generated from the canonical Pkl sources and pinned to the template skeleton by the generation contract. It is embedded in the binary, it is present in the packaged fallback, and it is never committed to the repository.
+- [x] AC5: The scaffold is generated from the canonical Pkl sources and pinned to the template skeleton by the generation contract. It is embedded in the binary, it is present in the packaged fallback, and it is never committed to the repository.
   - Validate: `nix run .#pkl-check-generated`
   - Decisions: D1, D2
   - Scenarios: S8, S9
-- [ ] AC6: The generated `sce-change-to-plan` workflow runs `sce plan init` for new plans only, after its clarification and target-resolution gates, and skips `init` for revisions while preserving completed tasks and evidence. It accepts initialization only on exit `0` with the success line and an existing file. It returns `blocked` when `init` is missing, unsupported, exits nonzero, or returns unexpected output. It never reports `plan_ready` while scaffold `TODO` placeholders remain. For new plans and revisions alike, it reports `plan_ready` only after `sce plan check` exits `0` with `structured plan: reference integrity holds`. It repairs and reruns on structural diagnostics, and returns `blocked` when `check` is unavailable or returns any other result. The workflow contains no legacy-binary detection, no manual initialization fallback, and no manual validation fallback. Generation contract checks enforce each of these rules and reject negative fixtures that break them.
+- [x] AC6: The generated `sce-change-to-plan` workflow runs `sce plan init` for new plans only, after its clarification and target-resolution gates, and skips `init` for revisions while preserving completed tasks and evidence. It accepts initialization only on exit `0` with the success line and an existing file. It returns `blocked` when `init` is missing, unsupported, exits nonzero, or returns unexpected output. It never reports `plan_ready` while scaffold `TODO` placeholders remain. For new plans and revisions alike, it reports `plan_ready` only after `sce plan check` exits `0` with `structured plan: reference integrity holds`. It repairs and reruns on structural diagnostics, and returns `blocked` when `check` is unavailable or returns any other result. The workflow contains no legacy-binary detection, no manual initialization fallback, and no manual validation fallback. Generation contract checks enforce each of these rules and reject negative fixtures that break them.
   - Validate: `nix run .#pkl-check-generated`
   - Decisions: D6
   - Scenarios: S10, S11, S13, S14, S15
-- [ ] AC7: `sce --help`, `sce plan --help`, and the generated Bash, Zsh, and Fish completion scripts include `plan init`.
+- [x] AC7: `sce --help`, `sce plan --help`, and the generated Bash, Zsh, and Fish completion scripts include `plan init`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::plan_init`
   - Decisions: D3
   - Scenarios: S12
@@ -298,7 +298,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: `context/cli/plan-service.md` (`init.rs`, `PlanRequest`, `execute_with`, the init command contract, and the new tests), `context/cli/cli-command-surface.md` and `context/sce/cli-shell-completion-contract.md` (the `sce plan init <name>` surface and updated plan help text), `context/architecture.md` and `context/overview.md` (plan service no longer only read-only), `context/glossary.md` (`plan scaffold`).
   - Context synchronization: synced
 
-- [ ] T03: `Use sce plan init in the change-to-plan workflow and document it` (status:todo)
+- [x] T03: `Use sce plan init in the change-to-plan workflow and document it` (status:done)
   - Task ID: T03
   - Covers: AC6
   - Scope: In:
@@ -312,9 +312,67 @@ Persist this field in every plan; this is durable plan state, not chat state:
     Out: `/next-task` and `/validate` content, including the `sce-validate` checker fallback; the plan template schema; CLI code; and any TODO detection, new mode, or behavior change in `sce plan check`.
   - Dependencies: T02
   - Done when: All four targets' generated `plan-authoring.md` carry the D6 behavior, including the completeness gate and the mandatory `check` gate. None of them contains legacy-binary detection, a manual initialization fallback, or a manual validation fallback. The contract assertion passes on generated output and fails on each of its negative fixtures. No `sce-next-task` or `sce-validate` document mentions `sce plan init`.
-  - Verify: `nix run .#pkl-check-generated`.
-  - Context synchronization: pending
+  - Verify: `nix run .#pkl-check-generated` — passed (146 files; the new `plan-authoring-plan-init` contract check evaluates to its pass message, which requires all four targets' `plan-authoring.md` to satisfy it and all six negative fixtures to be rejected; the updated `plan-authoring-structured-references` check and its existing negative fixture still pass).
+  - Completed: 2026-10-24
+  - Files changed: `config/pkl/base/workflow-change-to-plan.pkl`, `config/pkl/check-generated.sh`, `config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl`, `config/pkl/renderers/generation-contract-check.pkl`, `context/sce/shared-context-plan-workflow.md`, `context/plans/sce-plan-init.md`
+  - Result: Step 2.1 no longer writes, and says step 2.10 initializes a new plan after the clarification gate. Step 2.9 is pre-write guidance that never substitutes for `sce plan check`. Step 2.10 now has `New plan` (`sce plan init {plan_name}` with the exact three-part D6 success condition, `blocked` otherwise, then fill the scaffold), `Existing plan` (no `init`, `Updating an existing plan` rules), `Completeness gate`, and `Structural check` (exit `0` plus success marker, repair and rerun on exit `3`, `blocked` otherwise) subsections, and ends with the `plan_ready` permission. The manual `Reference rules` fallback and its open-question note were removed. `assertPlanAuthoringPlanInit` requires the D6 tokens, forbids `manual`, `checker is unavailable`, and legacy-help wording, orders the clarification gate before `sce plan init` and the gate and check marker before the `plan_ready` permission, and keeps `sce plan init` out of `sce-next-task` and `sce-validate` documents. Its six negative fixtures are derived in-contract from each real generated document: gate removed, gate moved after `plan_ready`, manual template fallback appended, init success reduced to exit `0`, the old checker fallback appended, and check success reduced to exit `0`. `requiredPlanAuthoringStructuredTokens` dropped the fallback tokens, and its failure message (mirrored in the fixture and `check-generated.sh`) dropped "with the checker trust rule and manual Reference rules fallback". Deviation: the negative fixtures live in `generation-contract-check.pkl`, following `assertCompactExecutionContractFixtures`, rather than as separate fixture files.
+  - Context impact: `context/sce/shared-context-plan-workflow.md` (updated in this task: step 2.10 init, completeness, and check gates, and the change-to-plan versus validate checker split); `context/sce/config-generation.md` (the `plan-authoring-plan-init` contract check).
+  - Context synchronization: synced
 
 ## Open questions
 
 - Should `init` refuse a symlinked `context/` or `context/plans/` directory, as D4 plans to? A repository that deliberately symlinks `context/` elsewhere would be blocked. Following the link instead would allow writes outside the repository root.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-24
+
+### Commands run
+
+- `nix run .#sce -- plan check context/plans/sce-plan-init.md` -> exit 0 (`structured plan: reference integrity holds`)
+- `nix flake check` -> exit 0 (all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 146 files, inventory sha256 49dfdb6b…0392)
+- `nix build .#default --no-link` -> exit 0 (packaged CLI built)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::init` -> exit 0 (5 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::scaffold` -> exit 0 (2 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::plan_init` -> exit 0 (1 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::completion_scripts_include_plan_init` -> exit 0 (1 passed)
+- `bash scripts/test-prepare-cli-generated-assets.sh` -> exit 0 (delegation tests passed)
+
+### Success-criteria verification
+
+- [x] AC1: `sce plan init example` creates the scaffold at the repository root with the D5 output -> `plan::init` filter passed (5 tests); scenarios: S1
+- [x] AC2: Existing entries never overwritten; validation, Clap, and missing-repository failure classes with no writes -> `plan::init` filter passed; scenarios: S3, S4, S5
+- [x] AC3: Nested invocation targets the root and its printed check command works there -> `plan::init` filter passed; scenarios: S2
+- [x] AC4: Untouched scaffold fails `check` with exactly the reference defects; reference-filled scaffold passes -> `plan::scaffold` filter passed (2 tests); scenarios: S6, S7
+- [x] AC5: Scaffold generated, contract-pinned, embedded, in the fallback, not committed -> `nix run .#pkl-check-generated` passed, `nix build .#default` passed, fallback test passed, no `config/plan-init-scaffold.md` in the worktree or `git ls-files`; scenarios: S8, S9
+- [x] AC6: Workflow uses `init` for new plans only, blocks on any other result, gates `plan_ready` on completeness and `check`, has no fallbacks -> `nix run .#pkl-check-generated` passed, including the `plan-authoring-plan-init` contract and its negative fixtures; scenarios: S10, S11, S13, S14, S15
+- [x] AC7: Help and completions include `plan init` -> `plan::plan_init` filter passed, and `cli-tests` passed inside `nix flake check`; scenarios: S12
+
+### Scenario verification
+
+- S1 (AC1): test `services::plan::init_creates_scaffold_at_repository_root` -> ok; status: Verified
+- S2 (AC3): test `services::plan::init_from_nested_directory_targets_repository_root` -> ok; status: Verified
+- S3 (AC2): test `services::plan::init_never_overwrites_existing_entry` -> ok; status: Verified
+- S4 (AC2): test `services::plan::init_rejects_unsafe_names_without_writing` -> ok; status: Verified
+- S5 (AC2): test `services::plan::init_outside_repository_is_runtime_failure` -> ok; status: Verified
+- S6 (AC4): test `services::plan::scaffold_untouched_fails_check` -> ok; status: Verified
+- S7 (AC4): test `services::plan::scaffold_authored_passes_check` -> ok; status: Verified
+- S8 (AC5): command `nix run .#pkl-check-generated` (`plan-init-scaffold` contract) -> passed, 146 files; no repository-local `config/plan-init-scaffold.md`; status: Verified
+- S9 (AC5): command `bash scripts/test-prepare-cli-generated-assets.sh` and `nix build .#default --no-link` -> both exit 0; status: Verified
+- S10 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract) -> passed; status: Verified
+- S11 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract) -> passed; status: Verified
+- S12 (AC7): test `services::plan::plan_init_appears_in_help` and `services::plan::completion_scripts_include_plan_init` -> both ok; `cli-tests` passed in `nix flake check`; status: Verified
+- S13 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
+- S14 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
+- S15 (AC6): command `nix run .#pkl-check-generated` (`plan-authoring-plan-init` contract and negative fixtures) -> passed; status: Verified
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- `nix flake check` does not build the release package, so a non-test-only compile failure is caught only by `nix build .#default`.
+- The worktree carries an out-of-scope test change in `cli/src/services/hooks/claude_mutation_scope/state.rs`; it is not part of this plan.

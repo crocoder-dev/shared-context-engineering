@@ -93,10 +93,37 @@ writes scenarios only for the case kinds (normal, boundary, failure,
 cancellation, concurrency, recovery) the change makes relevant, and a `Check:`
 never names a test that neither exists nor is created by a task. Before writing
 the plan, a reference-consistency pass applies every `Reference rules`
-entry to the full draft and fixes each defect first. After writing the
-plan, it runs `sce plan check {plan-path}`, fixes every reported diagnostic, and
-re-runs the checker before returning `plan_ready`. The phase cites the template's rule sections by
-name and does not restate them.
+entry to the full draft and fixes each defect first. That pass is pre-write
+guidance only and never substitutes for `sce plan check`. The phase cites the
+template's rule sections by name and does not restate them.
+
+Step 2.10 writes the plan with no fallback, because structured plans are the
+only supported format:
+
+- **New plan:** after the clarification gate, it runs `sce plan init {plan_name}`
+  (see [plan service](../cli/plan-service.md)). Initialization succeeds only on
+  exit `0`, a `Created plan: context/plans/{plan_name}.md` stdout line, and an
+  existing file. Every other result, including a missing `sce` or a binary
+  without `init`, returns `blocked` with the exit code and stderr. The agent
+  then fills the generated plan scaffold using `references/plan-template.md`.
+  The template never substitutes for `init`.
+- **Existing plan:** it skips `init` and applies the `Updating an existing plan`
+  rules, which preserve completed tasks and their evidence.
+- **Completeness gate (both paths):** no scaffold `TODO` placeholder remains,
+  and unused optional sections (`Design decisions`, `Assumptions`) are removed.
+  `sce plan check` is structural and does not detect placeholders, so the gate
+  is enforced here.
+- **Structural check (both paths):** `sce plan check {plan-path}` passes only on
+  exit `0` with `structured plan: reference integrity holds`. On exit `3`
+  diagnostics the phase repairs the plan and reruns the check, or returns
+  `blocked`. Every other result returns `blocked`.
+
+`plan_ready` requires both the completeness gate and a passing `sce plan check`.
+The `plan-authoring-plan-init` generation contract check pins these rules. It
+rejects negative fixtures that drop or reorder the gate, add a manual template
+or `Reference rules` fallback, or accept `init` or `check` without their exact
+success output. It also keeps `sce plan init` out of every `sce-next-task` and
+`sce-validate` document.
 
 Responsibility for structural consistency is split by surface. Generation checks
 (`nix run .#pkl-check-generated`, also run by `nix flake check`) verify the plan
@@ -113,15 +140,16 @@ runnable with
 The two checkers share one rule set, wording, and fixture manifest; see the
 [plan structure contract](plan-structure-contract.md).
 
-`/change-to-plan` (after writing) and `/validate` (step 4, before scenario
-verification) run `sce plan check {plan-path}`;
-`/validate` records each diagnostic as a failed check. Both trust a result only
-when the checker actually ran: exit `0` with
+`/change-to-plan` (step 2.10, as above) and `/validate` (step 4, before scenario
+verification) run `sce plan check {plan-path}`. `/change-to-plan` has no
+fallback when the checker is missing or returns anything else. `/validate`
+records each diagnostic as a failed check, and it trusts a result only when the
+checker actually ran: exit `0` with
 `structured plan: reference integrity holds` on stdout, or exit `3`
-with diagnostics. Any other outcome, such as an older `sce` that answers the
-unknown `plan` command with help and exit `0`, means the checker is unavailable,
-and the workflow applies the manual `Reference rules` pass instead and records
-the fallback. `/next-task` never invokes the checker.
+with diagnostics. For `/validate` only, any other outcome, such as an older
+`sce` that answers the unknown `plan` command with help and exit `0`, means the
+checker is unavailable. The workflow then applies the manual `Reference rules`
+pass instead and records the fallback. `/next-task` never invokes the checker.
 
 ## Continuation contract
 

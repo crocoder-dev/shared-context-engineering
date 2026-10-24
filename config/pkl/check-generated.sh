@@ -157,7 +157,7 @@ expect_pkl_fixture_failure \
   "generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl" \
-  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing the plan with the checker trust rule and manual Reference rules fallback, and keep sce plan check out of every sce-next-task document"
+  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing the plan, and keep sce plan check out of every sce-next-task document"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-structured-references-check.pkl" \
   "generated sce-next-task plan-review.md, output.md, and task-execution.md must carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, and never check an acceptance criterion or record a scenario status during task execution"

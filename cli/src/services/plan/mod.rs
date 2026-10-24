@@ -731,13 +731,51 @@ fn scaffold_authored_passes_check() {
 
 #[test]
 fn plan_init_appears_in_help() {
-    assert!(crate::services::help::help_text().contains("sce plan init"));
-    let plan_help =
-        crate::cli_schema::render_help_for_path(&[NAME]).expect("plan help should be renderable");
+    let root_help = strip_ansi(&crate::services::help::help_text());
+    assert!(root_help.contains("sce plan init"), "{root_help}");
+    let plan_help = strip_ansi(
+        &crate::cli_schema::render_help_for_path(&[NAME]).expect("plan help should be renderable"),
+    );
     assert!(plan_help.contains("init"), "{plan_help}");
-    let help = crate::cli_schema::render_help_for_path(&[NAME, "init"])
-        .expect("plan init help should be renderable");
+    let help = strip_ansi(
+        &crate::cli_schema::render_help_for_path(&[NAME, "init"])
+            .expect("plan init help should be renderable"),
+    );
     assert!(help.contains("<NAME>"), "{help}");
+}
+
+#[cfg(test)]
+fn strip_ansi(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '\x1b' {
+            output.push(character);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                for next in chars.by_ref() {
+                    if ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(next) = chars.next() {
+                    if next == '\x07' {
+                        break;
+                    }
+                    if next == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    output
 }
 
 #[test]

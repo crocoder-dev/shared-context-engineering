@@ -1122,12 +1122,8 @@ local requiredPlanAuthoringStructuredTokens = new Listing {
   "Give each task its `Covers:` field"
   "## 2.9 Check references"
   "run a reference-consistency pass over the\ncomplete draft that applies every `Reference rules` entry"
-  "After writing the plan, run `sce plan check {plan-path}`."
-  "Do\nnot set internal status `plan_ready` until the checker passes."
-  "Trust the checker only when it actually ran:"
+  "run `sce plan check {plan-path}`."
   "`structured plan: reference integrity holds`"
-  "Any other outcome means the checker is unavailable;"
-  "manual `Reference rules` pass from step 2.9"
 }
 
 local noNextTaskPlanCheckReference = (documents: Mapping) ->
@@ -1141,7 +1137,87 @@ hidden assertPlanAuthoringStructuredReferences = (documents: Mapping) ->
     )
     && noNextTaskPlanCheckReference.apply(documents)
   ) "sce-change-to-plan plan-authoring: decisions, criteria, scenarios, and tasks authored in order with a reference-consistency pass"
-  else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing the plan with the checker trust rule and manual Reference rules fallback, and keep sce plan check out of every sce-next-task document")
+  else throw("generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing the plan, and keep sce plan check out of every sce-next-task document")
+
+local planInitSuccessCondition = "Initialization succeeds only when all three\nhold: exit `0`, stdout contains `Created plan: context/plans/{plan_name}.md`,\nand that file exists."
+
+local planCheckSuccessCondition = "It passes\nonly on exit `0` with `structured plan: reference integrity holds` on stdout."
+
+local planCompletenessGate = "### Completeness gate"
+
+local planReadyPermission = "Set internal status `plan_ready` only after both the completeness gate and\n`sce plan check` pass."
+
+local requiredPlanAuthoringPlanInitTokens = new Listing {
+  "Structured plans are the only supported format. This step has no fallback for\n`sce plan init` or `sce plan check`."
+  "### New plan\n\nRun `sce plan init {plan_name}`."
+  planInitSuccessCondition
+  "Every other result returns `blocked` with the exit code\nand stderr."
+  "a missing `sce` executable, a binary without `init`,\na nonzero exit, an exit `0` without the expected line, and an expected line\nwith no created file."
+  "never a substitute for `sce plan init`. Never write a new\nplan without it."
+  "### Existing plan\n\nDo not run `sce plan init`."
+  "`Updating an existing plan` rules in `references/plan-template.md`, which\npreserve completed tasks and their evidence."
+  planCompletenessGate
+  "the plan contains no scaffold `TODO`\nplaceholder, and optional sections without real entries (`Design decisions`,\n`Assumptions`) are removed."
+  "The change summary, acceptance criteria, design\ndecisions, verification scenarios, task definitions, and verify instructions\nare authored for this change."
+  "While any placeholder remains, keep authoring or return `blocked`."
+  "`sce plan check` is required but not sufficient"
+  "### Structural check\n\nFor new plans and revisions alike, run `sce plan check {plan-path}`."
+  planCheckSuccessCondition
+  "On exit `3` with structural diagnostics, fix each reported defect in the plan\nand run it again, or return `blocked` with the remaining diagnostics"
+  "a binary without `check`, any\nother exit code, and an exit `0` without the success marker."
+  planReadyPermission
+  "It never substitutes for a\nsuccessful `sce plan check` in step 2.10."
+}
+
+local forbiddenPlanAuthoringFallbackTokens = new Listing {
+  "manual"
+  "Manual"
+  "checker is unavailable"
+  "older `sce`"
+  "`plan` help"
+  "plan --help"
+  "Usage: plan"
+}
+
+local hasPlanAuthoringPlanInitContract = (text: String) ->
+  requiredPlanAuthoringPlanInitTokens.every((token) -> text.contains(token))
+  && forbiddenPlanAuthoringFallbackTokens.every((token) -> !text.contains(token))
+  && text.indexOf("## 2.3 Run the clarification gate") < text.indexOf("`sce plan init")
+  && text.indexOf(planCompletenessGate) < text.indexOf(planReadyPermission)
+  && text.indexOf(planCheckSuccessCondition) < text.indexOf(planReadyPermission)
+
+local noPlanInitOutsideChangeToPlan = (documents: Mapping) ->
+  documents.every((path, text) ->
+    !(path.contains("/skills/sce-next-task/") || path.contains("/skills/sce-validate/"))
+    || !text.contains("sce plan init")
+  )
+
+local completenessGateSection = (text: String) ->
+  let (tail = text.drop(text.indexOf(planCompletenessGate)))
+    tail.take(tail.indexOf("### Structural check"))
+
+local planAuthoringPlanInitFixtures = (text: String) ->
+  let (gate = completenessGateSection.apply(text))
+    List(
+      text.replaceFirst(gate, ""),
+      text.replaceFirst(gate, "").replaceFirst(planReadyPermission, planReadyPermission + "\n\n" + gate),
+      text + "\nWhen `sce plan init` is unavailable or fails, author the new plan manually from\n`references/plan-template.md`.\n",
+      text.replaceFirst(planInitSuccessCondition, "Initialization succeeds on exit `0`."),
+      text + "\nAny other outcome means the checker is unavailable; apply the\nmanual `Reference rules` pass from step 2.9 to the written plan instead.\n",
+      text.replaceFirst(planCheckSuccessCondition, "It passes\non exit `0`.")
+    )
+
+hidden assertPlanAuthoringPlanInit = (documents: Mapping) ->
+  let (authoring = documents.toMap().filter((path, _) -> path.endsWith("/skills/sce-change-to-plan/references/plan-authoring.md")))
+    if (
+      authoring.length == generatedTargetRoots.length
+      && authoring.every((_, text) ->
+        hasPlanAuthoringPlanInitContract.apply(text)
+        && planAuthoringPlanInitFixtures.apply(text).every((fixture) -> !hasPlanAuthoringPlanInitContract.apply(fixture))
+      )
+      && noPlanInitOutsideChangeToPlan.apply(documents)
+    ) "sce-change-to-plan plan-authoring: sce plan init for new plans only, completeness gate and passing sce plan check before plan_ready, no fallback; negative fixtures rejected"
+    else throw("generated plan-authoring.md must run sce plan init for new plans after the clarification gate with the exact success condition, skip init for revisions, block on every other init or check result, gate plan_ready on the completeness gate and a check exit 0 with the success marker, and contain no legacy-binary detection or manual initialization or validation fallback; every negative fixture must be rejected; no sce-next-task or sce-validate document may mention sce plan init")
 
 local requiredNextTaskStructuredReferenceTokens = new Listing {
   Pair("/skills/sce-next-task/references/plan-review.md", "Read plan structure only outside fenced code blocks;")
@@ -1530,6 +1606,7 @@ contractChecks {
   ["plan-init-scaffold"] = assertPlanInitScaffold.apply(generatedArtifacts)
   ["plan-template-policy-ownership"] = assertPlanTemplatePolicyOwnership.apply(workflowDocuments)
   ["plan-authoring-structured-references"] = assertPlanAuthoringStructuredReferences.apply(workflowDocuments)
+  ["plan-authoring-plan-init"] = assertPlanAuthoringPlanInit.apply(workflowDocuments)
   ["next-task-structured-references"] = assertNextTaskStructuredReferences.apply(workflowDocuments)
   ["next-task-compact-completion-writing"] = assertNextTaskCompactCompletionWriting.apply(workflowDocuments)
   ["plan-review-reads-completed-record"] = assertPlanReviewReadsCompletedRecord.apply(workflowDocuments)
