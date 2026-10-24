@@ -421,6 +421,33 @@ pub enum PlanSubcommand {
         )]
         paths: Vec<String>,
     },
+
+    #[command(
+        name = "decision-brief",
+        about = "Print a Markdown Decision Brief for the given plans at a commit, offline and without writing files",
+        hide = true
+    )]
+    DecisionBrief {
+        #[arg(
+            long,
+            value_name = "OWNER/NAME",
+            help = "GitHub repository as <OWNER>/<NAME>"
+        )]
+        repo: String,
+
+        #[arg(
+            long,
+            value_name = "SHA",
+            help = "Full 40-character lowercase commit SHA to read the plan files from"
+        )]
+        head: String,
+
+        #[arg(
+            required = true,
+            help = "Plan paths relative to the Git repository root, each context/plans/<FILE>.md"
+        )]
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

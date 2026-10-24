@@ -1715,3 +1715,330 @@ fn decision_brief_rejects_empty_statement() {
         "{intent_review}"
     );
 }
+
+#[cfg(test)]
+fn git_output(root: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=SCE Test",
+            "-c",
+            "user.email=sce-test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .current_dir(root)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("git output should be UTF-8")
+        .trim_end()
+        .to_string()
+}
+
+#[cfg(test)]
+fn commit_repository(root: &std::path::Path) -> String {
+    git_output(root, &["add", "-A"]);
+    git_output(root, &["commit", "--quiet", "--no-verify", "-m", "plans"]);
+    git_output(root, &["rev-parse", "HEAD"])
+}
+
+#[cfg(test)]
+fn run_decision_brief(root: &std::path::Path, head: &str, paths: &[&str]) -> CommandRun {
+    let mut args = vec![NAME, "decision-brief", "--repo", PR_REPO, "--head", head];
+    args.extend_from_slice(paths);
+    run_plan_args(&args, root)
+}
+
+#[cfg(test)]
+fn assert_failure(run: &CommandRun, exit_code: u8, case: &str) {
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::from(exit_code),
+        "{case}: {}",
+        run.stderr
+    );
+    assert!(run.stdout.is_empty(), "{case}: {}", run.stdout);
+}
+
+#[test]
+fn decision_brief_reads_committed_plan() {
+    let (_directory, root) = temp_repository();
+    let path = "context/plans/committed.md";
+    let source = decision_brief_plan_source(
+        "committed",
+        &[("Keep one store.", Some("Is one store enough?"))],
+    );
+    write_repository_plan(&root, path, &source);
+    let head = commit_repository(&root);
+    let url = format!("https://github.com/{PR_REPO}/blob/{head}/{path}");
+    let expected = format!(
+        "<!-- sce:intent-review:start -->\n## Decision Brief\n\n**Review requested:** 1 decision\n\n**Plans:** [committed]({url})\n\n### 1. Is one store enough?\n\n**Proposed:** Keep one store.\n\n[Review committed D1 — rationale, alternatives and trade-offs]({url}#L5)\n\n<!-- sce:intent-review:end -->\n"
+    );
+
+    let before = run_decision_brief(&root, &head, &[path]);
+    assert_eq!(
+        before.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        before.stderr
+    );
+    assert_eq!(before.stdout, expected);
+    assert!(before.stdout.ends_with('\n'), "{:?}", before.stdout);
+    assert!(!before.stdout.ends_with("\n\n"), "{:?}", before.stdout);
+
+    let edited = source
+        .replacen(
+            "## Design decisions\n",
+            "Inserted.\n\nMore.\n\n## Design decisions\n",
+            1,
+        )
+        .replace("Is one store enough?", "Is the edited question shown?");
+    write_repository_plan(&root, path, &edited);
+
+    let after = run_decision_brief(&root, &head, &[path]);
+    assert_eq!(
+        after.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        after.stderr
+    );
+    assert_eq!(after.stdout, before.stdout);
+    assert!(
+        !after.stdout.contains("edited question"),
+        "{}",
+        after.stdout
+    );
+}
+
+#[test]
+fn decision_brief_question_limit() {
+    let (_directory, root) = temp_repository();
+    write_repository_plan(
+        &root,
+        "context/plans/beta.md",
+        &review_plan_source("beta", [Some("One?"), Some("Two?"), None]),
+    );
+    write_repository_plan(
+        &root,
+        "context/plans/alpha.md",
+        &review_plan_source("alpha", [Some("Three?"), None, None]),
+    );
+    let three = commit_repository(&root);
+
+    let accepted = run_decision_brief(
+        &root,
+        &three,
+        &["context/plans/beta.md", "context/plans/alpha.md"],
+    );
+    assert_eq!(
+        accepted.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        accepted.stderr
+    );
+    assert!(
+        accepted
+            .stdout
+            .contains("**Review requested:** 3 decisions"),
+        "{}",
+        accepted.stdout
+    );
+    let headings: Vec<&str> = accepted
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("### "))
+        .collect();
+    assert_eq!(
+        headings,
+        vec!["### 1. Three?", "### 2. One?", "### 3. Two?"]
+    );
+
+    write_repository_plan(
+        &root,
+        "context/plans/alpha.md",
+        &review_plan_source("alpha", [Some("Three?"), None, Some("Four?")]),
+    );
+    let four = commit_repository(&root);
+
+    let rejected = run_decision_brief(
+        &root,
+        &four,
+        &["context/plans/beta.md", "context/plans/alpha.md"],
+    );
+    assert_failure(&rejected, 3, "four marked decisions");
+    assert!(
+        rejected.stderr.contains("Found 4 decisions"),
+        "{}",
+        rejected.stderr
+    );
+    assert!(
+        rejected
+            .stderr
+            .contains("alpha D1, alpha D3, beta D1, beta D2."),
+        "{}",
+        rejected.stderr
+    );
+}
+
+#[test]
+fn decision_brief_rejects_invalid_git_inputs() {
+    use std::io::Write;
+
+    let (_directory, root) = temp_repository();
+    let valid = "context/plans/valid.md";
+    write_repository_plan(
+        &root,
+        valid,
+        &decision_brief_plan_source("valid", &[("Keep one store.", Some("Is it enough?"))]),
+    );
+    let invalid = "context/plans/invalid.md";
+    write_repository_plan(
+        &root,
+        invalid,
+        &std::fs::read_to_string(fixture_dir().join("duplicate-id.md"))
+            .expect("fixture should be readable"),
+    );
+    let linked = "context/plans/linked.md";
+    std::os::unix::fs::symlink("valid.md", root.join(linked)).expect("symlink should be created");
+    let binary = "context/plans/binary.md";
+    let mut bytes = b"# Plan: binary\n\n".to_vec();
+    bytes.extend_from_slice(&[0xff, 0xfe, b'\n']);
+    std::fs::File::create(root.join(binary))
+        .and_then(|mut file| file.write_all(&bytes))
+        .expect("binary plan should be written");
+    let head = commit_repository(&root);
+    let unknown = "0123456789abcdef0123456789abcdef01234567";
+    assert_ne!(head, unknown);
+
+    let run_with = |repo: &str, head: &str, paths: &[&str]| {
+        let mut args = vec![NAME, "decision-brief", "--repo", repo, "--head", head];
+        args.extend_from_slice(paths);
+        run_plan_args(&args, &root)
+    };
+
+    let cases: [(&str, CommandRun, u8); 10] = [
+        ("invalid repo", run_with("not-a-repo", &head, &[valid]), 3),
+        ("short head", run_with(PR_REPO, &head[..12], &[valid]), 3),
+        (
+            "uppercase head",
+            run_with(PR_REPO, &head.to_uppercase(), &[valid]),
+            3,
+        ),
+        ("unknown commit", run_with(PR_REPO, unknown, &[valid]), 4),
+        (
+            "absent path",
+            run_with(PR_REPO, &head, &["context/plans/absent.md"]),
+            4,
+        ),
+        ("outside plans", run_with(PR_REPO, &head, &["README.md"]), 3),
+        (
+            "duplicate path",
+            run_with(PR_REPO, &head, &[valid, valid]),
+            3,
+        ),
+        ("invalid plan", run_with(PR_REPO, &head, &[invalid]), 3),
+        ("symlink", run_with(PR_REPO, &head, &[linked]), 4),
+        ("non-UTF-8", run_with(PR_REPO, &head, &[binary]), 4),
+    ];
+    for (case, run, exit_code) in &cases {
+        assert_failure(run, *exit_code, case);
+    }
+
+    let [_, _, _, (_, unknown_run, _), (_, absent_run, _), _, _, (_, invalid_run, _), (_, symlink_run, _), (_, binary_run, _)] =
+        &cases;
+    assert!(
+        unknown_run
+            .stderr
+            .contains("is not available in the local repository"),
+        "{}",
+        unknown_run.stderr
+    );
+    assert!(
+        absent_run.stderr.contains("does not exist at commit"),
+        "{}",
+        absent_run.stderr
+    );
+    assert!(
+        invalid_run
+            .stderr
+            .contains(&format!("{invalid}:29: `S1` is defined more than once")),
+        "{}",
+        invalid_run.stderr
+    );
+    assert!(
+        symlink_run
+            .stderr
+            .contains("is not a regular file (mode 120000"),
+        "{}",
+        symlink_run.stderr
+    );
+    assert!(
+        binary_run.stderr.contains("is not valid UTF-8"),
+        "{}",
+        binary_run.stderr
+    );
+}
+
+#[test]
+fn decision_brief_hidden_but_directly_invocable() {
+    let (_directory, root) = temp_repository();
+    let path = "context/plans/direct.md";
+    write_repository_plan(
+        &root,
+        path,
+        &decision_brief_plan_source("direct", &[("Keep one store.", Some("Is it enough?"))]),
+    );
+    let head = commit_repository(&root);
+
+    let run = run_decision_brief(&root, &head, &[path]);
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        run.stderr
+    );
+    assert!(
+        run.stdout
+            .starts_with("<!-- sce:intent-review:start -->\n## Decision Brief\n"),
+        "{}",
+        run.stdout
+    );
+
+    let parsed = crate::services::parse::command_runtime::parse_runtime_command(
+        ["sce", NAME, "decision-brief", "--help"]
+            .into_iter()
+            .map(String::from),
+        &crate::services::command_registry::CommandRegistry::default(),
+        None,
+    )
+    .expect("decision-brief help should parse");
+    let crate::services::command_registry::RuntimeCommand::HelpText(command) = parsed else {
+        panic!("expected help text");
+    };
+    let help = strip_ansi(&command.text);
+    assert!(help.contains("--repo <OWNER/NAME>"), "{help}");
+    assert!(help.contains("--head <SHA>"), "{help}");
+    assert!(help.contains("<PATHS>..."), "{help}");
+}
+
+#[test]
+fn decision_brief_hidden_from_help_and_completions() {
+    let root_help = strip_ansi(&crate::services::help::help_text());
+    assert!(!root_help.contains("decision-brief"), "{root_help}");
+    assert!(root_help.contains("pr-description"), "{root_help}");
+
+    let plan_help = strip_ansi(
+        &crate::cli_schema::render_help_for_path(&[NAME]).expect("plan help should be renderable"),
+    );
+    assert!(!plan_help.contains("decision-brief"), "{plan_help}");
+    assert!(plan_help.contains("pr-description"), "{plan_help}");
+}

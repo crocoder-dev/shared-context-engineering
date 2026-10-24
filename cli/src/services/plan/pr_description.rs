@@ -34,7 +34,6 @@ pub struct PrDescriptionArguments {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BriefFormat {
     IntentReview,
-    #[cfg_attr(not(test), expect(dead_code))]
     DecisionBrief,
 }
 
@@ -261,7 +260,6 @@ fn render_decision_brief(
     ))
 }
 
-#[cfg_attr(not(test), expect(dead_code))]
 pub fn decision_brief_stdout_payload(mut brief: String) -> String {
     if brief.ends_with('\n') {
         brief.pop();
