@@ -29,8 +29,8 @@ any value other than `synced`, is unresolved synchronization debt. Never infer
 For the first task carrying debt:
 
 - When the task has no durable completed-task record (no `Files changed`,
-  `Result`, `Verify`, or `Context impact` recorded — a legacy plan predating
-  that structure, or an incomplete write), do not attempt a reconstructed retry.
+  `Result`, `Verify`, or `Context impact` recorded, for example after an
+  incomplete write), do not attempt a reconstructed retry.
   Set internal status `blocked` with a required action to migrate the plan
   (backfill the completion record, or resolve the debt manually) and a retry
   condition of the plan carrying that structure. Stop.
@@ -80,12 +80,7 @@ in its own section: `D` entries under `## Design decisions`, `AC` entries under
 `## Acceptance criteria`, `S` entries under `### Verification scenarios`, and
 `T` entries under `## Task stack`.
 
-A plan is structured when, outside fenced code blocks, it has a
-`### Verification scenarios` heading or any task under `## Task stack` carries
-`Covers:`. Every other plan is a legacy plan; review it exactly as
-described here, with no coverage lookup and no coverage fields in the result.
-
-For a structured plan, read the selected task's `Covers:` IDs. For each covered
+Read the selected task's `Covers:` IDs. For each covered
 acceptance criterion, read its `Scenarios:` and `Decisions:` fields and the
 scenario and decision definitions they name. A covered ID or referenced ID with
 no definition in the plan is a dangling reference. Record it as a review risk;
@@ -145,15 +140,13 @@ A `ready` result must identify:
 - Relevant files and context.
 - Review assumptions.
 
-For a structured plan, a `ready` result also identifies:
+A `ready` result also identifies:
 
 - The covered acceptance criteria: each `Covers:` ID with its outcome and
   `Validate:` check.
 - Their verification scenarios: each scenario ID with its `Then:` and `Check:`.
 - Their related design decisions: each decision ID with its decision text.
 - Every dangling reference, as a review risk.
-
-A `ready` result for a legacy plan carries none of these coverage fields.
 
 A `sync_debt` result must identify:
 

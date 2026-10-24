@@ -17,7 +17,6 @@ class PlanEntry {
 }
 
 class PlanReport {
-  structured: Boolean
   defects: List<String>
 }
 
@@ -283,21 +282,15 @@ local function inspect(text: String, skeleton: Boolean): PlanReport =
   let (planLines = annotate(text))
   let (headings = headingsOf(planLines))
   let (defined = entries(planLines))
-  let (isStructured =
-    headings.contains("### Verification scenarios")
-    || defined.any((entry) -> entry.kind == "T" && fieldOf(entry, "Covers") != null))
   new PlanReport {
-    structured = isStructured
     defects =
-      if (!isStructured) List()
-      else
-        headingDefects(
-          headings,
-          if (skeleton) templateSkeletonHeadings else requiredPlanHeadings,
-          if (skeleton) templateSkeletonHeadings else orderedPlanHeadings
-        )
-        + definitionDefects(defined)
-        + (if (skeleton) List() else misplacedDefinitionDefects(planLines) + referenceDefects(planLines, defined))
+      headingDefects(
+        headings,
+        if (skeleton) templateSkeletonHeadings else requiredPlanHeadings,
+        if (skeleton) templateSkeletonHeadings else orderedPlanHeadings
+      )
+      + definitionDefects(defined)
+      + (if (skeleton) List() else misplacedDefinitionDefects(planLines) + referenceDefects(planLines, defined))
   }
 
 function check(text: String): PlanReport = inspect(text, false)
@@ -331,9 +324,7 @@ local function sampleDefects(label: String, sample: String?, skeleton: Boolean):
   (
     if (sample == null) List("no fenced example found")
     else
-      let (report = inspect(sample, skeleton))
-      (if (report.structured) List() else List("example is not detected as a structured plan"))
-      + report.defects
+      inspect(sample, skeleton).defects
       + exampleShapeDefects(sample)
   ).map((defect) -> "\(label): \(defect)")
 

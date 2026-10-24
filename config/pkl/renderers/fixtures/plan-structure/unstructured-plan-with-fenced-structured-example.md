@@ -1,4 +1,4 @@
-# Plan: legacy-plan-with-fenced-structured-example
+# Plan: unstructured-plan-with-fenced-structured-example
 
 ## Change summary
 

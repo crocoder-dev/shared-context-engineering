@@ -37,9 +37,9 @@ workflow context. Do not create a second glossary for the same concepts.
   `sce-decision`.
 - **Verification scenario** — a plan-local `S{n}` entry stating one behavior as
   `Given:`, `When:`, `Then:`, and a planned `Check:`.
-- **Structured plan** — a plan with a `### Verification scenarios` heading or
-  any task carrying `Covers:`; the plan template's `Reference rules` apply to it.
-- **Legacy plan** — any other plan; it keeps the prior format and behavior.
+- **Structured plan** — the only plan format: acceptance criteria carry
+  `Scenarios:`, tasks carry `Covers:`, and the plan template's `Reference rules`
+  apply. There is no legacy plan format.
 
 ## Verbs
 

@@ -156,10 +156,10 @@ expect_pkl_fixture_failure \
   "generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl" \
-  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing a structured plan with the checker trust rule, manual Reference rules fallback, and legacy skip, and keep sce plan check out of every sce-next-task document"
+  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing the plan with the checker trust rule and manual Reference rules fallback, and keep sce plan check out of every sce-next-task document"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-structured-references-check.pkl" \
-  "generated sce-next-task plan-review.md, output.md, and task-execution.md must detect structured plans, carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, keep legacy plans unchanged, and never check an acceptance criterion or record a scenario status during task execution"
+  "generated sce-next-task plan-review.md, output.md, and task-execution.md must carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, and never check an acceptance criterion or record a scenario status during task execution"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-compact-completion-writing-check.pkl" \
   "sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record"
@@ -186,10 +186,10 @@ expect_pkl_fixture_failure \
   "generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl" \
-  "generated sce-validate validation.md must detect structured plans, fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, keep sce plan check out of every sce-next-task document, and keep legacy plans unchanged"
+  "generated sce-validate validation.md must fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, and keep sce plan check out of every sce-next-task document"
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validation-report-scenario-section-check.pkl" \
-  "generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, list unverified scenarios under What failed, and omit the section for legacy plans"
+  "generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, and list unverified scenarios under What failed"
 
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/plan-template-misplaced-field-check.pkl" \
@@ -207,7 +207,6 @@ plan_structure_fixtures="config/pkl/renderers/fixtures/plan-structure"
 
 expect_plan_structure_pass() {
   local fixture_name="$1"
-  local expected_result="$2"
   local output
 
   if ! output="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
@@ -217,8 +216,8 @@ expect_plan_structure_pass() {
     exit 1
   fi
 
-  if [[ "$output" != *"$expected_result"* ]]; then
-    printf 'Plan structure fixture passed with the wrong classification: %s\n%s\n' \
+  if [[ "$output" != *"$structured_plan_result"* ]]; then
+    printf 'Plan structure fixture passed with the wrong result: %s\n%s\n' \
       "$fixture_name" "$output" >&2
     exit 1
   fi
@@ -237,10 +236,8 @@ expect_plan_structure_failure() {
 
 expect_plan_structure_report() {
   local fixture_name="$1"
-  local expected_classification="$2"
-  shift 2
+  shift
   local report
-  local actual_classification
   local actual_diagnostics
   local expected_diagnostics
 
@@ -251,15 +248,8 @@ expect_plan_structure_report() {
     exit 1
   fi
 
-  actual_classification="$(head -n 1 <<<"$report")"
-  actual_diagnostics="$(tail -n +2 <<<"$report" | LC_ALL=C sort)"
+  actual_diagnostics="$(LC_ALL=C sort <<<"$report")"
   expected_diagnostics="$(if [[ "$#" -gt 0 ]]; then printf '%s\n' "$@"; fi | LC_ALL=C sort)"
-
-  if [[ "$actual_classification" != "$expected_classification" ]]; then
-    printf 'Plan structure fixture has the wrong classification: %s\nexpected: %s\nactual: %s\n' \
-      "$fixture_name" "$expected_classification" "$actual_classification" >&2
-    exit 1
-  fi
 
   if [[ "$actual_diagnostics" != "$expected_diagnostics" ]]; then
     printf 'Plan structure fixture diagnostics differ from the manifest: %s\nexpected (sorted):\n%s\nactual (sorted):\n%s\n' \
@@ -269,7 +259,6 @@ expect_plan_structure_report() {
 }
 
 structured_plan_result="structured plan: reference integrity holds"
-legacy_plan_result="legacy plan: structured reference rules do not apply"
 
 plan_structure_manifest="$plan_structure_fixtures/expectations.tsv"
 listed_plan_structure_fixtures=()
@@ -290,17 +279,13 @@ while IFS=$'\t' read -r -u 3 -a manifest_columns; do
   listed_plan_structure_fixtures+=("$fixture_name")
 
   case "$fixture_verdict" in
-    structured | legacy)
+    pass)
       if [[ "${#expected_diagnostics[@]}" -ne 0 ]]; then
         printf 'Plan structure manifest pass row must not list diagnostics: %s\n' "$fixture_name" >&2
         exit 1
       fi
-      if [[ "$fixture_verdict" == "structured" ]]; then
-        expect_plan_structure_pass "$fixture_name" "$structured_plan_result"
-      else
-        expect_plan_structure_pass "$fixture_name" "$legacy_plan_result"
-      fi
-      expect_plan_structure_report "$fixture_name" "$fixture_verdict"
+      expect_plan_structure_pass "$fixture_name"
+      expect_plan_structure_report "$fixture_name"
       ;;
     fail)
       if [[ "${#expected_diagnostics[@]}" -eq 0 ]]; then
@@ -308,7 +293,7 @@ while IFS=$'\t' read -r -u 3 -a manifest_columns; do
         exit 1
       fi
       expect_plan_structure_failure "$fixture_name"
-      expect_plan_structure_report "$fixture_name" structured "${expected_diagnostics[@]}"
+      expect_plan_structure_report "$fixture_name" "${expected_diagnostics[@]}"
       ;;
     *)
       printf 'Plan structure manifest has an unknown verdict for %s: %s\n' \

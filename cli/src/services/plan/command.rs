@@ -7,7 +7,6 @@ use crate::services::plan::extract::extract;
 use crate::services::plan::validate::{validate, PlanDiagnostic};
 
 pub const STRUCTURED_PLAN_PASS: &str = "structured plan: reference integrity holds";
-pub const LEGACY_PLAN_PASS: &str = "legacy plan: structured reference rules do not apply";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanCheckRequest {
@@ -36,12 +35,7 @@ impl PlanCommand {
             )));
         }
 
-        Ok(if report.structured {
-            STRUCTURED_PLAN_PASS
-        } else {
-            LEGACY_PLAN_PASS
-        }
-        .to_string())
+        Ok(STRUCTURED_PLAN_PASS.to_string())
     }
 }
 

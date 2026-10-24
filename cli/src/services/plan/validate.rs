@@ -21,7 +21,6 @@ pub struct PlanDiagnostic {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlanReport {
-    pub structured: bool,
     pub diagnostics: Vec<PlanDiagnostic>,
 }
 
@@ -100,29 +99,12 @@ pub fn validate(plan: &Plan) -> PlanReport {
         .iter()
         .map(|heading| (heading_text(heading), heading.line))
         .collect();
-    let structured = headings
-        .iter()
-        .any(|(text, _)| text == VERIFICATION_SCENARIOS_HEADING)
-        || plan
-            .entries_of(PlanEntryKind::Task)
-            .any(|entry| field_of(entry, "Covers").is_some());
-
-    if !structured {
-        return PlanReport {
-            structured,
-            diagnostics: Vec::new(),
-        };
-    }
-
     let mut diagnostics = heading_diagnostics(&headings);
     diagnostics.extend(definition_diagnostics(plan));
     diagnostics.extend(reference_diagnostics(plan));
     diagnostics.sort();
 
-    PlanReport {
-        structured,
-        diagnostics,
-    }
+    PlanReport { diagnostics }
 }
 
 fn first_line(headings: &[(String, usize)], text: &str) -> Option<usize> {

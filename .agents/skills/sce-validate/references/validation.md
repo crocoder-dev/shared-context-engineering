@@ -63,13 +63,7 @@ in its own section: `D` entries under `## Design decisions`, `AC` entries under
 `## Acceptance criteria`, `S` entries under `### Verification scenarios`, and
 `T` entries under `## Task stack`.
 
-A plan is structured when, outside fenced code blocks, it has a
-`### Verification scenarios` heading or any task under `## Task stack` carries
-`Covers:`. Every other plan is a legacy plan; validate it exactly
-as described here, with no scenario collection, no reference check, and no
-scenario statuses.
-
-For a structured plan, also collect:
+Also collect:
 
 - Every design decision.
 - Every acceptance criterion's `Decisions:` and `Scenarios:` fields.
@@ -85,9 +79,16 @@ fallback under notes on a `validated` or `failed` result.
 
 ### 4. Check plan references
 
-Skip this step for a legacy plan.
+Run `sce plan check {plan-path}` before scenario
+verification. Record each reported diagnostic as a failed check under
+**Failed checks and follow-ups**, quoting its line and message.
 
-For a structured plan, apply every entry of the plan template's
+Trust the checker only when it actually ran: a result counts only on exit `0`
+with `structured plan: reference integrity holds` on stdout, or on exit `3`
+with diagnostics. Any other outcome means the checker is unavailable; record
+that fallback under notes and apply the manual pass below instead.
+
+For the manual pass, apply every entry of the plan template's
 `Reference rules` to the plan. Each of these is a relationship-integrity
 defect:
 
@@ -112,7 +113,7 @@ Then verify each acceptance criterion using its `Validate:` line. Prefer a
 runnable command. Use a named inspection only when the criterion authorizes it,
 and say exactly what was inspected.
 
-For a structured plan, run or perform every scenario's `Check:` yourself in
+Run or perform every scenario's `Check:` yourself in
 this run, and compare the observed result with the scenario's `Then:`. Give
 each scenario exactly one status:
 
@@ -127,7 +128,7 @@ Only evidence gathered by this run counts. Task completion, a task's recorded
 evidence. Record every `Partially verified` or `Not verified` scenario as a
 failed check with the gap and a required action.
 
-In a structured plan, an acceptance criterion is met only when its `Validate:`
+An acceptance criterion is met only when its `Validate:`
 check passes and every scenario its `Scenarios:` names is `Verified`. An
 acceptance criterion marked `none (inspection)` is met by its `Validate:` check
 alone.
@@ -375,14 +376,13 @@ a normal work session, then rerun validation.
   `/validate {plan path}` as the final step after repairs.
 - The failed variant must be self-contained enough to hand to another session
   without the original chat.
-- For a structured plan, the validated and failed variants include **Scenario
+- The validated and failed variants include **Scenario
   verification** with exactly one entry per scenario in plan order: the scenario
   ID, the acceptance-criterion IDs that reference it, the evidence kind (`test`,
   `command`, or `inspection`), the exact test, command, or inspected location,
   the actual result, and the scenario status. Each acceptance-criterion line
   cites its scenario IDs, or `none (inspection)`. In the failed variant, list
   every `Partially verified` or `Not verified` scenario under **What failed**.
-- Omit **Scenario verification** and the scenario citations for a legacy plan.
 - Do not include durable context synchronization results in this report.
 - Do not select or describe an unrelated next implementation task when status is
   `validated`.

@@ -11,7 +11,7 @@ This contract defines what the two must agree on, how that agreement is enforced
 
 Both checkers apply the same rules to the plan source outside fenced code blocks:
 
-- **Classification.** A plan is structured when it has a `### Verification scenarios` heading or any task under `## Task stack` carries `Covers:`. Every other plan is legacy and gets no defects.
+- **No legacy classification.** Every plan is checked against the full rule set below. A plan in the pre-structured format fails with its missing-field and coverage defects.
 - **Headings.**
   - `## Acceptance criteria` and `## Task stack` are required.
   - `## Design decisions`, `## Acceptance criteria`, `### Verification scenarios`, and `## Task stack` appear at most once each, in that order.
@@ -34,8 +34,8 @@ Template-skeleton mode (`templateDefects` in `plan-structure.pkl`) validates gen
 
 The single source of truth is `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`. It covers the `*.md` fixtures in the same directory.
 
-- Each row is tab-separated: the fixture file name, then its verdict (`structured`, `legacy`, or `fail`). `fail` rows then list the complete expected defect messages, one per column. Comparison is exact on the sorted multiset of messages: missing, unexpected, or miscounted duplicate defects fail. Source lines are not part of the manifest; Rust tests assert them separately. Rows starting with `#` are comments.
-- `config/pkl/check-generated.sh` iterates the manifest. `structured` and `legacy` rows must print their classification line through `plan-structure-check.pkl`, and `fail` rows must make it fail. Every row is then compared against the structured report from `config/pkl/renderers/fixtures/plan-structure-report.pkl`: classification on the first line, then one defect per line. The run aborts on any of these: a missing fixture, an unknown verdict, a pass row with diagnostics, a fail row without diagnostics, a classification or diagnostic-set mismatch, or a `*.md` fixture not listed exactly once.
+- Each row is tab-separated: the fixture file name, then its verdict (`pass` or `fail`). `fail` rows then list the complete expected defect messages, one per column. Comparison is exact on the sorted multiset of messages: missing, unexpected, or miscounted duplicate defects fail. Source lines are not part of the manifest; Rust tests assert them separately. Rows starting with `#` are comments.
+- `config/pkl/check-generated.sh` iterates the manifest. `pass` rows must print `structured plan: reference integrity holds` through `plan-structure-check.pkl`, and `fail` rows must make it fail. Every row is then compared against the structured report from `config/pkl/renderers/fixtures/plan-structure-report.pkl`: one defect per line. The run aborts on any of these: a missing fixture, an unknown verdict, a pass row with diagnostics, a fail row without diagnostics, a wrong pass result or diagnostic-set mismatch, or a `*.md` fixture not listed exactly once.
 - The Rust test `plan::fixture_expectations_match_manifest` reads the same manifest and fixtures at test runtime through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. It requires the same verdicts and the same exact sorted message multiset, and fails on any unlisted fixture.
 - To add a fixture:
   1. Add the `.md` file to the directory.
@@ -48,14 +48,13 @@ The single source of truth is `config/pkl/renderers/fixtures/plan-structure/expe
 ## Result and diagnostic wording
 
 - Valid structured plan: `structured plan: reference integrity holds`.
-- Valid legacy plan: `legacy plan: structured reference rules do not apply`.
 - Defect messages are the Pkl defect strings, used verbatim by the Rust validator. Examples are ``heading `## Task stack` is missing``, `` `S1` is defined more than once``, and `` `Covers:` on `T01` names `S1`, which is not an acceptance criterion ``.
 - `sce plan check` exit and output behavior:
-  - It exits `0` and prints the classification line on stdout.
+  - It exits `0` and prints `structured plan: reference integrity holds` on stdout.
   - For a structurally invalid plan, it exits `3` (`SCE-ERR-VALIDATION`). Stderr lists one diagnostic per line as `{path}:{line}: {message}`, or `{path}: {message}` for a plan-level defect with no line. Diagnostics are ordered by line, then message.
   - It exits `4` (`SCE-ERR-RUNTIME`) for a missing or unreadable file.
 - The Pkl checker throws one joined `plan failed the structural reference-integrity check: …` message. Its result strings match the Rust stdout lines exactly.
-- Changing a classification line or a defect message is a change to both checkers. Update `plan-structure.pkl`, `cli/src/services/plan/validate.rs` or `command.rs`, any affected manifest substrings, and the workflow trust rule in [plan workflow](shared-context-plan-workflow.md). The trust rule matches the two classification lines.
+- Changing the pass line or a defect message is a change to both checkers. Update `plan-structure.pkl`, `cli/src/services/plan/validate.rs` or `command.rs`, any affected manifest substrings, and the workflow trust rule in [plan workflow](shared-context-plan-workflow.md). The trust rule matches the pass line.
 
 ## Known divergences
 

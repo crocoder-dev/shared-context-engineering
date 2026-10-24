@@ -73,10 +73,9 @@ indented under it. To check a fenced example itself, its content is extracted
 and checked as a separate sample document. `/change-to-plan`, `/next-task`, and
 `/validate` all read plans this way.
 
-A plan is **structured** when, outside fenced code blocks, it has a
-`### Verification scenarios` heading or any task under `## Task stack` carries
-`Covers:`; every other plan is **legacy** and keeps the prior format. A revision keeps a legacy plan legacy unless the correction explicitly
-asks to adopt the structured format.
+Every plan uses this structured format. There is no legacy plan format:
+`sce plan check` rejects a plan without `Scenarios:` on its acceptance criteria
+and `Covers:` on its tasks.
 
 ```mermaid
 flowchart LR
@@ -93,11 +92,10 @@ architectural choices and omits `## Design decisions` when there are none. It
 writes scenarios only for the case kinds (normal, boundary, failure,
 cancellation, concurrency, recovery) the change makes relevant, and a `Check:`
 never names a test that neither exists nor is created by a task. Before writing
-a structured plan, a reference-consistency pass applies every `Reference rules`
-entry to the full draft and fixes each defect first. After writing a structured
+the plan, a reference-consistency pass applies every `Reference rules`
+entry to the full draft and fixes each defect first. After writing the
 plan, it runs `sce plan check {plan-path}`, fixes every reported diagnostic, and
-re-runs the checker before returning `plan_ready`. A legacy-plan revision
-skips this structured work, including the checker. The phase cites the template's rule sections by
+re-runs the checker before returning `plan_ready`. The phase cites the template's rule sections by
 name and does not restate them.
 
 Responsibility for structural consistency is split by surface. Generation checks
@@ -116,11 +114,10 @@ The two checkers share one rule set, wording, and fixture manifest; see the
 [plan structure contract](plan-structure-contract.md).
 
 `/change-to-plan` (after writing) and `/validate` (step 4, before scenario
-verification) run `sce plan check {plan-path}` on structured plans only;
+verification) run `sce plan check {plan-path}`;
 `/validate` records each diagnostic as a failed check. Both trust a result only
 when the checker actually ran: exit `0` with
-`structured plan: reference integrity holds` or
-`legacy plan: structured reference rules do not apply` on stdout, or exit `3`
+`structured plan: reference integrity holds` on stdout, or exit `3`
 with diagnostics. Any other outcome, such as an older `sce` that answers the
 unknown `plan` command with help and exit `0`, means the checker is unavailable,
 and the workflow applies the manual `Reference rules` pass instead and records

@@ -115,7 +115,6 @@ Describe the smallest coherent implementation approach with enough detail for ap
 
 ## Acceptance coverage
 
-- Include only when the plan is structured; omit this section for a legacy plan.
 - List each covered acceptance criterion `{AC id}: {outcome}` with its
   scenarios `{S id}: {Then}` (`{Check}`) and related decisions `{D id}: {decision}`.
 - Report dangling references under **Risks or trade-offs**.

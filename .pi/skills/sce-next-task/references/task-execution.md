@@ -132,7 +132,7 @@ Run the narrowest authoritative checks that demonstrate the done checks.
 Start with verification supplied by the readiness result. Add nearby or directly
 relevant checks only when needed.
 
-For a structured plan, the covered scenarios' `Then:` and `Check:` may shape
+The covered scenarios' `Then:` and `Check:` may shape
 the task's own `Verify` checks. Running a scenario's check during the task is
 task-level evidence only. Task execution never checks an acceptance-criterion
 checkbox and never records a scenario status; only `/validate` verifies

@@ -56,24 +56,14 @@ fn fixture_expectations_match_manifest() {
         actual.sort_unstable();
 
         match verdict {
-            "structured" | "legacy" => {
-                assert!(
-                    expected.is_empty(),
-                    "{fixture}: pass rows take no diagnostics"
-                );
-                assert_eq!(
-                    report.structured,
-                    verdict == "structured",
-                    "{fixture}: wrong classification"
-                );
-            }
-            "fail" => {
-                assert!(
-                    !expected.is_empty(),
-                    "{fixture}: fail rows need diagnostics"
-                );
-                assert!(report.structured, "{fixture}: wrong classification");
-            }
+            "pass" => assert!(
+                expected.is_empty(),
+                "{fixture}: pass rows take no diagnostics"
+            ),
+            "fail" => assert!(
+                !expected.is_empty(),
+                "{fixture}: fail rows need diagnostics"
+            ),
             other => panic!("{fixture}: unknown verdict `{other}`"),
         }
         assert_eq!(actual, expected, "{fixture}: diagnostics differ");
@@ -208,7 +198,6 @@ fn command_valid_plans_exit_success() {
     for (fixture, expected) in [
         ("valid-structured-plan.md", command::STRUCTURED_PLAN_PASS),
         ("inspection-only-plan.md", command::STRUCTURED_PLAN_PASS),
-        ("legacy-plan.md", command::LEGACY_PLAN_PASS),
     ] {
         let absolute = fixture_dir().join(fixture);
         for path in [
@@ -237,6 +226,21 @@ fn command_invalid_plan_exits_validation() {
             .filter(|line| line.starts_with(&format!("{path}:")))
             .collect::<Vec<_>>(),
         vec![format!("{path}:29: `S1` is defined more than once")]
+    );
+}
+
+#[test]
+fn command_unstructured_plan_exits_validation() {
+    let path = "../config/pkl/renderers/fixtures/plan-structure/unstructured-plan.md";
+    let run = run_plan_check(path);
+
+    assert_eq!(run.exit_code, std::process::ExitCode::from(3));
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(
+        run.stderr
+            .contains(&format!("{path}:59: `T01` is missing `Covers:`")),
+        "{}",
+        run.stderr
     );
 }
 

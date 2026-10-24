@@ -371,8 +371,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_plan_with_fenced_structured_example_ignores_fenced_structure() {
-        let plan = fixture("legacy-plan-with-fenced-structured-example.md");
+    fn unstructured_plan_with_fenced_structured_example_ignores_fenced_structure() {
+        let plan = fixture("unstructured-plan-with-fenced-structured-example.md");
 
         assert_eq!(
             entry_lines(&plan),

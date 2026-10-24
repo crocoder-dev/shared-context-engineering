@@ -11,5 +11,5 @@ local documents = new Mapping {
 
 result = if (
   contract.assertNextTaskStructuredReferences.apply(documents)
-) "negative fixture unexpectedly accepted next-task references without structured-plan coverage or the legacy-plan path"
-else throw("generated sce-next-task plan-review.md, output.md, and task-execution.md must detect structured plans, carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, keep legacy plans unchanged, and never check an acceptance criterion or record a scenario status during task execution")
+) "negative fixture unexpectedly accepted next-task references without acceptance coverage"
+else throw("generated sce-next-task plan-review.md, output.md, and task-execution.md must carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, and never check an acceptance criterion or record a scenario status during task execution")

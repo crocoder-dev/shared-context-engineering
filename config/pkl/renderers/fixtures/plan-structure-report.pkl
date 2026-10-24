@@ -3,5 +3,5 @@ import "../plan-structure.pkl" as planStructure
 local report = planStructure.check(read("file:\(read("prop:planPath"))").text)
 
 output {
-  text = (List(if (report.structured) "structured" else "legacy") + report.defects).join("\n") + "\n"
+  text = report.defects.map((defect) -> defect + "\n").join("")
 }

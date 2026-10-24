@@ -34,10 +34,7 @@ Read its `Acceptance criteria rules`, `Design decision rules`,
 authoring or revising. Apply those rules rather than restating them here.
 
 Author plan content in this order: design decisions, then acceptance criteria,
-then verification scenarios, then tasks. When revising a legacy plan, skip the
-design decision, verification scenario, `Covers:`, and reference-check work
-unless the `Updating an existing plan` rules let the correction adopt the
-structured format.
+then verification scenarios, then tasks.
 
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
@@ -200,7 +197,7 @@ by completed tasks, set internal status `blocked` with category
 
 ## 2.9 Check references
 
-Before writing a structured plan, run a reference-consistency pass over the
+Before writing the plan, run a reference-consistency pass over the
 complete draft that applies every `Reference rules` entry in
 `references/plan-template.md`. Fix each defect in the draft before writing. Do
 not write a plan that fails this pass.
@@ -209,6 +206,16 @@ not write a plan that fails this pass.
 
 Write `context/plans/{plan_name}.md` by applying `references/plan-template.md`
 exactly. For revisions, apply its `Updating an existing plan` rules.
+
+After writing the plan, run `sce plan check {plan-path}`. When it reports
+diagnostics, fix each reported defect in the written plan and run it again. Do
+not set internal status `plan_ready` until the checker passes.
+
+Trust the checker only when it actually ran: a result counts only on exit `0`
+with `structured plan: reference integrity holds` on stdout, or on exit `3`
+with diagnostics. Any other outcome means the checker is unavailable; apply the
+manual `Reference rules` pass from step 2.9 to the written plan instead, and
+record in the open questions that the checker was unavailable.
 
 ## 2.11 Return the result
 

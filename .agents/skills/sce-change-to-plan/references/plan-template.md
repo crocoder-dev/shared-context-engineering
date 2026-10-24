@@ -234,10 +234,6 @@ invent one: `None.` is the expected answer for a well-specified change.}
   tildes to its closing fence. Headings, definitions, and fields inside it are
   example text, not plan structure. Keep fenced examples in place; never delete
   one to make a plan read correctly.
-- A plan is structured when, outside fenced code blocks, it has a
-  `### Verification scenarios` heading or any task under `## Task stack`
-  carries `Covers:`. Every other plan is a legacy plan, and the remaining rules
-  in this section do not apply to it.
 - A section runs from its heading to the next heading of any level outside
   fenced code blocks. A definition counts only in its own section: `D` entries
   under `## Design decisions`, `AC` entries under `## Acceptance criteria`, `S`
@@ -266,7 +262,7 @@ invent one: `None.` is the expected answer for a well-specified change.}
 - Every acceptance criterion carries `Scenarios:`, with scenario IDs or the
   literal `none (inspection)` when only an inspection can prove it. Omit
   `Decisions:` when no decision applies.
-- Every task in a structured plan carries `Covers:` naming at least one
+- Every task carries `Covers:` naming at least one
   acceptance criterion defined in the plan. A task without `Covers:` or with an
   empty `Covers:` is a defect even when other tasks cover every criterion.
 - Every acceptance criterion is named by at least one task's `Covers:`.
@@ -316,7 +312,4 @@ Do not author either while planning.
   run earlier, and never renumber a completed task.
 - Add acceptance criteria for newly planned outcomes rather than rewriting
   criteria already satisfied.
-- A legacy plan stays legacy. Add design decisions, verification scenarios, or
-  `Covers:` only when the correction explicitly asks to adopt the structured
-  format.
 - Give each new decision, criterion, or scenario the next unused ID of its kind.

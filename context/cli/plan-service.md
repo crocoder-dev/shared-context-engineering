@@ -27,7 +27,7 @@
 
 `validate` mirrors the `check` path of `config/pkl/renderers/plan-structure.pkl`. Template-skeleton mode stays Pkl-only. Defect messages are copied verbatim from the Pkl checker, so changing their wording means changing both checkers.
 
-- A plan is structured when it has a `### Verification scenarios` heading or any task carries `Covers:`. A legacy plan gets `structured: false` and no diagnostics.
+- Every plan is checked as a structured plan. There is no legacy classification: a plan in the pre-structured format fails with its missing `Scenarios:`, `Covers:`, and coverage diagnostics.
 - Heading rules, with headings compared as `#`×depth plus text:
   - `## Acceptance criteria` and `## Task stack` are required.
   - `## Design decisions`, `## Acceptance criteria`, `### Verification scenarios`, and `## Task stack` may each appear only once, in that order.
@@ -56,7 +56,6 @@
 `sce plan check <path>` checks exactly the file at `<path>`, relative or absolute. It is synchronous, uses no database or repository root, and never runs `Check:`, `Validate:`, or `Verify:` content.
 
 - Valid structured plan: stdout `structured plan: reference integrity holds`, exit `0`.
-- Valid legacy plan: stdout `legacy plan: structured reference rules do not apply`, exit `0`.
 - Structurally invalid plan: `CliError::validation` (exit `3`, `SCE-ERR-VALIDATION`). The stderr message is a `Plan structure check failed for '{path}':` header, one `{path}:{line}: {message}` line per diagnostic (`{path}: {message}` when the diagnostic has no line) in `validate` order, and a closing `Try:` line. `{path}` is printed as given.
 - Missing or unreadable file: `CliError::runtime` (exit `4`, `SCE-ERR-RUNTIME`) with `Failed to read plan file '{path}'` context, and no diagnostics.
 
@@ -64,7 +63,7 @@
 
 ## Terms
 
-- `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `structured`, `legacy`, or `fail`, then the complete expected defect messages for `fail` rows, compared as an exact order-insensitive multiset. Every `*.md` fixture in the directory must be listed exactly once.
+- `plan-structure expectations manifest`: `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, the single source of fixture verdicts for both the Pkl checker (driven by `config/pkl/check-generated.sh`) and the Rust validator. Each row is tab-separated: fixture file, `pass` or `fail`, then the complete expected defect messages for `fail` rows, compared as an exact order-insensitive multiset. Every `*.md` fixture in the directory must be listed exactly once.
 - `sce plan check`: The read-only CLI command that runs `extract` then `validate` on one plan file and reports through the exit `0`/`3`/`4` contract above.
 - `plan diagnostic`: One `PlanDiagnostic` from `validate`, with Pkl defect wording and an optional 1-based source line.
 
@@ -74,6 +73,6 @@ The extractor follows CommonMark/GFM nesting. The Pkl checker requires fields at
 
 ## Tests
 
-`cli/src/services/plan/extract.rs` unit tests (`plan::extract`) read the shared plan-structure fixtures through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. They cover fenced examples, misplaced definitions, legacy plans with fenced structured examples, source-sliced field values with lines, and the ID grammar.
+`cli/src/services/plan/extract.rs` unit tests (`plan::extract`) read the shared plan-structure fixtures through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. They cover fenced examples, misplaced definitions, unstructured plans with fenced structured examples, source-sliced field values with lines, and the ID grammar.
 
-Module-level tests in `cli/src/services/plan/mod.rs` make the shared contract mechanical. `plan::fixture_expectations_match_manifest` runs every manifest row through `extract` and `validate` and requires that every fixture is listed. `plan::diagnostic_lines_match_source_positions` asserts exact diagnostic lines, and checks that a missing heading has no line. The `plan::command_*` tests drive `sce plan check` through the parser and stdout/stderr renderer for valid plans (by relative and absolute path), an invalid plan, a missing file, and a plan whose commands would create a marker file. `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` cover help and completion.
+Module-level tests in `cli/src/services/plan/mod.rs` make the shared contract mechanical. `plan::fixture_expectations_match_manifest` runs every manifest row through `extract` and `validate` and requires that every fixture is listed. `plan::diagnostic_lines_match_source_positions` asserts exact diagnostic lines, and checks that a missing heading has no line. The `plan::command_*` tests drive `sce plan check` through the parser and stdout/stderr renderer for valid plans (by relative and absolute path), an invalid plan, an unstructured plan, a missing file, and a plan whose commands would create a marker file. `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` cover help and completion.
