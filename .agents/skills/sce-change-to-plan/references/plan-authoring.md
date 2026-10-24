@@ -36,6 +36,11 @@ authoring or revising. Apply those rules rather than restating them here.
 Author plan content in this order: design decisions, then acceptance criteria,
 then verification scenarios, then tasks.
 
+Apply the **Controlled English for Plans and Context** rules
+below to new or revised plan prose, including design decisions, acceptance
+criteria, verification scenarios, and tasks, in initial authoring and in every
+revision.
+
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
 
@@ -61,7 +66,9 @@ When multiple existing plans match and none can be selected safely, return
 `blocked` with the matching candidates.
 
 When the request targets a new plan, derive `plan_name` as a short kebab-case
-slug of the change, and confirm it does not collide with an existing plan.
+slug of the change, and confirm it does not collide with an existing plan. Do
+not create the plan file here; step 2.10 initializes it after the clarification
+gate.
 
 Resolve exactly one plan target per invocation.
 
@@ -202,20 +209,60 @@ complete draft that applies every `Reference rules` entry in
 `references/plan-template.md`. Fix each defect in the draft before writing. Do
 not write a plan that fails this pass.
 
+This pass is pre-write authoring guidance only. It never substitutes for a
+successful `sce plan check` in step 2.10.
+
 ## 2.10 Write the plan
 
-Write `context/plans/{plan_name}.md` by applying `references/plan-template.md`
-exactly. For revisions, apply its `Updating an existing plan` rules.
+Structured plans are the only supported format. This step has no fallback for
+`sce plan init` or `sce plan check`.
 
-After writing the plan, run `sce plan check {plan-path}`. When it reports
-diagnostics, fix each reported defect in the written plan and run it again. Do
-not set internal status `plan_ready` until the checker passes.
+### New plan
 
-Trust the checker only when it actually ran: a result counts only on exit `0`
-with `structured plan: reference integrity holds` on stdout, or on exit `3`
-with diagnostics. Any other outcome means the checker is unavailable; apply the
-manual `Reference rules` pass from step 2.9 to the written plan instead, and
-record in the open questions that the checker was unavailable.
+Run `sce plan init {plan_name}`. Initialization succeeds only when all three
+hold: exit `0`, stdout contains `Created plan: context/plans/{plan_name}.md`,
+and that file exists. Every other result returns `blocked` with the exit code
+and stderr. This includes a missing `sce` executable, a binary without `init`,
+a nonzero exit, an exit `0` without the expected line, and an expected line
+with no created file.
+
+Fill the generated scaffold with the plan content, applying the authoring rules
+in `references/plan-template.md`. The template is the authoring reference for
+filling the scaffold, never a substitute for `sce plan init`. Never write a new
+plan without it.
+
+### Existing plan
+
+Do not run `sce plan init`. Revise the plan by applying the
+`Updating an existing plan` rules in `references/plan-template.md`, which
+preserve completed tasks and their evidence. The revised plan must satisfy the
+same structured plan contract.
+
+### Completeness gate
+
+For new plans and revisions alike, the plan contains no scaffold `TODO`
+placeholder, and optional sections without real entries (`Design decisions`,
+`Assumptions`) are removed. The change summary, acceptance criteria, design
+decisions, verification scenarios, task definitions, and verify instructions
+are authored for this change.
+
+While any placeholder remains, keep authoring or return `blocked`. A passing
+`sce plan check` is required but not sufficient: it is structural and does not
+detect placeholders.
+
+### Structural check
+
+For new plans and revisions alike, run `sce plan check {plan-path}`. It passes
+only on exit `0` with `structured plan: reference integrity holds` on stdout.
+
+On exit `3` with structural diagnostics, fix each reported defect in the plan
+and run it again, or return `blocked` with the remaining diagnostics when they
+cannot be resolved. Every other result returns `blocked` with the exit code and
+stderr. This includes a missing `sce` executable, a binary without `check`, any
+other exit code, and an exit `0` without the success marker.
+
+Set internal status `plan_ready` only after both the completeness gate and
+`sce plan check` pass.
 
 ## 2.11 Return the result
 
@@ -240,6 +287,16 @@ Write user-facing questions and open questions directly and specifically.
 - Name a smaller or safer alternative when one is known.
 - Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
 - When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
+
+## Controlled English for Plans and Context
+
+Apply these rules to new or modified prose in SCE plans and durable context. Preserve Markdown structure, code, commands, identifiers, technical terminology, factual meaning, and existing task evidence. Do not rewrite unrelated content solely for style.
+
+1. Sentence structure: Use a maximum of 20 words per procedural sentence and 25 words per descriptive sentence, counted according to STE rules. Give one instruction per sentence, using imperative form and placing prerequisites first. Limit ordinary multi-word nouns to three words. Keep one topic and at most six sentences per descriptive paragraph. Do not use contractions or semicolons. Use active voice, except when the actor is unknown in descriptive text.
+
+2. Vocabulary: Prefer STE-approved words and established domain terminology. Use terms consistently and preserve their technical meanings.
+
+3. Verbs: Use simple present, simple past, simple future, and imperative forms. Avoid perfect and progressive constructions. Use "can" for possibility, ability, or permission, "must" for obligation, and "will" for future events. Replace "may", "should", "shall", and "would" with appropriate constructions. Use "could" only for past ability or permission.
 
 ## Plan authoring boundaries
 
