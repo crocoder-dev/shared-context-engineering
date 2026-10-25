@@ -1,5 +1,8 @@
 use std::collections::BTreeSet;
 
+use markdown::mdast::Node;
+use markdown::{to_mdast, ParseOptions};
+
 use crate::services::error::CliError;
 use crate::services::plan::extract::{Plan, PlanEntryKind};
 
@@ -9,10 +12,11 @@ pub const HEADING: &str = "## Intent review";
 pub const PLANS_LABEL: &str = "**Plans:**";
 pub const DECISIONS_HEADING: &str = "**Decisions requiring review**";
 pub const NO_FLAGGED_DECISIONS: &str = "No decisions explicitly flagged for review.";
-pub const DECISION_BRIEF_HEADING: &str = "## Decision Brief";
-pub const REVIEW_REQUESTED_LABEL: &str = "**Review requested:**";
+pub const DECISION_BRIEF_HEADING: &str = "## Decisions requiring review";
 pub const PROPOSED_LABEL: &str = "**Proposed:**";
-pub const REVIEW_LINK_SUFFIX: &str = "rationale, alternatives and trade-offs";
+pub const REVIEW_LINK_LABEL: &str = "Rationale, alternatives and trade-offs";
+pub const SOURCE_PLANS_SUMMARY: &str = "Source plans";
+const DECISION_ID_SEPARATOR: &str = "·";
 pub const SHA_LENGTH: usize = 40;
 pub const PLAN_PATH_PREFIX: &str = "context/plans/";
 pub const PLAN_PATH_SUFFIX: &str = ".md";
@@ -151,24 +155,23 @@ pub fn render_format(
             )
         })
         .collect();
-    let plans_line = format!("{PLANS_LABEL} {}", plan_links.join(", "));
 
     match format {
-        BriefFormat::IntentReview => Ok(render_intent_review(arguments, &plans_line, &questions)),
-        BriefFormat::DecisionBrief => render_decision_brief(arguments, &plans_line, &questions),
+        BriefFormat::IntentReview => Ok(render_intent_review(arguments, &plan_links, &questions)),
+        BriefFormat::DecisionBrief => render_decision_brief(arguments, &plan_links, &questions),
     }
 }
 
 fn render_intent_review(
     arguments: &PrDescriptionArguments,
-    plans_line: &str,
+    plan_links: &[String],
     questions: &[ReviewQuestion],
 ) -> String {
     let mut lines = vec![
         START_MARKER.to_string(),
         HEADING.to_string(),
         String::new(),
-        plans_line.to_string(),
+        format!("{PLANS_LABEL} {}", plan_links.join(", ")),
         String::new(),
     ];
     if let Some(warning) = review_scope_warning(questions.len()) {
@@ -184,7 +187,7 @@ fn render_intent_review(
             lines.push(format!(
                 "{}. {} — [{} {}]({}#L{})",
                 index + 1,
-                escape_markdown(question.question),
+                escape_authored_markdown(question.question),
                 escape_markdown(plan_label(question.path)),
                 question.decision_id,
                 blob_url(arguments, question.path),
@@ -200,7 +203,7 @@ fn render_intent_review(
 
 fn render_decision_brief(
     arguments: &PrDescriptionArguments,
-    plans_line: &str,
+    plan_links: &[String],
     questions: &[ReviewQuestion],
 ) -> Result<String, CliError> {
     if let Some(question) = questions
@@ -216,36 +219,39 @@ fn render_decision_brief(
         )));
     }
 
-    let count_noun = if questions.len() == 1 {
-        "decision"
-    } else {
-        "decisions"
-    };
-    let mut blocks = vec![
-        DECISION_BRIEF_HEADING.to_string(),
-        format!("{REVIEW_REQUESTED_LABEL} {} {count_noun}", questions.len()),
-        plans_line.to_string(),
-    ];
-    blocks.extend(review_scope_warning(questions.len()));
+    let mut blocks = vec![format!("{DECISION_BRIEF_HEADING} ({})", questions.len())];
+    blocks.extend(review_scope_advisory(questions.len()));
     if questions.is_empty() {
         blocks.push(NO_FLAGGED_DECISIONS.to_string());
     }
     for (index, question) in questions.iter().enumerate() {
         blocks.push(format!(
-            "### {}. {}",
+            "### {}. {} {DECISION_ID_SEPARATOR} {}",
             index + 1,
-            escape_markdown(question.question)
+            escape_markdown(plan_label(question.path)),
+            question.decision_id
+        ));
+        let folded_question = question.question.split_whitespace().collect::<Vec<_>>();
+        blocks.push(format!(
+            "**{}**",
+            escape_authored_markdown(&folded_question.join(" "))
         ));
         blocks.push(format!(
             "{PROPOSED_LABEL} {}",
-            escape_markdown(question.statement)
+            escape_authored_markdown(question.statement)
         ));
         blocks.push(format!(
-            "[Review {} {} — {REVIEW_LINK_SUFFIX}]({}#L{})",
-            escape_markdown(plan_label(question.path)),
-            question.decision_id,
+            "[{REVIEW_LINK_LABEL}]({}#L{})",
             blob_url(arguments, question.path),
             question.line
+        ));
+    }
+    if !plan_links.is_empty() {
+        let items: Vec<String> = plan_links.iter().map(|link| format!("- {link}")).collect();
+        blocks.push(format!(
+            "<details>\n<summary>{SOURCE_PLANS_SUMMARY} ({})</summary>\n\n{}\n\n</details>",
+            plan_links.len(),
+            items.join("\n")
         ));
     }
     Ok(format!(
@@ -255,9 +261,17 @@ fn render_decision_brief(
 }
 
 fn review_scope_warning(count: usize) -> Option<String> {
+    review_scope_text(count).map(|text| format!("{REVIEW_SCOPE_LABEL} {text}"))
+}
+
+fn review_scope_advisory(count: usize) -> Option<String> {
+    review_scope_text(count).map(|text| format!("> {text}"))
+}
+
+fn review_scope_text(count: usize) -> Option<String> {
     (count >= REVIEW_SCOPE_WARNING_THRESHOLD).then(|| {
         format!(
-            "{REVIEW_SCOPE_LABEL} {count} architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused."
+            "{count} architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused."
         )
     })
 }
@@ -315,4 +329,36 @@ pub fn escape_markdown(text: &str) -> String {
         escaped.push(character);
     }
     escaped
+}
+
+pub fn escape_authored_markdown(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end) in inline_code_spans(text) {
+        escaped.push_str(&escape_markdown(&text[cursor..start]));
+        escaped.push_str(&text[start..end]);
+        cursor = end;
+    }
+    escaped.push_str(&escape_markdown(&text[cursor..]));
+    escaped
+}
+
+fn inline_code_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    if let Ok(root) = to_mdast(text, &ParseOptions::gfm()) {
+        collect_inline_code_spans(&root, &mut spans);
+    }
+    spans
+}
+
+fn collect_inline_code_spans(node: &Node, spans: &mut Vec<(usize, usize)>) {
+    if let Node::InlineCode(_) = node {
+        if let Some(position) = node.position() {
+            spans.push((position.start.offset, position.end.offset));
+        }
+        return;
+    }
+    for child in node.children().into_iter().flatten() {
+        collect_inline_code_spans(child, spans);
+    }
 }

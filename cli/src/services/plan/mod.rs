@@ -1172,8 +1172,10 @@ fn pr_description_escapes_markdown() {
     );
     let output = pr_description::render(&pr_arguments(&["context/plans/escape.md"]), &[plan])
         .expect("brief should render");
+    let rendered =
+        r"Keep `code` \*bold\* \_it\_ \[l\] \<t\> \!b \|p\| \~s \& c:\\path # (ok) — fine?";
     assert!(
-        output.contains(&format!("\n1. {expected} — [escape D1](")),
+        output.contains(&format!("\n1. {rendered} — [escape D1](")),
         "{output}"
     );
 }
@@ -1514,23 +1516,30 @@ fn decision_brief_golden_two_decisions() {
     let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
     let expected = format!(
         "<!-- sce:intent-review:start -->\n\
-## Decision Brief\n\
+## Decisions requiring review (2)\n\
 \n\
-**Review requested:** 2 decisions\n\
+### 1. brief · D1\n\
 \n\
-**Plans:** [brief]({blob}/context/plans/brief.md)\n\
-\n\
-### 1. Is one store enough?\n\
+**Is one store enough?**\n\
 \n\
 **Proposed:** Keep one store.\n\
 \n\
-[Review brief D1 — rationale, alternatives and trade-offs]({blob}/context/plans/brief.md#L5)\n\
+[Rationale, alternatives and trade-offs]({blob}/context/plans/brief.md#L5)\n\
 \n\
-### 2. Should reads ignore the working tree?\n\
+### 2. brief · D3\n\
+\n\
+**Should reads ignore the working tree?**\n\
 \n\
 **Proposed:** Read plans from the head commit only.\n\
 \n\
-[Review brief D3 — rationale, alternatives and trade-offs]({blob}/context/plans/brief.md#L17)\n\
+[Rationale, alternatives and trade-offs]({blob}/context/plans/brief.md#L17)\n\
+\n\
+<details>\n\
+<summary>Source plans (1)</summary>\n\
+\n\
+- [brief]({blob}/context/plans/brief.md)\n\
+\n\
+</details>\n\
 \n\
 <!-- sce:intent-review:end -->\n"
     );
@@ -1558,17 +1567,22 @@ fn decision_brief_golden_one_decision() {
     let plan_url = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/example.md";
     let expected = format!(
         "<!-- sce:intent-review:start -->\n\
-## Decision Brief\n\
+## Decisions requiring review (1)\n\
 \n\
-**Review requested:** 1 decision\n\
+### 1. example · D1\n\
 \n\
-**Plans:** [example]({plan_url})\n\
-\n\
-### 1. Is this architectural choice acceptable?\n\
+**Is this architectural choice acceptable?**\n\
 \n\
 **Proposed:** Use one shared store for all sessions.\n\
 \n\
-[Review example D1 — rationale, alternatives and trade-offs]({plan_url}#L5)\n\
+[Rationale, alternatives and trade-offs]({plan_url}#L5)\n\
+\n\
+<details>\n\
+<summary>Source plans (1)</summary>\n\
+\n\
+- [example]({plan_url})\n\
+\n\
+</details>\n\
 \n\
 <!-- sce:intent-review:end -->\n"
     );
@@ -1615,7 +1629,7 @@ fn decision_brief_no_marked_decisions() {
 
     assert_eq!(
         output,
-        "<!-- sce:intent-review:start -->\n## Decision Brief\n\n**Review requested:** 0 decisions\n\n**Plans:** [quiet](https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/quiet.md)\n\nNo decisions explicitly flagged for review.\n\n<!-- sce:intent-review:end -->\n"
+        "<!-- sce:intent-review:start -->\n## Decisions requiring review (0)\n\nNo decisions explicitly flagged for review.\n\n<details>\n<summary>Source plans (1)</summary>\n\n- [quiet](https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/quiet.md)\n\n</details>\n\n<!-- sce:intent-review:end -->\n"
     );
     assert!(!output.contains("###"), "{output}");
     let lowered = output.to_lowercase();
@@ -1626,48 +1640,49 @@ fn decision_brief_no_marked_decisions() {
 
 #[test]
 fn decision_brief_escapes_markdown() {
-    let statement = r"Use `x` *y* _z_ [a] <b> |c| d:\e now";
-    let question = r"Is `q` *ok* _here_ [x] <y> |z| a:\b?";
-    let escaped_statement = r"Use \`x\` \*y\* \_z\_ \[a\] \<b\> \|c\| d:\\e now";
-    let escaped_question = r"Is \`q\` \*ok\* \_here\_ \[x\] \<y\> \|z\| a:\\b?";
-
-    let unescape = |text: &str| {
-        let mut unescaped = String::new();
-        let mut characters = text.chars().peekable();
-        while let Some(character) = characters.next() {
-            let escapes_next = character == '\\'
-                && characters
-                    .peek()
-                    .is_some_and(|next| r"\`*_[]<>|".contains(*next));
-            if !escapes_next {
-                unescaped.push(character);
-            } else if let Some(next) = characters.next() {
-                unescaped.push(next);
-            }
-        }
-        unescaped
-    };
-    assert_eq!(unescape(escaped_statement), statement);
-    assert_eq!(unescape(escaped_question), question);
+    let statement = r"Read `--head` at `<plan-path>#<AC-id>`; set `author_checked` and `acceptance_criterion`. Keep *y* _z_ [a] <b> |c| ~d & e! unmatched ` tick d:\e now";
+    let question = r"Is `--head` with `<plan-path>#<AC-id>` and `C:\tmp\_x` ok for *q* _here_ [x] <y> |z| a:\b?";
 
     let plan = pr_plan_input(
-        "context/plans/escape.md",
-        &decision_brief_plan_source("escape", &[(statement, Some(question))]),
+        "context/plans/escape_plan.md",
+        &decision_brief_plan_source("escape_plan", &[(statement, Some(question))]),
     );
-    let output = render_decision_brief(&["context/plans/escape.md"], &[plan])
+    let output = render_decision_brief(&["context/plans/escape_plan.md"], &[plan])
         .expect("decision brief should render");
 
-    assert!(
-        output.contains("\n\n**Review requested:** 1 decision\n\n"),
-        "{output}"
+    let plan_url = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/escape_plan.md";
+    let expected = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Decisions requiring review (1)\n\
+\n\
+### 1. escape\\_plan · D1\n\
+\n\
+**Is `--head` with `<plan-path>#<AC-id>` and `C:\\tmp\\_x` ok for \\*q\\* \\_here\\_ \\[x\\] \\<y\\> \\|z\\| a:\\\\b?**\n\
+\n\
+**Proposed:** Read `--head` at `<plan-path>#<AC-id>`; set `author_checked` and `acceptance_criterion`. Keep \\*y\\* \\_z\\_ \\[a\\] \\<b\\> \\|c\\| \\~d \\& e\\! unmatched \\` tick d:\\\\e now\n\
+\n\
+[Rationale, alternatives and trade-offs]({plan_url}#L5)\n\
+\n\
+<details>\n\
+<summary>Source plans (1)</summary>\n\
+\n\
+- [escape\\_plan]({plan_url})\n\
+\n\
+</details>\n\
+\n\
+<!-- sce:intent-review:end -->\n"
     );
-    assert!(
-        output.contains(&format!("\n\n### 1. {escaped_question}\n\n")),
-        "{output}"
+    assert_eq!(output, expected);
+
+    assert_eq!(
+        pr_description::escape_authored_markdown(r"a\`b `c`"),
+        r"a\\\`b `c`"
     );
-    assert!(
-        output.contains(&format!("\n\n**Proposed:** {escaped_statement}\n\n")),
-        "{output}"
+    assert_eq!(
+        pr_description::escape_authored_markdown("```\nx\n```"),
+        r"\`\`\`
+x
+\`\`\`"
     );
 }
 
@@ -1705,38 +1720,42 @@ fn decision_brief_orders_plans_deterministically() {
     assert_eq!(first, second);
     assert_eq!(first, sorted);
     assert!(
-        first.contains("\n\n**Review requested:** 3 decisions\n\n"),
+        first.contains("\n## Decisions requiring review (3)\n\n> 3 architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused.\n\n### 1. "),
         "{first}"
     );
-    assert_eq!(first.matches("**Review scope:**").count(), 1, "{first}");
-    assert!(
-        first.contains("\n\n**Review scope:** 3 architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused.\n\n### 1. "),
+    assert_eq!(
+        first.matches("architectural decisions require").count(),
+        1,
         "{first}"
     );
 
     let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
-    assert!(
-        first.contains(&format!(
-            "**Plans:** [alpha]({blob}/context/plans/alpha.md), [zeta]({blob}/context/plans/zeta.md)\n"
-        )),
-        "{first}"
-    );
     let ordered = [
-        "### 1. Is A two right?",
-        "[Review alpha D2 — rationale, alternatives and trade-offs]",
+        "### 1. alpha · D2\n\n**Is A two right?**",
+        "[Rationale, alternatives and trade-offs]",
         "alpha.md#L10)",
-        "### 2. Is A three right?",
-        "[Review alpha D3 — rationale, alternatives and trade-offs]",
+        "### 2. alpha · D3\n\n**Is A three right?**",
+        "[Rationale, alternatives and trade-offs]",
         "alpha.md#L17)",
-        "### 3. Is Z one right?",
-        "[Review zeta D1 — rationale, alternatives and trade-offs]",
+        "### 3. zeta · D1\n\n**Is Z one right?**",
+        "[Rationale, alternatives and trade-offs]",
         "zeta.md#L5)",
+        "<summary>Source plans (2)</summary>",
+        &format!(
+            "- [alpha]({blob}/context/plans/alpha.md)\n- [zeta]({blob}/context/plans/zeta.md)\n"
+        ),
     ];
+    assert_contains_in_order("sorted plans", &first, &ordered);
+}
+
+#[cfg(test)]
+fn assert_contains_in_order(case: &str, output: &str, needles: &[impl AsRef<str>]) {
     let mut cursor = 0;
-    for needle in ordered {
-        let found = first[cursor..]
+    for needle in needles {
+        let needle = needle.as_ref();
+        let found = output[cursor..]
             .find(needle)
-            .unwrap_or_else(|| panic!("missing {needle:?} after byte {cursor}: {first}"));
+            .unwrap_or_else(|| panic!("{case}: missing {needle:?} after byte {cursor}: {output}"));
         cursor += found + needle.len();
     }
 }
@@ -1790,6 +1809,13 @@ fn scope_warning(count: usize) -> String {
 }
 
 #[cfg(test)]
+fn scope_advisory(count: usize) -> String {
+    format!(
+        "> {count} architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused."
+    )
+}
+
+#[cfg(test)]
 fn scope_warning_plans() -> Vec<pr_description::PlanInput> {
     vec![
         pr_plan_input(
@@ -1837,39 +1863,53 @@ fn decision_brief_scope_warning_spans_all_plans() {
 
     let brief = render_decision_brief(&paths, &scope_warning_plans())
         .expect("decision brief should render");
+    let advisory = scope_advisory(4);
     let expected_brief = format!(
         "<!-- sce:intent-review:start -->\n\
-## Decision Brief\n\
+## Decisions requiring review (4)\n\
 \n\
-**Review requested:** 4 decisions\n\
+{advisory}\n\
 \n\
-{plans_line}\n\
+### 1. alpha · D1\n\
 \n\
-{warning}\n\
-\n\
-### 1. Is A one right?\n\
+**Is A one right?**\n\
 \n\
 **Proposed:** A one.\n\
 \n\
-[Review alpha D1 — rationale, alternatives and trade-offs]({blob}/context/plans/alpha.md#L5)\n\
+[Rationale, alternatives and trade-offs]({blob}/context/plans/alpha.md#L5)\n\
 \n\
-### 2. Is A three right?\n\
+### 2. alpha · D3\n\
+\n\
+**Is A three right?**\n\
 \n\
 **Proposed:** A three.\n\
 \n\
-[Review alpha D3 — rationale, alternatives and trade-offs]({blob}/context/plans/alpha.md#L17)\n\
+[Rationale, alternatives and trade-offs]({blob}/context/plans/alpha.md#L17)\n\
 \n\
-### 3. Is B two right?\n\
+### 3. beta · D2\n\
+\n\
+**Is B two right?**\n\
 \n\
 **Proposed:** B two.\n\
 \n\
-[Review beta D2 — rationale, alternatives and trade-offs]({blob}/context/plans/beta.md#L10)\n\
+[Rationale, alternatives and trade-offs]({blob}/context/plans/beta.md#L10)\n\
 \n\
-### 4. Is G one right?\n\
+### 4. gamma · D1\n\
+\n\
+**Is G one right?**\n\
 \n\
 **Proposed:** G one.\n\
 \n\
-[Review gamma D1 — rationale, alternatives and trade-offs]({blob}/context/plans/gamma.md#L5)\n\
+[Rationale, alternatives and trade-offs]({blob}/context/plans/gamma.md#L5)\n\
+\n\
+<details>\n\
+<summary>Source plans (3)</summary>\n\
+\n\
+- [alpha]({blob}/context/plans/alpha.md)\n\
+- [beta]({blob}/context/plans/beta.md)\n\
+- [gamma]({blob}/context/plans/gamma.md)\n\
+\n\
+</details>\n\
 \n\
 <!-- sce:intent-review:end -->\n"
     );
@@ -1970,6 +2010,12 @@ fn decision_brief_scope_warning_threshold_keeps_every_decision() {
         .map(|name| format!("[{name}]({blob}/context/plans/{name}.md)"))
         .collect();
     let plans_line = format!("**Plans:** {}", plan_links.join(", "));
+    let items: Vec<String> = plan_links.iter().map(|link| format!("- {link}")).collect();
+    let source_index = format!(
+        "\n<details>\n<summary>Source plans ({})</summary>\n\n{}\n\n</details>\n",
+        names.len(),
+        items.join("\n")
+    );
 
     for count in 0..=names.len() * 2 {
         let (plans, marked) = scope_threshold_plans(&names, count);
@@ -1989,16 +2035,28 @@ fn decision_brief_scope_warning_threshold_keeps_every_decision() {
             .unwrap_or_else(|error| panic!("{case}: {error}"));
             assert_eq!(output, reversed, "{case}");
 
-            let mut needles = vec![plans_line.clone()];
+            let mut needles = match format {
+                BriefFormat::IntentReview => vec![plans_line.clone()],
+                BriefFormat::DecisionBrief => {
+                    vec![format!("\n## Decisions requiring review ({count})")]
+                }
+            };
             if count >= 3 {
                 assert_eq!(
-                    output.matches("**Review scope:**").count(),
+                    output.matches("architectural decisions require").count(),
                     1,
                     "{case}: {output}"
                 );
-                needles.push(format!("\n\n{}\n", scope_warning(count)));
+                let warning = match format {
+                    BriefFormat::IntentReview => scope_warning(count),
+                    BriefFormat::DecisionBrief => scope_advisory(count),
+                };
+                needles.push(format!("\n\n{warning}\n"));
             } else {
-                assert!(!output.contains("**Review scope:**"), "{case}: {output}");
+                assert!(
+                    !output.contains("architectural decisions require"),
+                    "{case}: {output}"
+                );
             }
             for (number, (question, label, url)) in marked.iter().enumerate() {
                 let number = number + 1;
@@ -2012,20 +2070,18 @@ fn decision_brief_scope_warning_threshold_keeps_every_decision() {
                         needles.push(format!("\n{number}. {question} — [{label}]({url})\n"));
                     }
                     BriefFormat::DecisionBrief => {
-                        needles.push(format!("\n### {number}. {question}\n"));
+                        let heading = label.replacen(' ', " · ", 1);
+                        needles.push(format!("\n### {number}. {heading}\n\n**{question}**\n"));
                         needles.push(format!(
-                            "\n[Review {label} — rationale, alternatives and trade-offs]({url})\n"
+                            "\n[Rationale, alternatives and trade-offs]({url})\n"
                         ));
                     }
                 }
             }
-            let mut cursor = 0;
-            for needle in &needles {
-                let found = output[cursor..].find(needle.as_str()).unwrap_or_else(|| {
-                    panic!("{case}: missing {needle:?} after byte {cursor}: {output}")
-                });
-                cursor += found + needle.len();
+            if format == BriefFormat::DecisionBrief {
+                needles.push(source_index.clone());
             }
+            assert_contains_in_order(&case, &output, &needles);
 
             let numbered = output
                 .lines()
@@ -2106,7 +2162,7 @@ fn review_reads_committed_plan() {
     let head = commit_repository(&root);
     let url = format!("https://github.com/{PR_REPO}/blob/{head}/{path}");
     let expected = format!(
-        "<!-- sce:intent-review:start -->\n## Decision Brief\n\n**Review requested:** 1 decision\n\n**Plans:** [committed]({url})\n\n### 1. Is one store enough?\n\n**Proposed:** Keep one store.\n\n[Review committed D1 — rationale, alternatives and trade-offs]({url}#L5)\n\n<!-- sce:intent-review:end -->\n"
+        "<!-- sce:intent-review:start -->\n## Decisions requiring review (1)\n\n### 1. committed · D1\n\n**Is one store enough?**\n\n**Proposed:** Keep one store.\n\n[Rationale, alternatives and trade-offs]({url}#L5)\n\n<details>\n<summary>Source plans (1)</summary>\n\n- [committed]({url})\n\n</details>\n\n<!-- sce:intent-review:end -->\n"
     );
 
     let before = run_review(&root, &head, &[path]);
@@ -2173,7 +2229,7 @@ fn review_renders_every_marked_decision() {
     assert!(
         accepted
             .stdout
-            .contains("**Review requested:** 3 decisions"),
+            .contains("## Decisions requiring review (3)\n"),
         "{}",
         accepted.stdout
     );
@@ -2184,7 +2240,7 @@ fn review_renders_every_marked_decision() {
         .collect();
     assert_eq!(
         headings,
-        vec!["### 1. Three?", "### 2. One?", "### 3. Two?"]
+        vec!["### 1. alpha · D1", "### 2. beta · D1", "### 3. beta · D2"]
     );
 
     write_repository_plan(
@@ -2207,13 +2263,16 @@ fn review_renders_every_marked_decision() {
     );
     assert!(accepted.stderr.is_empty(), "{}", accepted.stderr);
     assert_eq!(
-        accepted.stdout.matches("**Review scope:**").count(),
+        accepted
+            .stdout
+            .matches("architectural decisions require")
+            .count(),
         1,
         "{}",
         accepted.stdout
     );
     assert!(
-        accepted.stdout.contains(&scope_warning(4)),
+        accepted.stdout.contains(&scope_advisory(4)),
         "{}",
         accepted.stdout
     );
@@ -2225,10 +2284,10 @@ fn review_renders_every_marked_decision() {
     assert_eq!(
         headings,
         vec![
-            "### 1. Three?",
-            "### 2. Four?",
-            "### 3. One?",
-            "### 4. Two?"
+            "### 1. alpha · D1",
+            "### 2. alpha · D3",
+            "### 3. beta · D1",
+            "### 4. beta · D2"
         ]
     );
 }
@@ -2259,7 +2318,11 @@ fn review_claims_ignore_review_scope() {
         "{}",
         claims.stderr
     );
-    assert!(!claims.stdout.contains("Review scope"), "{}", claims.stdout);
+    assert!(
+        !claims.stdout.contains("architectural decisions require"),
+        "{}",
+        claims.stdout
+    );
     let document: serde_json::Value =
         serde_json::from_str(&claims.stdout).expect("claims should be JSON");
     assert_eq!(
@@ -2417,7 +2480,7 @@ fn review_removed_name_shows_plan_help() {
     assert_eq!(removed.stdout, plan_help.stdout);
     assert!(removed.stderr.is_empty(), "{}", removed.stderr);
     assert!(
-        !removed.stdout.contains("## Decision Brief"),
+        !removed.stdout.contains("## Decisions requiring review"),
         "{}",
         removed.stdout
     );
@@ -2432,7 +2495,7 @@ fn review_removed_name_shows_plan_help() {
         review.stderr
     );
     assert!(
-        review.stdout.contains(&scope_warning(4)),
+        review.stdout.contains(&scope_advisory(4)),
         "{}",
         review.stdout
     );
