@@ -5,6 +5,7 @@ use std::process::{Command, Output};
 use anyhow::{anyhow, Context};
 
 use crate::services::error::CliError;
+use crate::services::plan::claims;
 use crate::services::plan::extract::{extract, Plan};
 use crate::services::plan::init::{create, resolve_repository_root, PlanName};
 use crate::services::plan::pr_description::{
@@ -38,6 +39,7 @@ pub struct PlanPrDescriptionRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReviewOutput {
     Brief,
+    Claims,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -136,6 +138,7 @@ fn review(
     match request.output {
         ReviewOutput::Brief => render_format(&arguments, &plans, BriefFormat::DecisionBrief)
             .map(decision_brief_stdout_payload),
+        ReviewOutput::Claims => claims::render(&arguments, &plans),
     }
 }
 

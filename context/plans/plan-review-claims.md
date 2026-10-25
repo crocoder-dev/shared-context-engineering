@@ -478,14 +478,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: internal only — a new pure plan-service module with no CLI surface change yet. `context/cli/plan-service.md` documents the claims contract in T04.
   - Context synchronization: synced
 
-- [ ] T03: `Wire the --claims flag into sce plan review` (status:todo)
+- [x] T03: `Wire the --claims flag into sce plan review` (status:done)
   - Task ID: T03
   - Covers: AC2, AC7, AC8, AC9
   - Scope: In — the boolean `--claims` Clap flag, its mapping to `ReviewOutput::Claims` in `command_runtime.rs`, the `command.rs` dispatch that reads plans from `--head`, validates all of them, and returns the `claims.rs` document, the `[--claims]` `Plan Usage:` suffix, the `--claims` help and completion assertions, and the `review_claims_*` Git repository tests for S10 to S12, including the committed plan with repeated `Covers:` lines on `T01`. Out — changes to the Decision Brief output, `validate.rs`, `sce plan check`, and context files.
   - Dependencies: T02
   - Done when: `sce plan review --claims` prints the manifest from the commit with one trailing newline, failures leave stdout empty with the expected exit class, a committed plan with repeated `Covers:` lines exits `3` with the exact `Plan claims check failed` stderr and no stdout while `sce plan check` still accepts it, help and completions show `--claims`, and the AC9 dogfood command succeeds.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_`; the AC9 `Validate:` command.
-  - Context synchronization: pending
+  - Completed: 2026-10-25
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/command_surface.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/plan/command.rs`, `cli/src/services/plan/mod.rs`
+  - Result: `PlanSubcommand::Review` gains the boolean `--claims` Clap flag, which `convert_plan_subcommand` maps to the new `ReviewOutput::Claims` (otherwise `ReviewOutput::Brief`). The `review` dispatch in `command.rs` adds a `ReviewOutput::Claims => claims::render(&arguments, &plans)` arm after the existing `verify_commit`, `read_committed_plan`, and `parse_valid_plan` pass, so the document is built only after every plan is read from `--head` and validated, and the shared stdout writer adds the single trailing newline. `pub mod claims;` is no longer `#[cfg(test)]`. `Plan Usage:` lists `sce plan review [--claims] --repo <owner/name> --head <sha> <path>...`. `review_appears_in_help_and_completions` now asserts `--claims` in the review help and in the Bash, Zsh, and Fish scripts. New tests: `review_claims_reads_committed_plans` (S10), `review_claims_output_is_pure` (S11), and `review_claims_rejects_invalid_inputs` (S12), which covers invalid repo, short and uppercase head, outside path, duplicate path, invalid plan, and repeated `Covers:` (exit `3`), and unknown commit, absent path, symlink, non-UTF-8, and a failed `git cat-file` on a removed loose object (exit `4`). In that test, `sce plan check` and the `review` Decision Brief still accept the repeated-`Covers:` plan.
+  - Deviation: the S12 exact repeated-`Covers:` stderr carries the CLI's standard `Error [SCE-ERR-VALIDATION]: ` prefix that `render_run_outcome` adds to every validation error, before the contract's `Plan claims check failed` text.
+  - Verify result: passed — `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_` (8 passed, 0 failed); AC9 `Validate:` command printed `true` with pipeline exit `0` (16 claims, 8 per plan, matching each plan's acceptance criteria). Additional: `plan::` (60 passed), the full CLI suite (670 passed), and `clippy --all-targets -- -D warnings` (clean).
+  - Context impact: the `plan review` command surface gains `--claims` and the `sce.plan.claims.v1` stdout document. `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` do not yet describe the flag or the manifest, and T04 is planned to document them.
+  - Context synchronization: synced
 
 - [ ] T04: `Document the review command and the claims manifest contract` (status:todo)
   - Task ID: T04

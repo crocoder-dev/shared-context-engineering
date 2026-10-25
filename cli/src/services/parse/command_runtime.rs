@@ -349,16 +349,23 @@ fn convert_plan_subcommand(subcommand: cli_schema::PlanSubcommand) -> RuntimeCom
                 services::plan::command::PlanPrDescriptionRequest { repo, head, paths },
             )
         }
-        cli_schema::PlanSubcommand::Review { repo, head, paths } => {
-            services::plan::command::PlanRequest::Review(
-                services::plan::command::PlanReviewRequest {
-                    repo,
-                    head,
-                    paths,
-                    output: services::plan::command::ReviewOutput::Brief,
+        cli_schema::PlanSubcommand::Review {
+            claims,
+            repo,
+            head,
+            paths,
+        } => services::plan::command::PlanRequest::Review(
+            services::plan::command::PlanReviewRequest {
+                repo,
+                head,
+                paths,
+                output: if claims {
+                    services::plan::command::ReviewOutput::Claims
+                } else {
+                    services::plan::command::ReviewOutput::Brief
                 },
-            )
-        }
+            },
+        ),
     };
 
     RuntimeCommand::Plan(services::plan::command::PlanCommand { request })

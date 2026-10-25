@@ -89,7 +89,7 @@ const HELP_SECTIONS: &[HelpSection] = &[
             },
             HelpSectionBodyLine::Command {
                 cmd: "  sce plan",
-                suffix: " review --repo <owner/name> --head <sha> <path>...",
+                suffix: " review [--claims] --repo <owner/name> --head <sha> <path>...",
             },
         ],
     },

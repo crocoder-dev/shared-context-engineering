@@ -429,6 +429,12 @@ pub enum PlanSubcommand {
     Review {
         #[arg(
             long,
+            help = "Print the sce.plan.claims.v1 JSON claims manifest instead of the Decision Brief"
+        )]
+        claims: bool,
+
+        #[arg(
+            long,
             value_name = "OWNER/NAME",
             help = "GitHub repository as <OWNER>/<NAME>"
         )]

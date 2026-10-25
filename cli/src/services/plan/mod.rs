@@ -1,4 +1,3 @@
-#[cfg(test)]
 pub mod claims;
 pub mod command;
 pub mod extract;
@@ -2060,7 +2059,7 @@ fn review_appears_in_help_and_completions() {
 
     let root_help = strip_ansi(&crate::services::help::help_text());
     assert!(
-        root_help.contains("sce plan review --repo <owner/name> --head <sha> <path>..."),
+        root_help.contains("sce plan review [--claims] --repo <owner/name> --head <sha> <path>..."),
         "{root_help}"
     );
     assert!(!root_help.contains("decision-brief"), "{root_help}");
@@ -2083,21 +2082,361 @@ fn review_appears_in_help_and_completions() {
     assert!(review_help.contains("--repo <OWNER/NAME>"), "{review_help}");
     assert!(review_help.contains("--head <SHA>"), "{review_help}");
     assert!(review_help.contains("<PATHS>..."), "{review_help}");
+    assert!(review_help.contains("--claims"), "{review_help}");
     assert!(!review_help.contains("decision-brief"), "{review_help}");
 
-    for (shell, needle) in [
-        (CompletionShell::Bash, "check init pr-description review"),
+    for (shell, needle, claims_needle) in [
+        (
+            CompletionShell::Bash,
+            "check init pr-description review",
+            "opts=\"-h --claims --repo --head --help\"",
+        ),
         (
             CompletionShell::Zsh,
             "'review:Print a Markdown Decision Brief",
+            "'--claims[Print the sce.plan.claims.v1 JSON claims manifest",
         ),
-        (CompletionShell::Fish, "-f -a \"review\""),
+        (
+            CompletionShell::Fish,
+            "-f -a \"review\"",
+            "__fish_seen_subcommand_from review\" -l claims",
+        ),
     ] {
         let script = render_completion(CompletionRequest { shell });
         assert!(script.contains(needle), "{shell:?}");
+        assert!(script.contains(claims_needle), "{shell:?}");
         assert!(!script.contains("decision-brief"), "{shell:?}");
         assert!(script.contains("pr-description"), "{shell:?}");
     }
+}
+
+#[cfg(test)]
+fn run_review_claims(root: &std::path::Path, head: &str, paths: &[&str]) -> CommandRun {
+    let mut args = vec![
+        NAME, "review", "--claims", "--repo", PR_REPO, "--head", head,
+    ];
+    args.extend_from_slice(paths);
+    run_plan_args(&args, root)
+}
+
+#[cfg(test)]
+fn source_line(source: &str, prefix: &str) -> u64 {
+    let index = source
+        .lines()
+        .position(|line| line.starts_with(prefix))
+        .expect("prefix should appear in the source");
+    u64::try_from(index + 1).expect("line should fit in u64")
+}
+
+#[test]
+fn review_claims_reads_committed_plans() {
+    let (_directory, root) = temp_repository();
+    let beta = "context/plans/beta.md";
+    let alpha = "context/plans/alpha.md";
+    let beta_source = decision_brief_plan_source("beta", &[("Keep one store.", None)]);
+    let alpha_source = decision_brief_plan_source(
+        "alpha",
+        &[
+            ("Use one queue.", Some("Is one queue enough?")),
+            ("Retry twice.", None),
+        ],
+    );
+    write_repository_plan(&root, beta, &beta_source);
+    write_repository_plan(&root, alpha, &alpha_source);
+    let head = commit_repository(&root);
+
+    let forward = run_review_claims(&root, &head, &[beta, alpha]);
+    assert_eq!(
+        forward.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        forward.stderr
+    );
+    let reverse = run_review_claims(&root, &head, &[alpha, beta]);
+    assert_eq!(reverse.stdout, forward.stdout);
+
+    write_repository_plan(
+        &root,
+        alpha,
+        &alpha_source
+            .replacen(
+                "## Acceptance criteria\n",
+                "Inserted.\n\nMore.\n\n## Acceptance criteria\n",
+                1,
+            )
+            .replace("It works.", "It is edited."),
+    );
+    let edited = run_review_claims(&root, &head, &[beta, alpha]);
+    assert_eq!(
+        edited.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        edited.stderr
+    );
+    assert_eq!(edited.stdout, forward.stdout);
+    assert!(!edited.stdout.contains("edited"), "{}", edited.stdout);
+
+    let document: serde_json::Value =
+        serde_json::from_str(&forward.stdout).expect("stdout should be valid JSON");
+    assert_eq!(document["repository"]["head_sha"], head.as_str());
+    let plan_paths: Vec<&str> = document["plans"]
+        .as_array()
+        .expect("plans should be an array")
+        .iter()
+        .map(|plan| plan["path"].as_str().expect("path should be a string"))
+        .collect();
+    assert_eq!(plan_paths, vec![alpha, beta]);
+    assert_eq!(
+        claim_ids(&document, "claims"),
+        vec![format!("{alpha}#AC1"), format!("{beta}#AC1")]
+    );
+
+    let alpha_claim = &document["claims"][0];
+    let alpha_line = source_line(&alpha_source, "- [ ] AC1:");
+    assert_eq!(alpha_claim["source"]["line"], alpha_line);
+    assert_eq!(
+        alpha_claim["source"]["url"],
+        format!("https://github.com/{PR_REPO}/blob/{head}/{alpha}#L{alpha_line}")
+    );
+    assert_eq!(alpha_claim["statement"], "It works.");
+    assert_eq!(
+        alpha_claim["tasks"][0]["source"]["line"],
+        source_line(&alpha_source, "- [ ] T01:")
+    );
+    assert_eq!(
+        document["claims"][1]["source"]["line"],
+        source_line(&beta_source, "- [ ] AC1:")
+    );
+}
+
+#[test]
+fn review_claims_output_is_pure() {
+    let (_directory, root) = temp_repository();
+    let path = "context/plans/pure.md";
+    write_repository_plan(
+        &root,
+        path,
+        &decision_brief_plan_source("pure", &[("Keep one store.", Some("Is it enough?"))]),
+    );
+    let head = commit_repository(&root);
+    let status_before = git_output(&root, &["status", "--porcelain", "--untracked-files=all"]);
+    let tree_before = tree_listing(&root);
+
+    let run = run_review_claims(&root, &head, &[path]);
+
+    assert_eq!(
+        run.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert!(run.stdout.ends_with("}\n"), "{:?}", run.stdout);
+    assert!(!run.stdout.ends_with("\n\n"), "{:?}", run.stdout);
+    let mut values =
+        serde_json::Deserializer::from_str(&run.stdout).into_iter::<serde_json::Value>();
+    let document = values
+        .next()
+        .expect("stdout should hold a JSON value")
+        .expect("stdout should be valid JSON");
+    assert!(values.next().is_none(), "{}", run.stdout);
+    assert_eq!(document["schema_version"], "sce.plan.claims.v1");
+    assert!(
+        run.stdout.starts_with("{\n  \"schema_version\""),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(
+        git_output(&root, &["status", "--porcelain", "--untracked-files=all"]),
+        status_before
+    );
+    assert_eq!(tree_listing(&root), tree_before);
+}
+
+#[cfg(test)]
+const CLAIMS_DEFECT_PLANS: [&str; 6] = [
+    "context/plans/valid.md",
+    "context/plans/invalid.md",
+    "context/plans/repeated.md",
+    "context/plans/linked.md",
+    "context/plans/binary.md",
+    "context/plans/corrupt.md",
+];
+
+#[cfg(test)]
+fn commit_claims_defect_plans(root: &std::path::Path) -> (String, String) {
+    use std::io::Write;
+
+    let [valid, invalid, repeated, linked, binary, corrupt] = CLAIMS_DEFECT_PLANS;
+    write_repository_plan(
+        root,
+        valid,
+        &decision_brief_plan_source("valid", &[("Keep one store.", Some("Is it enough?"))]),
+    );
+    write_repository_plan(
+        root,
+        invalid,
+        &std::fs::read_to_string(fixture_dir().join("duplicate-id.md"))
+            .expect("fixture should be readable"),
+    );
+    let repeated_source = repeated_field_source(
+        &[],
+        &[
+            "- [ ] AC1: First.",
+            "  - Validate: `true`",
+            "  - Scenarios: none (inspection)",
+            "- [ ] AC2: Second.",
+            "  - Validate: `true`",
+            "  - Scenarios: none (inspection)",
+        ],
+        &["  - Covers: AC1", "  - Covers: AC2"],
+    );
+    write_repository_plan(root, repeated, &repeated_source);
+    std::os::unix::fs::symlink("valid.md", root.join(linked)).expect("symlink should be created");
+    let mut bytes = b"# Plan: binary\n\n".to_vec();
+    bytes.extend_from_slice(&[0xff, 0xfe, b'\n']);
+    std::fs::File::create(root.join(binary))
+        .and_then(|mut file| file.write_all(&bytes))
+        .expect("binary plan should be written");
+    write_repository_plan(
+        root,
+        corrupt,
+        &decision_brief_plan_source("corrupt", &[("Keep a corrupt store.", None)]),
+    );
+    let head = commit_repository(root);
+    let object = git_output(root, &["rev-parse", &format!("{head}:{corrupt}")]);
+    std::fs::remove_file(
+        root.join(".git/objects")
+            .join(&object[..2])
+            .join(&object[2..]),
+    )
+    .expect("loose plan object should be removed");
+    (head, repeated_source)
+}
+
+#[test]
+fn review_claims_rejects_invalid_inputs() {
+    let (_directory, root) = temp_repository();
+    let (head, repeated_source) = commit_claims_defect_plans(&root);
+    let [valid, invalid, repeated, linked, binary, corrupt] = CLAIMS_DEFECT_PLANS;
+    let unknown = "0123456789abcdef0123456789abcdef01234567";
+    assert_ne!(head, unknown);
+    let status_before = git_output(&root, &["status", "--porcelain", "--untracked-files=all"]);
+
+    let run_with = |repo: &str, head: &str, paths: &[&str]| {
+        let mut args = vec![NAME, "review", "--claims", "--repo", repo, "--head", head];
+        args.extend_from_slice(paths);
+        run_plan_args(&args, &root)
+    };
+
+    let second_covers = source_line(&repeated_source, "  - Covers: AC2");
+    let repeated_stderr = format!(
+        "Error [SCE-ERR-VALIDATION]: Plan claims check failed for '{repeated}':\n{repeated}:{second_covers}: `Covers:` appears more than once on `T01`\nTry: merge each repeated field into one line, then rerun 'sce plan review --claims'.\n"
+    );
+    let invalid_needle = format!("{invalid}:29: `S1` is defined more than once");
+    let cases: [(&str, CommandRun, u8, &str); 12] = [
+        (
+            "invalid repo",
+            run_with("not-a-repo", &head, &[valid]),
+            3,
+            "not-a-repo",
+        ),
+        (
+            "short head",
+            run_with(PR_REPO, &head[..12], &[valid]),
+            3,
+            &head[..12],
+        ),
+        (
+            "uppercase head",
+            run_with(PR_REPO, &head.to_uppercase(), &[valid]),
+            3,
+            "--head",
+        ),
+        (
+            "outside plans",
+            run_with(PR_REPO, &head, &["README.md"]),
+            3,
+            "README.md",
+        ),
+        (
+            "duplicate path",
+            run_with(PR_REPO, &head, &[valid, valid]),
+            3,
+            valid,
+        ),
+        (
+            "invalid plan",
+            run_with(PR_REPO, &head, &[valid, invalid]),
+            3,
+            &invalid_needle,
+        ),
+        (
+            "repeated covers",
+            run_with(PR_REPO, &head, &[valid, repeated]),
+            3,
+            &repeated_stderr,
+        ),
+        (
+            "unknown commit",
+            run_with(PR_REPO, unknown, &[valid]),
+            4,
+            "is not available in the local repository",
+        ),
+        (
+            "absent path",
+            run_with(PR_REPO, &head, &[valid, "context/plans/absent.md"]),
+            4,
+            "does not exist at commit",
+        ),
+        (
+            "symlink",
+            run_with(PR_REPO, &head, &[linked]),
+            4,
+            "is not a regular file (mode 120000",
+        ),
+        (
+            "non-UTF-8",
+            run_with(PR_REPO, &head, &[binary]),
+            4,
+            "is not valid UTF-8",
+        ),
+        (
+            "failed git",
+            run_with(PR_REPO, &head, &[valid, corrupt]),
+            4,
+            "Failed to read plan file",
+        ),
+    ];
+    for (case, run, exit_code, needle) in &cases {
+        assert_failure(run, *exit_code, case);
+        assert!(run.stderr.contains(needle), "{case}: {}", run.stderr);
+    }
+    assert_eq!(cases[6].1.stderr, repeated_stderr);
+    assert_eq!(
+        git_output(&root, &["status", "--porcelain", "--untracked-files=all"]),
+        status_before
+    );
+
+    assert_repeated_plan_passes_check_and_brief(&root, &head, repeated);
+}
+
+#[cfg(test)]
+fn assert_repeated_plan_passes_check_and_brief(root: &std::path::Path, head: &str, repeated: &str) {
+    let check = run_plan_check(root.join(repeated).to_str().expect("path should be UTF-8"));
+    assert_eq!(
+        check.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        check.stderr
+    );
+    let brief = run_review(root, head, &[repeated]);
+    assert_eq!(
+        brief.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        brief.stderr
+    );
 }
 
 #[cfg(test)]
