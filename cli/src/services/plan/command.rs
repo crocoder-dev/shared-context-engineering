@@ -14,7 +14,7 @@ use crate::services::plan::validate::{validate, PlanDiagnostic};
 
 pub const STRUCTURED_PLAN_PASS: &str = "structured plan: reference integrity holds";
 const PR_DESCRIPTION_COMMAND: &str = "sce plan pr-description";
-const DECISION_BRIEF_COMMAND: &str = "sce plan decision-brief";
+const REVIEW_COMMAND: &str = "sce plan review";
 const REGULAR_BLOB_MODES: [&str; 2] = ["100644", "100755"];
 const BLOB_TYPE: &str = "blob";
 
@@ -35,12 +35,25 @@ pub struct PlanPrDescriptionRequest {
     pub paths: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewOutput {
+    Brief,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlanReviewRequest {
+    pub repo: String,
+    pub head: String,
+    pub paths: Vec<String>,
+    pub output: ReviewOutput,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlanRequest {
     Check(PlanCheckRequest),
     Init(PlanInitRequest),
     PrDescription(PlanPrDescriptionRequest),
-    DecisionBrief(PlanPrDescriptionRequest),
+    Review(PlanReviewRequest),
 }
 
 pub struct PlanCommand {
@@ -67,7 +80,7 @@ impl PlanCommand {
                 create(&name, &start, stderr)
             }
             PlanRequest::PrDescription(request) => pr_description(request, current_dir),
-            PlanRequest::DecisionBrief(request) => decision_brief(request, current_dir),
+            PlanRequest::Review(request) => review(request, current_dir),
         }
     }
 }
@@ -99,15 +112,15 @@ fn pr_description(
     render_format(&arguments, &plans, BriefFormat::IntentReview)
 }
 
-fn decision_brief(
-    request: &PlanPrDescriptionRequest,
+fn review(
+    request: &PlanReviewRequest,
     current_dir: impl FnOnce() -> std::io::Result<PathBuf>,
 ) -> Result<String, CliError> {
     let arguments = parse_arguments(&request.repo, &request.head, &request.paths)?;
     let start = current_dir()
         .context("Failed to read the current directory")
         .map_err(CliError::runtime)?;
-    let root = resolve_repository_root(&start, DECISION_BRIEF_COMMAND)?;
+    let root = resolve_repository_root(&start, REVIEW_COMMAND)?;
     verify_commit(&root, &arguments.head)?;
     let plans = arguments
         .paths
@@ -120,7 +133,10 @@ fn decision_brief(
             })
         })
         .collect::<Result<Vec<_>, CliError>>()?;
-    render_format(&arguments, &plans, BriefFormat::DecisionBrief).map(decision_brief_stdout_payload)
+    match request.output {
+        ReviewOutput::Brief => render_format(&arguments, &plans, BriefFormat::DecisionBrief)
+            .map(decision_brief_stdout_payload),
+    }
 }
 
 fn run_git(root: &str, args: &[&str]) -> Result<Output, CliError> {
@@ -130,7 +146,7 @@ fn run_git(root: &str, args: &[&str]) -> Result<Output, CliError> {
         .output()
         .with_context(|| {
             format!(
-                "Failed to run 'git {}'. Try: install Git and rerun '{DECISION_BRIEF_COMMAND}'.",
+                "Failed to run 'git {}'. Try: install Git and rerun '{REVIEW_COMMAND}'.",
                 args.join(" ")
             )
         })
@@ -142,7 +158,7 @@ fn verify_commit(root: &str, head: &str) -> Result<(), CliError> {
     let output = run_git(root, &["rev-parse", "--verify", "--quiet", &revision])?;
     if !output.status.success() {
         return Err(CliError::runtime(anyhow!(
-            "Commit '{head}' is not available in the local repository. Try: fetch the commit, then rerun '{DECISION_BRIEF_COMMAND}'."
+            "Commit '{head}' is not available in the local repository. Try: fetch the commit, then rerun '{REVIEW_COMMAND}'."
         )));
     }
     Ok(())
@@ -152,7 +168,7 @@ fn read_committed_plan(root: &str, head: &str, path: &str) -> Result<String, Cli
     let listing = run_git(root, &["ls-tree", "-z", head, "--", path])?;
     if !listing.status.success() {
         return Err(CliError::runtime(anyhow!(
-            "Failed to list plan file '{path}' at commit '{head}' ({}). Try: rerun '{DECISION_BRIEF_COMMAND}' inside the repository that contains the commit.",
+            "Failed to list plan file '{path}' at commit '{head}' ({}). Try: rerun '{REVIEW_COMMAND}' inside the repository that contains the commit.",
             String::from_utf8_lossy(&listing.stderr).trim()
         )));
     }
@@ -177,7 +193,7 @@ fn read_committed_plan(root: &str, head: &str, path: &str) -> Result<String, Cli
     let blob = run_git(root, &["cat-file", BLOB_TYPE, entry.object])?;
     if !blob.status.success() {
         return Err(CliError::runtime(anyhow!(
-            "Failed to read plan file '{path}' at commit '{head}' ({}). Try: rerun '{DECISION_BRIEF_COMMAND}' after 'git fsck' reports no missing objects.",
+            "Failed to read plan file '{path}' at commit '{head}' ({}). Try: rerun '{REVIEW_COMMAND}' after 'git fsck' reports no missing objects.",
             String::from_utf8_lossy(&blob.stderr).trim()
         )));
     }

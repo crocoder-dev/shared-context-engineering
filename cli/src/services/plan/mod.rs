@@ -1752,8 +1752,8 @@ fn commit_repository(root: &std::path::Path) -> String {
 }
 
 #[cfg(test)]
-fn run_decision_brief(root: &std::path::Path, head: &str, paths: &[&str]) -> CommandRun {
-    let mut args = vec![NAME, "decision-brief", "--repo", PR_REPO, "--head", head];
+fn run_review(root: &std::path::Path, head: &str, paths: &[&str]) -> CommandRun {
+    let mut args = vec![NAME, "review", "--repo", PR_REPO, "--head", head];
     args.extend_from_slice(paths);
     run_plan_args(&args, root)
 }
@@ -1770,7 +1770,7 @@ fn assert_failure(run: &CommandRun, exit_code: u8, case: &str) {
 }
 
 #[test]
-fn decision_brief_reads_committed_plan() {
+fn review_reads_committed_plan() {
     let (_directory, root) = temp_repository();
     let path = "context/plans/committed.md";
     let source = decision_brief_plan_source(
@@ -1784,7 +1784,7 @@ fn decision_brief_reads_committed_plan() {
         "<!-- sce:intent-review:start -->\n## Decision Brief\n\n**Review requested:** 1 decision\n\n**Plans:** [committed]({url})\n\n### 1. Is one store enough?\n\n**Proposed:** Keep one store.\n\n[Review committed D1 — rationale, alternatives and trade-offs]({url}#L5)\n\n<!-- sce:intent-review:end -->\n"
     );
 
-    let before = run_decision_brief(&root, &head, &[path]);
+    let before = run_review(&root, &head, &[path]);
     assert_eq!(
         before.exit_code,
         std::process::ExitCode::SUCCESS,
@@ -1804,7 +1804,7 @@ fn decision_brief_reads_committed_plan() {
         .replace("Is one store enough?", "Is the edited question shown?");
     write_repository_plan(&root, path, &edited);
 
-    let after = run_decision_brief(&root, &head, &[path]);
+    let after = run_review(&root, &head, &[path]);
     assert_eq!(
         after.exit_code,
         std::process::ExitCode::SUCCESS,
@@ -1820,7 +1820,7 @@ fn decision_brief_reads_committed_plan() {
 }
 
 #[test]
-fn decision_brief_question_limit() {
+fn review_question_limit() {
     let (_directory, root) = temp_repository();
     write_repository_plan(
         &root,
@@ -1834,7 +1834,7 @@ fn decision_brief_question_limit() {
     );
     let three = commit_repository(&root);
 
-    let accepted = run_decision_brief(
+    let accepted = run_review(
         &root,
         &three,
         &["context/plans/beta.md", "context/plans/alpha.md"],
@@ -1869,7 +1869,7 @@ fn decision_brief_question_limit() {
     );
     let four = commit_repository(&root);
 
-    let rejected = run_decision_brief(
+    let rejected = run_review(
         &root,
         &four,
         &["context/plans/beta.md", "context/plans/alpha.md"],
@@ -1890,7 +1890,7 @@ fn decision_brief_question_limit() {
 }
 
 #[test]
-fn decision_brief_rejects_invalid_git_inputs() {
+fn review_rejects_invalid_git_inputs() {
     use std::io::Write;
 
     let (_directory, root) = temp_repository();
@@ -1920,7 +1920,7 @@ fn decision_brief_rejects_invalid_git_inputs() {
     assert_ne!(head, unknown);
 
     let run_with = |repo: &str, head: &str, paths: &[&str]| {
-        let mut args = vec![NAME, "decision-brief", "--repo", repo, "--head", head];
+        let mut args = vec![NAME, "review", "--repo", repo, "--head", head];
         args.extend_from_slice(paths);
         run_plan_args(&args, &root)
     };
@@ -1988,71 +1988,112 @@ fn decision_brief_rejects_invalid_git_inputs() {
     );
 }
 
-#[test]
-fn decision_brief_hidden_but_directly_invocable() {
-    let (_directory, root) = temp_repository();
-    let path = "context/plans/direct.md";
-    write_repository_plan(
-        &root,
-        path,
-        &decision_brief_plan_source("direct", &[("Keep one store.", Some("Is it enough?"))]),
-    );
-    let head = commit_repository(&root);
-
-    let run = run_decision_brief(&root, &head, &[path]);
-    assert_eq!(
-        run.exit_code,
-        std::process::ExitCode::SUCCESS,
-        "{}",
-        run.stderr
-    );
-    assert!(
-        run.stdout
-            .starts_with("<!-- sce:intent-review:start -->\n## Decision Brief\n"),
-        "{}",
-        run.stdout
-    );
-
-    let parsed = crate::services::parse::command_runtime::parse_runtime_command(
-        ["sce", NAME, "decision-brief", "--help"]
-            .into_iter()
+#[cfg(test)]
+fn run_cli_args(args: &[&str], start: &std::path::Path) -> CommandRun {
+    let mut stderr = Vec::new();
+    let result = crate::services::parse::command_runtime::parse_runtime_command(
+        std::iter::once("sce")
+            .chain(args.iter().copied())
             .map(String::from),
         &crate::services::command_registry::CommandRegistry::default(),
         None,
     )
-    .expect("decision-brief help should parse");
-    let crate::services::command_registry::RuntimeCommand::HelpText(command) = parsed else {
-        panic!("expected help text");
-    };
-    let help = strip_ansi(&command.text);
-    assert!(help.contains("--repo <OWNER/NAME>"), "{help}");
-    assert!(help.contains("--head <SHA>"), "{help}");
-    assert!(help.contains("<PATHS>..."), "{help}");
+    .and_then(|command| match command {
+        crate::services::command_registry::RuntimeCommand::HelpText(command) => Ok(command.text),
+        crate::services::command_registry::RuntimeCommand::Plan(command) => {
+            command.execute_with(|| Ok(start.to_path_buf()), &mut stderr)
+        }
+        _ => panic!("expected help text or plan command"),
+    });
+    render_plan_result(result, stderr)
 }
 
 #[test]
-fn decision_brief_hidden_from_help_and_completions() {
+fn review_removed_name_shows_plan_help_and_keeps_question_limit() {
+    let (_directory, root) = temp_repository();
+    write_repository_plan(
+        &root,
+        "context/plans/beta.md",
+        &review_plan_source("beta", [Some("One?"), Some("Two?"), None]),
+    );
+    write_repository_plan(
+        &root,
+        "context/plans/alpha.md",
+        &review_plan_source("alpha", [Some("Three?"), None, Some("Four?")]),
+    );
+    let head = commit_repository(&root);
+    let paths = ["context/plans/beta.md", "context/plans/alpha.md"];
+
+    let plan_help = run_cli_args(&[NAME, "--help"], &root);
+    assert_eq!(plan_help.exit_code, std::process::ExitCode::SUCCESS);
+    assert!(plan_help.stderr.is_empty(), "{}", plan_help.stderr);
+    assert!(plan_help.stdout.contains("review"), "{}", plan_help.stdout);
+
+    let mut removed_args = vec![NAME, "decision-brief", "--repo", PR_REPO, "--head", &head];
+    removed_args.extend_from_slice(&paths);
+    let removed = run_cli_args(&removed_args, &root);
+    assert_eq!(removed.exit_code, std::process::ExitCode::SUCCESS);
+    assert_eq!(removed.stdout, plan_help.stdout);
+    assert!(removed.stderr.is_empty(), "{}", removed.stderr);
+    assert!(
+        !removed.stdout.contains("## Decision Brief"),
+        "{}",
+        removed.stdout
+    );
+
+    let mut review_args = vec![NAME, "review", "--repo", PR_REPO, "--head", &head];
+    review_args.extend_from_slice(&paths);
+    let review = run_cli_args(&review_args, &root);
+    assert_failure(&review, 3, "four marked decisions");
+    assert!(
+        review.stderr.contains("Found 4 decisions"),
+        "{}",
+        review.stderr
+    );
+}
+
+#[test]
+fn review_appears_in_help_and_completions() {
     use crate::services::completion::{render_completion, CompletionRequest, CompletionShell};
 
     let root_help = strip_ansi(&crate::services::help::help_text());
+    assert!(
+        root_help.contains("sce plan review --repo <owner/name> --head <sha> <path>..."),
+        "{root_help}"
+    );
     assert!(!root_help.contains("decision-brief"), "{root_help}");
-    assert!(root_help.contains("pr-description"), "{root_help}");
 
     let plan_help = strip_ansi(
         &crate::cli_schema::render_help_for_path(&[NAME]).expect("plan help should be renderable"),
     );
+    assert!(
+        plan_help
+            .lines()
+            .any(|line| line.trim_start().starts_with("review ")),
+        "{plan_help}"
+    );
     assert!(!plan_help.contains("decision-brief"), "{plan_help}");
-    assert!(plan_help.contains("pr-description"), "{plan_help}");
 
-    for shell in [
-        CompletionShell::Bash,
-        CompletionShell::Zsh,
-        CompletionShell::Fish,
+    let review_help = strip_ansi(
+        &crate::cli_schema::render_help_for_path(&[NAME, "review"])
+            .expect("review help should be renderable"),
+    );
+    assert!(review_help.contains("--repo <OWNER/NAME>"), "{review_help}");
+    assert!(review_help.contains("--head <SHA>"), "{review_help}");
+    assert!(review_help.contains("<PATHS>..."), "{review_help}");
+    assert!(!review_help.contains("decision-brief"), "{review_help}");
+
+    for (shell, needle) in [
+        (CompletionShell::Bash, "check init pr-description review"),
+        (
+            CompletionShell::Zsh,
+            "'review:Print a Markdown Decision Brief",
+        ),
+        (CompletionShell::Fish, "-f -a \"review\""),
     ] {
         let script = render_completion(CompletionRequest { shell });
+        assert!(script.contains(needle), "{shell:?}");
         assert!(!script.contains("decision-brief"), "{shell:?}");
         assert!(script.contains("pr-description"), "{shell:?}");
-        assert!(script.contains("claude-mutation-scope"), "{shell:?}");
-        assert!(script.contains("telemetry-headers"), "{shell:?}");
     }
 }

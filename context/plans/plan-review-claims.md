@@ -449,14 +449,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Rename plan decision-brief to the visible plan review command` (status:todo)
+- [x] T01: `Rename plan decision-brief to the visible plan review command` (status:done)
   - Task ID: T01
   - Covers: AC1, AC2
   - Scope: In — rename `PlanSubcommand::DecisionBrief` to a visible `Review` subcommand named `review`, rename `PlanRequest::DecisionBrief` to `PlanRequest::Review(PlanReviewRequest)` with `ReviewOutput::Brief` only, update the command name constant and its remediation text to `sce plan review`, add the `Plan Usage:` line without `[--claims]`, rename the command-level `decision_brief_*` tests to `review_*`, replace the hidden-command tests with `review_appears_in_help_and_completions`, and add `review_removed_name_shows_plan_help_and_keeps_question_limit`, which compares the stdout, stderr, and exit code of `sce plan decision-brief ...` with those of `sce plan --help`. Out — the `--claims` flag, `claims.rs`, context files, and any change to the unknown-subcommand routing in `command_runtime.rs`.
   - Dependencies: none
   - Done when: `sce plan review` prints the unchanged Decision Brief, `sce plan decision-brief ...` exits `0` with the exact `sce plan --help` stdout, empty stderr, and no Decision Brief, `review` still exits `3` with empty stdout above three marked decisions, `review` appears in help and all three completion scripts, and the renamed and new tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`.
-  - Context synchronization: pending
+  - Completed: 2026-10-25
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/command_surface.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/plan/command.rs`, `cli/src/services/plan/mod.rs`
+  - Result: `PlanSubcommand::Review` (`name = "review"`, visible) replaces the hidden `DecisionBrief` variant. `PlanRequest::Review(PlanReviewRequest)` carries `repo`, `head`, `paths`, and `output: ReviewOutput`, where `ReviewOutput::Brief` is the only variant, and `command.rs` dispatches on it with a static `match`. `REVIEW_COMMAND = "sce plan review"` names the command in the remediation text. `Plan Usage:` lists `sce plan review --repo <owner/name> --head <sha> <path>...`. The command-level tests are renamed to `review_reads_committed_plan`, `review_question_limit`, and `review_rejects_invalid_git_inputs`. `review_appears_in_help_and_completions` replaces the two hidden-command tests. The new `review_removed_name_shows_plan_help_and_keeps_question_limit` uses a new `run_cli_args` test helper that renders help-text and plan commands through `render_run_outcome`. The unknown-subcommand routing and the completion pruning are unchanged.
+  - Verify result: passed — `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` (50 passed, 0 failed). Additional: the full CLI test suite (660 passed) and `clippy --all-targets -D warnings` (clean).
+  - Context impact: the `plan` command surface changed — `sce plan decision-brief` is now the visible `sce plan review`, without an alias. `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` still describe the hidden `decision-brief`, and T04 is planned to rewrite those sections.
+  - Context synchronization: synced
 
 - [ ] T02: `Add the pure sce.plan.claims.v1 claims module` (status:todo)
   - Task ID: T02

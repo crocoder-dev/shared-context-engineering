@@ -87,6 +87,10 @@ const HELP_SECTIONS: &[HelpSection] = &[
                 cmd: "  sce plan",
                 suffix: " pr-description --repo <owner/name> --head <sha> <path>...",
             },
+            HelpSectionBodyLine::Command {
+                cmd: "  sce plan",
+                suffix: " review --repo <owner/name> --head <sha> <path>...",
+            },
         ],
     },
     HelpSection {

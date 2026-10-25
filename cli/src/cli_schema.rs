@@ -423,11 +423,10 @@ pub enum PlanSubcommand {
     },
 
     #[command(
-        name = "decision-brief",
-        about = "Print a Markdown Decision Brief for the given plans at a commit, offline and without writing files",
-        hide = true
+        name = "review",
+        about = "Print a Markdown Decision Brief for the given plans at a commit, offline and without writing files"
     )]
-    DecisionBrief {
+    Review {
         #[arg(
             long,
             value_name = "OWNER/NAME",

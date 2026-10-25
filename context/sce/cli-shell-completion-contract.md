@@ -29,8 +29,8 @@ Defines the implemented `sce completion` contract for deterministic shell comple
 - Scripts are deterministic for identical binary + input shell.
 - Generated scripts encode current parser-valid command/flag/subcommand surfaces for:
 - top-level commands: `help`, `config`, `setup`, `doctor`, `auth`, `hooks`, `sync`, `plan`, `version`, `completion`
-  - plan subcommands: `check`, `init`, `pr-description`
-  - hidden `plan` subcommands are omitted: `render_completion` rebuilds `plan` with only its visible subcommands, so `decision-brief` is absent
+  - plan subcommands: `check`, `init`, `pr-description`, `review`
+  - hidden `plan` subcommands are omitted: `render_completion` rebuilds `plan` with only its visible subcommands
   - hidden subcommands of other commands, such as the `hooks` adapters, stay in the scripts
   - completion-specific flags and values: `--shell` with `bash|zsh|fish`
 
