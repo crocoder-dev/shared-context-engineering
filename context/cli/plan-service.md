@@ -9,7 +9,7 @@
 - `command.rs` owns the `plan` command. `PlanCommand` holds one `PlanRequest::{Check(PlanCheckRequest), Init(PlanInitRequest), PrDescription(PlanPrDescriptionRequest), Review(PlanReviewRequest)}`, mapped from `PlanSubcommand` in `services/parse/command_runtime.rs` and dispatched by a static `match`. `execute_with_stderr(stderr)`, called from `RuntimeCommand::execute_with_stderr`, passes `std::env::current_dir` and the command stderr writer to `execute_with`, which tests call with an explicit start directory and a captured stderr buffer instead of changing process state (see [Command contract](#command-contract), [Init command contract](#init-command-contract), and [PR description command contract](#pr-description-command-contract), and [Review command contract](#review-command-contract)). `PlanReviewRequest` carries `repo`, `head`, `paths`, and a `ReviewOutput::{Brief, Claims}` enum. `command_runtime.rs` maps the boolean `--claims` flag to `Claims`, and `command.rs` dispatches on the enum with a static `match`. All three read commands share `parse_valid_plan`: `extract`, `validate`, and the same diagnostic rendering. `check` and `pr-description` read the working tree, and `review` reads Git objects.
 - `init.rs` owns `PlanName` validation and `create(&PlanName, start)`, the repository-root scaffold publication. Its `resolve_repository_root(start, command)` is shared with `pr-description` and `review` and names the calling command in its remediation text.
 - `pr_description.rs` is a pure module with no I/O. It owns the argument grammar (`parse_arguments`), the collection of marked decisions, the question limit, Markdown escaping (`escape_markdown`), and `render_format(&PrDescriptionArguments, &[PlanInput], BriefFormat)`. `BriefFormat::{IntentReview, DecisionBrief}` selects only the layout (see [Brief formats](#brief-formats)). The test-only `render` wrapper calls `render_format` with `IntentReview`.
-- `claims.rs` is a pure module with no I/O. `claims::render(&PrDescriptionArguments, &[PlanInput])` maps validated plans to one `sce.plan.claims.v1` JSON document, with one claim per acceptance criterion. Typed `#[derive(Serialize)]` structs fix the property order, and `serde_json::to_string_pretty` serializes them. The module does not use `render_format` or `escape_markdown`, so the three-question limit and Markdown escaping never apply to claims. A repeated consumed field on one entry gives a `Plan claims check failed` validation error (exit `3`) and no JSON. The plan's `## Claims JSON v1 contract` owns the field list. `sce plan review --claims` is its only caller. The [claims manifest decision](../decisions/2026-10-25-plan-claims-manifest-v1-contract.md) records the intent-only v1 contract with status `Proposed`.
+- `claims.rs` is a pure module with no I/O. `claims::render(&PrDescriptionArguments, &[PlanInput])` maps validated plans to one `sce.plan.claims.v1` JSON document, with one claim per acceptance criterion. Typed `#[derive(Serialize)]` structs fix the property order, and `serde_json::to_string_pretty` serializes them. The module does not use `render_format` or `escape_markdown`, so the three-question limit and Markdown escaping never apply to claims. A repeated consumed field on one entry gives a `Plan claims check failed` validation error (exit `3`) and no JSON. The [Claims manifest contract](#claims-manifest-contract) owns the field list. `sce plan review --claims` is its only caller. The [claims manifest decision](../decisions/2026-10-25-plan-claims-manifest-v1-contract.md) records the intent-only v1 contract with status `Proposed`.
 - `mod.rs` embeds the generated plan init scaffold as the crate-visible `SCAFFOLD` constant (`include_str!` of `OUT_DIR/pkl-generated/config/plan-init-scaffold.md`) with its `SCAFFOLD_PLAN_NAME_TOKEN` (`{plan-name}`). `cli/build.rs` requires that staged path, so a payload or package fallback without the scaffold fails the build. The binary never renders the scaffold itself.
 
 ## Plan model
@@ -109,9 +109,53 @@
 - Link limitation: `--repo` is a caller-supplied GitHub repository identifier, and `--head` must be a commit available in the local repository. The command guarantees local source integrity: the parsed text and the `#L{line}` anchors match the local `--head` commit. It does not guarantee remote link availability: it does not check that the commit was pushed to GitHub or exists in `--repo`. Published links work only when that commit is available in the named repository, so a wrong `--repo` or an unpushed commit gives a well-formed brief whose links do not resolve.
 - Review intent is not evidence: the brief shows what the plan author asks reviewers to judge. It does not show that the implementation follows those decisions, and it is not a substitute for verification.
 - Failures: invalid arguments, a duplicate path, an invalid plan, more than three marked decisions, and an empty marked statement are `CliError::validation` (exit `3`). A missing commit, a missing path, a symlink or other non-regular entry, non-UTF-8 content, and a failed `git` are `CliError::runtime` (exit `4`). Stdout is empty on every failure.
-- Claims output: `--claims` reads and validates every plan from `--head` through the same Git path. Then `claims::render` builds the complete document, and the shared stdout writer appends one newline. The three-question limit and the empty-statement check do not apply. A repeated consumed field fails with the `Plan claims check failed` validation error (exit `3`), although `sce plan check` and the Decision Brief accept the plan. Stdout stays empty on every failure, and the command creates no file.
+- Claims output: `--claims` reads and validates every plan from `--head` through the same Git path. Then `claims::render` builds the complete document, and the shared stdout writer appends one newline. The three-question limit and the empty-statement check do not apply. A repeated consumed field fails with the `Plan claims check failed` validation error (exit `3`), although `sce plan check` and the Decision Brief accept the plan. Stdout stays empty on every failure, and the command creates no file. The [Claims manifest contract](#claims-manifest-contract) owns the document.
 - `PlanSubcommand::Review` is visible. `sce --help` lists it under `Plan Usage:`, and `sce plan --help` and the Bash, Zsh, and Fish completion scripts list `review` and its `--claims` flag.
 - The former `sce plan decision-brief` name has no alias. The unknown-subcommand routing in `command_runtime.rs` handles it: the command exits `0`, prints the `sce plan --help` text on stdout, and prints no Decision Brief. A script cannot detect the removal from the exit code.
+
+## Claims manifest contract
+
+`sce plan review --claims --repo <owner/name> --head <sha> <path>...` prints exactly one `sce.plan.claims.v1` JSON document on stdout, followed by exactly one newline. The [claims manifest decision](../decisions/2026-10-25-plan-claims-manifest-v1-contract.md) records this contract as an external compatibility surface.
+
+- Claim identity: one claim per acceptance criterion, with `id` `<plan-path>#<AC-id>`, for example `context/plans/token-refresh.md#AC1`. The ID contains no SHA and no line number, so it stays stable across text edits and commits because plan rules never renumber or reuse AC IDs. Renaming a plan file or moving a criterion to another plan changes it.
+- Provenance: every plan is read from the `--head` commit through the [review command contract](#review-command-contract) Git path, never from the working tree. Every `line` is the 1-based `PlanEntry.line` in the committed content, and every `url` is `https://github.com/{slug}/blob/{head_sha}/{path}` with `#L{line}` for sources. Uncommitted edits never change the output, and input path order never changes it.
+- Intended claims, declared checks, and observed evidence are three different things. Acceptance criteria and design decisions are authored intent: every claim has `kind` `acceptance_criterion` and `modality` `intended`. `Validate:`, scenario, and `Check:` values are declared verification procedures, copied as text. The command never runs them, and their presence never means that they passed. Observed evidence (exit codes, logs, test results, model judgments) is never part of v1. `author_checked` copies the checkbox (`true`, `false`, or `null` when absent) and never counts as evidence or changes `modality`.
+- Consumers: Jev and other semantic evaluators or assessors are separate consumers outside `sce`. They attach their own evidence and judgments by joining on `repository.slug`, `repository.head_sha`, and `claims[].id`. The document has no evidence, assessment, verdict, confidence, risk, score, or priority property.
+- `claims.json` names the stdout document only, for example after `> claims.json`. The command creates no file.
+
+Every object has exactly these properties, in this order, with none optional or omitted when empty:
+
+- Root: `schema_version` (`"sce.plan.claims.v1"`), `repository` (Repository), `plans` (Plan[]), `claims` (Claim[]).
+- Repository: `slug` (the validated `--repo`), `head_sha` (the validated `--head`).
+- Plan: `path`, `url`.
+- Claim: `id`, `kind` (`"acceptance_criterion"`), `statement`, `modality` (`"intended"`), `author_checked` (boolean or null), `source` (Source), `decisions` (Decision[]), `verification` (Verification), `tasks` (Task[]).
+- Source: `path`, `entry_id`, `line` (positive integer), `url`.
+- Decision: `id`, `statement`, `boundary`, `rationale`, `rejected`, `trade_offs`, `review` (Review), `source` (Source).
+- Review: `required` (boolean, `true` for `Review: required`), `question` (the `Review question:` value when required, otherwise `null`).
+- Verification: `mode` (`"scenarios"` or `"inspection"`), `validate` (the `Validate:` value), `scenarios` (Scenario[]).
+- Scenario: `id`, `statement`, `given`, `when`, `then`, `check`, `source` (Source).
+- Task: `id`, `statement`, `author_checked` (boolean or null), `source` (Source).
+
+Mapping rules:
+
+- Statements are the whitespace-folded `PlanEntry.statement`. Other strings are the authored `PlanField.value`. Neither uses Markdown escaping, so inline backticks and a task's `(status:...)` suffix stay as authored, and a wrapped field value keeps its newline as `\n`. A marked decision with an empty statement gives `"statement": ""`.
+- `decisions` and `scenarios` follow the reference order of `Decisions:` and `Scenarios:`, resolved only inside the claim's own plan. A claim without `Decisions:` gives `[]`. `Scenarios: none (inspection)` gives `"mode": "inspection"` and `"scenarios": []`.
+- `tasks` lists every task whose `Covers:` names the criterion, in task source order, or `[]`.
+- `plans` is sorted by path in byte order, and `claims` by plan path, then criterion source order.
+- The three-question limit and the empty-statement check of the Decision Brief do not apply. Every criterion of every plan gives a claim, and valid plans without criteria give `"claims": []`.
+- `serde_json::to_string_pretty` serializes typed `#[derive(Serialize)]` structs with two-space indentation, without `serde_json::Value` maps or `skip_serializing_if`.
+
+Repeated consumed fields: a plan that `validate` accepts can repeat a field on one entry. `claims.rs` rejects a repeated `Boundary`, `Rationale`, `Rejected`, `Trade-offs`, `Review`, or `Review question` on a decision, `Validate`, `Decisions`, or `Scenarios` on an acceptance criterion, `Given`, `When`, `Then`, or `Check` on a scenario, and `Covers` on a task, instead of choosing one occurrence. It checks plans in sorted path order and fails on the first plan with a repetition with `CliError::validation` (exit `3`):
+
+```text
+Plan claims check failed for '<path>':
+<path>:<line>: `<key>:` appears more than once on `<id>`
+Try: merge each repeated field into one line, then rerun 'sce plan review --claims'.
+```
+
+Each diagnostic names the line of the second occurrence, in line order. `validate` still reports a repeated `Review:` or `Review question:` first with its own diagnostic. `sce plan check` and the Decision Brief keep accepting the other repetitions.
+
+Failures follow the review command: argument, duplicate-path, plan, and repeated-field defects exit `3`, and Git and content defects exit `4`. Stdout is empty on every failure, with no partial JSON, and no file is written.
 
 ## Brief formats
 
@@ -133,7 +177,7 @@
 - `sce plan check`: The read-only CLI command that runs `extract` then `validate` on one plan file and reports through the exit `0`/`3`/`4` contract above.
 - `sce plan pr-description`: The offline CLI command that validates plans and prints their intent review brief through the [PR description command contract](#pr-description-command-contract).
 - `sce plan review`: The offline CLI command that reads plans from a commit and prints their Decision Brief through the [review command contract](#review-command-contract). It replaced the former `sce plan decision-brief` name without an alias.
-- `claims manifest`: The `sce.plan.claims.v1` JSON document that `sce plan review --claims` prints on stdout. It holds one claim per acceptance criterion and records authored intent only, with no evidence or verdict.
+- `claims manifest`: The `sce.plan.claims.v1` JSON document that `sce plan review --claims` prints on stdout through the [claims manifest contract](#claims-manifest-contract). It holds one claim per acceptance criterion, identified as `<plan-path>#<AC-id>`, and records authored intent only, with no evidence or verdict. `claims.json` names this stdout document, not a file the command creates.
 - `Decision Brief`: The marker-delimited Markdown layout that `BriefFormat::DecisionBrief` renders for a senior reviewer. Each marked decision shows its review question, its proposed decision statement, and one link to the decision line (see [Brief formats](#brief-formats)).
 - `intent review brief`: The marker-delimited Markdown block that `sce plan pr-description` prints for a pull request. It lists the input plans and their review questions with links to exact decision lines.
 - `review pair`: The optional `Review: required` and one-line `Review question:` fields on a design decision. They mark a decision that needs senior engineering judgment.

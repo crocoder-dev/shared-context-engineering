@@ -294,43 +294,43 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: `sce plan review --repo <owner/name> --head <sha> <path>...` prints the Decision Brief Markdown that `sce plan decision-brief` printed for the same commit and plans, with stdout ending in exactly one newline. `decision-brief` is no longer a recognized `plan` subcommand: `sce plan decision-brief --repo <owner/name> --head <sha> <path>...` follows the existing unknown-subcommand routing in `command_runtime.rs`, exits `0`, prints on stdout exactly the bytes that `sce plan --help` prints, leaves stderr empty, and generates no Decision Brief. The three-question limit and the empty-statement check still apply to the `review` output, so `sce plan review` over plans with more than three marked decisions exits `3` with empty stdout.
+- [x] AC1: `sce plan review --repo <owner/name> --head <sha> <path>...` prints the Decision Brief Markdown that `sce plan decision-brief` printed for the same commit and plans, with stdout ending in exactly one newline. `decision-brief` is no longer a recognized `plan` subcommand: `sce plan decision-brief --repo <owner/name> --head <sha> <path>...` follows the existing unknown-subcommand routing in `command_runtime.rs`, exits `0`, prints on stdout exactly the bytes that `sce plan --help` prints, leaves stderr empty, and generates no Decision Brief. The three-question limit and the empty-statement check still apply to the `review` output, so `sce plan review` over plans with more than three marked decisions exits `3` with empty stdout.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_` and `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_`
   - Decisions: D1
   - Scenarios: S1, S2
-- [ ] AC2: `sce --help`, `sce plan --help`, and the Bash, Zsh, and Fish completion scripts expose `review` and its `--claims` flag, and none of them contains `decision-brief`. The `Plan Usage:` section lists `sce plan review [--claims] --repo <owner/name> --head <sha> <path>...`.
+- [x] AC2: `sce --help`, `sce plan --help`, and the Bash, Zsh, and Fish completion scripts expose `review` and its `--claims` flag, and none of them contains `decision-brief`. The `Plan Usage:` section lists `sce plan review [--claims] --repo <owner/name> --head <sha> <path>...`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_appears_in_help_and_completions`
   - Decisions: D1
   - Scenarios: S3
-- [ ] AC3: `sce plan review --claims` prints one `sce.plan.claims.v1` JSON document that follows the `## Claims JSON v1 contract` section exactly: the Root, Repository, Plan, Claim, Source, Decision, Review, Verification, Scenario, and Task objects have exactly the listed properties, types, and order, and the document is pretty-printed with two-space indentation. For the golden example plan and arguments in that section, the output is byte-identical to the golden JSON document. Statements and field values keep their authored text without Markdown escaping.
+- [x] AC3: `sce plan review --claims` prints one `sce.plan.claims.v1` JSON document that follows the `## Claims JSON v1 contract` section exactly: the Root, Repository, Plan, Claim, Source, Decision, Review, Verification, Scenario, and Task objects have exactly the listed properties, types, and order, and the document is pretty-printed with two-space indentation. For the golden example plan and arguments in that section, the output is byte-identical to the golden JSON document. Statements and field values keep their authored text without Markdown escaping.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_`
   - Decisions: D2, D4
   - Scenarios: S4
-- [ ] AC4: Each claim resolves its `Decisions:` and `Scenarios:` references in reference order and lists its covering tasks in task source order. A claim without `Decisions:` has `"decisions": []`. A decision without a review pair has `"review": {"required": false, "question": null}`. `Scenarios: none (inspection)` gives `"mode": "inspection"` and `"scenarios": []`. `validate` is always the authored `Validate:` value. When an entry repeats a consumed field listed in `### Ambiguous field rejection`, the `claims.rs` render function returns a validation error naming the entry ID, the repeated field, and the line of the second occurrence, and returns no JSON, even when it is called directly with a plan that `validate` accepts.
+- [x] AC4: Each claim resolves its `Decisions:` and `Scenarios:` references in reference order and lists its covering tasks in task source order. A claim without `Decisions:` has `"decisions": []`. A decision without a review pair has `"review": {"required": false, "question": null}`. `Scenarios: none (inspection)` gives `"mode": "inspection"` and `"scenarios": []`. `validate` is always the authored `Validate:` value. When an entry repeats a consumed field listed in `### Ambiguous field rejection`, the `claims.rs` render function returns a validation error naming the entry ID, the repeated field, and the line of the second occurrence, and returns no JSON, even when it is called directly with a plan that `validate` accepts.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_`
   - Decisions: D2
   - Scenarios: S5, S6, S7, S14
-- [ ] AC5: The manifest records intent only. Every claim has `"kind": "acceptance_criterion"` and `"modality": "intended"`. `author_checked` is `true`, `false`, or `null` exactly as the checkbox is checked, unchecked, or absent, for claims and tasks alike. The document contains no evidence, verdict, confidence, risk, or priority field, whatever the checkbox or task status.
+- [x] AC5: The manifest records intent only. Every claim has `"kind": "acceptance_criterion"` and `"modality": "intended"`. `author_checked` is `true`, `false`, or `null` exactly as the checkbox is checked, unchecked, or absent, for claims and tasks alike. The document contains no evidence, verdict, confidence, risk, or priority field, whatever the checkbox or task status.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_`
   - Decisions: D4
   - Scenarios: S8
-- [ ] AC6: `--claims` includes every acceptance criterion of every supplied plan, also when the plans hold more than three marked decisions or a marked decision with an empty statement. Valid plans without acceptance criteria give `"claims": []`.
+- [x] AC6: `--claims` includes every acceptance criterion of every supplied plan, also when the plans hold more than three marked decisions or a marked decision with an empty statement. Valid plans without acceptance criteria give `"claims": []`.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_`
   - Decisions: D2
   - Scenarios: S9
-- [ ] AC7: `--claims` reads plans only from the `--head` commit. The same repository, SHA, and plan set give byte-identical stdout for every path order and after an uncommitted working-tree edit. On success, stdout is one valid JSON document followed by exactly one newline, stderr is empty, and `git status --porcelain` is unchanged.
+- [x] AC7: `--claims` reads plans only from the `--head` commit. The same repository, SHA, and plan set give byte-identical stdout for every path order and after an uncommitted working-tree edit. On success, stdout is one valid JSON document followed by exactly one newline, stderr is empty, and `git status --porcelain` is unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_claims_`
   - Decisions: D3
   - Scenarios: S10, S11
-- [ ] AC8: `--claims` fails with exit `3` for invalid `--repo`, `--head`, or plan-path values, a duplicate path, an invalid plan, and a committed plan that `sce plan check` accepts but that repeats a consumed field, and with exit `4` for a missing commit, a missing path, a symlink, non-UTF-8 content, and a failed `git`. Every failure leaves stdout empty, prints a diagnostic on stderr, and writes no file.
+- [x] AC8: `--claims` fails with exit `3` for invalid `--repo`, `--head`, or plan-path values, a duplicate path, an invalid plan, and a committed plan that `sce plan check` accepts but that repeats a consumed field, and with exit `4` for a missing commit, a missing path, a symlink, non-UTF-8 content, and a failed `git`. Every failure leaves stdout empty, prints a diagnostic on stderr, and writes no file.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_claims_rejects_invalid_inputs`
   - Decisions: D3
   - Scenarios: S12
-- [ ] AC9: `sce plan review --claims` over the committed plans `context/plans/sce-plan-init.md` and `context/plans/plan-pr-description.md` at the `--head` commit exits `0` and prints valid JSON with one claim per acceptance criterion of those plans.
+- [x] AC9: `sce plan review --claims` over the committed plans `context/plans/sce-plan-init.md` and `context/plans/plan-pr-description.md` at the `--head` commit exits `0` and prints valid JSON with one claim per acceptance criterion of those plans.
   - Validate: `nix run .#sce -- plan review --claims --repo crocoder-dev/shared-context-engineering --head "$(git rev-parse HEAD)" context/plans/sce-plan-init.md context/plans/plan-pr-description.md | nix shell nixpkgs#jq -c jq -e '.schema_version == "sce.plan.claims.v1" and (.claims | length) > 0'`
   - Decisions: D3, D4
   - Scenarios: S13
-- [ ] AC10: `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` document `sce plan review`, `sce plan review --claims`, the exact v1 JSON contract, the stable claim identity, commit-backed provenance, and the difference between intended claims, declared checks, and observed evidence. They state that Jev and other semantic evaluators are separate consumers and that `claims.json` names the stdout document, not a file the command creates.
+- [x] AC10: `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` document `sce plan review`, `sce plan review --claims`, the exact v1 JSON contract, the stable claim identity, commit-backed provenance, and the difference between intended claims, declared checks, and observed evidence. They state that Jev and other semantic evaluators are separate consumers and that `claims.json` names the stdout document, not a file the command creates.
   - Validate: inspection of the `## Review command contract` and `## Claims manifest contract` sections in `context/cli/plan-service.md` and the `plan` paragraph in `context/cli/cli-command-surface.md`.
   - Scenarios: none (inspection)
 
@@ -493,15 +493,73 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: the `plan review` command surface gains `--claims` and the `sce.plan.claims.v1` stdout document. `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` do not yet describe the flag or the manifest, and T04 is planned to document them.
   - Context synchronization: synced
 
-- [ ] T04: `Document the review command and the claims manifest contract` (status:todo)
+- [x] T04: `Document the review command and the claims manifest contract` (status:done)
   - Task ID: T04
   - Covers: AC10
   - Scope: In — replace the decision brief command contract in `context/cli/plan-service.md` with a `## Review command contract` section, add a `## Claims manifest contract` section with the exact v1 fields, identity, provenance, intent-versus-evidence distinction, separate assessors, and the stdout-only `claims.json` meaning, update the `plan-service.md` scope, tests, and terms, update the `plan` paragraph in `context/cli/cli-command-surface.md`, and update the `context/context-map.md` annotation and any `context/glossary.md` entry that names `decision-brief`. Out — code changes.
   - Dependencies: T03
   - Done when: No durable context file outside `context/plans/` and `context/decisions/` names `sce plan decision-brief` as a current command, and the two new sections state every AC10 item.
   - Verify: `nix shell nixpkgs#ripgrep -c rg -n "decision-brief" context --glob '!plans/**' --glob '!decisions/**' --glob '!handovers/**'` returns only historical references; inspection of the two new sections.
-  - Context synchronization: pending
+  - Completed: 2026-10-25
+  - Files changed: `context/cli/plan-service.md`, `context/cli/cli-command-surface.md`, `context/context-map.md`, `context/glossary.md`
+  - Result: The T01 and T03 context syncs had already replaced the decision brief contract with `## Review command contract`, so that section only gains a link. `plan-service.md` gains `## Claims manifest contract`: the `<plan-path>#<AC-id>` identity and its stability limits, `--head` provenance for lines and URLs, the split between intended claims, declared `Validate:`/`Check:` procedures, and observed evidence (never in v1), Jev and other assessors as separate consumers joining on `repository.slug`, `repository.head_sha`, and `claims[].id`, the stdout-only `claims.json` meaning, every v1 object with its properties in order, the mapping rules, the repeated-consumed-field rejection text, and the failure classes. The `claims.rs` scope bullet, the review claims bullet, and the `claims manifest` term now link to the new section. The `plan` paragraph in `cli-command-surface.md` names the manifest's authored acceptance-criterion claims, the separate assessors, and the stdout-only `claims.json`. The `context-map.md` annotation and the glossary's plan-terms list now name the claims manifest contract.
+  - Verify result: passed — `nix shell nixpkgs#ripgrep -c rg -n "decision-brief" context --glob '!plans/**' --glob '!decisions/**' --glob '!handovers/**'` shows, outside `context/plans/` and `context/decisions/`, only historical references (`cli-command-surface.md:101` and `plan-service.md:114`, `:179`, `:206`, each the "former name, no alias" note or the removed-name test). The globs do not exclude the `context/plans/` hits because the search path prefix is `context/`; those files are historical plan records. Inspection: `## Review command contract` and `## Claims manifest contract` state every AC10 item.
+  - Context impact: documentation only — durable CLI context now fully describes `sce plan review` and the `sce.plan.claims.v1` contract. No code or behavior change.
+  - Context synchronization: synced
 
 ## Open questions
 
 None. The change request fixes the command shape, the schema, the identity rule, the error classes, and the test coverage. D4 carries the one choice a reviewer is asked to judge.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-25
+
+### Commands run
+
+- `nix run .#sce -- plan check context/plans/plan-review-claims.md` -> exit 0 (`structured plan: reference integrity holds`)
+- `nix flake check` -> exit 0 (all checks passed, including `cli-tests`, `cli-clippy`, and `cli-fmt`)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 146 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::review_` -> exit 0 (8 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::decision_brief_` -> exit 0 (7 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_` -> exit 0 (7 passed)
+- AC9 `Validate:` command (`nix run .#sce -- plan review --claims ... | jq -e ...`) -> exit 0 (prints `true`; 16 claims, matching the 8 acceptance criteria in each plan at `HEAD`)
+
+### Success-criteria verification
+
+- [x] AC1: `sce plan review` prints the Decision Brief; `decision-brief` routes to `sce plan --help` with exit 0; the limit and empty-statement checks still apply -> `plan::review_` 8 passed and `plan::decision_brief_` 7 passed; scenarios: S1, S2
+- [x] AC2: help and the Bash, Zsh, and Fish completions expose `review` and `--claims` and omit `decision-brief` -> `plan::review_appears_in_help_and_completions` passed; scenarios: S3
+- [x] AC3: `--claims` prints the exact v1 document, byte-identical to the golden example -> `plan::claims_golden_one_of_each` passed; scenarios: S4
+- [x] AC4: references resolve in order, tasks follow source order, inspection mode works, and repeated consumed fields are rejected -> `plan::claims_` 7 passed; scenarios: S5, S6, S7, S14
+- [x] AC5: the manifest records intent only; `author_checked` mirrors the checkbox; no evidence fields -> `plan::claims_checked_entries_stay_intended` passed; scenarios: S8
+- [x] AC6: every criterion is included regardless of the brief limits; no criteria gives `[]` -> `plan::claims_include_every_criterion` passed; scenarios: S9
+- [x] AC7: output is read from the commit, independent of path order, and pure -> `plan::review_claims_` tests passed; scenarios: S10, S11
+- [x] AC8: invalid inputs fail with the right exit class, empty stdout, and an exact diagnostic -> `plan::review_claims_rejects_invalid_inputs` passed both under `nix develop` and in the `nix flake check` sandbox; scenarios: S12
+- [x] AC9: dogfood over `sce-plan-init.md` and `plan-pr-description.md` -> pipeline exit 0, `jq -e` printed `true`, 16 claims; scenarios: S13
+- [x] AC10: the context docs describe the review command and the claims manifest contract -> inspected `## Review command contract` and `## Claims manifest contract` in `context/cli/plan-service.md` and the `plan` paragraph at `context/cli/cli-command-surface.md:101`; all AC10 items are present; scenarios: none (inspection)
+
+### Scenario verification
+
+- S1 (AC1): test `plan::review_reads_committed_plan` -> passed; status: Verified
+- S2 (AC1): test `plan::review_removed_name_shows_plan_help_and_keeps_question_limit` -> passed; status: Verified
+- S3 (AC2): test `plan::review_appears_in_help_and_completions` -> passed; status: Verified
+- S4 (AC3): test `plan::claims_golden_one_of_each` -> passed; status: Verified
+- S5 (AC4): test `plan::claims_preserve_reference_order` -> passed; status: Verified
+- S6 (AC4): test `plan::claims_inspection_only_criterion` -> passed; status: Verified
+- S7 (AC4): test `plan::claims_unmarked_and_absent_decisions` -> passed; status: Verified
+- S8 (AC5): test `plan::claims_checked_entries_stay_intended` -> passed; status: Verified
+- S9 (AC6): test `plan::claims_include_every_criterion` -> passed; status: Verified
+- S10 (AC7): test `plan::review_claims_reads_committed_plans` -> passed; status: Verified
+- S11 (AC7): test `plan::review_claims_output_is_pure` -> passed; status: Verified
+- S12 (AC8): test `plan::review_claims_rejects_invalid_inputs` -> passed, including the exact repeated-`Covers:` stderr, under `nix develop` and in the `nix flake check` sandbox; status: Verified
+- S13 (AC9): command AC9 `Validate:` -> exit 0, `true`, 16 claims; status: Verified
+- S14 (AC4): test `plan::claims_reject_repeated_consumed_fields` -> passed; status: Verified
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The plan-module test helper `render_plan_result` now strips ANSI codes from captured stderr, so tests no longer check that color is applied correctly on a terminal.

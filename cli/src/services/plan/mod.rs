@@ -283,7 +283,7 @@ fn render_plan_result(
     CommandRun {
         exit_code,
         stdout: String::from_utf8(stdout).expect("stdout should be UTF-8"),
-        stderr: String::from_utf8(stderr).expect("stderr should be UTF-8"),
+        stderr: strip_ansi(&String::from_utf8(stderr).expect("stderr should be UTF-8")),
     }
 }
 
