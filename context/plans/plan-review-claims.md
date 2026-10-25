@@ -463,14 +463,20 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: the `plan` command surface changed — `sce plan decision-brief` is now the visible `sce plan review`, without an alias. `context/cli/plan-service.md` and `context/cli/cli-command-surface.md` still describe the hidden `decision-brief`, and T04 is planned to rewrite those sections.
   - Context synchronization: synced
 
-- [ ] T02: `Add the pure sce.plan.claims.v1 claims module` (status:todo)
+- [x] T02: `Add the pure sce.plan.claims.v1 claims module` (status:done)
   - Task ID: T02
   - Covers: AC3, AC4, AC5, AC6
   - Scope: In — `cli/src/services/plan/claims.rs` with the typed `Serialize` structures of `## Claims JSON v1 contract`, the mapping from `PrDescriptionArguments` and `PlanInput` values under its mapping rules, in-plan reference and task resolution, sorted plans, the repeated-consumed-field rejection of `### Ambiguous field rejection`, `to_string_pretty` serialization, its registration in `mod.rs`, and the in-memory `claims_*` tests for S4 to S9 and S14, with the `### Golden example` plan and JSON as the S4 fixture and expected output. Out — CLI flag, Git I/O, dispatch, context files, and any change to `validate.rs`.
   - Dependencies: T01
   - Done when: The `claims.rs` render function returns the `### Golden example` JSON byte for byte for S4, the reference-order, inspection, unmarked-decision, intent-only, and no-limit tests pass without any call to `render_format` or `escape_markdown`, and repeated `Covers:`, `Scenarios:`, `Decisions:`, and `Rationale:` fields return the exact validation error instead of JSON.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_`.
-  - Context synchronization: pending
+  - Completed: 2026-10-25
+  - Files changed: `cli/src/services/plan/claims.rs` (new), `cli/src/services/plan/mod.rs`
+  - Result: `claims::render(&PrDescriptionArguments, &[PlanInput]) -> Result<String, CliError>` sorts plans by path, checks every plan for repeated consumed fields on their owning entry kind, and returns the `Plan claims check failed` envelope (`CliError::validation`, exit `3`) for the first plan with a repetition, listing its diagnostics in line order at each second occurrence. Otherwise it maps each acceptance criterion to borrowed `#[derive(Serialize)]` structs in contract order, resolves `Decisions:` and `Scenarios:` in reference order inside the plan, lists covering tasks in source order, and serializes with `serde_json::to_string_pretty`. It does not use `render_format`, `escape_markdown`, `serde_json::Value`, or `skip_serializing_if`. The module is registered as `#[cfg(test)] pub mod claims;` because the binary-only crate has no non-test caller until T03 wires `--claims`; T03 removes that `cfg`. The new tests are `claims_golden_one_of_each`, `claims_preserve_reference_order`, `claims_inspection_only_criterion`, `claims_unmarked_and_absent_decisions`, `claims_checked_entries_stay_intended`, `claims_include_every_criterion`, and `claims_reject_repeated_consumed_fields`.
+  - Assumptions: the repetition check also covers `Review` and `Review question`; for plans that `validate` accepts it changes nothing. A missing field in a plan passed in directly maps to `""`, and an unresolved reference in a plan passed in directly is skipped, because `--claims` only passes validated plans.
+  - Verify result: passed — `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::claims_` (7 passed, 0 failed). Additional: `plan::` (57 passed) and `clippy --all-targets -- -D warnings` (clean).
+  - Context impact: internal only — a new pure plan-service module with no CLI surface change yet. `context/cli/plan-service.md` documents the claims contract in T04.
+  - Context synchronization: synced
 
 - [ ] T03: `Wire the --claims flag into sce plan review` (status:todo)
   - Task ID: T03

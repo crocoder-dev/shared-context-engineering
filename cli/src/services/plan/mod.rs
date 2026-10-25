@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub mod claims;
 pub mod command;
 pub mod extract;
 pub mod init;
@@ -2095,5 +2097,688 @@ fn review_appears_in_help_and_completions() {
         assert!(script.contains(needle), "{shell:?}");
         assert!(!script.contains("decision-brief"), "{shell:?}");
         assert!(script.contains("pr-description"), "{shell:?}");
+    }
+}
+
+#[cfg(test)]
+const CLAIMS_GOLDEN_REPO: &str = "crocoder-dev/example";
+
+#[cfg(test)]
+const CLAIMS_GOLDEN_HEAD: &str = "4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234";
+
+#[cfg(test)]
+const CLAIMS_GOLDEN_PLAN: &str = r#"# Plan: token-refresh
+
+## Change summary
+
+Add a refresh endpoint.
+
+## Design decisions
+
+- D1: The session store validates refresh tokens.
+  - Boundary: `src/auth/` owns token validation.
+  - Rationale: The store already tracks revocation.
+  - Rejected: Stateless tokens — they cannot be revoked.
+  - Trade-offs: One store read per refresh.
+  - Review: required
+  - Review question: Is one store read per refresh acceptable?
+
+## Acceptance criteria
+
+- [ ] AC1: `POST /auth/refresh` rejects a revoked token with 401.
+  - Validate: `pnpm test src/auth/refresh.test.ts`
+  - Decisions: D1
+  - Scenarios: S1
+
+### Verification scenarios
+
+- S1: Revoked refresh token is rejected
+  - Given: A revoked refresh token.
+  - When: The client calls `POST /auth/refresh`.
+  - Then: The response is 401.
+  - Check: `pnpm test src/auth/refresh.test.ts -t "rejects a revoked token"`
+
+## Task stack
+
+- [x] T01: `Add /auth/refresh endpoint` (status:done)
+  - Task ID: T01
+  - Covers: AC1
+  - Scope: In — route handler. Out — rotation policy.
+  - Dependencies: none
+  - Done when: The endpoint returns 401 for a revoked token.
+  - Verify: `pnpm test src/auth/refresh.test.ts`
+  - Context synchronization: synced
+
+## Open questions
+
+None.
+"#;
+
+#[cfg(test)]
+const CLAIMS_GOLDEN_JSON: &str = r#"{
+  "schema_version": "sce.plan.claims.v1",
+  "repository": {
+    "slug": "crocoder-dev/example",
+    "head_sha": "4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234"
+  },
+  "plans": [
+    {
+      "path": "context/plans/token-refresh.md",
+      "url": "https://github.com/crocoder-dev/example/blob/4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234/context/plans/token-refresh.md"
+    }
+  ],
+  "claims": [
+    {
+      "id": "context/plans/token-refresh.md#AC1",
+      "kind": "acceptance_criterion",
+      "statement": "`POST /auth/refresh` rejects a revoked token with 401.",
+      "modality": "intended",
+      "author_checked": false,
+      "source": {
+        "path": "context/plans/token-refresh.md",
+        "entry_id": "AC1",
+        "line": 19,
+        "url": "https://github.com/crocoder-dev/example/blob/4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234/context/plans/token-refresh.md#L19"
+      },
+      "decisions": [
+        {
+          "id": "D1",
+          "statement": "The session store validates refresh tokens.",
+          "boundary": "`src/auth/` owns token validation.",
+          "rationale": "The store already tracks revocation.",
+          "rejected": "Stateless tokens — they cannot be revoked.",
+          "trade_offs": "One store read per refresh.",
+          "review": {
+            "required": true,
+            "question": "Is one store read per refresh acceptable?"
+          },
+          "source": {
+            "path": "context/plans/token-refresh.md",
+            "entry_id": "D1",
+            "line": 9,
+            "url": "https://github.com/crocoder-dev/example/blob/4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234/context/plans/token-refresh.md#L9"
+          }
+        }
+      ],
+      "verification": {
+        "mode": "scenarios",
+        "validate": "`pnpm test src/auth/refresh.test.ts`",
+        "scenarios": [
+          {
+            "id": "S1",
+            "statement": "Revoked refresh token is rejected",
+            "given": "A revoked refresh token.",
+            "when": "The client calls `POST /auth/refresh`.",
+            "then": "The response is 401.",
+            "check": "`pnpm test src/auth/refresh.test.ts -t \"rejects a revoked token\"`",
+            "source": {
+              "path": "context/plans/token-refresh.md",
+              "entry_id": "S1",
+              "line": 26,
+              "url": "https://github.com/crocoder-dev/example/blob/4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234/context/plans/token-refresh.md#L26"
+            }
+          }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "T01",
+          "statement": "`Add /auth/refresh endpoint` (status:done)",
+          "author_checked": true,
+          "source": {
+            "path": "context/plans/token-refresh.md",
+            "entry_id": "T01",
+            "line": 34,
+            "url": "https://github.com/crocoder-dev/example/blob/4f2a9c1e8b7d6053a1c2e3f4a5b6c7d8e9f01234/context/plans/token-refresh.md#L34"
+          }
+        }
+      ]
+    }
+  ]
+}"#;
+
+#[cfg(test)]
+const CLAIMS_CONTRACT_KEYS: [&str; 33] = [
+    "schema_version",
+    "repository",
+    "plans",
+    "claims",
+    "slug",
+    "head_sha",
+    "path",
+    "url",
+    "id",
+    "kind",
+    "statement",
+    "modality",
+    "author_checked",
+    "source",
+    "decisions",
+    "verification",
+    "tasks",
+    "entry_id",
+    "line",
+    "boundary",
+    "rationale",
+    "rejected",
+    "trade_offs",
+    "review",
+    "required",
+    "question",
+    "mode",
+    "validate",
+    "scenarios",
+    "given",
+    "when",
+    "then",
+    "check",
+];
+
+#[cfg(test)]
+fn claims_plan_source(lines: &[&str]) -> String {
+    let mut source = lines.join("\n");
+    source.push('\n');
+    source
+}
+
+#[cfg(test)]
+fn render_claims(
+    plans: &[pr_description::PlanInput],
+) -> Result<String, crate::services::error::CliError> {
+    let paths: Vec<&str> = plans.iter().map(|plan| plan.path.as_str()).collect();
+    claims::render(&pr_arguments(&paths), plans)
+}
+
+#[cfg(test)]
+fn claims_document(plans: &[pr_description::PlanInput]) -> serde_json::Value {
+    let rendered = render_claims(plans).expect("claims should render");
+    serde_json::from_str(&rendered).expect("claims should be valid JSON")
+}
+
+#[cfg(test)]
+fn claim_ids<'a>(values: &'a serde_json::Value, key: &str) -> Vec<&'a str> {
+    values[key]
+        .as_array()
+        .expect("value should be an array")
+        .iter()
+        .map(|value| value["id"].as_str().expect("id should be a string"))
+        .collect()
+}
+
+#[cfg(test)]
+fn collect_keys<'a>(value: &'a serde_json::Value, keys: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                keys.push(key);
+                collect_keys(child, keys);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_keys(item, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn claims_golden_one_of_each() {
+    let path = "context/plans/token-refresh.md";
+    let plan = pr_plan_input(path, CLAIMS_GOLDEN_PLAN);
+    let arguments = pr_description::PrDescriptionArguments {
+        repo: CLAIMS_GOLDEN_REPO.to_string(),
+        head: CLAIMS_GOLDEN_HEAD.to_string(),
+        paths: vec![path.to_string()],
+    };
+
+    let rendered = claims::render(&arguments, &[plan]).expect("claims should render");
+
+    assert_eq!(rendered, CLAIMS_GOLDEN_JSON);
+}
+
+#[test]
+fn claims_preserve_reference_order() {
+    let source = claims_plan_source(&[
+        "# Plan: ordering",
+        "",
+        "## Design decisions",
+        "",
+        "- D1: First decision.",
+        "  - Boundary: Boundary one.",
+        "  - Rationale: Rationale one.",
+        "  - Rejected: Rejected one.",
+        "  - Trade-offs: Trade-offs one.",
+        "- D2: Second decision.",
+        "  - Boundary: Boundary two.",
+        "  - Rationale: Rationale two.",
+        "  - Rejected: Rejected two.",
+        "  - Trade-offs: Trade-offs two.",
+        "",
+        "## Acceptance criteria",
+        "",
+        "- [ ] AC1: Ordered references.",
+        "  - Validate: `true`",
+        "  - Decisions: D2, D1",
+        "  - Scenarios: S2, S1",
+        "- [ ] AC2: Other criterion.",
+        "  - Validate: `false`",
+        "  - Scenarios: none (inspection)",
+        "",
+        "### Verification scenarios",
+        "",
+        "- S1: First scenario",
+        "  - Given: Given one.",
+        "  - When: When one.",
+        "  - Then: Then one.",
+        "  - Check: Check one.",
+        "- S2: Second scenario",
+        "  - Given: Given two.",
+        "  - When: When two.",
+        "  - Then: Then two.",
+        "  - Check: Check two.",
+        "",
+        "## Task stack",
+        "",
+        "- [ ] T01: `First` (status:todo)",
+        "  - Task ID: T01",
+        "  - Covers: AC1",
+        "- [ ] T02: `Second` (status:todo)",
+        "  - Task ID: T02",
+        "  - Covers: AC2, AC1",
+        "- [ ] T03: `Third` (status:todo)",
+        "  - Task ID: T03",
+        "  - Covers: AC2",
+    ]);
+    let document = claims_document(&[pr_plan_input("context/plans/ordering.md", &source)]);
+    let first = &document["claims"][0];
+    let second = &document["claims"][1];
+
+    assert_eq!(claim_ids(first, "decisions"), vec!["D2", "D1"]);
+    assert_eq!(
+        claim_ids(&first["verification"], "scenarios"),
+        vec!["S2", "S1"]
+    );
+    assert_eq!(claim_ids(first, "tasks"), vec!["T01", "T02"]);
+    assert_eq!(claim_ids(second, "tasks"), vec!["T02", "T03"]);
+
+    let decisions = &first["decisions"];
+    assert_eq!(decisions[0]["statement"], "Second decision.");
+    assert_eq!(decisions[0]["boundary"], "Boundary two.");
+    assert_eq!(decisions[0]["rationale"], "Rationale two.");
+    assert_eq!(decisions[0]["rejected"], "Rejected two.");
+    assert_eq!(decisions[0]["trade_offs"], "Trade-offs two.");
+    assert_eq!(decisions[0]["source"]["line"], 10);
+    assert_eq!(decisions[1]["statement"], "First decision.");
+    assert_eq!(decisions[1]["boundary"], "Boundary one.");
+    assert_eq!(decisions[1]["source"]["line"], 5);
+
+    let scenarios = &first["verification"]["scenarios"];
+    assert_eq!(scenarios[0]["statement"], "Second scenario");
+    assert_eq!(scenarios[0]["given"], "Given two.");
+    assert_eq!(scenarios[0]["when"], "When two.");
+    assert_eq!(scenarios[0]["then"], "Then two.");
+    assert_eq!(scenarios[0]["check"], "Check two.");
+    assert_eq!(scenarios[0]["source"]["line"], 33);
+    assert_eq!(scenarios[1]["statement"], "First scenario");
+    assert_eq!(scenarios[1]["check"], "Check one.");
+    assert_eq!(scenarios[1]["source"]["line"], 28);
+
+    let tasks = &first["tasks"];
+    assert_eq!(tasks[0]["source"]["line"], 41);
+    assert_eq!(tasks[1]["source"]["line"], 44);
+    assert_eq!(second["source"]["line"], 22);
+    assert_eq!(second["id"], "context/plans/ordering.md#AC2");
+}
+
+#[test]
+fn claims_inspection_only_criterion() {
+    let source = review_plan_source("inspection", [None, None, None]);
+    let document = claims_document(&[pr_plan_input("context/plans/inspection.md", &source)]);
+
+    assert_eq!(
+        document["claims"][0]["verification"],
+        serde_json::json!({
+            "mode": "inspection",
+            "validate": "`true`",
+            "scenarios": []
+        })
+    );
+}
+
+#[test]
+fn claims_unmarked_and_absent_decisions() {
+    let source = claims_plan_source(&[
+        "# Plan: unmarked",
+        "",
+        "## Design decisions",
+        "",
+        "- D1: Unmarked decision.",
+        "  - Boundary: One module.",
+        "  - Rationale: It is simple.",
+        "  - Rejected: Two modules.",
+        "  - Trade-offs: None.",
+        "- D2: Marked decision.",
+        "  - Boundary: One module.",
+        "  - Rationale: It is simple.",
+        "  - Rejected: Two modules.",
+        "  - Trade-offs: None.",
+        "  - Review: required",
+        "  - Review question: Is one module enough?",
+        "",
+        "## Acceptance criteria",
+        "",
+        "- [ ] AC1: References an unmarked decision.",
+        "  - Validate: `true`",
+        "  - Decisions: D1",
+        "  - Scenarios: none (inspection)",
+        "- [ ] AC2: References no decision.",
+        "  - Validate: `true`",
+        "  - Scenarios: none (inspection)",
+        "- [ ] AC3: References a marked decision.",
+        "  - Validate: `true`",
+        "  - Decisions: D2",
+        "  - Scenarios: none (inspection)",
+        "",
+        "## Task stack",
+        "",
+        "- [ ] T01: `Do it` (status:todo)",
+        "  - Task ID: T01",
+        "  - Covers: AC1, AC2, AC3",
+    ]);
+    let document = claims_document(&[pr_plan_input("context/plans/unmarked.md", &source)]);
+    let claims = &document["claims"];
+
+    assert_eq!(
+        claims[0]["decisions"][0]["review"],
+        serde_json::json!({"required": false, "question": null})
+    );
+    assert_eq!(claims[1]["decisions"], serde_json::json!([]));
+    assert_eq!(
+        claims[2]["decisions"][0]["review"],
+        serde_json::json!({"required": true, "question": "Is one module enough?"})
+    );
+}
+
+#[test]
+fn claims_checked_entries_stay_intended() {
+    let source = claims_plan_source(&[
+        "# Plan: checked",
+        "",
+        "## Acceptance criteria",
+        "",
+        "- [x] AC1: Checked criterion keeps *stars* and snake_case.",
+        "  - Validate: `true`",
+        "  - Scenarios: none (inspection)",
+        "- [ ] AC2: Unchecked criterion.",
+        "  - Validate: `true`",
+        "  - Scenarios: none (inspection)",
+        "- AC3: Criterion without a checkbox.",
+        "  - Validate: `true`",
+        "  - Scenarios: none (inspection)",
+        "",
+        "## Task stack",
+        "",
+        "- [x] T01: `Done task` (status:done)",
+        "  - Task ID: T01",
+        "  - Covers: AC1, AC2, AC3",
+        "- [ ] T02: `Open task` (status:todo)",
+        "  - Task ID: T02",
+        "  - Covers: AC1",
+        "- T03: `Plain task`",
+        "  - Task ID: T03",
+        "  - Covers: AC1",
+    ]);
+    let document = claims_document(&[pr_plan_input("context/plans/checked.md", &source)]);
+    let claims = document["claims"]
+        .as_array()
+        .expect("claims should be an array");
+
+    let checked: Vec<&serde_json::Value> = claims
+        .iter()
+        .map(|claim| &claim["author_checked"])
+        .collect();
+    assert_eq!(
+        checked,
+        vec![
+            &serde_json::json!(true),
+            &serde_json::json!(false),
+            &serde_json::Value::Null
+        ]
+    );
+    let task_checked: Vec<&serde_json::Value> = claims[0]["tasks"]
+        .as_array()
+        .expect("tasks should be an array")
+        .iter()
+        .map(|task| &task["author_checked"])
+        .collect();
+    assert_eq!(
+        task_checked,
+        vec![
+            &serde_json::json!(true),
+            &serde_json::json!(false),
+            &serde_json::Value::Null
+        ]
+    );
+    assert_eq!(
+        claims[0]["statement"],
+        "Checked criterion keeps *stars* and snake_case."
+    );
+    assert_eq!(
+        claims[0]["tasks"][0]["statement"],
+        "`Done task` (status:done)"
+    );
+    for claim in claims {
+        assert_eq!(claim["kind"], "acceptance_criterion");
+        assert_eq!(claim["modality"], "intended");
+    }
+
+    let mut keys = Vec::new();
+    collect_keys(&document, &mut keys);
+    for key in keys {
+        assert!(
+            CLAIMS_CONTRACT_KEYS.contains(&key),
+            "unexpected key `{key}`"
+        );
+    }
+}
+
+#[test]
+fn claims_include_every_criterion() {
+    use std::fmt::Write;
+
+    let mut source = decision_brief_plan_source(
+        "unlimited",
+        &[
+            ("First.", Some("Question one?")),
+            ("Second.", Some("Question two?")),
+            ("", Some("Question three?")),
+            ("Fourth.", Some("Question four?")),
+        ],
+    );
+    let criteria_start = source
+        .find("\n## Acceptance criteria")
+        .expect("source should hold acceptance criteria");
+    source.truncate(criteria_start);
+    source.push_str("\n## Acceptance criteria\n\n");
+    for index in 1..=5 {
+        write!(
+            source,
+            "- [ ] AC{index}: Criterion {index}.\n  - Validate: `true`\n  - Decisions: D1, D2, D3, D4\n  - Scenarios: none (inspection)\n"
+        )
+        .expect("writing to String should not fail");
+    }
+    source.push_str(
+        "\n## Task stack\n\n- [ ] T01: `Do it` (status:todo)\n  - Task ID: T01\n  - Covers: AC1, AC2, AC3, AC4, AC5\n",
+    );
+    let unlimited = pr_plan_input("context/plans/unlimited.md", &source);
+    let document = claims_document(std::slice::from_ref(&unlimited));
+    let ids: Vec<&str> = document["claims"]
+        .as_array()
+        .expect("claims should be an array")
+        .iter()
+        .map(|claim| claim["id"].as_str().expect("id should be a string"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "context/plans/unlimited.md#AC1",
+            "context/plans/unlimited.md#AC2",
+            "context/plans/unlimited.md#AC3",
+            "context/plans/unlimited.md#AC4",
+            "context/plans/unlimited.md#AC5",
+        ]
+    );
+    assert_eq!(document["claims"][0]["decisions"][2]["statement"], "");
+    assert_eq!(
+        claim_ids(&document["claims"][4], "decisions"),
+        vec!["D1", "D2", "D3", "D4"]
+    );
+
+    let empty = claims_plan_source(&[
+        "# Plan: empty",
+        "",
+        "## Acceptance criteria",
+        "",
+        "None.",
+        "",
+        "## Task stack",
+        "",
+        "None.",
+    ]);
+    let empty = pr_plan_input("context/plans/empty.md", &empty);
+    let document = claims_document(std::slice::from_ref(&empty));
+    assert_eq!(document["claims"], serde_json::json!([]));
+    assert_eq!(document["plans"][0]["path"], "context/plans/empty.md");
+
+    let both = claims_document(&[unlimited, empty]);
+    assert_eq!(
+        both["plans"]
+            .as_array()
+            .expect("plans should be an array")
+            .iter()
+            .map(|plan| plan["path"].as_str().expect("path should be a string"))
+            .collect::<Vec<_>>(),
+        vec!["context/plans/empty.md", "context/plans/unlimited.md"]
+    );
+    assert_eq!(both["claims"].as_array().map(Vec::len), Some(5));
+}
+
+#[cfg(test)]
+fn repeated_field_source(decision_extra: &[&str], criteria: &[&str], covers: &[&str]) -> String {
+    let mut lines = vec![
+        "# Plan: repeated",
+        "",
+        "## Design decisions",
+        "",
+        "- D1: One decision.",
+        "  - Boundary: One module.",
+        "  - Rationale: It is simple.",
+        "  - Rejected: Two modules.",
+        "  - Trade-offs: None.",
+    ];
+    lines.extend(decision_extra);
+    lines.extend(["", "## Acceptance criteria", ""]);
+    lines.extend(criteria);
+    lines.extend([
+        "",
+        "## Task stack",
+        "",
+        "- [ ] T01: Implement the feature",
+        "  - Task ID: T01",
+    ]);
+    lines.extend(covers);
+    claims_plan_source(&lines)
+}
+
+#[test]
+fn claims_reject_repeated_consumed_fields() {
+    let covers = repeated_field_source(
+        &[],
+        &[
+            "- [ ] AC1: First.",
+            "  - Validate: `true`",
+            "  - Scenarios: none (inspection)",
+            "- [ ] AC2: Second.",
+            "  - Validate: `true`",
+            "  - Scenarios: none (inspection)",
+        ],
+        &["  - Covers: AC1", "  - Covers: AC2"],
+    );
+    let scenarios = repeated_field_source(
+        &[],
+        &[
+            "- [ ] AC1: First.",
+            "  - Validate: `true`",
+            "  - Scenarios: S1",
+            "  - Scenarios: S2",
+            "",
+            "### Verification scenarios",
+            "",
+            "- S1: One",
+            "  - Given: G.",
+            "  - When: W.",
+            "  - Then: T.",
+            "  - Check: C.",
+            "- S2: Two",
+            "  - Given: G.",
+            "  - When: W.",
+            "  - Then: T.",
+            "  - Check: C.",
+        ],
+        &["  - Covers: AC1"],
+    );
+    let decisions = repeated_field_source(
+        &[],
+        &[
+            "- [ ] AC1: First.",
+            "  - Validate: `true`",
+            "  - Decisions: D1",
+            "  - Decisions: D1",
+            "  - Scenarios: none (inspection)",
+        ],
+        &["  - Covers: AC1"],
+    );
+    let rationale = repeated_field_source(
+        &["  - Rationale: It is also cheap."],
+        &[
+            "- [ ] AC1: First.",
+            "  - Validate: `true`",
+            "  - Decisions: D1",
+            "  - Scenarios: none (inspection)",
+        ],
+        &["  - Covers: AC1"],
+    );
+
+    for (source, expected) in [
+        (
+            &covers,
+            "context/plans/repeated.md:25: `Covers:` appears more than once on `T01`",
+        ),
+        (
+            &scenarios,
+            "context/plans/repeated.md:16: `Scenarios:` appears more than once on `AC1`",
+        ),
+        (
+            &decisions,
+            "context/plans/repeated.md:16: `Decisions:` appears more than once on `AC1`",
+        ),
+        (
+            &rationale,
+            "context/plans/repeated.md:10: `Rationale:` appears more than once on `D1`",
+        ),
+    ] {
+        let plan = pr_plan_input("context/plans/repeated.md", source);
+        let error = render_claims(std::slice::from_ref(&plan))
+            .expect_err("repeated consumed field should fail claims");
+
+        assert_eq!(error.class().exit_code(), 3);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Plan claims check failed for 'context/plans/repeated.md':\n{expected}\nTry: merge each repeated field into one line, then rerun 'sce plan review --claims'."
+            )
+        );
     }
 }
