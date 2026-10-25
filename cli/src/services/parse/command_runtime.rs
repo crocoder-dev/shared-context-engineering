@@ -323,12 +323,52 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 },
             },
         )),
+        cli_schema::Commands::Plan { subcommand } => Ok(convert_plan_subcommand(subcommand)),
         cli_schema::Commands::Sync { format } => {
             Ok(RuntimeCommand::Sync(services::sync::command::SyncCommand {
                 request: services::sync::SyncRequest { format },
             }))
         }
     }
+}
+
+fn convert_plan_subcommand(subcommand: cli_schema::PlanSubcommand) -> RuntimeCommand {
+    let request = match subcommand {
+        cli_schema::PlanSubcommand::Check { path } => {
+            services::plan::command::PlanRequest::Check(services::plan::command::PlanCheckRequest {
+                path,
+            })
+        }
+        cli_schema::PlanSubcommand::Init { name } => {
+            services::plan::command::PlanRequest::Init(services::plan::command::PlanInitRequest {
+                name,
+            })
+        }
+        cli_schema::PlanSubcommand::PrDescription { repo, head, paths } => {
+            services::plan::command::PlanRequest::PrDescription(
+                services::plan::command::PlanPrDescriptionRequest { repo, head, paths },
+            )
+        }
+        cli_schema::PlanSubcommand::Review {
+            claims,
+            repo,
+            head,
+            paths,
+        } => services::plan::command::PlanRequest::Review(
+            services::plan::command::PlanReviewRequest {
+                repo,
+                head,
+                paths,
+                output: if claims {
+                    services::plan::command::ReviewOutput::Claims
+                } else {
+                    services::plan::command::ReviewOutput::Brief
+                },
+            },
+        ),
+    };
+
+    RuntimeCommand::Plan(services::plan::command::PlanCommand { request })
 }
 
 fn convert_doctor_command(

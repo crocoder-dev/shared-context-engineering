@@ -1,0 +1,388 @@
+class PlanLine {
+  text: String
+  fenced: Boolean
+  openFence: String
+  section: String
+}
+
+class PlanField {
+  key: String
+  value: String
+  continued: List<String>
+}
+
+class PlanEntry {
+  id: String
+  kind: String
+  fields: List<PlanField>
+}
+
+class PlanReport {
+  defects: List<String>
+}
+
+local idPattern = #"(?:D[1-9][0-9]*|AC[1-9][0-9]*|S[1-9][0-9]*|T[0-9]{2,})"#
+local fencePattern = Regex(#"\s*(`{3,}|~{3,})(.*)"#)
+local headingPattern = Regex(#"#{1,6}\s+\S.*"#)
+local definitionPattern = Regex(#"( *)-\s+(?:\[[ x]\]\s+)?("# + idPattern + #"):(?:\s.*)?"#)
+local fieldPattern = Regex(#"( *)-\s+([A-Z][A-Za-z -]*):(?:\s+(.*))?"#)
+local idListPattern = Regex(idPattern + "(?:, " + idPattern + ")*")
+local blockStartPattern = Regex(#"\s*(?:[-*+](?:\s.*)?|[0-9]+[.)](?:\s.*)?|>.*|#{1,6}(?:\s.*)?)"#)
+
+local inspectionOnly = "none (inspection)"
+
+local reviewKey = "Review"
+local reviewQuestionKey = "Review question"
+local reviewRequired = "required"
+
+local authoritativeSections = Map(
+  "D", "## Design decisions",
+  "AC", "## Acceptance criteria",
+  "S", "### Verification scenarios",
+  "T", "## Task stack"
+)
+
+local kindNames = Map(
+  "D", "a design decision",
+  "AC", "an acceptance criterion",
+  "S", "a verification scenario",
+  "T", "a task"
+)
+
+local fieldOwners = Map(
+  "Boundary", "D",
+  "Rationale", "D",
+  "Rejected", "D",
+  "Trade-offs", "D",
+  "Review", "D",
+  "Review question", "D",
+  "Validate", "AC",
+  "Decisions", "AC",
+  "Scenarios", "AC",
+  "Given", "S",
+  "When", "S",
+  "Then", "S",
+  "Check", "S",
+  "Covers", "T"
+)
+
+local requiredFields = Map(
+  "D", List("Boundary", "Rationale", "Rejected", "Trade-offs"),
+  "AC", List("Validate", "Scenarios"),
+  "S", List("Given", "When", "Then", "Check"),
+  "T", List("Covers")
+)
+
+local referenceKinds = Map(
+  "Decisions", "D",
+  "Scenarios", "S",
+  "Covers", "AC"
+)
+
+local requiredPlanHeadings = List("## Acceptance criteria", "## Task stack")
+
+local orderedPlanHeadings = List(
+  "## Design decisions",
+  "## Acceptance criteria",
+  "### Verification scenarios",
+  "## Task stack"
+)
+
+local templateSkeletonHeadings = List(
+  "## Change summary",
+  "## Design decisions",
+  "## Acceptance criteria",
+  "### Verification scenarios",
+  "### Full validation",
+  "### Context sync",
+  "## Task context synchronization lifecycle",
+  "## Constraints and non-goals",
+  "## Assumptions",
+  "## Task stack",
+  "## Open questions"
+)
+
+local templateDocumentHeadings = List(
+  "## Template",
+  "## Filled-in structured plan example",
+  "## Design decision rules",
+  "## Verification scenario rules",
+  "## Reference rules"
+)
+
+local function kindOf(id: String): String = if (id.startsWith("AC")) "AC" else id.take(1)
+
+local function indentOf(line: String): Int = line.length - line.trimStart().length
+
+local function closesFence(opener: String, marker: String, rest: String): Boolean =
+  marker.take(1) == opener.take(1) && marker.length >= opener.length && rest.isBlank
+
+function annotate(text: String): List<PlanLine> =
+  text.split("\n").fold(List(), (acc: List<PlanLine>, raw: String) ->
+    let (openMarker = acc.lastOrNull?.openFence ?? "")
+    let (currentSection = acc.lastOrNull?.section ?? "")
+    let (fence = fencePattern.matchEntire(raw))
+    acc.add(
+      if (openMarker != "")
+        new PlanLine {
+          text = raw
+          fenced = true
+          openFence =
+            if (fence != null && closesFence(openMarker, fence.groups[1]!!.value, fence.groups[2]!!.value)) ""
+            else openMarker
+          section = currentSection
+        }
+      else if (fence != null)
+        new PlanLine {
+          text = raw
+          fenced = true
+          openFence = fence.groups[1]!!.value
+          section = currentSection
+        }
+      else
+        new PlanLine {
+          text = raw
+          fenced = false
+          openFence = ""
+          section = if (headingPattern.matchEntire(raw) != null) raw.trim() else currentSection
+        }
+    )
+  )
+
+function headingsOf(planLines: List<PlanLine>): List<String> =
+  planLines
+    .filter((line) -> !line.fenced && headingPattern.matchEntire(line.text) != null)
+    .map((line) -> line.text.trim())
+
+local function endsEntry(line: PlanLine, indent: Int): Boolean =
+  !line.fenced && !line.text.isBlank && indentOf(line.text) <= indent
+
+local function continuationOf(following: List<PlanLine>): List<String> =
+  following
+    .takeWhile((next) ->
+      !next.fenced && !next.text.isBlank && blockStartPattern.matchEntire(next.text) == null)
+    .map((next) -> next.text.trim())
+
+function entries(planLines: List<PlanLine>): List<PlanEntry> =
+  planLines
+    .mapIndexed((index, line) ->
+      let (match = if (line.fenced) null else definitionPattern.matchEntire(line.text))
+      if (match == null) null
+      else
+        let (entryId = match.groups[2]!!.value)
+        let (entryKind = kindOf(entryId))
+        let (indent = match.groups[1]!!.value.length)
+        if (line.section != authoritativeSections[entryKind]) null
+        else
+          new PlanEntry {
+            id = entryId
+            kind = entryKind
+            fields =
+              let (body = planLines.drop(index + 1))
+              body
+                .takeWhile((next) -> !endsEntry(next, indent))
+                .mapIndexed((offset, next) ->
+                  let (field = if (next.fenced) null else fieldPattern.matchEntire(next.text))
+                  if (field == null || field.groups[1]!!.value.length != indent + 2) null
+                  else
+                    new PlanField {
+                      key = field.groups[2]!!.value
+                      value = field.groups[3]?.value?.trim() ?? ""
+                      continued = continuationOf(body.drop(offset + 1))
+                    }
+                )
+                .filterNonNull()
+          }
+    )
+    .filterNonNull()
+
+local function fieldOf(entry: PlanEntry, key: String): PlanField? =
+  entry.fields.findOrNull((field) -> field.key == key)
+
+local function fieldText(field: PlanField): String =
+  (List(field.value) + field.continued).join("\n").trim()
+
+local function reviewDefects(entry: PlanEntry): List<String> =
+  let (reviews = entry.fields.filter((field) -> field.key == reviewKey))
+  let (questions = entry.fields.filter((field) -> field.key == reviewQuestionKey))
+  List(Pair(reviewKey, reviews), Pair(reviewQuestionKey, questions))
+    .filter((pair) -> pair.second.length > 1)
+    .map((pair) -> "`\(pair.first):` appears more than once on `\(entry.id)`")
+  + (
+    if (!reviews.isEmpty && questions.isEmpty)
+      List("`\(entry.id)` has `\(reviewKey):` without `\(reviewQuestionKey):`")
+    else List()
+  )
+  + (
+    if (!questions.isEmpty && reviews.isEmpty)
+      List("`\(entry.id)` has `\(reviewQuestionKey):` without `\(reviewKey):`")
+    else List()
+  )
+  + reviews
+    .filter((field) -> fieldText(field) != reviewRequired)
+    .map((field) -> "`\(reviewKey):` on `\(entry.id)` must be `\(reviewRequired)`")
+  + questions
+    .map((field) -> fieldText(field))
+    .filter((text) -> text.isEmpty || text.contains("\n"))
+    .map((text) ->
+      if (text.isEmpty) "`\(reviewQuestionKey):` on `\(entry.id)` is empty"
+      else "`\(reviewQuestionKey):` on `\(entry.id)` must be a single line")
+
+local function listedIds(value: String): List<String> =
+  if (idListPattern.matchEntire(value) == null) List() else value.split(", ")
+
+local function orderDefects(headings: List<String>, ordered: List<String>): List<String> =
+  let (present = ordered.filter((heading) -> headings.contains(heading)))
+  present
+    .drop(1)
+    .mapIndexed((index, heading) -> Pair(present[index], heading))
+    .filter((pair) -> headings.indexOf(pair.first) > headings.indexOf(pair.second))
+    .map((pair) -> "heading `\(pair.second)` must come after `\(pair.first)`")
+
+local function headingDefects(headings: List<String>, required: List<String>, ordered: List<String>): List<String> =
+  required.filter((heading) -> !headings.contains(heading)).map((heading) -> "heading `\(heading)` is missing")
+  + ordered
+    .filter((heading) -> headings.count((other) -> other == heading) > 1)
+    .map((heading) -> "heading `\(heading)` appears more than once")
+  + orderDefects(headings, ordered)
+  + (
+    if (!headings.contains("### Verification scenarios")) List()
+    else
+      let (parent = headings
+        .take(headings.indexOf("### Verification scenarios"))
+        .findLastOrNull((heading) -> heading.startsWith("# ") || heading.startsWith("## ")))
+      if (parent == "## Acceptance criteria") List()
+      else List("heading `### Verification scenarios` is not inside `## Acceptance criteria`")
+  )
+
+local function definitionDefects(defined: List<PlanEntry>): List<String> =
+  let (ids = defined.map((entry) -> entry.id))
+  ids
+    .filter((id) -> ids.count((other) -> other == id) > 1)
+    .distinct
+    .map((id) -> "`\(id)` is defined more than once")
+  + defined.flatMap((entry) ->
+    entry.fields
+      .filter((field) -> fieldOwners.containsKey(field.key) && fieldOwners[field.key] != entry.kind)
+      .map((field) -> "`\(field.key):` on `\(entry.id)` is misplaced; it belongs to \(kindNames[fieldOwners[field.key]])")
+    + requiredFields[entry.kind]
+      .filter((key) -> fieldOf(entry, key) == null)
+      .map((key) -> "`\(entry.id)` is missing `\(key):`")
+    + (if (entry.kind == "D") reviewDefects(entry) else List())
+  )
+
+local function misplacedDefinitionDefects(planLines: List<PlanLine>): List<String> =
+  planLines
+    .map((line) -> if (line.fenced) null else definitionPattern.matchEntire(line.text))
+    .zip(planLines)
+    .filter((pair) ->
+      pair.first != null
+      && pair.first.groups[1]!!.value.isEmpty
+      && authoritativeSections.values.contains(pair.second.section)
+      && pair.second.section != authoritativeSections[kindOf(pair.first.groups[2]!!.value)])
+    .map((pair) ->
+      let (id = pair.first!!.groups[2]!!.value)
+      "`\(id)` is defined under `\(pair.second.section)`; it belongs under `\(authoritativeSections[kindOf(id)])`")
+
+local function undefinedHint(planLines: List<PlanLine>, id: String): String =
+  let (candidates = planLines.filter((line) ->
+    let (match = definitionPattern.matchEntire(line.text))
+    match != null && match.groups[2]!!.value == id))
+  if (candidates.any((line) -> !line.fenced)) "; it appears only outside `\(authoritativeSections[kindOf(id)])`"
+  else if (candidates.any((line) -> line.fenced)) "; it appears only inside a fenced code block"
+  else ""
+
+local function referenceDefects(planLines: List<PlanLine>, defined: List<PlanEntry>): List<String> =
+  let (ids = defined.map((entry) -> entry.id))
+  let (references = defined.flatMap((entry) ->
+    entry.fields
+      .filter((field) -> referenceKinds.containsKey(field.key) && fieldOwners[field.key] == entry.kind)
+      .map((field) -> Pair(entry.id, field))))
+  let (coveredIds = references
+    .filter((reference) -> reference.second.key == "Covers")
+    .flatMap((reference) -> listedIds(reference.second.value)))
+  let (scenarioIds = references
+    .filter((reference) -> reference.second.key == "Scenarios")
+    .flatMap((reference) -> listedIds(reference.second.value)))
+  references.flatMap((reference) ->
+    let (owner = reference.first)
+    let (field = reference.second)
+    if (field.key == "Scenarios" && field.value == inspectionOnly) List()
+    else if (idListPattern.matchEntire(field.value) == null)
+      List("`\(field.key):` on `\(owner)` is not a comma-separated ID list")
+    else
+      field.value.split(", ").flatMap((id) ->
+        if (kindOf(id) != referenceKinds[field.key])
+          List("`\(field.key):` on `\(owner)` names `\(id)`, which is not \(kindNames[referenceKinds[field.key]])")
+        else if (!ids.contains(id))
+          List("`\(field.key):` on `\(owner)` references undefined `\(id)`\(undefinedHint(planLines, id))")
+        else List()
+      )
+  )
+  + defined
+    .filter((entry) -> entry.kind == "AC" && !coveredIds.contains(entry.id))
+    .map((entry) -> "`\(entry.id)` is not covered by any task's `Covers:`")
+  + defined
+    .filter((entry) -> entry.kind == "S" && !scenarioIds.contains(entry.id))
+    .map((entry) -> "`\(entry.id)` is not referenced by any acceptance criterion's `Scenarios:`")
+
+local function inspect(text: String, skeleton: Boolean): PlanReport =
+  let (planLines = annotate(text))
+  let (headings = headingsOf(planLines))
+  let (defined = entries(planLines))
+  new PlanReport {
+    defects =
+      headingDefects(
+        headings,
+        if (skeleton) templateSkeletonHeadings else requiredPlanHeadings,
+        if (skeleton) templateSkeletonHeadings else orderedPlanHeadings
+      )
+      + definitionDefects(defined)
+      + (if (skeleton) List() else misplacedDefinitionDefects(planLines) + referenceDefects(planLines, defined))
+  }
+
+function check(text: String): PlanReport = inspect(text, false)
+
+function skeletonDefects(text: String): List<String> = inspect(text, true).defects
+
+function fencedBlockUnder(text: String, heading: String): String? =
+  let (planLines = annotate(text))
+  let (start = planLines.findIndexOrNull((line) -> line.fenced && line.section == heading))
+  if (start == null) null
+  else
+    planLines
+      .drop(start + 1)
+      .takeWhile((line) -> line.openFence != "")
+      .map((line) -> line.text)
+      .join("\n")
+
+local function exampleShapeDefects(sample: String): List<String> =
+  let (defined = entries(annotate(sample)))
+  List("D", "AC", "S", "T")
+    .filter((kind) -> !defined.any((entry) -> entry.kind == kind))
+    .map((kind) -> "defines no \(authoritativeSections[kind]) entry")
+  + (
+    if (defined.any((entry) -> entry.kind == "AC" && fieldOf(entry, "Decisions") != null)) List()
+    else List("no acceptance criterion carries `Decisions:`")
+  )
+  + (
+    if (defined.any((entry) -> entry.kind == "AC" && fieldOf(entry, "Scenarios")?.value == inspectionOnly)) List()
+    else List("no acceptance criterion carries `Scenarios: \(inspectionOnly)`")
+  )
+
+local function sampleDefects(label: String, sample: String?, skeleton: Boolean): List<String> =
+  (
+    if (sample == null) List("no fenced example found")
+    else
+      inspect(sample, skeleton).defects
+      + exampleShapeDefects(sample)
+  ).map((defect) -> "\(label): \(defect)")
+
+function templateDefects(text: String): List<String> =
+  let (headings = headingsOf(annotate(text)))
+  templateDocumentHeadings
+    .filter((heading) -> !headings.contains(heading))
+    .map((heading) -> "heading `\(heading)` is missing outside fenced code blocks")
+  + orderDefects(headings, templateDocumentHeadings)
+  + sampleDefects("template", fencedBlockUnder(text, "## Template"), true)
+  + sampleDefects("structured example", fencedBlockUnder(text, "## Filled-in structured plan example"), false)

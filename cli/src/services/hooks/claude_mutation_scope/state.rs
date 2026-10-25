@@ -390,14 +390,15 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        clear_recovery_pending_if_quiescent_inner, read_state, write_state_durably_sync,
-        AdapterState, ClearRecoveryOutcome,
+        clear_recovery_pending_if_quiescent_inner, read_state, state_dir, write_state_durably_sync,
+        AdapterState, ClearRecoveryOutcome, STATE_LOCK,
     };
 
     const INJECTED_WRITE_DELAY: Duration = Duration::from_millis(500);
     const UNRELATED_TIMER: Duration = Duration::from_millis(10);
     const RESPONSIVENESS_BUDGET: Duration = Duration::from_millis(250);
     const HOOK_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+    const STARTED_TRANSACTION_FINISH_TIMEOUT: Duration = Duration::from_mins(2);
 
     fn seed_quiescent_recovery_pending(git_dir: &std::path::Path) {
         write_state_durably_sync(
@@ -470,6 +471,16 @@ mod tests {
             .expect_err("aborted caller should not join successfully")
             .is_cancelled());
         release_tx.send(()).expect("hook should still be waiting");
+
+        drop(
+            STATE_LOCK
+                .acquire_with_timeout_async(
+                    &state_dir(git_dir.path()),
+                    STARTED_TRANSACTION_FINISH_TIMEOUT,
+                )
+                .await
+                .expect("started transaction should finish and release the state lock"),
+        );
 
         let outcome = clear_recovery_pending_if_quiescent_inner(git_dir.path(), |_, _| Ok(()))
             .await

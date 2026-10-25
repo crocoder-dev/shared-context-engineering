@@ -1,0 +1,405 @@
+# Plan: sce-plan-check
+
+## Change summary
+
+Add `sce plan check <path>`, a deterministic, read-only Rust CLI command that
+validates the structure and reference integrity of one selected SCE plan. It
+works in the distributed `sce` binary and needs no Pkl, Nix, LLM, or network
+access. Today, structural checking exists only as the test-only Pkl checker
+`config/pkl/renderers/plan-structure.pkl` (run through
+`config/pkl/renderers/plan-structure-check.pkl` and the fixtures under
+`config/pkl/renderers/fixtures/plan-structure/` by `config/pkl/check-generated.sh`).
+The `/change-to-plan` and `/validate` workflows apply the `Reference rules` by
+hand. Users of the shipped binary have no deterministic checker.
+
+The Rust checker parses Markdown with `markdown-rs` (`markdown` crate) into a
+typed GFM `mdast` tree, extracts an SCE plan model with source positions, and
+runs pure validation over that model. It keeps the Pkl checker's behavior: both
+implementations run against the same fixtures, driven by one shared expectations
+manifest. The canonical `/change-to-plan` and `/validate` workflow sources then
+call `sce plan check` on every plan they write or validate. This extends
+existing behavior. The Pkl checker stays in place as the generation-time
+reference implementation.
+
+Current behavior: this plan first specified a legacy-plan classification. A
+legacy plan passed with exit `0`, the workflows skipped the checker for it, and
+both workflows fell back to a manual `Reference rules` pass. Later commits on the
+same branch (PR #342) superseded these requirements:
+
+- Commit `0e0d756c` changed the manifest from expected substrings to the
+  complete set of expected messages.
+- Commit `7c6dde7c` removed the legacy classification. Every plan is now checked
+  against the structured-plan rules. An unstructured plan fails with validation
+  diagnostics and exit `3`. A valid structured plan passes with exactly
+  `structured plan: reference integrity holds`. No legacy-plan success
+  classification exists.
+- `context/plans/sce-plan-init.md` T03 (its D6) removed the `/change-to-plan`
+  checker fallback. `/validate` keeps its fallback.
+
+The design decisions, acceptance criteria, and verification scenarios below
+describe the current behavior. Each revised entry carries a `Revised:` field.
+The task records and the original validation results are kept unchanged as
+historical evidence. They describe what was built and verified before those
+revisions.
+
+## Design decisions
+
+- D1: `markdown-rs` (`markdown` crate, `to_mdast` with `ParseOptions::gfm()`) is the only Markdown parser; plan structure is extracted from the typed `mdast` tree, never from line scanning.
+  - Boundary: `cli/src/services/plan/extract.rs` is the only code that touches `markdown::mdast::Node`. Sections are the runs of root children between `Heading` nodes, identified by depth and plain text. A definition is a `ListItem` of a root-level `List` in its authoritative section whose first paragraph starts with an ID token and `:`; GFM `checked` gives the checkbox. A definition's fields are the `ListItem`s of its directly nested `List`. Field values are sliced from the original source using node positions, so Markdown is never rewritten. `Code` nodes, both fenced and indented, are never visited for structure. Simple string parsing applies only to ID tokens and reference values after structural extraction.
+  - Rationale: CommonMark/GFM nesting, fences, and checkboxes are what the plan rules actually depend on. An AST gives them correctly, along with line positions for diagnostics.
+  - Rejected: Porting the Pkl regex/line scanner to Rust — this is the custom Markdown parser the request forbids. `comrak` / `pulldown-cmark` — the request names `markdown-rs` explicitly, and a second parser adds no value.
+  - Trade-offs: The AST follows CommonMark list-nesting rules, while the Pkl checker requires exactly `entry indent + 2` spaces. Inputs that only one of them treats as nested can diverge. The fixtures pin the shared behavior, and the contract document (D3) records the known divergences.
+- D2: Parsing, plan representation, semantic validation, and CLI integration are separate layers in a new `cli/src/services/plan/` service with static dispatch.
+  - Boundary: `extract.rs` turns source into `Plan`: headings with lines, plus `PlanEntry { id, kind, checked, line, fields: Vec<PlanField { key, value, line }> }` grouped by kind. `validate.rs` holds a pure `fn validate(plan: &Plan) -> PlanReport { diagnostics: Vec<PlanDiagnostic { line: Option<usize>, message }> }` with no I/O. `command.rs` reads the file, calls extract then validate, and renders the result. `cli_schema.rs`, `services/parse/command_runtime.rs`, and `services/command_registry.rs` add one `Plan`/`PlanCommand` variant each. No `dyn`, no boxed futures, no async, no persistent state.
+  - Rationale: Pure validation over a small owned model can be tested without the CLI. Keeping the AST out of `validate.rs` stops parser types from leaking into the rules.
+  - Rejected: Validating directly over `mdast` nodes — this mixes traversal with rules and makes the rules parser-shaped. A trait-based checker abstraction — there is only one implementation.
+  - Trade-offs: One small intermediate model to maintain. It is kept minimal: one entry type with a kind enum, not four structs per kind.
+  - Revised: The original `PlanReport` also carried a `structured` flag for the legacy classification. Commit `7c6dde7c` removed it.
+- D3: One shared fixture contract prevents Pkl/Rust drift. Both checkers run the same `config/pkl/renderers/fixtures/plan-structure/*.md` fixtures from a single manifest, `config/pkl/renderers/fixtures/plan-structure/expectations.tsv` (fixture, `pass`/`fail`, then for `fail` rows the complete expected defect messages, compared as an exact sorted multiset). Rust diagnostic messages reuse the Pkl defect wording verbatim.
+  - Revised: The original manifest had `structured`/`legacy`/`fail` verdicts and expected diagnostic substrings. Commit `0e0d756c` changed it to complete messages, and commit `7c6dde7c` replaced the verdicts with `pass`/`fail`.
+  - Boundary: `config/pkl/check-generated.sh` reads the manifest instead of hard-coding the `expect_plan_structure_pass`/`expect_plan_structure_failure` calls. A Rust test in `cli/src/services/plan/` reads the same manifest and fixtures at test runtime through `CARGO_MANIFEST_DIR/../config/pkl/renderers/fixtures/plan-structure`. That tree already reaches the Crane sandbox through `cliBuildInputFileset` (`./config/pkl`), so no flake change is needed. The behavioral contract is documented in `context/sce/plan-structure-contract.md`.
+  - Rationale: A single manifest makes "same fixtures, same verdicts, same defect text" mechanically true rather than a convention.
+  - Rejected: Separate Rust fixture copies or a Rust-only expectations table — two equivalent sets drift. Making the Rust CLI or its tests invoke Pkl — the distributed binary must not need Pkl.
+  - Trade-offs: Pkl defect wording becomes a cross-implementation contract, and rewording requires touching both checkers.
+- D4: Outcome mapping reuses existing CLI classification and the Pkl result wording.
+  - Revised: The original boundary also gave a legacy plan exit `0` with `legacy plan: structured reference rules do not apply`. Commit `7c6dde7c` removed that classification.
+  - Boundary: Every plan is checked against the structured-plan rules. A valid structured plan prints exactly `structured plan: reference integrity holds` to stdout and exits `0`. No other success line exists. A structurally invalid plan, including an unstructured plan, returns `CliError::validation` (exit `3`, `SCE-ERR-VALIDATION`), whose stderr message lists one diagnostic per line as `{path}:{line}: {message}`, or `{path}: {message}` for plan-level defects such as a missing heading. `{path}` is the path as given. Diagnostics are ordered by line, then message, for deterministic output. Missing or unreadable files go through the existing runtime-failure path (exit `4`) with `with_context` naming the path.
+  - Rationale: Exit `3` already means validation failure in `context/sce/cli-exit-code-contract.md`. Reusing the Pkl strings keeps D3's contract simple.
+  - Rejected: A new exit code for plan defects — it breaks the class-based contract. Printing diagnostics to stdout — stdout is reserved for command payloads.
+  - Trade-offs: The diagnostics share the `CliError` stderr envelope (including the class's `Try:` guidance) rather than a bespoke report format.
+- D5: The workflows trust the checker only when it actually ran. A result counts only on exit `0` with `structured plan: reference integrity holds` on stdout, or exit `3` with diagnostics. `/validate` treats any other outcome as an unavailable checker, applies its manual `Reference rules` pass, and records that fallback under notes. `/change-to-plan` has no fallback: any other outcome returns `blocked`.
+  - Revised: Originally both workflows accepted either D4 classification line, skipped the checker for a legacy plan, and fell back to the manual pass. Commit `7c6dde7c` removed the legacy line and the legacy skip. `context/plans/sce-plan-init.md` D6 and T03 removed the `/change-to-plan` fallback.
+  - Boundary: Canonical `config/pkl/base/workflow-change-to-plan.pkl` (step 2.10 "Structural check") and `config/pkl/base/workflow-validate.pkl` (step 4 "Check plan references") only. `/next-task` never mentions `sce plan check`.
+  - Rationale: An older `sce` binary resolves the unknown `plan` command to help with exit `0` (per the exit-code contract), so exit status alone would report a false pass.
+  - Rejected: For `/validate`, requiring the new binary and failing without it, because validation still yields a report from the manual pass. For `/change-to-plan`, a manual fallback, because it could report an unchecked plan as `plan_ready` (`context/plans/sce-plan-init.md` D6).
+  - Trade-offs: The `/validate` prose carries one extra fallback rule. `/change-to-plan` cannot author plans without a current `sce`.
+
+## Acceptance criteria
+
+- [x] AC1: `sce plan check <path>` validates exactly the selected file, read-only. It accepts relative and absolute paths. It checks every plan against the structured-plan rules. It exits `0` and prints exactly `structured plan: reference integrity holds` for a valid structured plan. It exits `3` and prints `{path}:{line}: {message}` diagnostics on stderr for a structurally invalid plan, including an unstructured plan. No legacy-plan success classification exists. A missing or unreadable file fails through the existing runtime-failure handling. It never executes `Check:`, `Validate:`, or `Verify:` content.
+  - Revised: Originally a valid legacy plan exited `0` with a legacy classification line. Commit `7c6dde7c` removed that classification and added S10.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` plus `nix run .#sce -- plan check config/pkl/renderers/fixtures/plan-structure/valid-structured-plan.md; echo $?` (expect `0`), and the same against `duplicate-id.md` and `unstructured-plan.md` (expect `3`).
+  - Decisions: D1, D2, D4
+  - Scenarios: S1, S2, S3, S4, S10
+- [x] AC2: The Rust validator and the Pkl checker give the same verdict and defect text for every fixture under `config/pkl/renderers/fixtures/plan-structure/`, both driven by the single `expectations.tsv` manifest. The passing fixtures are valid structured, inspection-only, and fenced-example plans. The unstructured and unstructured-with-fenced-structured-example plans fail. The fixtures also cover duplicate IDs, missing and empty `Covers:`, dangling references, wrong reference kinds, uncovered AC, unreferenced scenario, missing required fields, misplaced definitions and fields, wrong heading placement, and keywords only inside fenced examples.
+  - Revised: The original legacy and legacy-with-fenced-structured-example fixtures passed as legacy plans. Commit `7c6dde7c` renamed them to `unstructured-plan.md` and `unstructured-plan-with-fenced-structured-example.md`, which now fail.
+  - Validate: `nix run .#pkl-check-generated` and `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::fixture`
+  - Decisions: D1, D3
+  - Scenarios: S5, S6
+- [x] AC3: Every definition-, field-, and heading-anchored diagnostic carries the 1-based source line of the offending node, taken from `mdast` positions.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::diagnostic_lines`
+  - Decisions: D1, D4
+  - Scenarios: S7
+- [x] AC4: `sce plan` appears in top-level help, `sce plan check --help` documents the required `<path>` argument, and generated bash/zsh/fish completion scripts include `plan check`.
+  - Validate: `nix run .#sce -- --help`, `nix run .#sce -- plan check --help`, and `nix run .#sce -- completion --shell bash | grep -n "plan"`
+  - Decisions: D2
+  - Scenarios: S8
+- [x] AC5: The generated `/change-to-plan` workflow runs `sce plan check {plan-path}` after writing every new or revised plan. It repairs reported defects and reruns the checker. It reports `plan_ready` only on exit `0` with `structured plan: reference integrity holds`, and returns `blocked` on every other result. The generated `/validate` workflow runs `sce plan check {plan-path}` before scenario verification for every plan and records each reported defect as a failed check. It applies the D5 trust rule and falls back to the manual `Reference rules` pass when the checker is unavailable. Neither workflow skips the checker for a legacy plan. No generated `/next-task` document mentions `sce plan check`.
+  - Revised: Originally both workflows fell back to the manual pass and skipped the checker for legacy plans. Commit `7c6dde7c` removed the legacy skip. `context/plans/sce-plan-init.md` T03 removed the `/change-to-plan` fallback.
+  - Validate: `nix run .#pkl-check-generated`
+  - Decisions: D5
+  - Scenarios: S9
+- [x] AC6: The Pkl/Rust behavioral contract is documented: the shared rules, the shared manifest as the source of truth, the result and diagnostic wording, and the known AST-versus-line-scanner divergences.
+  - Validate: inspection of `context/sce/plan-structure-contract.md`, and of `context/sce/shared-context-plan-workflow.md` linking to it.
+  - Scenarios: none (inspection)
+- [x] AC7: The only new runtime dependency is `markdown`. No repository plan under `context/plans/` is read by generation or Nix checks, and `flake.nix` gains no `context/plans/` source dependency.
+  - Validate: inspection of `git diff main -- cli/Cargo.toml flake.nix config/pkl/check-generated.sh`
+  - Scenarios: none (inspection)
+
+### Verification scenarios
+
+- S1: Valid structured plans pass
+  - Given: The `valid-structured-plan.md` and `inspection-only-plan.md` fixtures.
+  - When: `sce plan check` runs on each one, once by relative path and once by absolute path.
+  - Then: Exit `0`. Stdout is exactly `structured plan: reference integrity holds`. Stderr is empty.
+  - Check: Rust command test `plan::command_valid_plans_exit_success`, created by T03, plus the AC1 `nix run .#sce` command.
+  - Revised: The original scenario also expected `legacy-plan.md` to exit `0` with the legacy classification line. Commit `7c6dde7c` removed that case, and S10 covers unstructured plans.
+- S2: Structurally invalid plan fails with validation class
+  - Given: The `duplicate-id.md` fixture.
+  - When: `sce plan check` runs on it.
+  - Then: Exit `3`. Stderr contains `SCE-ERR-VALIDATION` and one `{path}:{line}:` diagnostic carrying the Pkl defect text for the duplicated `S1` ID ("is defined more than once"). Stdout is empty.
+  - Check: Rust command test `plan::command_invalid_plan_exits_validation`, created by T03, plus the AC1 `nix run .#sce` command.
+- S3: Missing file uses existing runtime error handling
+  - Given: A path that does not exist.
+  - When: `sce plan check` runs on it.
+  - Then: Exit `4`. Stderr names the path and carries `SCE-ERR-RUNTIME`. No diagnostics are printed.
+  - Check: Rust command test `plan::command_missing_file_is_runtime_failure`, created by T03.
+- S4: The checker never executes plan commands
+  - Given: A structured fixture whose `Check:`, `Validate:`, and `Verify:` values name a command that would create a marker file.
+  - When: `sce plan check` runs on it.
+  - Then: Exit `0`, and the marker file does not exist afterwards.
+  - Check: Rust command test `plan::command_does_not_execute_plan_commands`, created by T03, plus named inspection that the check path (`extract.rs`, `validate.rs`, and `check` in `command.rs`) contains no `std::process` use.
+  - Revised: The original inspection covered all of `cli/src/services/plan/`. `context/plans/sce-plan-init.md` T02 later added `init.rs`, which runs `git rev-parse --show-toplevel` for `sce plan init` only.
+- S5: Rust matches every manifest expectation
+  - Given: `expectations.tsv` and every fixture it lists.
+  - When: The Rust fixture test extracts and validates each fixture.
+  - Then: Each `pass` fixture produces no diagnostics. Each `fail` fixture produces exactly its expected messages, compared as a sorted multiset. Every `.md` fixture in the directory is listed in the manifest.
+  - Check: Rust test `plan::fixture_expectations_match_manifest`, created by T02.
+  - Revised: The original scenario expected `structured`/`legacy` classifications and substring matches. Commits `0e0d756c` and `7c6dde7c` changed these to exact messages and `pass`/`fail` verdicts.
+- S6: Pkl matches every manifest expectation
+  - Given: The same `expectations.tsv`.
+  - When: `config/pkl/check-generated.sh` iterates it through `plan-structure-check.pkl`.
+  - Then: Every `pass` fixture prints `structured plan: reference integrity holds`. Every `fail` fixture fails, and its structured report equals its expected message set. The run aborts on any mismatch or unlisted fixture.
+  - Check: `nix run .#pkl-check-generated`
+  - Revised: The original scenario expected per-fixture classifications and substring matches. Commits `0e0d756c` and `7c6dde7c` changed these to the single pass line and exact message sets.
+- S7: Diagnostics point at the offending line
+  - Given: The `misplaced-field.md`, `duplicate-id.md`, and `task-empty-covers.md` fixtures.
+  - When: The Rust validator runs on each one.
+  - Then: Each diagnostic's `line` equals the 1-based line of the offending field or definition in the fixture source. A plan-level missing-heading defect has no line.
+  - Check: Rust test `plan::diagnostic_lines_match_source_positions`, created by T02.
+- S8: Help and completion expose the command
+  - Given: The built `sce` binary.
+  - When: Top-level help, `plan check --help`, and `completion --shell {bash,zsh,fish}` run.
+  - Then: Top-level help lists `plan`. Command help shows the required `<PATH>` argument. Each completion script contains `plan` and `check`.
+  - Check: Existing help/completion tests updated by T03, plus the AC4 commands.
+- S9: Generated workflows invoke the checker, and only `/validate` has a fallback
+  - Given: The canonical workflow Pkl sources after T04.
+  - When: Generation and the contract checks run.
+  - Then: Every target's generated `sce-change-to-plan/references/plan-authoring.md` contains the `sce plan check {plan-path}` invocation and the exact success marker, and has no checker fallback. Every target's generated `sce-validate/references/validation.md` contains the invocation, the D5 trust rule, and the manual `Reference rules` fallback. Neither document has a legacy skip. No generated `sce-next-task` document mentions `sce plan check`.
+  - Check: `nix run .#pkl-check-generated`, with the `plan-authoring-structured-references` and `validate-scenario-evidence` assertions from T04 and the `plan-authoring-plan-init` assertion from `context/plans/sce-plan-init.md` T03.
+  - Revised: The original scenario required the manual fallback and the legacy skip in both documents. Commit `7c6dde7c` removed the legacy skip. `context/plans/sce-plan-init.md` T03 removed the plan-authoring fallback.
+- S10: Unstructured plans fail with validation diagnostics
+  - Given: The `unstructured-plan.md` fixture, which uses the pre-structured plan format.
+  - When: `sce plan check` runs on it.
+  - Then: Exit `3`. Stdout is empty. Stderr carries `{path}:{line}:` diagnostics, including ``{path}:59: `T01` is missing `Covers:` ``. No legacy classification line is printed.
+  - Check: Rust command test `plan::command_unstructured_plan_exits_validation`, added by commit `7c6dde7c`, plus the AC1 `nix run .#sce` command.
+
+### Full validation
+
+- `nix flake check`
+- `nix run .#pkl-check-generated`
+
+### Context sync
+
+- `context/sce/plan-structure-contract.md` (new, the Pkl/Rust behavioral contract)
+- `context/sce/shared-context-plan-workflow.md` (responsibility split: `sce plan check` for one selected plan, the `/validate` checker fallback)
+- `context/sce/config-generation.md` (`check-generated.sh` drives plan-structure fixtures from `expectations.tsv`)
+- `context/cli/cli-command-surface.md` and `context/overview.md` (new `plan` command and `services/plan` domain)
+- `context/glossary.md` (`sce plan check`, plan-structure expectations manifest)
+- `context/context-map.md` (link the new contract file)
+
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `cli/Cargo.toml`/`Cargo.lock` (`markdown`), new `cli/src/services/plan/` (`mod.rs`, `extract.rs`, `validate.rs`, `command.rs`), `cli/src/services/mod.rs`, `cli/src/cli_schema.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/command_registry.rs`, the help/completion tests they affect, `config/pkl/renderers/fixtures/plan-structure/` (manifest plus new fixtures), `config/pkl/check-generated.sh`, `config/pkl/base/workflow-change-to-plan.pkl`, `config/pkl/base/workflow-validate.pkl`, `config/pkl/renderers/generation-contract-check.pkl`, and `context/sce/plan-structure-contract.md`.
+- **Out of scope:** `sce plan init`. Repository-wide plan scanning. Validating plans inside `nix flake check` or generation. Any new Nix source dependency on `context/plans/`. Executing planned tests or validation commands. Editing historical plans. YAML/JSON sidecar schemas. `/next-task` gates and task-completion semantics. Git hooks. Unrelated CLI services.
+- **Constraints:** No `comrak`, `pulldown-cmark`, or custom Markdown parser, and no regex/line scanning for structure. The distributed binary never invokes Pkl. Static dispatch, with no `dyn`, boxed futures, or background tasks. Rust import grouping and `anyhow` context conventions apply. Stable diagnostic wording is shared with Pkl. All commands run through Nix.
+- **Non-goal:** A general Markdown linter or auto-fixer. The checker reports defects and never rewrites the plan.
+
+## Assumptions
+
+- `markdown = "1"` is used as the request specifies. `Cargo.lock` pins the resolved version.
+- The command lives under a new top-level `plan` command group shown in top-level help. It is visible rather than hidden because workflows and users invoke it directly.
+- The success output reuses `plan-structure-check.pkl`'s single-plan strings exactly. There is no `--format json` in this change.
+- The heading, ordering, required-field, ownership, reference, and coverage rules are exactly those in `config/pkl/renderers/plan-structure.pkl`'s `check` path. Template-skeleton mode (`templateDefects`) stays Pkl-only because it validates generated templates, not plans.
+- New fixtures are added where the current set lacks a case the request names: a wrong reference kind (for example `Covers: S1`), and one fixture for the S4 no-execution check if an existing one cannot serve.
+- Rust fixture tests read `config/pkl` at test runtime. That tree already reaches the Crane sandbox through `cliBuildInputFileset`, and crates.io packaging never compiles tests, so neither needs a flake change.
+
+## Task stack
+
+- [x] T01: `Extract SCE plan structure from the markdown-rs AST` (status:done)
+  - Task ID: T01
+  - Covers: AC2, AC7
+  - Scope: In — add `markdown = "1"` to `cli/Cargo.toml`. Add `cli/src/services/plan/{mod.rs,extract.rs}` with the D1/D2 `Plan`/`PlanEntry`/`PlanField` model, extracted from `to_mdast(source, &ParseOptions::gfm())`. Covered: sections by heading depth and text; definitions only in authoritative sections; GFM checkbox; nested field items; source-sliced values; 1-based lines; `Code` nodes ignored. Add focused extraction unit tests on fenced-example and legacy-with-fenced fixtures. Out — validation rules, CLI wiring, manifest.
+  - Dependencies: none
+  - Done when: Extraction of `fenced-example-plan.md` yields only the out-of-fence definitions with correct lines. Extraction of `misplaced-definition.md` yields no `S` entry. No regex or line scanner identifies structure, and no other Markdown crate is added.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::extract`
+  - Completed: 2026-10-24
+  - Files changed: `cli/Cargo.toml`, `cli/Cargo.lock`, `cli/src/services/mod.rs`, `cli/src/services/plan/mod.rs`, `cli/src/services/plan/extract.rs`
+  - Result: Added `markdown = "1"` (locked `markdown 1.0.0`, plus its transitive `unicode-id 0.3.7`). `services::plan::extract::extract(&str) -> Result<Plan>` parses with `to_mdast(.., &ParseOptions::gfm())`. It walks the root children, tracking the current heading (`PlanHeading { depth, text, line }`). It takes definitions only from `ListItem`s of root-level `List`s in authoritative sections whose first paragraph starts with an ID token and `:`. It gets fields from directly nested `List` items with a `Key:` prefix, slices values from source by node offsets, and records 1-based lines from `mdast` positions. `PlanEntry { id, kind: PlanEntryKind, checked, line, fields }` is stored in source order, with `Plan::entries_of(kind)`. Approved assumptions: `Plan` also records `outside_section_ids` (definition-shaped items outside authoritative positions) and `fenced_ids` (definition-shaped items found by re-parsing `Code` values with `to_mdast`, never line scanning) for T02's undefined-reference hints. `pub mod plan` carries `#[cfg_attr(not(test), allow(dead_code, ...))]` until T03 wires the command. Remove it there.
+  - Verify outcome: `plan::extract` passed (6 tests: fenced-example entries/lines/fenced IDs, fenced headings skipped, source-sliced fields with lines and GFM checkbox, misplaced-definition yields no `S` entry, legacy-with-fenced example ignored, ID grammar). Additionally `clippy --all-targets` (pedantic, deny warnings) and `cargo fmt` are clean. No regex, line scanner, `comrak`, or `pulldown-cmark` appears under `cli/src/services/plan/`.
+  - Context impact: localized — new internal `cli/src/services/plan/` domain (extraction model only, not yet reachable from the CLI) and a new `markdown` runtime dependency. No user-visible behavior change.
+  - Context synchronization: synced
+
+- [x] T02: `Validate plan structure in pure Rust against the shared fixture manifest` (status:done)
+  - Task ID: T02
+  - Covers: AC2, AC3
+  - Scope: In — `cli/src/services/plan/validate.rs` with a pure `validate(&Plan) -> PlanReport` that ports the `plan-structure.pkl` `check` rules and defect wording: structured detection, required, duplicate, and ordered headings; `### Verification scenarios` parent; duplicate IDs; field ownership; required fields; ID-list grammar; reference kind and resolution with the outside-section/fenced hints; AC coverage; scenario referencing. Diagnostics are sorted deterministically. Add `config/pkl/renderers/fixtures/plan-structure/expectations.tsv` and the new wrong-reference-kind fixture. Switch `config/pkl/check-generated.sh` from hard-coded calls to iterating the manifest, and fail when a fixture is unlisted. Add `plan::fixture_expectations_match_manifest` and `plan::diagnostic_lines_match_source_positions`. Out — CLI wiring, workflow prose, template-skeleton mode.
+  - Dependencies: T01
+  - Done when: Both the Rust fixture test and `pkl-check-generated` pass from the same manifest, and every fixture's verdict and defect text agree. The diagnostic-line test asserts exact lines.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`; `nix run .#pkl-check-generated`
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/services/plan/validate.rs`, `cli/src/services/plan/mod.rs`, `cli/src/services/plan/extract.rs`, `config/pkl/renderers/fixtures/plan-structure/expectations.tsv`, `config/pkl/renderers/fixtures/plan-structure/wrong-reference-kind.md`, `config/pkl/check-generated.sh`
+  - Result: `services::plan::validate::validate(&Plan) -> PlanReport { structured, diagnostics: Vec<PlanDiagnostic { line: Option<usize>, message }> }` ports the `plan-structure.pkl` `check` rules with verbatim defect wording: structured detection; required, duplicate, and ordered headings; the `### Verification scenarios` parent rule; duplicate IDs; field ownership; required fields; ID-list grammar; reference kind and resolution with the outside-section and fenced hints from `Plan.outside_section_ids` and `Plan.fenced_ids`; AC coverage; and scenario referencing. Diagnostics are sorted by `(line, message)`, with line-less diagnostics first. `PlanEntryKind::of_id` in `extract.rs` became `pub` so it can be reused. `expectations.tsv` (tab-separated: fixture, `structured`/`legacy`/`fail`, then expected substrings; `#` comment rows) lists all 17 fixtures, including the new `wrong-reference-kind.md` (`Covers: S1`). `check-generated.sh` iterates the manifest on fd 3. It rejects missing fixtures, unknown verdicts, pass rows that list substrings, fail rows without substrings, and any `*.md` fixture not listed exactly once. Approved assumptions: plan-level missing-heading defects carry no line. Duplicate-heading and duplicate-ID defects anchor at the first repeated occurrence. Misordered-heading defects anchor at the later heading. The parent-rule defect anchors at the `### Verification scenarios` heading. Deviation: `plan::fixture_expectations_match_manifest` and `plan::diagnostic_lines_match_source_positions` are module-level `#[test]` functions in `plan/mod.rs`, not in a `tests` submodule, so the plan's `plan::fixture` and `plan::diagnostic_lines` Cargo filters match them.
+  - Verify outcome: `plan::` passed 8 tests (6 `extract`, plus `fixture_expectations_match_manifest` and `diagnostic_lines_match_source_positions`). `nix run .#pkl-check-generated` passed (145 files); the new files were marked intent-to-add with `git add -N` so the flake source includes them. A direct `nix develop -c ./config/pkl/check-generated.sh` also passed. A temporary unlisted fixture made it fail with `Plan structure fixture must be listed exactly once …`, and the fixture was removed afterwards. `clippy --all-targets -D warnings` is clean, and `cargo fmt` was applied.
+  - Context impact: localized — the internal `cli/src/services/plan/` domain gains a validation layer that is not yet reachable from the CLI. The plan-structure fixture check in `check-generated.sh` is now driven by `expectations.tsv`, which changes the documented `config-generation.md` fixture-run description. No user-visible CLI behavior change.
+  - Context synchronization: synced
+
+- [x] T03: `Wire sce plan check into the CLI schema and static dispatcher` (status:done)
+  - Task ID: T03
+  - Covers: AC1, AC4
+  - Scope: In — `cli_schema.rs`: `PLAN_*` constants, a `Commands::Plan { subcommand: PlanSubcommand::Check { path: PathBuf } }` variant, and a `TOP_LEVEL_COMMANDS` entry. Conversion in `services/parse/command_runtime.rs`, a `RuntimeCommand::Plan` variant in `services/command_registry.rs`, and `services/plan/command.rs`, which reads the file with path context (runtime failure) and maps defects to `CliError::validation` with D4 rendering. Update the affected help/completion tests, and add the S1–S4 command tests. Out — workflow prose, any `plan init`.
+  - Dependencies: T02
+  - Done when: S1–S4 tests pass. `sce plan check` on a valid fixture exits `0` and on an invalid one exits `3` with `{path}:{line}:` diagnostics. Help and completion list `plan check`.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml completion`; `nix run .#sce -- plan check config/pkl/renderers/fixtures/plan-structure/duplicate-id.md; echo $?`
+  - Completed: 2026-10-24
+  - Files changed: `cli/src/cli_schema.rs`, `cli/src/command_surface.rs`, `cli/src/services/command_registry.rs`, `cli/src/services/mod.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/services/plan/command.rs`, `cli/src/services/plan/mod.rs`
+  - Result: `cli_schema.rs` adds the `PLAN_CLAP_ABOUT`/`PLAN_TOP_LEVEL_PURPOSE`/`PLAN_SHOW_IN_TOP_LEVEL_HELP` constants, a visible `Commands::Plan { subcommand: PlanSubcommand::Check { path: PathBuf } }` with a required `<PATH>`, and a `TOP_LEVEL_COMMANDS` entry. `services::plan::NAME = "plan"` is registered in `DEFAULT_COMMAND_NAMES`. `RuntimeCommand::Plan(PlanCommand)` dispatches statically to the synchronous `PlanCommand::execute()`. `command_runtime.rs` converts the clap command through `convert_plan_subcommand`. `services/plan/command.rs` reads the file with `with_context("Failed to read plan file '{path}'")` and maps read failures to `CliError::runtime` (exit `4`). It then runs `extract` and `validate` and returns `STRUCTURED_PLAN_PASS`/`LEGACY_PLAN_PASS` on stdout, or `CliError::validation` (exit `3`) for a defective plan. That error message is a header line, then one `{path}:{line}: {message}` (or `{path}: {message}`) per diagnostic, then its own `Try:` line, so the default class guidance is not appended. The T01 `dead_code` allowance on `pub mod plan` was removed. Approved assumptions: no help or completion tests existed before this task, so `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` were added. The top-level help also gains a `Plan Usage:` section (`sce plan check <path>`). `default_runtime_command` has no `plan` default because the command requires a path. S4 uses a temporary structured plan whose `Validate:`/`Check:`/`Verify:` values are `touch <marker>`, so no new fixture or manifest row was needed.
+  - Verify outcome: `plan::` passed 14 tests (the 8 earlier ones, plus `command_valid_plans_exit_success`, `command_invalid_plan_exits_validation`, `command_missing_file_is_runtime_failure`, `command_does_not_execute_plan_commands`, `plan_check_appears_in_help`, and `completion_scripts_include_plan_check`). `completion` passed 2 tests. `nix run .#sce -- plan check …/duplicate-id.md` printed `…/duplicate-id.md:29: \`S1\` is defined more than once` under `SCE-ERR-VALIDATION` and exited `3`. `valid-structured-plan.md` and `legacy-plan.md` exited `0` with their classification lines. A missing file exited `4` with `SCE-ERR-RUNTIME` naming the path. `plan check --help` shows `<PATH>`, top-level help lists `plan`, and bash completion contains `plan`. `clippy --all-targets -D warnings` is clean, and `cargo fmt` was applied. `cli/src/services/plan/` has no `std::process` use outside the tests' `ExitCode`.
+  - Context impact: significant — new user-visible top-level `sce plan check <path>` command (help, completion, and exit-code `0`/`3`/`4` behavior), and the `services/plan` domain is now reachable from the CLI. This affects `context/cli/cli-command-surface.md`, `context/overview.md`, `context/cli/plan-service.md`, and `context/glossary.md`.
+  - Context synchronization: synced
+
+- [x] T04: `Invoke sce plan check from the change-to-plan and validate workflows` (status:done)
+  - Task ID: T04
+  - Covers: AC5
+  - Scope: In — `config/pkl/base/workflow-change-to-plan.pkl` steps 2.9–2.10: after writing a structured plan, run `sce plan check {plan-path}`, fix the reported defects, and re-run before `plan_ready`. `config/pkl/base/workflow-validate.pkl` step 4: run the checker before scenario verification and record each diagnostic as a failed check. Both get the D5 trust rule, the manual `Reference rules` fallback, and the legacy skip. Extend the existing `plan-authoring-structured-references` and `validate-scenario-evidence` assertions in `generation-contract-check.pkl`, and the negative fixtures they already use, so the invocation, fallback, and `/next-task` exclusion are required. Out — `/next-task` sources, Git hooks, new assertion families.
+  - Dependencies: T03
+  - Done when: Generated plan-authoring and validation references on every target carry the invocation, trust rule, fallback, and legacy skip, and `pkl-check-generated` passes.
+  - Verify: `nix run .#pkl-check-generated`
+  - Completed: 2026-10-24
+  - Files changed: `config/pkl/base/workflow-change-to-plan.pkl`, `config/pkl/base/workflow-validate.pkl`, `config/pkl/renderers/generation-contract-check.pkl`, `config/pkl/check-generated.sh`, `config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl`, `config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl`
+  - Result: Plan-authoring step 2.10 now runs `sce plan check {plan-path}` after writing a structured plan, fixes the reported defects, and re-runs until the checker passes before `plan_ready`. It skips the checker for a legacy plan. Validation step 4 runs `sce plan check {plan-path}` before scenario verification for a structured plan and records each diagnostic as a failed check. The step keeps "Skip this step for a legacy plan.", and its existing rule list is now the manual pass. Both carry the D5 trust rule: a result counts only on exit `0` with one of the two D4 classification lines, or on exit `3` with diagnostics. Any other outcome falls back to the manual `Reference rules` pass. Plan authoring records that fallback in open questions; validation records it under notes. `assertPlanAuthoringStructuredReferences` and `assertValidateScenarioEvidence` require the new invocation, trust-rule, fallback, and legacy-skip tokens. Both also apply a shared `noNextTaskPlanCheckReference` check, which rejects any `/skills/sce-next-task/` document containing `sce plan check`. Both throw messages were extended, and the matching strings in `check-generated.sh` and the two existing negative fixtures were kept in sync. Approved assumptions: the `/next-task` exclusion lives inside the two existing assertions, with no new assertion family.
+  - Verify outcome: `nix run .#pkl-check-generated` passed (145 files). Generated output contains `sce plan check` only in `sce-change-to-plan/references/plan-authoring.md` and `sce-validate/references/validation.md`, on all four targets (`.agents`, `.claude`, `.opencode`, `.pi`), and in no `sce-next-task` document. A throwaway Pkl evaluation in the scratchpad (since removed) confirmed two things: the generated `validation.md` passes `assertValidateScenarioEvidence`, and adding an `sce-next-task` document that mentions `sce plan check` makes it throw.
+  - Context impact: localized — the generated `/change-to-plan` and `/validate` workflow references now invoke `sce plan check` with a fallback. This affects `context/sce/shared-context-plan-workflow.md` (checker responsibility split and fallback). `/next-task` is unchanged.
+  - Context synchronization: synced
+
+- [x] T05: `Document the Pkl/Rust plan-structure behavioral contract` (status:done)
+  - Task ID: T05
+  - Covers: AC6
+  - Scope: In — new `context/sce/plan-structure-contract.md` covering: the shared rule set; `expectations.tsv` as the single source of truth and how to add a fixture; the D4 result and diagnostic wording; the rule that changing defect text requires both checkers; the known AST-versus-line-scanner divergences (list-nesting indentation tolerance, `[X]` checkboxes, definitions nested inside other list items, multi-line reference values); and that Pkl stays generation-only while the CLI never invokes Pkl. Link it from `context/sce/shared-context-plan-workflow.md` and `context/context-map.md`. Out — code changes.
+  - Dependencies: T04
+  - Done when: The contract file exists with those sections and is linked from both files.
+  - Verify: inspection of `context/sce/plan-structure-contract.md` and its links.
+  - Completed: 2026-10-24
+  - Files changed: `context/sce/plan-structure-contract.md`, `context/sce/shared-context-plan-workflow.md`, `context/context-map.md`
+  - Result: New `context/sce/plan-structure-contract.md` covers the Pkl and Rust checker roles: Pkl runs generation-only over fixtures, and the CLI never invokes Pkl. It also covers the shared classification, heading, definition, reference, and coverage rules, with template-skeleton mode excluded. It documents `expectations.tsv` as the single source of truth: the row format, the guards in `check-generated.sh` and `plan::fixture_expectations_match_manifest`, and the steps to add a fixture. It records the D4 result and diagnostic wording, and the rule that rewording requires both checkers plus the workflow trust rule. Finally, it lists the known divergences. `shared-context-plan-workflow.md` links the contract from its responsibility-split paragraph, and `context-map.md` gains a contract entry. Approved assumptions: beyond the four divergences the task names (indentation tolerance, `[X]` checkboxes, nested definitions, multi-line values), the list adds two verified from the Pkl regexes and `extract.rs`: Pkl accepts only `-` list markers, and only Rust ignores indented code blocks.
+  - Verify outcome: Inspection passed. The contract file has the sections for shared rules, fixtures and manifest, wording, and divergences. `grep` confirms the links in `context/sce/shared-context-plan-workflow.md:116` and `context/context-map.md:63`. The cited defect strings match `plan-structure.pkl`, `plan-structure-check.pkl`, and `validate.rs` verbatim.
+  - Context impact: localized — new durable context file for the Pkl/Rust contract, plus links. No code or behavior change.
+  - Context synchronization: synced
+
+## Open questions
+
+- Should a known AST-versus-line-scanner divergence (D1 trade-off) be fixed in the Pkl checker so the two agree beyond the fixtures, or only documented? The plan documents divergences and pins agreement through fixtures. Tightening `plan-structure.pkl` would be a follow-up.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-10-24
+
+The current status comes from the revalidation below, which verifies the
+revised requirements at PR #342 head `69e617c0`. The original validation is
+kept as a historical record. It verified the original requirements, including
+the legacy classification and the `/change-to-plan` fallback that are now
+superseded, and it is not evidence for the revised requirements.
+
+### Revalidation of the revised requirements
+
+Run on 2026-10-24 at HEAD `69e617c03aa80eebff49c896cbf521672b01ef55`. The tree
+was clean apart from edits to `context/plans/`, which Nix and generation checks
+do not read.
+
+#### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` -> exit 0 (28 passed, 610 filtered out)
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 146 files, inventory sha256 `087ce623…ef16`)
+- `nix flake check` -> exit 1 (first run, concurrent with other Cargo test runs: `cli-tests` 637 passed, 1 failed — `app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline`, "child exited after 8.3714708s", a wall-clock bound outside `services/plan`)
+- `nix flake check` -> exit 0 (rerun with no other load: `cli-tests` 638 passed, 0 failed; all checks passed)
+- `nix build .#default --no-link` -> exit 0
+- `nix run .#sce -- plan check config/pkl/renderers/fixtures/plan-structure/{valid-structured-plan,inspection-only-plan}.md`, by relative and by absolute path -> exit 0, stdout exactly `structured plan: reference integrity holds`
+- `nix run .#sce -- plan check …/duplicate-id.md`, by relative and by absolute path -> exit 3, empty stdout, `SCE-ERR-VALIDATION`, one ``…/duplicate-id.md:29: `S1` is defined more than once`` diagnostic
+- `nix run .#sce -- plan check …/unstructured-plan.md`, by relative and by absolute path -> exit 3, empty stdout, `SCE-ERR-VALIDATION`, eight `{path}:{line}:` diagnostics (lines 9, 11, 13, 59, 73), including ``…/unstructured-plan.md:59: `T01` is missing `Covers:` ``; no legacy line
+- `nix run .#sce -- plan check does/not/exist.md` -> exit 4 (`SCE-ERR-RUNTIME`, `Failed to read plan file 'does/not/exist.md'`)
+- `nix run .#sce -- --help` -> lists `plan` and the `Plan Usage:` lines `sce plan check <path>` and `sce plan init <name>`; `nix run .#sce -- plan check --help` -> `Usage: check <PATH>`
+- `nix run .#sce -- completion --shell {bash,zsh,fish}` -> each script contains `plan` and `check`
+- Inspection: `grep -n 'process\|Command::new' cli/src/services/plan/*.rs` -> no match in `extract.rs`, `validate.rs`, or `command.rs`; matches only in `init.rs` (`git rev-parse`, temporary-file PID) and test helpers in `mod.rs`
+- Inspection of the committed generated trees (`.agents`, `.claude`, `.opencode`, `.pi`): each `sce-change-to-plan/references/plan-authoring.md` has the `sce plan check {plan-path}` invocation and the success marker, no `checker is unavailable`, and no `legacy`; each `sce-validate/references/validation.md` has the invocation, the trust rule, and `checker is unavailable`, and no `legacy`; no `sce-next-task` document mentions `sce plan check`
+- Inspection: `git diff main -- cli/Cargo.toml` adds only `markdown = "1"`; the lock adds `markdown` and `unicode-id`; `flake.nix` is unchanged versus `main`; `flake.nix` and `config/pkl/check-generated.sh` contain no `context/plans` reference
+- `nix run .#sce -- plan check context/plans/sce-plan-check.md` -> exit 0 (`structured plan: reference integrity holds`)
+
+#### Success-criteria verification
+
+- [x] AC1: Every plan is checked against the structured rules; valid structured plans exit 0 with the exact marker; invalid and unstructured plans exit 3 with diagnostics; missing file exits 4; no plan command runs -> `plan::` tests passed and CLI runs matched; scenarios: S1, S2, S3, S4, S10
+- [x] AC2: Rust and Pkl agree on every fixture from the `pass`/`fail` manifest with exact message sets -> `plan::fixture_expectations_match_manifest` and `nix run .#pkl-check-generated` passed; scenarios: S5, S6
+- [x] AC3: Diagnostics carry 1-based `mdast` source lines -> `plan::diagnostic_lines_match_source_positions` passed; scenarios: S7
+- [x] AC4: Help and bash/zsh/fish completion expose `plan check` -> help, `plan check --help`, and completion output as listed; `plan::plan_check_appears_in_help` and `plan::completion_scripts_include_plan_check` passed; scenarios: S8
+- [x] AC5: `/change-to-plan` requires the checker with no fallback; `/validate` runs it with the trust rule and manual fallback; no legacy skip; `/next-task` never mentions it -> `nix run .#pkl-check-generated` passed with the `plan-authoring-structured-references`, `plan-authoring-plan-init`, and `validate-scenario-evidence` assertions, and the generated-tree inspection matched; scenarios: S9
+- [x] AC6: Pkl/Rust contract documented -> `context/sce/plan-structure-contract.md` states "No legacy classification" and the single pass line, and is linked from `context/sce/shared-context-plan-workflow.md:141` and `context/context-map.md:63`; scenarios: none (inspection)
+- [x] AC7: Only new runtime dependency is `markdown`; no `context/plans/` Nix dependency -> inspection as listed; scenarios: none (inspection)
+
+#### Scenario verification
+
+- S1 (AC1): test `services::plan::command_valid_plans_exit_success` + CLI runs on both fixtures by relative and absolute path -> passed; exit 0, exact marker; status: Verified
+- S2 (AC1): test `services::plan::command_invalid_plan_exits_validation` + CLI run on `duplicate-id.md` -> passed; exit 3, empty stdout, one line-29 diagnostic; status: Verified
+- S3 (AC1): test `services::plan::command_missing_file_is_runtime_failure` + CLI run on a missing path -> passed; exit 4, `SCE-ERR-RUNTIME`, path named; status: Verified
+- S4 (AC1): test `services::plan::command_does_not_execute_plan_commands` + check-path `std::process` inspection -> passed; no process use on the check path; status: Verified
+- S5 (AC2): test `services::plan::fixture_expectations_match_manifest` -> passed; status: Verified
+- S6 (AC2): command `nix run .#pkl-check-generated` -> exit 0; status: Verified
+- S7 (AC3): test `services::plan::diagnostic_lines_match_source_positions` -> passed; status: Verified
+- S8 (AC4): tests `services::plan::plan_check_appears_in_help` and `services::plan::completion_scripts_include_plan_check` + AC4 commands -> passed; status: Verified
+- S9 (AC5): command `nix run .#pkl-check-generated` + generated-tree inspection -> exit 0, inspection matched; status: Verified
+- S10 (AC1): test `services::plan::command_unstructured_plan_exits_validation` + CLI run on `unstructured-plan.md` -> passed; exit 3, empty stdout, line-59 `T01` diagnostic present, no legacy line; status: Verified
+
+#### Failed checks and follow-ups
+
+- None. The first `nix flake check` failure is recorded under residual risks.
+
+#### Residual risks
+
+- `app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline` failed again under concurrent load and passed on the quiet rerun. It asserts a wall-clock bound on a child process and stays flaky under load, as the original validation also observed.
+- `sce plan check --help` still renders `Usage: check <PATH>` rather than `sce plan check <PATH>`.
+- AST-versus-line-scanner divergences beyond the fixtures remain documented, not fixed (see Open questions).
+
+### Original validation (historical)
+
+Recorded on 2026-10-24, before commit `7c6dde7c`. These results verified the
+original requirements. The S1 legacy pass, the `legacy-plan.md` runs, and the
+AC5/S9 fallback and legacy-skip results describe behavior that has since been
+removed. They are kept unchanged as historical evidence and are not evidence
+for current behavior.
+
+#### Commands run
+
+- `nix flake check` -> exit 1 (first run: `cli-tests` 622 passed, 2 failed — `app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline` (child exited after 10.07s) and `services::hooks::commit_hooks::tests::commit_patch_id_is_none_without_warning_for_empty_post_commit`; both outside `services/plan`)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml -- <the two failing tests>` -> exit 0 (both passed in isolation)
+- `nix flake check` -> exit 0 (rerun: all checks passed)
+- `nix run .#pkl-check-generated` -> exit 0 (Ephemeral Pkl generation passed: 145 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml plan::` -> exit 0 (14 passed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml completion` -> exit 0 (2 passed)
+- `nix run .#sce -- plan check <fixture>` for `valid-structured-plan.md`, `inspection-only-plan.md`, `legacy-plan.md` (relative and absolute) -> exit 0 (classification line on stdout)
+- `nix run .#sce -- plan check config/pkl/renderers/fixtures/plan-structure/duplicate-id.md` -> exit 3 (`SCE-ERR-VALIDATION`, `…/duplicate-id.md:29: \`S1\` is defined more than once`)
+- `nix run .#sce -- plan check does/not/exist.md` -> exit 4 (`SCE-ERR-RUNTIME`, names the path)
+- `nix run .#sce -- plan check context/plans/sce-plan-check.md` -> exit 0 (`structured plan: reference integrity holds`)
+- `nix run .#sce -- --help`, `nix run .#sce -- plan check --help` -> exit 0 (lists `plan`; shows `<PATH>`)
+- `nix run .#sce -- completion --shell {bash,zsh,fish}` -> exit 0 (each script contains `plan` and `check`)
+
+#### Success-criteria verification
+
+- [x] AC1: `sce plan check <path>` validates one file read-only with 0/3/4 outcomes -> `plan::` tests passed; CLI runs gave exit 0 for valid fixtures (relative and absolute), 3 for `duplicate-id.md`, 4 for a missing file; scenarios: S1, S2, S3, S4
+- [x] AC2: Rust and Pkl agree on every fixture from `expectations.tsv` -> `plan::fixture_expectations_match_manifest` passed and `pkl-check-generated` passed from the same manifest; scenarios: S5, S6
+- [x] AC3: Diagnostics carry 1-based `mdast` source lines -> `plan::diagnostic_lines_match_source_positions` passed; scenarios: S7
+- [x] AC4: Help and bash/zsh/fish completion expose `plan check` -> top-level help line 56 `plan`, `plan check --help` shows `<PATH>`, all three completion scripts contain `plan`/`check`; scenarios: S8
+- [x] AC5: Generated `/change-to-plan` and `/validate` invoke `sce plan check` with trust rule, fallback, legacy skip; `/next-task` untouched -> `nix run .#pkl-check-generated` passed with the extended assertions; scenarios: S9
+- [x] AC6: Pkl/Rust contract documented -> `context/sce/plan-structure-contract.md` has Shared rule set, Shared fixtures and manifest, Result and diagnostic wording, Known divergences; linked from `context/sce/shared-context-plan-workflow.md:116` and `context/context-map.md:63`; scenarios: none (inspection)
+- [x] AC7: Only new runtime dependency is `markdown`; no `context/plans/` Nix dependency -> `git diff main -- cli/Cargo.toml` adds only `markdown = "1"` (lock adds `markdown`, transitive `unicode-id`); `flake.nix` unchanged vs `main`; no `context/plans` reference in `flake.nix` or `check-generated.sh`; scenarios: none (inspection)
+
+#### Scenario verification
+
+- S1 (AC1): test `plan::command_valid_plans_exit_success` + command `nix run .#sce -- plan check` on the three fixtures (relative and absolute) -> test passed (asserts exit 0, exact stdout, empty stderr); CLI printed exact classification lines with exit 0; status: Verified
+- S2 (AC1): test `plan::command_invalid_plan_exits_validation` + command `nix run .#sce -- plan check …/duplicate-id.md` -> test passed; CLI exit 3, empty stdout, `SCE-ERR-VALIDATION` and one `…/duplicate-id.md:29: \`S1\` is defined more than once` line; status: Verified
+- S3 (AC1): test `plan::command_missing_file_is_runtime_failure` -> passed (exit 4, `SCE-ERR-RUNTIME`, path named, no `{path}:` diagnostics); CLI confirmed exit 4; status: Verified
+- S4 (AC1): test `plan::command_does_not_execute_plan_commands` + inspection of `cli/src/services/plan/` for `std::process` -> test passed (exit 0, marker absent); only `std::process::ExitCode` in test code, no `Command` use; status: Verified
+- S5 (AC2): test `plan::fixture_expectations_match_manifest` -> passed; status: Verified
+- S6 (AC2): command `nix run .#pkl-check-generated` -> exit 0, manifest-driven loop in `config/pkl/check-generated.sh` with unlisted-fixture guard; status: Verified
+- S7 (AC3): test `plan::diagnostic_lines_match_source_positions` -> passed; status: Verified
+- S8 (AC4): test `plan::plan_check_appears_in_help`, `plan::completion_scripts_include_plan_check` + AC4 commands -> tests passed; help lists `plan`, `<PATH>` shown, bash/zsh/fish scripts contain `plan` and `check`; status: Verified
+- S9 (AC5): command `nix run .#pkl-check-generated` -> exit 0 with extended `plan-authoring-structured-references` and `validate-scenario-evidence` assertions (including the `sce-next-task` exclusion); status: Verified
+
+#### Failed checks and follow-ups
+
+- None.
+
+#### Residual risks
+
+- The first `nix flake check` run failed two timing/environment-sensitive tests outside this plan's scope (`app::tests::stalled_telemetry_headers_lookup_fails_closed_within_deadline`, `services::hooks::commit_hooks::tests::commit_patch_id_is_none_without_warning_for_empty_post_commit`); both passed in isolation and on the full rerun, which points to flakiness under load.
+- `sce plan check --help` renders `Usage: check <PATH>` rather than the full `sce plan check <PATH>` path.
+- AST-versus-line-scanner divergences between Rust and Pkl beyond the fixtures remain documented, not fixed (see Open questions).

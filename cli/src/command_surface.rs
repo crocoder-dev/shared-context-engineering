@@ -73,6 +73,27 @@ const HELP_SECTIONS: &[HelpSection] = &[
         }],
     },
     HelpSection {
+        title: "Plan Usage:",
+        body: &[
+            HelpSectionBodyLine::Command {
+                cmd: "  sce plan",
+                suffix: " check <path>",
+            },
+            HelpSectionBodyLine::Command {
+                cmd: "  sce plan",
+                suffix: " init <name>",
+            },
+            HelpSectionBodyLine::Command {
+                cmd: "  sce plan",
+                suffix: " pr-description --repo <owner/name> --head <sha> <path>...",
+            },
+            HelpSectionBodyLine::Command {
+                cmd: "  sce plan",
+                suffix: " review [--claims] --repo <owner/name> --head <sha> <path>...",
+            },
+        ],
+    },
+    HelpSection {
         title: "Completion Usage:",
         body: &[HelpSectionBodyLine::Command {
             cmd: "  sce completion",

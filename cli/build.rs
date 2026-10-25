@@ -326,6 +326,7 @@ fn validate_staged_artifacts(out_dir: &Path) -> io::Result<()> {
         "static/schema/agent-trace.schema.json",
         "pkl-generated/config/schema/sce-config.schema.json",
         "pkl-generated/config/optional-workflows.json",
+        "pkl-generated/config/plan-init-scaffold.md",
     ] {
         if !out_dir.join(relative_path).exists() {
             return Err(invalid_data(&format!(

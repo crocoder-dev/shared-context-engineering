@@ -30,6 +30,17 @@ workflow context. Do not create a second glossary for the same concepts.
 - **Handover document** — the persisted session-continuation document under
   `context/handovers/`.
 
+## Plan structure terms
+
+- **Design decision** — a plan-local `D{n}` entry recording an architectural
+  choice the plan commits to. It is not an ADR; ADRs are written only by
+  `sce-decision`.
+- **Verification scenario** — a plan-local `S{n}` entry stating one behavior as
+  `Given:`, `When:`, `Then:`, and a planned `Check:`.
+- **Structured plan** — the only plan format: acceptance criteria carry
+  `Scenarios:`, tasks carry `Covers:`, and the plan template's `Reference rules`
+  apply. There is no legacy plan format.
+
 ## Verbs
 
 Use verbs according to the object they operate on:

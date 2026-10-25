@@ -113,6 +113,21 @@ checks.
 
 Use judgment for ordinary, reversible local implementation choices.
 
+When writing or modifying tests:
+
+1. Before implementing, identify likely subtle bugs, mistakes, and
+   alternative interpretations. Design tests that distinguish them,
+   preferring asymmetric examples and boundary cases on both sides.
+
+2. After implementing, independently derive expected results for high-risk
+   cases from the requirements, without using production code or helpers.
+   Compare these expectations with actual results, using fresh context when
+   available.
+
+3. When feasible, use property-based tests or structured random inputs to
+   explore meaningful states and code paths. Avoid random tests that only
+   check for crashes or repeatedly exercise the same error path.
+
 Stop when implementation requires:
 
 - Material scope expansion.
@@ -131,6 +146,12 @@ Run the narrowest authoritative checks that demonstrate the done checks.
 
 Start with verification supplied by the readiness result. Add nearby or directly
 relevant checks only when needed.
+
+The covered scenarios' `Then:` and `Check:` may shape
+the task's own `Verify` checks. Running a scenario's check during the task is
+task-level evidence only. Task execution never checks an acceptance-criterion
+checkbox and never records a scenario status; only `/validate` verifies
+acceptance criteria and scenarios.
 
 Verification may include:
 
@@ -167,6 +188,7 @@ Only after successful implementation and task-level verification:
   facts above and before the synchronization phase is invoked.
 - Record material deviations or approved assumptions.
 - Preserve the plan's existing structure and terminology.
+- Keep the task's `Covers:` field as authored.
 
 Do not mark the task complete when returning `declined`, `blocked`, or
 `incomplete`.

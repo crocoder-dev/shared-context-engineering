@@ -92,7 +92,7 @@ selected or resumed, before allowing a new implementation task to start. A
 missing field, or any value other than `synced`, is unresolved synchronization
 debt. Never infer `synced` from conversation history. When the debt-carrying
 task has no durable completed-task record, the **Plan review phase** returns
-`blocked` directly with a legacy-migration required action; otherwise it returns
+`blocked` directly with a plan-migration required action; otherwise it returns
 `sync_debt` with the resolved plan path, debt task ID/title, completed task
 record, and persisted blocker when present, for the branch above to route.
 

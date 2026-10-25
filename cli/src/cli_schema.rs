@@ -53,6 +53,12 @@ pub const SYNC_TOP_LEVEL_PURPOSE: &str =
     "Synchronize the current repository's Agent Trace database";
 pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
+pub const PLAN_CLAP_ABOUT: &str =
+    "Create an SCE plan scaffold, check the structure and reference integrity of one SCE plan, or print an intent-review brief";
+pub const PLAN_TOP_LEVEL_PURPOSE: &str =
+    "Create or check the structure of one SCE plan, or print an intent-review brief";
+pub const PLAN_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
     TopLevelCommandMetadata {
         name: crate::services::auth_command::NAME,
@@ -93,6 +99,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::completion::NAME,
         purpose: COMPLETION_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: COMPLETION_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::plan::NAME,
+        purpose: PLAN_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: PLAN_SHOW_IN_TOP_LEVEL_HELP,
     },
     TopLevelCommandMetadata {
         name: crate::services::sync::NAME,
@@ -234,6 +245,12 @@ pub enum Commands {
         shell: CompletionShell,
     },
 
+    #[command(about = PLAN_CLAP_ABOUT, hide = !PLAN_SHOW_IN_TOP_LEVEL_HELP)]
+    Plan {
+        #[command(subcommand)]
+        subcommand: PlanSubcommand,
+    },
+
     #[command(about = SYNC_CLAP_ABOUT, hide = !SYNC_SHOW_IN_TOP_LEVEL_HELP)]
     Sync {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
@@ -359,6 +376,83 @@ pub enum HooksSubcommand {
         hide = true
     )]
     ExternalMutationGuard,
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum PlanSubcommand {
+    #[command(about = "Validate one plan file without executing any of its commands")]
+    Check {
+        #[arg(help = "Path to the plan Markdown file to check")]
+        path: PathBuf,
+    },
+
+    #[command(
+        about = "Create context/plans/<NAME>.md at the Git repository root from the plan scaffold"
+    )]
+    Init {
+        #[arg(
+            help = "Plan name: lowercase letters and digits separated by single hyphens, without `.md`"
+        )]
+        name: String,
+    },
+
+    #[command(
+        name = "pr-description",
+        about = "Print a Markdown intent-review brief for the given plans, offline and without writing files"
+    )]
+    PrDescription {
+        #[arg(
+            long,
+            value_name = "OWNER/NAME",
+            help = "GitHub repository as <OWNER>/<NAME>"
+        )]
+        repo: String,
+
+        #[arg(
+            long,
+            value_name = "SHA",
+            help = "Full 40-character lowercase commit SHA that contains the plan files"
+        )]
+        head: String,
+
+        #[arg(
+            required = true,
+            help = "Plan paths relative to the Git repository root, each context/plans/<FILE>.md"
+        )]
+        paths: Vec<String>,
+    },
+
+    #[command(
+        name = "review",
+        about = "Print a Markdown Decision Brief for the given plans at a commit, offline and without writing files"
+    )]
+    Review {
+        #[arg(
+            long,
+            help = "Print the sce.plan.claims.v1 JSON claims manifest instead of the Decision Brief"
+        )]
+        claims: bool,
+
+        #[arg(
+            long,
+            value_name = "OWNER/NAME",
+            help = "GitHub repository as <OWNER>/<NAME>"
+        )]
+        repo: String,
+
+        #[arg(
+            long,
+            value_name = "SHA",
+            help = "Full 40-character lowercase commit SHA to read the plan files from"
+        )]
+        head: String,
+
+        #[arg(
+            required = true,
+            help = "Plan paths relative to the Git repository root, each context/plans/<FILE>.md"
+        )]
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]

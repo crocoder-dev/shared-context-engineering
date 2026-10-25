@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-change-to-plan/references/plan-template.md"] =
+    "## Design decisions\n\n## Acceptance criteria\n\n  - Validate: `check`\n\n## Task stack\n\n  - Task ID: T01"
+}
+
+result = if (
+  contract.assertStructuredPlanTemplateSchema.apply(documents)
+) "negative fixture unexpectedly accepted a plan template without verification scenarios or coverage fields"
+else throw("generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules")

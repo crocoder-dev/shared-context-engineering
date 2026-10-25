@@ -44,6 +44,124 @@ context-load phase and continues with the original request in the same session.
 - Durable repository context is read, not synchronized, during planning.
 - A ready plan ends with an exact `/next-task {plan-path} {task-id}` handoff; the workflow does not request implementation approval itself.
 
+## Plan format
+
+`references/plan-template.md`, rendered from `changeToPlanPlanTemplate`, is the
+only owner of the persisted plan schema and its rules. Alongside the compact
+task, completion, and synchronization-lifecycle fields, it defines an optional
+structured layer:
+
+- `## Design decisions` with `D1..Dn` entries, each carrying `Boundary:`,
+  `Rationale:`, `Rejected:`, and `Trade-offs:`. A decision can also carry the
+  optional review pair `Review: required` and a one-line `Review question:`.
+  The planning agent marks only a decision that needs senior engineering
+  judgment. An unmarked decision carries neither field and no placeholder value.
+  The template's `Design decision rules` require one specific question that a
+  reviewer can accept or reject. The question names the architectural choice
+  and its consequence. Each concern appears in one marked decision only, and
+  one question carries one concern. There is no maximum number of marked
+  decisions. Three or more decisions marked for senior review produce a
+  non-blocking scope warning. Every marked decision remains visible. The
+  warning encourages splitting independent work into separate PRs but does
+  not reject the review brief.
+- One-line reference fields: `Decisions:` and `Scenarios:` on each acceptance
+  criterion, and `Covers:` on each task.
+- `### Verification scenarios` with `S1..Sn` entries, each carrying `Given:`,
+  `When:`, `Then:`, and `Check:`.
+
+The template's `Reference rules` make the relationships extractable by line
+matching. Each ID is defined once. Decision, criterion, and scenario IDs are
+never renumbered or reused. Every reference resolves. Every criterion has
+`Scenarios:` (IDs or `none (inspection)`), is covered by a task, and every
+scenario is referenced by a criterion. A planned `Check:` is not evidence.
+
+Plan structure is read only outside fenced code blocks, so a fenced example that
+repeats real IDs or headings defines nothing and stays in place. A definition
+counts only in its own section (`D` under `## Design decisions`, `AC` under
+`## Acceptance criteria`, `S` under `### Verification scenarios`, `T` under
+`## Task stack`, each ending at the next heading), and its fields are the lines
+indented under it. To check a fenced example itself, its content is extracted
+and checked as a separate sample document. `/change-to-plan`, `/next-task`, and
+`/validate` all read plans this way.
+
+Every plan uses this structured format. There is no legacy plan format:
+`sce plan check` rejects a plan without `Scenarios:` on its acceptance criteria
+and `Covers:` on its tasks.
+
+```mermaid
+flowchart LR
+    D["D{n} design decision"] -->|"Decisions:"| AC["AC{n} acceptance criterion"]
+    AC -->|"Scenarios:"| S["S{n} verification scenario"]
+    T["T{nn} task"] -->|"Covers:"| AC
+    S -->|"Check:"| C["planned test, command, or inspection"]
+```
+
+The plan-authoring phase writes this layer in a fixed order: design decisions,
+then acceptance criteria with their `Decisions:` and `Scenarios:`, then
+verification scenarios, then tasks with `Covers:`. It records only real
+architectural choices and omits `## Design decisions` when there are none. It
+writes scenarios only for the case kinds (normal, boundary, failure,
+cancellation, concurrency, recovery) the change makes relevant, and a `Check:`
+never names a test that neither exists nor is created by a task. Before writing
+the plan, a reference-consistency pass applies every `Reference rules`
+entry to the full draft and fixes each defect first. That pass is pre-write
+guidance only and never substitutes for `sce plan check`. The phase cites the
+template's rule sections by name and does not restate them.
+
+Step 2.10 writes the plan with no fallback, because structured plans are the
+only supported format:
+
+- **New plan:** after the clarification gate, it runs `sce plan init {plan_name}`
+  (see [plan service](../cli/plan-service.md)). Initialization succeeds only on
+  exit `0`, a `Created plan: context/plans/{plan_name}.md` stdout line, and an
+  existing file. Every other result, including a missing `sce` or a binary
+  without `init`, returns `blocked` with the exit code and stderr. The agent
+  then fills the generated plan scaffold using `references/plan-template.md`.
+  The template never substitutes for `init`.
+- **Existing plan:** it skips `init` and applies the `Updating an existing plan`
+  rules, which preserve completed tasks and their evidence.
+- **Completeness gate (both paths):** no scaffold `TODO` placeholder remains,
+  and unused optional sections (`Design decisions`, `Assumptions`) are removed.
+  `sce plan check` is structural and does not detect placeholders, so the gate
+  is enforced here.
+- **Structural check (both paths):** `sce plan check {plan-path}` passes only on
+  exit `0` with `structured plan: reference integrity holds`. On exit `3`
+  diagnostics the phase repairs the plan and reruns the check, or returns
+  `blocked`. Every other result returns `blocked`.
+
+`plan_ready` requires both the completeness gate and a passing `sce plan check`.
+The `plan-authoring-plan-init` generation contract check pins these rules. It
+rejects negative fixtures that drop or reorder the gate, add a manual template
+or `Reference rules` fallback, or accept `init` or `check` without their exact
+success output. It also keeps `sce plan init` out of every `sce-next-task` and
+`sce-validate` document.
+
+Responsibility for structural consistency is split by surface. Generation checks
+(`nix run .#pkl-check-generated`, also run by `nix flake check`) verify the plan
+template and the behavior of the structural checker
+`config/pkl/renderers/plan-structure-check.pkl` against fixtures only; they never
+read `context/plans/`, so an incomplete or malformed working plan cannot fail Nix
+CI. Plan authoring produces structurally consistent plans. Plan validation checks
+the selected plan's references and its actual verification evidence. For one
+selected plan, the shipped `sce plan check <path>` command (see
+[plan service](../cli/plan-service.md)) is the deterministic checker; the Pkl
+checker stays the generation-time reference implementation and is still
+runnable with
+`pkl eval -p planPath=<plan> config/pkl/renderers/plan-structure-check.pkl`.
+The two checkers share one rule set, wording, and fixture manifest; see the
+[plan structure contract](plan-structure-contract.md).
+
+`/change-to-plan` (step 2.10, as above) and `/validate` (step 4, before scenario
+verification) run `sce plan check {plan-path}`. `/change-to-plan` has no
+fallback when the checker is missing or returns anything else. `/validate`
+records each diagnostic as a failed check, and it trusts a result only when the
+checker actually ran: exit `0` with
+`structured plan: reference integrity holds` on stdout, or exit `3`
+with diagnostics. For `/validate` only, any other outcome, such as an older
+`sce` that answers the unknown `plan` command with help and exit `0`, means the
+checker is unavailable. The workflow then applies the manual `Reference rules`
+pass instead and records the fallback. `/next-task` never invokes the checker.
+
 ## Continuation contract
 
 Same-session waits preserve one of two explicit continuation shapes inside the

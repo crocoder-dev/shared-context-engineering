@@ -36,6 +36,7 @@ legacy_paths=(
   "config/.claude"
   "config/.pi"
   "config/schema/sce-config.schema.json"
+  "config/plan-init-scaffold.md"
   "cli/assets/generated"
 )
 
@@ -152,6 +153,15 @@ expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/compact-plan-template-schema-check.pkl" \
   "generated plan-template.md must use the compact task and completion schema and must not reference the removed Goal, Boundaries (in/out of scope), Verification notes, Implementation evidence, Verification evidence, or Context synchronization handoff fields"
 expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/structured-plan-template-schema-check.pkl" \
+  "generated plan-template.md must define the Design decisions section, the Decisions:, Scenarios:, and Covers: reference fields, the Verification scenarios section, and the Design decision, Verification scenario, and Reference rules"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-authoring-structured-references-check.pkl" \
+  "generated plan-authoring.md must author design decisions, acceptance criteria, verification scenarios, and tasks in that order, forbid manufactured decisions and invented test names, add Covers:, and run a reference-consistency pass before writing, run sce plan check after writing the plan, and keep sce plan check out of every sce-next-task document"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/next-task-structured-references-check.pkl" \
+  "generated sce-next-task plan-review.md, output.md, and task-execution.md must carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, and never check an acceptance criterion or record a scenario status during task execution"
+expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/next-task-compact-completion-writing-check.pkl" \
   "sce-next-task task-execution.md must record execution facts directly on the completed task and must not construct a separate Implementation evidence, Verification evidence, or Context synchronization handoff record"
 expect_pkl_fixture_failure \
@@ -175,6 +185,140 @@ expect_pkl_fixture_failure \
 expect_pkl_fixture_failure \
   "config/pkl/renderers/fixtures/validate-decision-sync-boundary-check.pkl" \
   "generated sce-validate document must not contain a sce-decision reference or plan-context-sync wording"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validate-scenario-evidence-check.pkl" \
+  "generated sce-validate validation.md must fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, and keep sce plan check out of every sce-next-task document"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/validation-report-scenario-section-check.pkl" \
+  "generated sce-validate validation-report.md and validation.md must carry a scenario verification section mapping each scenario to its acceptance criteria, evidence kind, exact evidence, actual result, and status, cite scenario IDs on acceptance-criterion lines, and list unverified scenarios under What failed"
+
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-template-misplaced-field-check.pkl" \
+  "structured example: \`Covers:\` on \`AC2\` is misplaced; it belongs to a task"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-template-keywords-in-examples-check.pkl" \
+  "heading \`## Reference rules\` is missing outside fenced code blocks"
+expect_pkl_fixture_failure \
+  "config/pkl/renderers/fixtures/plan-template-dangling-reference-check.pkl" \
+  "structured example: \`Scenarios:\` on \`AC1\` references undefined \`S2\`"
+
+plan_structure_check="config/pkl/renderers/plan-structure-check.pkl"
+plan_structure_report="config/pkl/renderers/fixtures/plan-structure-report.pkl"
+plan_structure_fixtures="config/pkl/renderers/fixtures/plan-structure"
+
+expect_plan_structure_pass() {
+  local fixture_name="$1"
+  local output
+
+  if ! output="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_check" 2>&1)"; then
+    printf 'Plan structure fixture unexpectedly failed: %s\n%s\n' \
+      "$fixture_name" "$output" >&2
+    exit 1
+  fi
+
+  if [[ "$output" != *"$structured_plan_result"* ]]; then
+    printf 'Plan structure fixture passed with the wrong result: %s\n%s\n' \
+      "$fixture_name" "$output" >&2
+    exit 1
+  fi
+}
+
+expect_plan_structure_failure() {
+  local fixture_name="$1"
+
+  if pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_check" >/dev/null 2>&1; then
+    printf 'Negative plan structure fixture unexpectedly passed: %s\n' \
+      "$fixture_name" >&2
+    exit 1
+  fi
+}
+
+expect_plan_structure_report() {
+  local fixture_name="$1"
+  shift
+  local report
+  local actual_diagnostics
+  local expected_diagnostics
+  local report_stderr="$tmp_dir/plan-structure-report.stderr"
+
+  if ! report="$(pkl eval -p "planPath=$repo_root/$plan_structure_fixtures/$fixture_name" \
+    "$plan_structure_report" 2>"$report_stderr")"; then
+    printf 'Plan structure report failed to evaluate: %s\n%s\n%s\n' \
+      "$fixture_name" "$report" "$(cat "$report_stderr")" >&2
+    exit 1
+  fi
+
+  actual_diagnostics="$(LC_ALL=C sort <<<"$report")"
+  expected_diagnostics="$(if [[ "$#" -gt 0 ]]; then printf '%s\n' "$@"; fi | LC_ALL=C sort)"
+
+  if [[ "$actual_diagnostics" != "$expected_diagnostics" ]]; then
+    printf 'Plan structure fixture diagnostics differ from the manifest: %s\nexpected (sorted):\n%s\nactual (sorted):\n%s\n' \
+      "$fixture_name" "$expected_diagnostics" "$actual_diagnostics" >&2
+    exit 1
+  fi
+}
+
+structured_plan_result="structured plan: reference integrity holds"
+
+plan_structure_manifest="$plan_structure_fixtures/expectations.tsv"
+listed_plan_structure_fixtures=()
+
+while IFS=$'\t' read -r -u 3 -a manifest_columns; do
+  if [[ "${#manifest_columns[@]}" -eq 0 || "${manifest_columns[0]}" == \#* ]]; then
+    continue
+  fi
+
+  fixture_name="${manifest_columns[0]}"
+  fixture_verdict="${manifest_columns[1]:-}"
+  expected_diagnostics=("${manifest_columns[@]:2}")
+
+  if [[ ! -f "$plan_structure_fixtures/$fixture_name" ]]; then
+    printf 'Plan structure manifest lists a missing fixture: %s\n' "$fixture_name" >&2
+    exit 1
+  fi
+  listed_plan_structure_fixtures+=("$fixture_name")
+
+  case "$fixture_verdict" in
+    pass)
+      if [[ "${#expected_diagnostics[@]}" -ne 0 ]]; then
+        printf 'Plan structure manifest pass row must not list diagnostics: %s\n' "$fixture_name" >&2
+        exit 1
+      fi
+      expect_plan_structure_pass "$fixture_name"
+      expect_plan_structure_report "$fixture_name"
+      ;;
+    fail)
+      if [[ "${#expected_diagnostics[@]}" -eq 0 ]]; then
+        printf 'Plan structure manifest fail row must list diagnostics: %s\n' "$fixture_name" >&2
+        exit 1
+      fi
+      expect_plan_structure_failure "$fixture_name"
+      expect_plan_structure_report "$fixture_name" "${expected_diagnostics[@]}"
+      ;;
+    *)
+      printf 'Plan structure manifest has an unknown verdict for %s: %s\n' \
+        "$fixture_name" "$fixture_verdict" >&2
+      exit 1
+      ;;
+  esac
+done 3<"$plan_structure_manifest"
+
+for fixture_path in "$plan_structure_fixtures"/*.md; do
+  fixture_name="$(basename "$fixture_path")"
+  listed_count=0
+  for listed_fixture in "${listed_plan_structure_fixtures[@]}"; do
+    if [[ "$listed_fixture" == "$fixture_name" ]]; then
+      listed_count=$((listed_count + 1))
+    fi
+  done
+  if [[ "$listed_count" -ne 1 ]]; then
+    printf 'Plan structure fixture must be listed exactly once in %s: %s\n' \
+      "$plan_structure_manifest" "$fixture_name" >&2
+    exit 1
+  fi
+done
 
 "$producer" "$repo_root" "$generated_input_root"
 generated_root="$generated_input_root/pkl-generated"
@@ -196,6 +340,7 @@ required_paths=(
   "config/.pi/skills"
   "config/.pi/extensions/sce/index.ts"
   "config/schema/sce-config.schema.json"
+  "config/plan-init-scaffold.md"
 )
 
 for path in "${required_paths[@]}"; do

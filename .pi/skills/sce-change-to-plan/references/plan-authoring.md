@@ -28,9 +28,18 @@ This phase owns the planning process:
 - Write or revise exactly one `context/plans/{plan_name}.md`.
 
 `references/plan-template.md` is the sole owner of the persisted plan schema.
-Read its `Acceptance criteria rules`, `Task rules` and `No validation task` rules,
-and `Updating an existing plan` rules before authoring or revising. Apply those
-rules rather than restating them here.
+Read its `Acceptance criteria rules`, `Design decision rules`,
+`Verification scenario rules`, `Reference rules`, `Task rules` and
+`No validation task` rules, and `Updating an existing plan` rules before
+authoring or revising. Apply those rules rather than restating them here.
+
+Author plan content in this order: design decisions, then acceptance criteria,
+then verification scenarios, then tasks.
+
+Apply the **Controlled English for Plans and Context** rules
+below to new or revised plan prose, including design decisions, acceptance
+criteria, verification scenarios, and tasks, in initial authoring and in every
+revision.
 
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
@@ -57,7 +66,9 @@ When multiple existing plans match and none can be selected safely, return
 `blocked` with the matching candidates.
 
 When the request targets a new plan, derive `plan_name` as a short kebab-case
-slug of the change, and confirm it does not collide with an existing plan.
+slug of the change, and confirm it does not collide with an existing plan. Do
+not create the plan file here; step 2.10 initializes it after the clarification
+gate.
 
 Resolve exactly one plan target per invocation.
 
@@ -151,18 +162,39 @@ the repository does not yet have.
 
 Do not explore the entire repository by default.
 
-## 2.5 Author the acceptance criteria
+## 2.5 Record design decisions
+
+Record the architectural choices this plan commits to under `## Design decisions`,
+applying the `Design decision rules` in `references/plan-template.md`. Do not
+manufacture a decision to fill the section. When the change commits to no such
+choice, omit the section.
+
+## 2.6 Author the acceptance criteria
 
 Derive the plan-specific success outcomes and checks before slicing tasks, then
 apply the `Acceptance criteria rules` and exact section shape in
 `references/plan-template.md`. The template owns their generic validation
 semantics and placement.
 
-## 2.6 Author the task stack
+Give each criterion its `Decisions:` and `Scenarios:` fields as the
+`Reference rules` define them.
 
-Slice and order the plan-specific work after the acceptance criteria, applying the
-`Task rules` and `No validation task` rules in `references/plan-template.md`.
+## 2.7 Author the verification scenarios
+
+Write the scenarios the acceptance criteria depend on under
+`### Verification scenarios`, applying the `Verification scenario rules` in
+`references/plan-template.md`. Cover normal, boundary, failure, cancellation,
+concurrency, and recovery cases only where the change makes them relevant.
+Do not invent test names: a `Check:` names an existing test, a test a task in
+the stack creates, a command, or a named inspection.
+
+## 2.8 Author the task stack
+
+Slice and order the plan-specific work after the acceptance criteria and
+verification scenarios, applying the `Task rules` and `No validation task` rules in `references/plan-template.md`.
 Do not restate those generic task rules here.
+
+Give each task its `Covers:` field as the `Reference rules` define it.
 
 A finished stack always leaves at least one incomplete task, so the workflow can
 always hand off to `/next-task`. When the request resolves to a plan but produces
@@ -170,12 +202,69 @@ no incomplete task, because the change is already implemented or already covered
 by completed tasks, set internal status `blocked` with category
 `no_actionable_work` instead of writing the plan.
 
-## 2.7 Write the plan
+## 2.9 Check references
 
-Write `context/plans/{plan_name}.md` by applying `references/plan-template.md`
-exactly. For revisions, apply its `Updating an existing plan` rules.
+Before writing the plan, run a reference-consistency pass over the
+complete draft that applies every `Reference rules` entry in
+`references/plan-template.md`. Fix each defect in the draft before writing. Do
+not write a plan that fails this pass.
 
-## 2.8 Return the result
+This pass is pre-write authoring guidance only. It never substitutes for a
+successful `sce plan check` in step 2.10.
+
+## 2.10 Write the plan
+
+Structured plans are the only supported format. This step has no fallback for
+`sce plan init` or `sce plan check`.
+
+### New plan
+
+Run `sce plan init {plan_name}`. Initialization succeeds only when all three
+hold: exit `0`, stdout contains `Created plan: context/plans/{plan_name}.md`,
+and that file exists. Every other result returns `blocked` with the exit code
+and stderr. This includes a missing `sce` executable, a binary without `init`,
+a nonzero exit, an exit `0` without the expected line, and an expected line
+with no created file.
+
+Fill the generated scaffold with the plan content, applying the authoring rules
+in `references/plan-template.md`. The template is the authoring reference for
+filling the scaffold, never a substitute for `sce plan init`. Never write a new
+plan without it.
+
+### Existing plan
+
+Do not run `sce plan init`. Revise the plan by applying the
+`Updating an existing plan` rules in `references/plan-template.md`, which
+preserve completed tasks and their evidence. The revised plan must satisfy the
+same structured plan contract.
+
+### Completeness gate
+
+For new plans and revisions alike, the plan contains no scaffold `TODO`
+placeholder, and optional sections without real entries (`Design decisions`,
+`Assumptions`) are removed. The change summary, acceptance criteria, design
+decisions, verification scenarios, task definitions, and verify instructions
+are authored for this change.
+
+While any placeholder remains, keep authoring or return `blocked`. A passing
+`sce plan check` is required but not sufficient: it is structural and does not
+detect placeholders.
+
+### Structural check
+
+For new plans and revisions alike, run `sce plan check {plan-path}`. It passes
+only on exit `0` with `structured plan: reference integrity holds` on stdout.
+
+On exit `3` with structural diagnostics, fix each reported defect in the plan
+and run it again, or return `blocked` with the remaining diagnostics when they
+cannot be resolved. Every other result returns `blocked` with the exit code and
+stderr. This includes a missing `sce` executable, a binary without `check`, any
+other exit code, and an exit `0` without the success marker.
+
+Set internal status `plan_ready` only after both the completeness gate and
+`sce plan check` pass.
+
+## 2.11 Return the result
 
 Return one internal result with one of these statuses:
 
@@ -198,6 +287,16 @@ Write user-facing questions and open questions directly and specifically.
 - Name a smaller or safer alternative when one is known.
 - Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
 - When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
+
+## Controlled English for Plans and Context
+
+Apply these rules to new or modified prose in SCE plans and durable context. Preserve Markdown structure, code, commands, identifiers, technical terminology, factual meaning, and existing task evidence. Do not rewrite unrelated content solely for style.
+
+1. Sentence structure: Use a maximum of 20 words per procedural sentence and 25 words per descriptive sentence, counted according to STE rules. Give one instruction per sentence, using imperative form and placing prerequisites first. Limit ordinary multi-word nouns to three words. Keep one topic and at most six sentences per descriptive paragraph. Do not use contractions or semicolons. Use active voice, except when the actor is unknown in descriptive text.
+
+2. Vocabulary: Prefer STE-approved words and established domain terminology. Use terms consistently and preserve their technical meanings.
+
+3. Verbs: Use simple present, simple past, simple future, and imperative forms. Avoid perfect and progressive constructions. Use "can" for possibility, ability, or permission, "must" for obligation, and "will" for future events. Replace "may", "should", "shall", and "would" with appropriate constructions. Use "could" only for past ability or permission.
 
 ## Plan authoring boundaries
 

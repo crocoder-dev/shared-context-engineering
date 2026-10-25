@@ -29,8 +29,8 @@ any value other than `synced`, is unresolved synchronization debt. Never infer
 For the first task carrying debt:
 
 - When the task has no durable completed-task record (no `Files changed`,
-  `Result`, `Verify`, or `Context impact` recorded — a legacy plan predating
-  that structure, or an incomplete write), do not attempt a reconstructed retry.
+  `Result`, `Verify`, or `Context impact` recorded, for example after an
+  incomplete write), do not attempt a reconstructed retry.
   Set internal status `blocked` with a required action to migrate the plan
   (backfill the completion record, or resolve the debt manually) and a retry
   condition of the plan carrying that structure. Stop.
@@ -73,6 +73,18 @@ Load root context only when the task affects repository-wide behavior,
 architecture, shared terminology, or cross-domain interfaces.
 
 Do not explore the entire repository by default.
+
+Read plan structure only outside fenced code blocks; headings, definitions, and
+fields inside a fenced example are not plan structure. A definition counts only
+in its own section: `D` entries under `## Design decisions`, `AC` entries under
+`## Acceptance criteria`, `S` entries under `### Verification scenarios`, and
+`T` entries under `## Task stack`.
+
+Read the selected task's `Covers:` IDs. For each covered
+acceptance criterion, read its `Scenarios:` and `Decisions:` fields and the
+scenario and decision definitions they name. A covered ID or referenced ID with
+no definition in the plan is a dangling reference. Record it as a review risk;
+it does not make the task `blocked`.
 
 ## 1.4 Determine readiness
 
@@ -127,6 +139,14 @@ A `ready` result must identify:
 - Verification expectations.
 - Relevant files and context.
 - Review assumptions.
+
+A `ready` result also identifies:
+
+- The covered acceptance criteria: each `Covers:` ID with its outcome and
+  `Validate:` check.
+- Their verification scenarios: each scenario ID with its `Then:` and `Check:`.
+- Their related design decisions: each decision ID with its decision text.
+- Every dangling reference, as a review risk.
 
 A `sync_debt` result must identify:
 

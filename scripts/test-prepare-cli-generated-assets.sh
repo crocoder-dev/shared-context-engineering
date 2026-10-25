@@ -52,6 +52,7 @@ fi
 printf '%s\n' "$((count + 1))" > "${count_file}"
 mkdir -p "${destination}/config/.opencode"
 printf 'generated\n' > "${destination}/config/.opencode/generated.txt"
+printf '# Plan: {plan-name}\n' > "${destination}/config/plan-init-scaffold.md"
 EOF
 chmod +x \
   "${fake_bin}/pkl" \
@@ -81,6 +82,7 @@ if [ "$(<"${state_root}/generation-count")" -ne 4 ]; then
 fi
 test ! -e "${first_root}/INPUTS.SHA256SUMS"
 test -f "${first_root}/pkl-generated/config/.opencode/generated.txt"
+test -f "${first_root}/pkl-generated/config/plan-init-scaffold.md"
 test -f "${first_root}/static/hooks/hook.sh"
 test -f "${first_root}/static/migrations/001.sql"
 test -f "${first_root}/static/schema/agent-trace.schema.json"
@@ -88,7 +90,11 @@ test -f "${first_root}/static/schema/agent-trace.schema.json"
   cd "${first_root}"
   sha256sum -c SHA256SUMS >/dev/null
 )
-if [ "$(wc -l < "${first_root}/SHA256SUMS" | tr -d ' ')" -ne 4 ]; then
+if ! grep -q ' pkl-generated/config/plan-init-scaffold.md$' "${first_root}/SHA256SUMS"; then
+  printf 'Package fallback inventory does not list the plan init scaffold.\n' >&2
+  exit 1
+fi
+if [ "$(wc -l < "${first_root}/SHA256SUMS" | tr -d ' ')" -ne 5 ]; then
   printf 'Combined package fallback inventory has the wrong entry count.\n' >&2
   exit 1
 fi

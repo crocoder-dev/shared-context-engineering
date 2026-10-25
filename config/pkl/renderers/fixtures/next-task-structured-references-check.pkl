@@ -1,0 +1,15 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-next-task/references/plan-review.md"] =
+    "## 1.5 Return the result\n\nA `ready` result must identify:\n\n- One resolved plan."
+  ["config/.opencode/skills/sce-next-task/references/output.md"] =
+    "## Risks or trade-offs\n\n## Verification"
+  ["config/.opencode/skills/sce-next-task/references/task-execution.md"] =
+    "## 2.6 Verify the task\n\n## 2.7 Update the plan"
+}
+
+result = if (
+  contract.assertNextTaskStructuredReferences.apply(documents)
+) "negative fixture unexpectedly accepted next-task references without acceptance coverage"
+else throw("generated sce-next-task plan-review.md, output.md, and task-execution.md must carry covered acceptance criteria, scenarios, and decisions, treat dangling references as review risks, and never check an acceptance criterion or record a scenario status during task execution")

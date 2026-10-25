@@ -1,0 +1,11 @@
+import "../generation-contract-check.pkl" as contract
+
+local documents = new Mapping {
+  ["config/.opencode/skills/sce-validate/references/validation.md"] =
+    "## 1.4 Run full validation and acceptance checks\n\nRun the plan's `Full validation` commands."
+}
+
+result = if (
+  contract.assertValidateScenarioEvidence.apply(documents)
+) "negative fixture unexpectedly accepted validation.md without relationship integrity or scenario evidence rules"
+else throw("generated sce-validate validation.md must fail on relationship-integrity defects, run every scenario check itself with exactly one of Verified, Partially verified, or Not verified, check an acceptance criterion only when its Validate: check passes and all its scenarios are Verified, exclude task completion and plan claims as evidence, run sce plan check before scenario verification with the checker trust rule and manual Reference rules fallback, and keep sce plan check out of every sce-next-task document")

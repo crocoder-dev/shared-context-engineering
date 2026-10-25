@@ -57,6 +57,19 @@ From the plan, collect:
 - Every acceptance criterion and its `Validate:` check.
 - The `Full validation` command list.
 
+Read plan structure only outside fenced code blocks; headings, definitions, and
+fields inside a fenced example are not plan structure. A definition counts only
+in its own section: `D` entries under `## Design decisions`, `AC` entries under
+`## Acceptance criteria`, `S` entries under `### Verification scenarios`, and
+`T` entries under `## Task stack`.
+
+Also collect:
+
+- Every design decision.
+- Every acceptance criterion's `Decisions:` and `Scenarios:` fields.
+- Every verification scenario with its `Then:` and `Check:`.
+- Every task's `Covers:` field.
+
 Return `blocked` when the plan has no usable acceptance criteria, or when no
 validation commands can be determined from the plan or repository conventions.
 
@@ -64,13 +77,61 @@ Prefer the plan's authored checks. Fall back to repository-primary test, lint,
 and format commands only when `Full validation` is absent, and record that
 fallback under notes on a `validated` or `failed` result.
 
-### 4. Run full validation and acceptance checks
+### 4. Check plan references
+
+Run `sce plan check {plan-path}` before scenario
+verification. Record each reported diagnostic as a failed check under
+**Failed checks and follow-ups**, quoting its line and message.
+
+Trust the checker only when it actually ran: a result counts only on exit `0`
+with `structured plan: reference integrity holds` on stdout, or on exit `3`
+with diagnostics. Any other outcome means the checker is unavailable; record
+that fallback under notes and apply the manual pass below instead.
+
+For the manual pass, apply every entry of the plan template's
+`Reference rules` to the plan. Each of these is a relationship-integrity
+defect:
+
+- An ID defined more than once.
+- A dangling reference: a `Decisions:`, `Scenarios:`, or `Covers:` ID with no
+  definition in the plan.
+- An acceptance criterion without `Scenarios:`.
+- An acceptance criterion that no task's `Covers:` names.
+- A task without `Covers:` or with an empty `Covers:`.
+- A scenario that no acceptance criterion's `Scenarios:` references.
+
+Record each defect as a failed check under **Failed checks and follow-ups**,
+naming the IDs involved. A relationship-integrity defect makes the result
+`failed`; never tolerate one silently. Continue gathering the remaining
+evidence.
+
+### 5. Run full validation and acceptance checks
 
 Run the plan's `Full validation` commands.
 
 Then verify each acceptance criterion using its `Validate:` line. Prefer a
 runnable command. Use a named inspection only when the criterion authorizes it,
 and say exactly what was inspected.
+
+Run or perform every scenario's `Check:` yourself in
+this run, and compare the observed result with the scenario's `Then:`. Give
+each scenario exactly one status:
+
+- `Verified` when this run's evidence proves its `Then:` in full.
+- `Partially verified` when the check ran but proves `Then:` only in part, for
+  example at a narrower level than `Then:` requires.
+- `Not verified` when the check failed, could not be run or located, or was
+  not performed.
+
+Only evidence gathered by this run counts. Task completion, a task's recorded
+`Verify` outcomes, a planned `Check:` line, and the plan's own claims are never
+evidence. Record every `Partially verified` or `Not verified` scenario as a
+failed check with the gap and a required action.
+
+An acceptance criterion is met only when its `Validate:`
+check passes and every scenario its `Scenarios:` names is `Verified`. An
+acceptance criterion marked `none (inspection)` is met by its `Validate:` check
+alone.
 
 Treat leftover debug-only flags, temporary files, intermediate artifacts, or
 local scaffolding as a failed validation check. Record the path and evidence
@@ -87,7 +148,7 @@ inspection confirmed the criterion.
 Do not run task-by-task implementation work for incomplete tasks. That belongs
 to `/next-task`.
 
-### 5. Update the plan
+### 6. Update the plan
 
 For `validated` and `failed` outcomes:
 
@@ -101,7 +162,7 @@ Do not reopen completed tasks, rewrite task evidence, or change the task stack.
 
 For `blocked`, leave the plan file unchanged.
 
-### 6. Return the Markdown report
+### 7. Return the Markdown report
 
 Return exactly one Markdown report:
 
@@ -176,8 +237,12 @@ invoking workflow.
 
 ## Acceptance criteria
 
-- [x] AC1: {criterion statement} — {evidence}
-- [x] AC2: {criterion statement} — {evidence}
+- [x] AC1: {criterion statement} — {evidence}; scenarios: S1
+- [x] AC2: {criterion statement} — {evidence}; scenarios: none (inspection)
+
+## Scenario verification
+
+- S1 (AC1): {test | command | inspection} `{exact test, command, or inspected location}` -> {actual result}; status: Verified
 
 ## Residual risks
 
@@ -218,11 +283,19 @@ a normal work session, then rerun validation.
 - `{check or AC id}`: {problem}
   - Evidence: {command output, exit summary, or inspection finding}
   - Required action: {concrete repair or decision}
+- `{scenario id}` ({AC ids}): {Partially verified | Not verified} — {gap between the observed result and `Then:`}
+  - Evidence: {exact test, command, or inspected location and its actual result}
+  - Required action: {concrete repair or decision}
 
 ## Acceptance criteria
 
-- [x] AC1: {criterion} — {evidence}
-- [ ] AC2: {criterion} — {why unmet}
+- [x] AC1: {criterion} — {evidence}; scenarios: S1
+- [ ] AC2: {criterion} — {why unmet}; scenarios: S2
+
+## Scenario verification
+
+- S1 (AC1): {test | command | inspection} `{exact test, command, or inspected location}` -> {actual result}; status: Verified
+- S2 (AC2): {test | command | inspection} `{exact test, command, or inspected location}` -> {actual result}; status: {Partially verified | Not verified}
 
 ## Commands run
 
@@ -303,6 +376,13 @@ a normal work session, then rerun validation.
   `/validate {plan path}` as the final step after repairs.
 - The failed variant must be self-contained enough to hand to another session
   without the original chat.
+- The validated and failed variants include **Scenario
+  verification** with exactly one entry per scenario in plan order: the scenario
+  ID, the acceptance-criterion IDs that reference it, the evidence kind (`test`,
+  `command`, or `inspection`), the exact test, command, or inspected location,
+  the actual result, and the scenario status. Each acceptance-criterion line
+  cites its scenario IDs, or `none (inspection)`. In the failed variant, list
+  every `Partially verified` or `Not verified` scenario under **What failed**.
 - Do not include durable context synchronization results in this report.
 - Do not select or describe an unrelated next implementation task when status is
   `validated`.
