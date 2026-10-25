@@ -28,6 +28,8 @@ the section when there are none.}
   - Rationale: {why}
   - Rejected: {alternative} — {why not}
   - Trade-offs: {known limitation or cost}
+  - Review: required
+  - Review question: {optional; one question for senior engineering judgment; remove both review lines when none is needed}
 
 ## Acceptance criteria
 
@@ -200,6 +202,30 @@ invent one: `None.` is the expected answer for a well-specified change.}
   alternative a reviewer would otherwise reopen.
 - Every decision carries `Boundary:`, `Rationale:`, `Rejected:`, and
   `Trade-offs:`.
+- A decision may also carry the optional review pair `Review: required` and
+  `Review question: {one question}`. Mark only a decision that needs senior
+  engineering judgment before the change merges, such as a trade-off a reviewer
+  must accept. Leave every other decision unmarked.
+- Write the review question as one specific question that a reviewer can
+  accept or reject. Name the architectural choice and its consequence, so the
+  reviewer can answer from the decision alone. Prefer "Is reading plans from
+  the working tree instead of the `--head` commit acceptable for stable
+  links?" over "Is this design OK?" or "Any concerns about plan reads?".
+- Ask about each concern once. Do not mark a second decision that raises the
+  same concern as another marked decision, and do not combine two concerns in
+  one question.
+- Mark every decision that meets this bar. There is no maximum number of
+  marked decisions. Do not drop an important review question or merge
+  unrelated questions to lower the count.
+- Three or more marked decisions are a signal that the change may be too large
+  for one focused review. Consider moving independent changes into a separate
+  pull request. This is advisory: keep tightly coupled changes together, and
+  complete the plan either way.
+- The review pair is all or nothing: a decision carries both fields or
+  neither. `Review:` is exactly `required`, and `Review question:` is one
+  nonempty line that states one question.
+- An unmarked decision carries no review field. Do not add a placeholder value
+  such as `Review: none` or an empty `Review question:`.
 - A design decision belongs to this plan only. It does not replace an
   architecture decision record.
 
@@ -241,8 +267,9 @@ invent one: `None.` is the expected answer for a well-specified change.}
   `## Task stack`. A line shaped like a definition anywhere else, such as in a
   fenced example or a validation report, defines nothing.
 - A definition's fields are the `- Field:` lines indented one level under its
-  entry line, up to the next entry. `Boundary:`, `Rationale:`, `Rejected:`, and
-  `Trade-offs:` belong to a design decision; `Validate:`, `Decisions:`, and
+  entry line, up to the next entry. `Boundary:`, `Rationale:`, `Rejected:`,
+  `Trade-offs:`, and the optional `Review:` and `Review question:` belong to a
+  design decision; `Validate:`, `Decisions:`, and
   `Scenarios:` to an acceptance criterion; `Given:`, `When:`, `Then:`, and
   `Check:` to a verification scenario; and `Covers:` to a task.
 - To check a fenced example itself, extract the block's content and apply these

@@ -59,7 +59,11 @@ structured layer:
   The template's `Design decision rules` require one specific question that a
   reviewer can accept or reject. The question names the architectural choice
   and its consequence. Each concern appears in one marked decision only, and
-  one question carries one concern.
+  one question carries one concern. There is no maximum number of marked
+  decisions. Three or more decisions marked for senior review produce a
+  non-blocking scope warning. Every marked decision remains visible. The
+  warning encourages splitting independent work into separate PRs but does
+  not reject the review brief.
 - One-line reference fields: `Decisions:` and `Scenarios:` on each acceptance
   criterion, and `Covers:` on each task.
 - `### Verification scenarios` with `S1..Sn` entries, each carrying `Given:`,

@@ -13,7 +13,6 @@ pub const DECISION_BRIEF_HEADING: &str = "## Decision Brief";
 pub const REVIEW_REQUESTED_LABEL: &str = "**Review requested:**";
 pub const PROPOSED_LABEL: &str = "**Proposed:**";
 pub const REVIEW_LINK_SUFFIX: &str = "rationale, alternatives and trade-offs";
-pub const MAX_REVIEW_QUESTIONS: usize = 3;
 pub const SHA_LENGTH: usize = 40;
 pub const PLAN_PATH_PREFIX: &str = "context/plans/";
 pub const PLAN_PATH_SUFFIX: &str = ".md";
@@ -21,6 +20,8 @@ const GITHUB_URL: &str = "https://github.com";
 const REVIEW_KEY: &str = "Review";
 const REVIEW_REQUIRED: &str = "required";
 const REVIEW_QUESTION_KEY: &str = "Review question";
+const REVIEW_SCOPE_LABEL: &str = "**Review scope:**";
+const REVIEW_SCOPE_WARNING_THRESHOLD: usize = 3;
 const ESCAPED_CHARACTERS: [char; 12] =
     ['\\', '`', '*', '_', '[', ']', '<', '>', '!', '|', '~', '&'];
 
@@ -140,18 +141,6 @@ pub fn render_format(
         .iter()
         .flat_map(|input| review_questions(input))
         .collect();
-    if questions.len() > MAX_REVIEW_QUESTIONS {
-        let marked: Vec<String> = questions
-            .iter()
-            .map(|question| format!("{} {}", plan_label(question.path), question.decision_id))
-            .collect();
-        return Err(CliError::validation(format!(
-            "Found {} decisions marked 'Review: required'; at most {MAX_REVIEW_QUESTIONS} are allowed: {}. Try: remove 'Review:' and 'Review question:' from the decisions that do not need senior review, or split the plans into separate pull requests.",
-            questions.len(),
-            marked.join(", ")
-        )));
-    }
-
     let plan_links: Vec<String> = sorted
         .iter()
         .map(|input| {
@@ -182,6 +171,10 @@ fn render_intent_review(
         plans_line.to_string(),
         String::new(),
     ];
+    if let Some(warning) = review_scope_warning(questions.len()) {
+        lines.push(warning);
+        lines.push(String::new());
+    }
     if questions.is_empty() {
         lines.push(NO_FLAGGED_DECISIONS.to_string());
     } else {
@@ -233,6 +226,7 @@ fn render_decision_brief(
         format!("{REVIEW_REQUESTED_LABEL} {} {count_noun}", questions.len()),
         plans_line.to_string(),
     ];
+    blocks.extend(review_scope_warning(questions.len()));
     if questions.is_empty() {
         blocks.push(NO_FLAGGED_DECISIONS.to_string());
     }
@@ -258,6 +252,14 @@ fn render_decision_brief(
         "{START_MARKER}\n{}\n\n{END_MARKER}\n",
         blocks.join("\n\n")
     ))
+}
+
+fn review_scope_warning(count: usize) -> Option<String> {
+    (count >= REVIEW_SCOPE_WARNING_THRESHOLD).then(|| {
+        format!(
+            "{REVIEW_SCOPE_LABEL} {count} architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused."
+        )
+    })
 }
 
 pub fn decision_brief_stdout_payload(mut brief: String) -> String {

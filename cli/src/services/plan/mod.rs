@@ -1080,6 +1080,8 @@ fn pr_description_golden_multiple_plans() {
 \n\
 **Plans:** [alpha-plan]({blob}/context/plans/alpha-plan.md), [zeta\\_notes]({blob}/context/plans/zeta_notes.md)\n\
 \n\
+**Review scope:** 3 architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused.\n\
+\n\
 **Decisions requiring review**\n\
 \n\
 1. Is A acceptable? — [alpha-plan D1]({blob}/context/plans/alpha-plan.md#L5)\n\
@@ -1087,6 +1089,37 @@ fn pr_description_golden_multiple_plans() {
 2. Is B acceptable? — [alpha-plan D2]({blob}/context/plans/alpha-plan.md#L12)\n\
 \n\
 3. Is the zeta store shared? — [zeta\\_notes D2]({blob}/context/plans/zeta_notes.md#L10)\n\
+\n\
+<!-- sce:intent-review:end -->"
+    );
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn pr_description_golden_two_decisions() {
+    let plan = pr_plan_input(
+        "context/plans/alpha-plan.md",
+        &review_plan_source(
+            "alpha-plan",
+            [Some("Is A acceptable?"), Some("Is B acceptable?"), None],
+        ),
+    );
+
+    let output = pr_description::render(&pr_arguments(&["context/plans/alpha-plan.md"]), &[plan])
+        .expect("brief should render");
+
+    let plan_url = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567/context/plans/alpha-plan.md";
+    let expected = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Intent review\n\
+\n\
+**Plans:** [alpha-plan]({plan_url})\n\
+\n\
+**Decisions requiring review**\n\
+\n\
+1. Is A acceptable? — [alpha-plan D1]({plan_url}#L5)\n\
+\n\
+2. Is B acceptable? — [alpha-plan D2]({plan_url}#L12)\n\
 \n\
 <!-- sce:intent-review:end -->"
     );
@@ -1276,7 +1309,7 @@ fn pr_description_rejects_invalid_arguments() {
 }
 
 #[test]
-fn pr_description_rejects_more_than_three_questions() {
+fn pr_description_accepts_four_questions_across_plans() {
     let (_directory, root) = temp_repository();
     write_repository_plan(
         &root,
@@ -1288,21 +1321,48 @@ fn pr_description_rejects_more_than_three_questions() {
         "context/plans/alpha.md",
         &review_plan_source("alpha", [Some("Three?"), None, Some("Four?")]),
     );
+    for path in ["context/plans/beta.md", "context/plans/alpha.md"] {
+        let check = run_plan_check(root.join(path).to_str().expect("path should be UTF-8"));
+        assert_eq!(
+            check.exit_code,
+            std::process::ExitCode::SUCCESS,
+            "{}",
+            check.stderr
+        );
+    }
 
     let run = run_pr_description(&root, &["context/plans/beta.md", "context/plans/alpha.md"]);
 
     assert_eq!(
         run.exit_code,
-        std::process::ExitCode::from(3),
+        std::process::ExitCode::SUCCESS,
         "{}",
         run.stderr
     );
-    assert!(run.stdout.is_empty(), "{}", run.stdout);
-    assert!(run.stderr.contains("Found 4 decisions"), "{}", run.stderr);
-    assert!(
-        run.stderr.contains("alpha D1, alpha D3, beta D1, beta D2."),
+    assert!(run.stderr.is_empty(), "{}", run.stderr);
+    assert_eq!(
+        run.stdout.matches("**Review scope:**").count(),
+        1,
         "{}",
-        run.stderr
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("**Review scope:** 4 architectural decisions require senior review."),
+        "{}",
+        run.stdout
+    );
+    let numbered: Vec<&str> = run
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with(|first: char| first.is_ascii_digit()))
+        .map(|line| line.split(" — ").next().unwrap_or(line))
+        .collect();
+    assert_eq!(
+        numbered,
+        vec!["1. Three?", "2. Four?", "3. One?", "4. Two?"],
+        "{}",
+        run.stdout
     );
 }
 
@@ -1648,6 +1708,11 @@ fn decision_brief_orders_plans_deterministically() {
         first.contains("\n\n**Review requested:** 3 decisions\n\n"),
         "{first}"
     );
+    assert_eq!(first.matches("**Review scope:**").count(), 1, "{first}");
+    assert!(
+        first.contains("\n\n**Review scope:** 3 architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused.\n\n### 1. "),
+        "{first}"
+    );
 
     let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
     assert!(
@@ -1715,6 +1780,265 @@ fn decision_brief_rejects_empty_statement() {
         intent_review.contains("2. Is the blank decision right? — [empty D2]("),
         "{intent_review}"
     );
+}
+
+#[cfg(test)]
+fn scope_warning(count: usize) -> String {
+    format!(
+        "**Review scope:** {count} architectural decisions require senior review. Consider moving independent changes into a separate PR to keep this review focused."
+    )
+}
+
+#[cfg(test)]
+fn scope_warning_plans() -> Vec<pr_description::PlanInput> {
+    vec![
+        pr_plan_input(
+            "context/plans/gamma.md",
+            &decision_brief_plan_source("gamma", &[("G one.", Some("Is G one right?"))]),
+        ),
+        pr_plan_input(
+            "context/plans/alpha.md",
+            &decision_brief_plan_source(
+                "alpha",
+                &[
+                    ("A one.", Some("Is A one right?")),
+                    ("A two.", None),
+                    ("A three.", Some("Is A three right?")),
+                ],
+            ),
+        ),
+        pr_plan_input(
+            "context/plans/beta.md",
+            &decision_brief_plan_source(
+                "beta",
+                &[("B one.", None), ("B two.", Some("Is B two right?"))],
+            ),
+        ),
+    ]
+}
+
+#[test]
+fn decision_brief_scope_warning_spans_all_plans() {
+    let paths = [
+        "context/plans/gamma.md",
+        "context/plans/alpha.md",
+        "context/plans/beta.md",
+    ];
+    let mut reversed_paths = paths;
+    reversed_paths.reverse();
+    let mut reversed_plans = scope_warning_plans();
+    reversed_plans.reverse();
+
+    let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
+    let plans_line = format!(
+        "**Plans:** [alpha]({blob}/context/plans/alpha.md), [beta]({blob}/context/plans/beta.md), [gamma]({blob}/context/plans/gamma.md)"
+    );
+    let warning = scope_warning(4);
+
+    let brief = render_decision_brief(&paths, &scope_warning_plans())
+        .expect("decision brief should render");
+    let expected_brief = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Decision Brief\n\
+\n\
+**Review requested:** 4 decisions\n\
+\n\
+{plans_line}\n\
+\n\
+{warning}\n\
+\n\
+### 1. Is A one right?\n\
+\n\
+**Proposed:** A one.\n\
+\n\
+[Review alpha D1 — rationale, alternatives and trade-offs]({blob}/context/plans/alpha.md#L5)\n\
+\n\
+### 2. Is A three right?\n\
+\n\
+**Proposed:** A three.\n\
+\n\
+[Review alpha D3 — rationale, alternatives and trade-offs]({blob}/context/plans/alpha.md#L17)\n\
+\n\
+### 3. Is B two right?\n\
+\n\
+**Proposed:** B two.\n\
+\n\
+[Review beta D2 — rationale, alternatives and trade-offs]({blob}/context/plans/beta.md#L10)\n\
+\n\
+### 4. Is G one right?\n\
+\n\
+**Proposed:** G one.\n\
+\n\
+[Review gamma D1 — rationale, alternatives and trade-offs]({blob}/context/plans/gamma.md#L5)\n\
+\n\
+<!-- sce:intent-review:end -->\n"
+    );
+    assert_eq!(brief, expected_brief);
+    assert_eq!(
+        render_decision_brief(&reversed_paths, &reversed_plans)
+            .expect("decision brief should render"),
+        brief
+    );
+
+    let intent_review = pr_description::render(&pr_arguments(&paths), &scope_warning_plans())
+        .expect("intent review should render");
+    let expected_intent_review = format!(
+        "<!-- sce:intent-review:start -->\n\
+## Intent review\n\
+\n\
+{plans_line}\n\
+\n\
+{warning}\n\
+\n\
+**Decisions requiring review**\n\
+\n\
+1. Is A one right? — [alpha D1]({blob}/context/plans/alpha.md#L5)\n\
+\n\
+2. Is A three right? — [alpha D3]({blob}/context/plans/alpha.md#L17)\n\
+\n\
+3. Is B two right? — [beta D2]({blob}/context/plans/beta.md#L10)\n\
+\n\
+4. Is G one right? — [gamma D1]({blob}/context/plans/gamma.md#L5)\n\
+\n\
+<!-- sce:intent-review:end -->"
+    );
+    assert_eq!(intent_review, expected_intent_review);
+    assert_eq!(
+        pr_description::render(&pr_arguments(&reversed_paths), &reversed_plans)
+            .expect("intent review should render"),
+        intent_review
+    );
+}
+
+#[cfg(test)]
+fn scope_threshold_plans(
+    names: &[&str],
+    count: usize,
+) -> (
+    Vec<pr_description::PlanInput>,
+    Vec<(String, String, String)>,
+) {
+    let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
+    let mut plans = Vec::new();
+    let mut marked = Vec::new();
+    for (plan_index, name) in names.iter().enumerate() {
+        let questions: Vec<String> = (1..=2)
+            .map(|decision| format!("Is {name} D{decision} right?"))
+            .collect();
+        let decisions: Vec<(&str, Option<&str>)> = questions
+            .iter()
+            .enumerate()
+            .map(|(index, question)| {
+                (
+                    "Keep it.",
+                    (plan_index * 2 + index < count).then_some(question.as_str()),
+                )
+            })
+            .collect();
+        let source = decision_brief_plan_source(name, &decisions);
+        for (index, (_, question)) in decisions.iter().enumerate() {
+            if let Some(question) = question {
+                let id = format!("D{}", index + 1);
+                let line = source_line(&source, &format!("- {id}:"));
+                marked.push((
+                    question.to_string(),
+                    format!("{name} {id}"),
+                    format!("{blob}/context/plans/{name}.md#L{line}"),
+                ));
+            }
+        }
+        plans.push(pr_plan_input(&format!("context/plans/{name}.md"), &source));
+    }
+    (plans, marked)
+}
+
+#[test]
+fn decision_brief_scope_warning_threshold_keeps_every_decision() {
+    use pr_description::BriefFormat;
+
+    let blob = "https://github.com/crocoder-dev/shared-context-engineering/blob/0123456789abcdef0123456789abcdef01234567";
+    let names = ["alpha", "bravo", "charlie", "delta"];
+    let paths: Vec<String> = names
+        .iter()
+        .map(|name| format!("context/plans/{name}.md"))
+        .collect();
+    let paths: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let mut reversed_paths = paths.clone();
+    reversed_paths.reverse();
+    let plan_links: Vec<String> = names
+        .iter()
+        .map(|name| format!("[{name}]({blob}/context/plans/{name}.md)"))
+        .collect();
+    let plans_line = format!("**Plans:** {}", plan_links.join(", "));
+
+    for count in 0..=names.len() * 2 {
+        let (plans, marked) = scope_threshold_plans(&names, count);
+        assert_eq!(marked.len(), count);
+        let mut reversed_plans = plans.clone();
+        reversed_plans.reverse();
+
+        for format in [BriefFormat::IntentReview, BriefFormat::DecisionBrief] {
+            let case = format!("{format:?} with {count} marked decisions");
+            let output = pr_description::render_format(&pr_arguments(&paths), &plans, format)
+                .unwrap_or_else(|error| panic!("{case}: {error}"));
+            let reversed = pr_description::render_format(
+                &pr_arguments(&reversed_paths),
+                &reversed_plans,
+                format,
+            )
+            .unwrap_or_else(|error| panic!("{case}: {error}"));
+            assert_eq!(output, reversed, "{case}");
+
+            let mut needles = vec![plans_line.clone()];
+            if count >= 3 {
+                assert_eq!(
+                    output.matches("**Review scope:**").count(),
+                    1,
+                    "{case}: {output}"
+                );
+                needles.push(format!("\n\n{}\n", scope_warning(count)));
+            } else {
+                assert!(!output.contains("**Review scope:**"), "{case}: {output}");
+            }
+            for (number, (question, label, url)) in marked.iter().enumerate() {
+                let number = number + 1;
+                assert_eq!(
+                    output.matches(question.as_str()).count(),
+                    1,
+                    "{case}: {output}"
+                );
+                match format {
+                    BriefFormat::IntentReview => {
+                        needles.push(format!("\n{number}. {question} — [{label}]({url})\n"));
+                    }
+                    BriefFormat::DecisionBrief => {
+                        needles.push(format!("\n### {number}. {question}\n"));
+                        needles.push(format!(
+                            "\n[Review {label} — rationale, alternatives and trade-offs]({url})\n"
+                        ));
+                    }
+                }
+            }
+            let mut cursor = 0;
+            for needle in &needles {
+                let found = output[cursor..].find(needle.as_str()).unwrap_or_else(|| {
+                    panic!("{case}: missing {needle:?} after byte {cursor}: {output}")
+                });
+                cursor += found + needle.len();
+            }
+
+            let numbered = output
+                .lines()
+                .filter(|line| match format {
+                    BriefFormat::IntentReview => {
+                        line.starts_with(|first: char| first.is_ascii_digit())
+                    }
+                    BriefFormat::DecisionBrief => line.starts_with("### "),
+                })
+                .count();
+            assert_eq!(numbered, count, "{case}: {output}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1821,7 +2145,7 @@ fn review_reads_committed_plan() {
 }
 
 #[test]
-fn review_question_limit() {
+fn review_renders_every_marked_decision() {
     let (_directory, root) = temp_repository();
     write_repository_plan(
         &root,
@@ -1870,23 +2194,79 @@ fn review_question_limit() {
     );
     let four = commit_repository(&root);
 
-    let rejected = run_review(
+    let accepted = run_review(
         &root,
         &four,
         &["context/plans/beta.md", "context/plans/alpha.md"],
     );
-    assert_failure(&rejected, 3, "four marked decisions");
-    assert!(
-        rejected.stderr.contains("Found 4 decisions"),
+    assert_eq!(
+        accepted.exit_code,
+        std::process::ExitCode::SUCCESS,
         "{}",
-        rejected.stderr
+        accepted.stderr
+    );
+    assert!(accepted.stderr.is_empty(), "{}", accepted.stderr);
+    assert_eq!(
+        accepted.stdout.matches("**Review scope:**").count(),
+        1,
+        "{}",
+        accepted.stdout
     );
     assert!(
-        rejected
-            .stderr
-            .contains("alpha D1, alpha D3, beta D1, beta D2."),
+        accepted.stdout.contains(&scope_warning(4)),
         "{}",
-        rejected.stderr
+        accepted.stdout
+    );
+    let headings: Vec<&str> = accepted
+        .stdout
+        .lines()
+        .filter(|line| line.starts_with("### "))
+        .collect();
+    assert_eq!(
+        headings,
+        vec![
+            "### 1. Three?",
+            "### 2. Four?",
+            "### 3. One?",
+            "### 4. Two?"
+        ]
+    );
+}
+
+#[test]
+fn review_claims_ignore_review_scope() {
+    let (_directory, root) = temp_repository();
+    write_repository_plan(
+        &root,
+        "context/plans/beta.md",
+        &review_plan_source("beta", [Some("One?"), Some("Two?"), None]),
+    );
+    write_repository_plan(
+        &root,
+        "context/plans/alpha.md",
+        &review_plan_source("alpha", [Some("Three?"), None, Some("Four?")]),
+    );
+    let head = commit_repository(&root);
+
+    let claims = run_review_claims(
+        &root,
+        &head,
+        &["context/plans/beta.md", "context/plans/alpha.md"],
+    );
+    assert_eq!(
+        claims.exit_code,
+        std::process::ExitCode::SUCCESS,
+        "{}",
+        claims.stderr
+    );
+    assert!(!claims.stdout.contains("Review scope"), "{}", claims.stdout);
+    let document: serde_json::Value =
+        serde_json::from_str(&claims.stdout).expect("claims should be JSON");
+    assert_eq!(
+        document["claims"].as_array().map(Vec::len),
+        Some(2),
+        "{}",
+        claims.stdout
     );
 }
 
@@ -2010,7 +2390,7 @@ fn run_cli_args(args: &[&str], start: &std::path::Path) -> CommandRun {
 }
 
 #[test]
-fn review_removed_name_shows_plan_help_and_keeps_question_limit() {
+fn review_removed_name_shows_plan_help() {
     let (_directory, root) = temp_repository();
     write_repository_plan(
         &root,
@@ -2045,11 +2425,16 @@ fn review_removed_name_shows_plan_help_and_keeps_question_limit() {
     let mut review_args = vec![NAME, "review", "--repo", PR_REPO, "--head", &head];
     review_args.extend_from_slice(&paths);
     let review = run_cli_args(&review_args, &root);
-    assert_failure(&review, 3, "four marked decisions");
-    assert!(
-        review.stderr.contains("Found 4 decisions"),
+    assert_eq!(
+        review.exit_code,
+        std::process::ExitCode::SUCCESS,
         "{}",
         review.stderr
+    );
+    assert!(
+        review.stdout.contains(&scope_warning(4)),
+        "{}",
+        review.stdout
     );
 }
 
