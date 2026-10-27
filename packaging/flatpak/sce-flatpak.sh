@@ -356,6 +356,7 @@ cmd_release_bundle() {
   validate_generated_local_manifest "${repo_root}" "${local_manifest}"
 
   local build_dir="${tmp_dir}/build"
+  local state_dir="${tmp_dir}/state"
   local export_repo="${tmp_dir}/repo"
   local bundle_name="sce-v${version}-${arch}.flatpak"
   local bundle_path="${out_dir}/${bundle_name}"
@@ -366,6 +367,7 @@ cmd_release_bundle() {
 
   printf 'Building %s for %s from local checkout source: %s\n' "${APP_ID}" "${arch}" "${repo_root}"
   flatpak-builder --force-clean --user \
+    --state-dir="${state_dir}" \
     --install-deps-from="${FLATHUB_REMOTE_NAME}" \
     --repo="${export_repo}" --arch="${arch}" \
     "${build_dir}" "${local_manifest}"
