@@ -936,7 +936,22 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     checks.
     
     Use judgment for ordinary, reversible local implementation choices.
-    
+
+    When writing or modifying tests:
+
+    1. Before implementing, identify likely subtle bugs, mistakes, and
+       alternative interpretations. Design tests that distinguish them,
+       preferring asymmetric examples and boundary cases on both sides.
+
+    2. After implementing, independently derive expected results for high-risk
+       cases from the requirements, without using production code or helpers.
+       Compare these expectations with actual results, using fresh context when
+       available.
+
+    3. When feasible, use property-based tests or structured random inputs to
+       explore meaningful states and code paths. Avoid random tests that only
+       check for crashes or repeatedly exercise the same error path.
+
     Stop when implementation requires:
     
     - Material scope expansion.
@@ -1724,6 +1739,21 @@ Make the minimum coherent changes required to satisfy the task goal and done
 checks.
 
 Use judgment for ordinary, reversible local implementation choices.
+
+When writing or modifying tests:
+
+1. Before implementing, identify likely subtle bugs, mistakes, and
+   alternative interpretations. Design tests that distinguish them,
+   preferring asymmetric examples and boundary cases on both sides.
+
+2. After implementing, independently derive expected results for high-risk
+   cases from the requirements, without using production code or helpers.
+   Compare these expectations with actual results, using fresh context when
+   available.
+
+3. When feasible, use property-based tests or structured random inputs to
+   explore meaningful states and code paths. Avoid random tests that only
+   check for crashes or repeatedly exercise the same error path.
 
 Stop when implementation requires:
 
