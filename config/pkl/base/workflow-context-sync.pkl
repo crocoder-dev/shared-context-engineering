@@ -1,5 +1,4 @@
 import "workflow-content.pkl" as workflow
-import "controlled-english.pkl" as controlledEnglish
 
 local taskExecution = workflow.semanticReference.apply("`sce-task-execution`", "the **Task execution phase**")
 local taskExecutionName = workflow.semanticReference.apply("sce-task-execution", "Task execution phase")
@@ -1337,8 +1336,6 @@ When editing context:
 - Update cross-references when files are added, moved, renamed, or superseded.
 - Keep one authoritative statement for each durable fact.
 - Avoid copying the execution result verbatim into context files.
-- Write new or modified prose under the **\(controlledEnglish.title)**
-  rules below.
 - Do not change application code, tests, or plan state.
 
 Create a new context file only when:
@@ -1435,8 +1432,6 @@ Record only the Markdown report. Do not add explanatory prose before or after it
 
 Do not determine whether the plan is complete. The `/next-task` workflow owns
 that decision after context synchronization.
-
-\(controlledEnglish.section)
 
 ## Task context synchronization boundaries
 
