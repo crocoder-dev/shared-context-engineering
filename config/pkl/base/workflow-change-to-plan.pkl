@@ -1,5 +1,4 @@
 import "workflow-content.pkl" as model
-import "controlled-english.pkl" as controlledEnglish
 
 changeToPlanSkillBody = (argumentsReference: String, invocationExample: String) -> """
 # SCE Change to Plan
@@ -283,11 +282,6 @@ authoring or revising. Apply those rules rather than restating them here.
 Author plan content in this order: design decisions, then acceptance criteria,
 then verification scenarios, then tasks.
 
-Apply the **\(controlledEnglish.title)** rules
-below to new or revised plan prose, including design decisions, acceptance
-criteria, verification scenarios, and tasks, in initial authoring and in every
-revision.
-
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
 
@@ -534,8 +528,6 @@ Write user-facing questions and open questions directly and specifically.
 - Name a smaller or safer alternative when one is known.
 - Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
 - When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
-
-\(controlledEnglish.section)
 
 ## Plan authoring boundaries
 
