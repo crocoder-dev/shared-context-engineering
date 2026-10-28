@@ -32,6 +32,9 @@ Read its `Acceptance criteria rules`, `Task rules` and `No validation task` rule
 and `Updating an existing plan` rules before authoring or revising. Apply those
 rules rather than restating them here.
 
+Apply the **Controlled English for Plans and Context** rules
+below to new or revised plan prose, both when authoring and revising.
+
 The workflow renders this phase's result as the summary defined in
 `references/output.md`.
 
@@ -198,6 +201,16 @@ Write user-facing questions and open questions directly and specifically.
 - Name a smaller or safer alternative when one is known.
 - Do not invent concerns, add praise or reassurance, or repeat the same concern in several forms.
 - When the user overrules a concern, record the decision and continue. Do not reintroduce it as a constraint, non-goal, or task.
+
+## Controlled English for Plans and Context
+
+Apply these rules to new or modified prose in SCE plans and durable context. Preserve Markdown structure, code, commands, identifiers, technical terminology, factual meaning, and existing task evidence. Do not rewrite unrelated content solely for style.
+
+1. Sentence structure: Use a maximum of 20 words per procedural sentence and 25 words per descriptive sentence, counted according to STE rules. Give one instruction per sentence, using imperative form and placing prerequisites first. Limit ordinary multi-word nouns to three words. Keep one topic and at most six sentences per descriptive paragraph. Do not use contractions or semicolons. Use active voice, except when the actor is unknown in descriptive text.
+
+2. Vocabulary: Prefer STE-approved words and established domain terminology. Use terms consistently and preserve their technical meanings.
+
+3. Verbs: Use simple present, simple past, simple future, and imperative forms. Avoid perfect and progressive constructions. Use "can" for possibility, ability, or permission, "must" for obligation, and "will" for future events. Replace "may", "should", "shall", and "would" with appropriate constructions. Use "could" only for past ability or permission.
 
 ## Plan authoring boundaries
 
