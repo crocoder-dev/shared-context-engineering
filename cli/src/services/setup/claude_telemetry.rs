@@ -30,7 +30,7 @@ const SKIPPED_HELPER_LINE: &str =
 const SKIPPED_DISABLED_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings explicitly disable telemetry or tracing.";
 const SKIPPED_PRIVACY_LINE: &str =
-    "Claude telemetry: skipped; existing Claude settings explicitly opt out of repository attributes.";
+    "Claude telemetry: skipped; existing Claude settings explicitly opt out of repository attributes or tool details.";
 const SKIPPED_ENDPOINT_LINE: &str =
     "Claude telemetry: skipped; existing Claude settings define a different OTLP endpoint.";
 const SKIPPED_HEADERS_LINE: &str =
@@ -366,7 +366,9 @@ fn modified_reason_text(reason: ClaudeTelemetrySkipReason) -> &'static str {
     match reason {
         ClaudeTelemetrySkipReason::UserHelperPresent => "different otelHeadersHelper",
         ClaudeTelemetrySkipReason::TelemetryDisabled => "telemetry or tracing disabled",
-        ClaudeTelemetrySkipReason::PrivacySettingConflict => "repository attributes opted out",
+        ClaudeTelemetrySkipReason::PrivacySettingConflict => {
+            "repository attributes or tool details opted out"
+        }
         ClaudeTelemetrySkipReason::ConflictingEndpoint => "different OTLP endpoint",
         ClaudeTelemetrySkipReason::ConflictingHeaders => "OTLP headers defined",
         ClaudeTelemetrySkipReason::ConflictingProtocol => "different OTLP protocol",

@@ -232,7 +232,8 @@ const CLAUDE_TELEMETRY_SWITCH_KEYS: [&str; 3] = [
     CLAUDE_ENHANCED_TELEMETRY_BETA_ALIAS,
 ];
 const CLAUDE_ENHANCED_TELEMETRY_BETA_ALIAS: &str = "ENABLE_ENHANCED_TELEMETRY_BETA";
-const CLAUDE_TELEMETRY_PRIVACY_KEYS: [&str; 1] = ["OTEL_METRICS_INCLUDE_REPOSITORY"];
+const CLAUDE_TELEMETRY_PRIVACY_KEYS: [&str; 2] =
+    ["OTEL_METRICS_INCLUDE_REPOSITORY", "OTEL_LOG_TOOL_DETAILS"];
 const CLAUDE_TELEMETRY_HELPER_SETTING_KEYS: [&str; 1] =
     ["CLAUDE_CODE_OTEL_HEADERS_HELPER_DEBOUNCE_MS"];
 const CLAUDE_TELEMETRY_ENABLED_VALUE: &str = "1";
@@ -278,6 +279,7 @@ fn claude_telemetry_env_entries() -> Vec<(&'static str, &'static str)> {
             CLAUDE_OTEL_HEADERS_DEBOUNCE_MS,
         ),
         ("OTEL_METRICS_INCLUDE_REPOSITORY", "true"),
+        ("OTEL_LOG_TOOL_DETAILS", CLAUDE_TELEMETRY_ENABLED_VALUE),
     ]
 }
 
@@ -529,6 +531,7 @@ mod tests {
             "300000"
         );
         assert_eq!(merged["env"]["OTEL_METRICS_INCLUDE_REPOSITORY"], "true");
+        assert_eq!(merged["env"]["OTEL_LOG_TOOL_DETAILS"], "1");
         assert!(merged["env"].get("OTEL_EXPORTER_OTLP_HEADERS").is_none());
     }
 
@@ -650,6 +653,11 @@ mod tests {
             (
                 "OTEL_METRICS_INCLUDE_REPOSITORY",
                 "false",
+                ClaudeTelemetrySkipReason::PrivacySettingConflict,
+            ),
+            (
+                "OTEL_LOG_TOOL_DETAILS",
+                "0",
                 ClaudeTelemetrySkipReason::PrivacySettingConflict,
             ),
             (
