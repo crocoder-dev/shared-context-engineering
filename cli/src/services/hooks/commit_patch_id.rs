@@ -369,10 +369,11 @@ mod tests {
 
     use super::{
         compute_commit_patch_id, compute_commit_patch_id_with, parse_patch_id_output,
-        CommitPatchIdRunner,
+        CommitPatchIdRunner, COMMIT_PATCH_ID_DEADLINE,
     };
 
-    const FAKE_GIT_DEADLINE: Duration = Duration::from_millis(500);
+    #[cfg(target_os = "linux")]
+    const FAKE_GIT_TIMEOUT_DEADLINE: Duration = Duration::from_millis(500);
     #[cfg(target_os = "linux")]
     const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(10);
     #[cfg(target_os = "linux")]
@@ -730,12 +731,12 @@ mod tests {
         }
     }
 
-    async fn run_fake_git(fake: &FakeGit) -> anyhow::Result<Option<String>> {
+    async fn run_fake_git(fake: &FakeGit, deadline: Duration) -> anyhow::Result<Option<String>> {
         let leading_args = [fake.script.as_os_str()];
         let runner = CommitPatchIdRunner {
             program: OsStr::new("/bin/sh"),
             leading_args: &leading_args,
-            deadline: FAKE_GIT_DEADLINE,
+            deadline,
             ..CommitPatchIdRunner::default()
         };
         compute_commit_patch_id_with(&runner, Path::new("."), FAKE_COMMIT_OID).await
@@ -769,7 +770,9 @@ mod tests {
     #[tokio::test]
     async fn commit_patch_id_reports_non_zero_git_exit() {
         let fake = fake_git("exit 3", "cat >/dev/null");
-        let error = run_fake_git(&fake).await.expect_err("non-zero show");
+        let error = run_fake_git(&fake, COMMIT_PATCH_ID_DEADLINE)
+            .await
+            .expect_err("non-zero show");
         assert!(
             error.to_string().contains("git show exited with status 3"),
             "{error:#}"
@@ -779,7 +782,9 @@ mod tests {
     #[tokio::test]
     async fn commit_patch_id_reports_malformed_patch_id_output() {
         let fake = fake_git("echo patch", "cat >/dev/null; echo not-a-patch-id");
-        let error = run_fake_git(&fake).await.expect_err("malformed output");
+        let error = run_fake_git(&fake, COMMIT_PATCH_ID_DEADLINE)
+            .await
+            .expect_err("malformed output");
         assert!(error.to_string().contains("malformed"), "{error:#}");
     }
 
@@ -788,7 +793,9 @@ mod tests {
     async fn commit_patch_id_times_out_and_kills_both_git_processes() {
         let fake = fake_git("exec sleep 30", "exec cat");
         let started = std::time::Instant::now();
-        let error = run_fake_git(&fake).await.expect_err("timeout");
+        let error = run_fake_git(&fake, FAKE_GIT_TIMEOUT_DEADLINE)
+            .await
+            .expect_err("timeout");
         assert!(error.to_string().contains("deadline"), "{error:#}");
         assert!(started.elapsed() < CHILD_EXIT_TIMEOUT);
 
