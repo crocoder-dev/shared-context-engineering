@@ -70,13 +70,26 @@ Current-state facts this plan starts from:
 
 ## Task stack
 
-- [ ] T01: `Fix launcher executable permission and add packed-package smoke test` (status:todo)
+- [x] T01: `Fix launcher executable permission and add packed-package smoke test` (status:done)
   - Task ID: T01
   - Scope: In — reproduce the non-executable launcher via real `npm pack` + `npm install --prefix <tmp>`; identify and fix the root cause (e.g. Git mode `100755` for `npm/bin/sce.js`, packaging step); add a smoke script that packs `npm/`, builds the local fixture release (stub binary archive, signed manifest with a test key swapped into the staged package copy, loopback HTTPS server), installs into an isolated prefix with `SCE_NPM_RELEASE_BASE_URL`, asserts the packed `package/bin/sce.js` mode, and runs `sce --help` and `sce version`. Out — manifest validation and extractor changes (T02/T03), flake/release wiring (T04).
   - Dependencies: none
   - Done when: the smoke script fails on the pre-fix tree for the reproduced reason and passes after the fix; root cause is recorded in task evidence.
   - Verify: `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash <smoke-script>` before and after the fix; `git ls-files -s npm/bin/sce.js`; `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`.
-  - Context synchronization: pending
+  - Completed: 2026-11-03
+  - Files changed: `npm/bin/sce.js` (mode only, `100644` -> `100755`, staged in the index; content unchanged), `npm/test/pack-smoke.sh` (new, mode `0755`), `npm/test/fixture-release-server.mjs` (new).
+  - Root cause: `npm/bin/sce.js` was committed as Git mode `100644`; `release-npm-package` copies `npm/` with `cp -R` (preserving the non-executable filesystem mode) and `npm pack` records it verbatim, so the published tarball entry `package/bin/sce.js` was `-rw-r--r--`. Reproduction (npm 11.13.0 / Node 24.16.0): `tar -tvzf` of the packed tarball showed `-rw-r--r-- package/bin/sce.js`. npm 11 (`--prefix` and `-g`), bun 1.3, and pnpm all chmod bin targets while linking, so those installers mask the defect; any consumer that executes the packed `bin/sce.js` without bin-link repair gets a permission failure. Fixed at the source by committing the launcher as `100755`.
+  - Result: Added `npm/test/pack-smoke.sh`, which stages `npm/`, swaps a throwaway RSA-2048 manifest key into the staged copy only, builds a stub `sce` archive in the canonical `sce-v<version>-<target>/{bin/sce,LICENSE,README.md}` layout with a signed manifest (`openssl dgst -sha256 -sign`, base64), serves it from `npm/test/fixture-release-server.mjs` (loopback HTTPS, self-signed cert trusted via `NODE_EXTRA_CA_CERTS`), runs `npm pack`, asserts the packed `package/bin/sce.js` mode is executable, installs with `npm install --prefix <tmp> --offline` using `SCE_NPM_RELEASE_BASE_URL` and an isolated npm cache/config, then asserts exact stdout for `sce --help` and `sce version`. Accepts `--package-dir <path>` for later reuse (T04). The production public key and trust code are unchanged.
+  - Verify outcomes:
+    - Pre-fix smoke: `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh` -> exit 1, `Packed package/bin/sce.js has mode -rw-r--r--; expected an executable mode` (reproduced reason).
+    - Post-fix smoke: same command -> exit 0, `packed package/bin/sce.js mode -rwxr-xr-x`, `pack-smoke: OK (sce --help, sce version)`; temp work dir removed on exit.
+    - `git ls-files -s npm/bin/sce.js` -> `100755 13ef5b35... npm/bin/sce.js`.
+    - Bun tests: `nix shell nixpkgs#bun -c bun test ./test/install.test.js ./test/platform.test.js` (from `npm/`) -> 25 pass, 0 fail. The `nix develop -c sh -c '... bun test ...'` form was blocked by the repo bash policy `use-nix-for-bun`, so the nixpkgs Bun form was used.
+    - `nix develop -c biome check npm/bin npm/lib npm/test` -> no errors (one pre-existing warning: unused `getRepositorySlug` in `npm/lib/install.js`, untouched).
+    - `nix shell nixpkgs#shellcheck -c shellcheck npm/test/pack-smoke.sh` -> clean.
+  - Deviations: the new smoke files are not yet in `flake.nix` `npmSrc`, so flake Biome/test checks do not see them until T04 wires them in (as planned).
+  - Context impact: localized to the npm launcher packaging/verification surface; affects `context/sce/cli-npm-distribution-contract.md` (launcher mode requirement, new local smoke script). No flake check or glossary changes yet (T04/T05).
+  - Context synchronization: synced
 
 - [ ] T02: `Validate signed manifest identity before archive download` (status:todo)
   - Task ID: T02

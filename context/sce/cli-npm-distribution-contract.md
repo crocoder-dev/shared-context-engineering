@@ -8,6 +8,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 - The committed package source lives under `npm/`.
 - `npm/README.md` documents the package as a thin launcher, lists the supported npm platform-to-target-triple matrix, and distinguishes npm `postinstall`/download/signature/checksum/permission failures from runtime loader failures caused by bad native release artifact linkage.
 - `npm/package.json` exposes the `sce` binary through `bin/sce.js`.
+- `npm/bin/sce.js` is committed as Git mode `100755`. `release-npm-package` copies `npm/` with `cp -R` and `npm pack` records filesystem modes verbatim, so the launcher's executable bit in Git is what makes the packed `package/bin/sce.js` entry executable. npm, bun, and pnpm re-chmod bin targets while linking, which masks a non-executable entry for those installers but not for consumers that execute the packed file directly.
 - The npm package is a thin launcher package, not a separate build pipeline.
 
 ## Install/runtime behavior
@@ -51,9 +52,15 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 - The npm installer continues to trust GitHub Releases as the canonical host for signed manifest and native binary artifacts.
 - Native binary portability hygiene is owned by the shared release artifact surface before archive publication, including macOS `libiconv` install-name sanitization, Linux/macOS forbidden `/nix/store/` audits, and reusable-workflow extracted-binary smoke validation; npm continues to consume the signed release manifest and checksum-verified native archive without adding a separate npm-native build or dylib repair path.
 
+## Packed-package smoke test
+
+- `npm/test/pack-smoke.sh` (with helper `npm/test/fixture-release-server.mjs`) verifies the real packed artifact end to end without network access: it stages a copy of the package (or `--package-dir <path>`), swaps a throwaway RSA manifest-signing public key into the staged copy only, builds a stub `sce` archive in the canonical `sce-v<version>-<target>/{bin/sce,LICENSE,README.md}` layout with a matching signed manifest, serves it over loopback HTTPS (self-signed certificate trusted via `NODE_EXTRA_CA_CERTS`, selected via `SCE_NPM_RELEASE_BASE_URL`), runs `npm pack`, fails unless the packed `package/bin/sce.js` entry is executable, installs into an isolated `--prefix` with an isolated npm cache/config, and asserts exact output from `sce --help` and `sce version`.
+- Only the host platform is exercised, with a stub binary; the production public key and manifest trust code are not modified.
+
 ## Verification baseline
 
 - `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`
+- `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh`
 - `nix develop -c sh -c 'cd npm && SCE_NPM_SKIP_DOWNLOAD=1 bun ./lib/install.js'`
 - `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path> --signing-key-file <path>`
 - `nix run .#release-npm-package -- --version <semver> --out-dir <path>`
