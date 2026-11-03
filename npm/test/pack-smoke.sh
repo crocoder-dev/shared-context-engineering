@@ -5,18 +5,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LAUNCHER_ENTRY="package/bin/sce.js"
 SERVER_START_TIMEOUT_SECONDS=10
+INSTALLED_PACKAGE_DIR="node_modules/@crocoder-dev/sce"
+EXPECTED_RUNTIME_MODE="755"
 EXPECTED_HELP_OUTPUT="sce fixture help"
 SOURCE_TARBALL=""
+SOURCE_BINARY=""
+EXPECTED_VERSION=""
+PREFIX_DIR=""
 
 usage() {
   cat <<'EOF'
 Usage: pack-smoke.sh [--package-dir <path> | --tarball <path>]
+                     [--binary <path>] [--expected-version <version>]
+                     [--prefix <dir>]
 
 Packs the npm launcher package, installs it into an isolated prefix against a
 loopback fixture release, and verifies `sce --help` and `sce version`.
 
 With --tarball, the launcher mode is asserted on the given packed tarball and
 its package contents are used instead of a package directory.
+
+With --binary, the given executable (e.g. the Nix-built sce-release binary) is
+served as bin/sce in the release archive instead of the fixture stub. The
+installed CLI must exit 0 for `sce --help` and report the expected version via
+`sce version --format json`.
+
+--expected-version overrides the version asserted from `sce version`
+(default: the staged package.json version).
+
+--prefix installs into the given directory and keeps it after the run instead
+of using a temporary prefix.
 EOF
 }
 
@@ -36,6 +54,23 @@ while [[ $# -gt 0 ]]; do
       [[ -n "${2:-}" ]] || fail "Missing value for --tarball."
       [[ -f "$2" ]] || fail "Tarball $2 does not exist."
       SOURCE_TARBALL="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+      shift 2
+      ;;
+    --binary)
+      [[ -n "${2:-}" ]] || fail "Missing value for --binary."
+      [[ -f "$2" ]] || fail "Binary $2 does not exist."
+      SOURCE_BINARY="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
+      shift 2
+      ;;
+    --expected-version)
+      [[ -n "${2:-}" ]] || fail "Missing value for --expected-version."
+      EXPECTED_VERSION="$2"
+      shift 2
+      ;;
+    --prefix)
+      [[ -n "${2:-}" ]] || fail "Missing value for --prefix."
+      mkdir -p "$2"
+      PREFIX_DIR="$(cd "$2" && pwd)"
       shift 2
       ;;
     --help | -h)
@@ -72,7 +107,7 @@ trap cleanup EXIT
 stage_dir="$work_dir/stage"
 release_dir="$work_dir/release"
 pack_dir="$work_dir/pack"
-prefix_dir="$work_dir/prefix"
+prefix_dir="${PREFIX_DIR:-$work_dir/prefix}"
 keys_dir="$work_dir/keys"
 mkdir -p "$stage_dir" "$release_dir" "$pack_dir" "$prefix_dir" "$keys_dir"
 
@@ -110,6 +145,8 @@ target_triple="$(node -p "JSON.parse(process.argv[1]).targetTriple" "$platform_j
 target_os="$(node -p "JSON.parse(process.argv[1]).os" "$platform_json")"
 target_arch="$(node -p "JSON.parse(process.argv[1]).arch" "$platform_json")"
 
+expected_version="${EXPECTED_VERSION:-$version}"
+
 printf 'pack-smoke: version %s, target %s\n' "$version" "$target_triple"
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$keys_dir/signing.pem" 2>/dev/null
@@ -125,7 +162,11 @@ archive_name="${archive_root}.tar.gz"
 manifest_name="sce-v${version}-release-manifest.json"
 archive_src="$work_dir/archive-src"
 mkdir -p "$archive_src/$archive_root/bin"
-cat >"$archive_src/$archive_root/bin/sce" <<EOF
+if [[ -n "$SOURCE_BINARY" ]]; then
+  printf 'pack-smoke: serving real binary %s\n' "$SOURCE_BINARY"
+  cp "$SOURCE_BINARY" "$archive_src/$archive_root/bin/sce"
+else
+  cat >"$archive_src/$archive_root/bin/sce" <<EOF
 #!/bin/sh
 case "\${1:-}" in
   --help) echo "$EXPECTED_HELP_OUTPUT" ;;
@@ -133,6 +174,7 @@ case "\${1:-}" in
   *) echo "unexpected arguments: \$*" >&2; exit 64 ;;
 esac
 EOF
+fi
 chmod 0755 "$archive_src/$archive_root/bin/sce"
 printf 'fixture license\n' >"$archive_src/$archive_root/LICENSE"
 printf 'fixture readme\n' >"$archive_src/$archive_root/README.md"
@@ -196,8 +238,21 @@ SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:${port}" \
   "$tarball" ||
   fail "npm install of the packed tarball failed."
 
+installed_dir="$prefix_dir/$INSTALLED_PACKAGE_DIR"
+runtime_bin="$installed_dir/runtime/sce"
+[[ -f "$runtime_bin" ]] || fail "Installer did not produce $runtime_bin."
+runtime_mode="$(node -p "(require('fs').statSync(process.argv[1]).mode & 0o777).toString(8)" "$runtime_bin")"
+[[ "$runtime_mode" == "$EXPECTED_RUNTIME_MODE" ]] ||
+  fail "Installed $runtime_bin has mode $runtime_mode; expected $EXPECTED_RUNTIME_MODE."
+printf 'pack-smoke: installed runtime/sce mode %s\n' "$runtime_mode"
+
 sce_bin="$prefix_dir/node_modules/.bin/sce"
 [[ -x "$sce_bin" ]] || fail "Installed sce bin $sce_bin is not executable."
+sce_bin_target="$(realpath "$sce_bin")"
+expected_bin_target="$(realpath "$installed_dir/bin/sce.js")"
+[[ "$sce_bin_target" == "$expected_bin_target" ]] ||
+  fail "Installed sce bin resolves to $sce_bin_target; expected $expected_bin_target."
+printf 'pack-smoke: .bin/sce resolves to %s\n' "$sce_bin_target"
 
 sce_cmd=("$sce_bin")
 if [[ ! -x /usr/bin/env ]]; then
@@ -206,11 +261,24 @@ if [[ ! -x /usr/bin/env ]]; then
 fi
 
 help_output="$("${sce_cmd[@]}" --help)" || fail "sce --help exited non-zero."
+
+if [[ -n "$SOURCE_BINARY" ]]; then
+  version_json="$("${sce_cmd[@]}" version --format json)" ||
+    fail "sce version --format json exited non-zero."
+  reported_version="$(node -p "JSON.parse(process.argv[1]).version" "$version_json")" ||
+    fail "sce version --format json printed invalid JSON: $version_json"
+  [[ "$reported_version" == "$expected_version" ]] ||
+    fail "sce version reported '$reported_version'; expected '$expected_version'."
+  printf 'pack-smoke: real binary reported version %s\n' "$reported_version"
+  printf 'pack-smoke: OK (real binary: sce --help, sce version --format json)\n'
+  exit 0
+fi
+
 [[ "$help_output" == "$EXPECTED_HELP_OUTPUT" ]] ||
   fail "sce --help printed '$help_output'; expected '$EXPECTED_HELP_OUTPUT'."
 
 version_output="$("${sce_cmd[@]}" version)" || fail "sce version exited non-zero."
-[[ "$version_output" == "sce $version" ]] ||
-  fail "sce version printed '$version_output'; expected 'sce $version'."
+[[ "$version_output" == "sce $expected_version" ]] ||
+  fail "sce version printed '$version_output'; expected 'sce $expected_version'."
 
 printf 'pack-smoke: OK (sce --help, sce version)\n'
