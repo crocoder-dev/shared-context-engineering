@@ -10,6 +10,9 @@ The root flake separates ordinary development from release-only work:
 - `packages.ci-checks` is the explicit expensive tier. It forces the release
   package and, on Linux, audits the real release binary for forbidden
   `/nix/store/` runtime references.
+- `packages.x86_64-linux.npm-nixos-vm` is an opt-in NixOS VM test of the real
+  packed npm install against the release binary; it is not a flake check, so
+  `nix flake check` never boots a VM.
 - `nix flake check` runs the normal test/lint/format/parity/static checks without
   building `.#sce-release`.
 - `devShells.default` provides development tools without `scePackage` or the
