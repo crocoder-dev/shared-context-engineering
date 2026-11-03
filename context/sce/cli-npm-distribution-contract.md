@@ -64,6 +64,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 - The fixture archive is produced by real GNU `tar`, so the smoke also exercises the in-repo archive reader against the release pipeline's archive format under Node.
 - Only the host platform is exercised. The production public key and manifest trust code are not modified.
 - Root `flake.nix` runs the smoke in the build sandbox as `checks.<system>.npm-pack-smoke` (part of `nix flake check`; loopback HTTPS works inside the sandbox). The sandbox has no `/usr/bin/env`, so there the installed bin is run as `node <bin>` after its `-x` check. Host runs, including the `release-npm-package` gate, exec the bin directly.
+- `nix/tests/npm-nixos-vm.nix` (exposed only as `packages.x86_64-linux.npm-nixos-vm`, never a flake check) runs real-binary mode inside a minimal NixOS VM (`pkgs.testers.runNixOSTest`, loopback-only networking) as a non-root user with an isolated HOME, npm cache, and prefix, against `${sceReleasePackage}/bin/sce` and the repo `.version`. It then asserts `runtime/sce` mode `755`, an executable `.bin/sce` resolving to the installed `bin/sce.js`, direct shebang execution of `sce --help`, and the `jq`-parsed `sce version --format json` `.version`. NixOS has no FHS loader or `/usr/lib` glibc, so a passing run shows the static-musl binary needs no unavailable dynamic libraries.
 
 ## Verification baseline
 
@@ -71,6 +72,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 - `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh`
 - `nix build .#sce-release && nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh --binary ./result/bin/sce`
 - `nix build .#checks.<system>.npm-pack-smoke --print-build-logs`
+- `nix build .#npm-nixos-vm --print-build-logs` (x86_64-linux; uses KVM when `/dev/kvm` exists, otherwise slower QEMU emulation)
 - `nix develop -c sh -c 'cd npm && SCE_NPM_SKIP_DOWNLOAD=1 bun ./lib/install.js'`
 - `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path> --signing-key-file <path>`
 - `nix run .#release-npm-package -- --version <semver> --out-dir <path>`

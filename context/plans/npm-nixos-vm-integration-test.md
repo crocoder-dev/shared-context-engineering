@@ -93,13 +93,23 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — npm packed-package smoke test surface (`context/sce/cli-npm-distribution-contract.md` smoke-mode description); full documentation is owned by T04.
   - Context synchronization: synced
 
-- [ ] T02: `Add NixOS VM integration test for the real npm install` (status:todo)
+- [x] T02: `Add NixOS VM integration test for the real npm install` (status:done)
   - Task ID: T02
   - Scope: In — new `nix/tests/npm-nixos-vm.nix` using `pkgs.testers.runNixOSTest` (minimal node with `nodejs`, `openssl`, `gnutar`, `gzip`, `coreutils`, `jq`; non-root user; no networking beyond loopback; testScript running `pack-smoke.sh --binary ${sceReleasePackage}/bin/sce` as that user with isolated HOME/cache/prefix, then asserting modes, direct launcher execution, and parsed version); `flake.nix` exposure as `packages.x86_64-linux.npm-nixos-vm` only. Out — `ciChecks` membership and CI workflow changes (T03); aarch64/darwin.
   - Dependencies: T01
   - Done when: `nix build .#npm-nixos-vm` boots the VM, completes the real install and direct CLI execution, and passes; the attribute does not evaluate on non-x86_64-linux systems; `nix flake check` does not build it.
   - Verify: `nix build .#npm-nixos-vm --print-build-logs` (requires KVM locally); `nix eval .#checks.x86_64-linux --apply builtins.attrNames`; `nix flake check --no-build`; temporary-worktree fault: VM run with a broken `--binary` fails at the execution step.
-  - Context synchronization: pending
+  - Completed: 2026-11-03
+  - Files changed: `nix/tests/npm-nixos-vm.nix` (new), `flake.nix`
+  - Result: Added `nix/tests/npm-nixos-vm.nix`, a `pkgs.testers.runNixOSTest` with one node. The node has `bash`, `coreutils`, `gnutar`, `gzip`, `jq`, `nodejs`, and `openssl`, a non-root `sce-tester` user, no DHCP, no interfaces, and `virtualisation.vlans = [ ]` (loopback only). The testScript checks that the user's uid is not 0, then copies `npmSrc/npm` into the user's home. As that user, with HOME, TMPDIR, `npm_config_cache`, and `npm_config_userconfig` isolated, it runs `pack-smoke.sh --binary ${sceReleasePackage}/bin/sce --expected-version <.version> --prefix ~/prefix`. It then asserts: `runtime/sce` mode `755`, an executable `.bin/sce` that resolves to the installed `bin/sce.js`, a direct shebang run of `.bin/sce --help`, and `sce version --format json | jq -er .version` equal to `.version`. There is no `SCE_NPM_SKIP_DOWNLOAD` and no manual copy or chmod into `runtime/`. `flake.nix` imports the test with `pkgs`, `npmSrc`, `sceReleasePackage`, and `expectedVersion = version`, and exposes it only as `packages.x86_64-linux.npm-nixos-vm` via `optionalAttrs (system == "x86_64-linux")`. On user request, the explanatory comments added in the new file and in `flake.nix` were removed.
+  - Verify:
+    - `nix build .#npm-nixos-vm --print-build-logs`: passed. This host has no `/dev/kvm`, so QEMU logged `failed to initialize kvm` and ran under TCG; the test script finished in 115s. The log shows `pack-smoke: installed runtime/sce mode 755`, `.bin/sce resolves to /home/sce-tester/prefix/node_modules/@crocoder-dev/sce/bin/sce.js`, `real binary reported version 0.4.0-pre-alpha-v12`, `runtime/sce mode: 755`, `launcher mode: 755`, and `parsed version: 0.4.0-pre-alpha-v12`. pack-smoke did not use its `node` fallback: `/usr/bin/env` exists, so the shebang ran directly. Removing the comments left the drv path unchanged (`d09iqhh4…-vm-test-run-npm-nixos-vm.drv`).
+    - `nix eval .#checks.x86_64-linux --apply builtins.attrNames`: lists `npm-pack-smoke` and does not list `npm-nixos-vm`. `nix eval .#packages.x86_64-darwin --apply 'p: builtins.hasAttr "npm-nixos-vm" p'` returns `false`, and the `aarch64-darwin` package names do not include it.
+    - `nix flake check --no-build`: passed (`all checks passed!`).
+    - Fault: a scratch copy of `npm/` and `nix/tests/` was imported with `sceReleasePackage` replaced by a derivation whose `bin/sce` is a truncated 7-byte ELF header. The VM failed at the install subtest with `pack-smoke: sce --help exited non-zero.` (test `install the packed package through postinstall with the real binary` failed). The repo worktree was not touched.
+  - Deviations: The new file is registered with `git add -N` (intent-to-add) so the flake can see it. The first fault-injection attempt used `builtins.getFlake` on the working directory and stalled copying the tree; it was stopped and re-run from a minimal scratch copy.
+  - Context impact: localized. Adds the opt-in `.#npm-nixos-vm` package (x86_64-linux), relevant to `context/sce/cli-npm-distribution-contract.md` and `context/sce/flake-build-performance.md`. Full documentation is owned by T04, and `ciChecks` membership by T03.
+  - Context synchronization: synced
 
 - [ ] T03: `Run the NixOS VM test in ci-checks with KVM on Linux CI` (status:todo)
   - Task ID: T03

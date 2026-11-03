@@ -1701,6 +1701,11 @@
               ''}
             '';
 
+        npmNixosVmTest = import ./nix/tests/npm-nixos-vm.nix {
+          inherit pkgs npmSrc sceReleasePackage;
+          expectedVersion = version;
+        };
+
         # The dedicated MBT runner is opt-in as a package, not a flake check:
         # cli-tests already executes the same mutation_trace::mbt test module.
         # The Quint workflow tests the spec separately, without rebuilding Rust MBT.
@@ -1745,6 +1750,9 @@
           mutation-trace-quint-connect = mutationTraceQuintConnectCheck;
           quint-language-server = quintLanguageServerPackage;
           default = scePackage;
+        }
+        // pkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          npm-nixos-vm = npmNixosVmTest;
         };
 
         checks =
