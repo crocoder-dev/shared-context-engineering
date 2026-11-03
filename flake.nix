@@ -1693,8 +1693,6 @@
               ln -s ${sceReleasePackage} "$out/sce-release"
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
                 ln -s ${releasePortabilityAuditCheck} "$out/release-portability-audit"
-              ''}${pkgs.lib.optionalString (system == "x86_64-linux") ''
-                ln -s ${npmNixosVmTest} "$out/npm-nixos-vm"
               ''}
             '';
 
