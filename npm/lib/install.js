@@ -1,11 +1,7 @@
-import { spawnSync } from "node:child_process";
 import { createHash, createVerify } from "node:crypto";
 import {
-	chmodSync,
-	copyFileSync,
 	createReadStream,
 	createWriteStream,
-	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -19,10 +15,10 @@ import process from "node:process";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
+import { extractReleaseBinary, installBinaryAtomically } from "./archive.js";
 import {
 	formatUnsupportedPlatformMessage,
 	getArchiveRoot,
-	getInstalledBinaryPath,
 	getReleaseManifestName,
 	resolveSupportedPlatform,
 	validateReleaseManifestIdentity,
@@ -287,31 +283,6 @@ function sha256File(filePath) {
 	});
 }
 
-function extractArchive(archivePath, destinationDir) {
-	const tarResult = spawnSync(
-		"tar",
-		["-xzf", archivePath, "-C", destinationDir],
-		{
-			stdio: "pipe",
-			encoding: "utf8",
-		},
-	);
-
-	if (tarResult.error) {
-		throw new Error(
-			`Failed to extract sce release archive: ${tarResult.error.message}`,
-		);
-	}
-
-	if (tarResult.status !== 0) {
-		throw new Error(
-			tarResult.stderr?.trim() ||
-				tarResult.error?.message ||
-				"Failed to extract sce release archive.",
-		);
-	}
-}
-
 export async function installBinaryWithDependencies({
 	supportedPlatform = resolveSupportedPlatform(),
 	unsupportedMessage = formatUnsupportedPlatformMessage(),
@@ -319,11 +290,9 @@ export async function installBinaryWithDependencies({
 	loadReleaseManifest = loadVerifiedReleaseManifest,
 	downloadArchive = downloadToFile,
 	checksumFile = sha256File,
-	extractArchiveFn = extractArchive,
-	fileExists = existsSync,
-	createRuntimeDir = mkdirSync,
-	copyBinary = copyFileSync,
-	chmodBinary = chmodSync,
+	extractArchiveFn = extractReleaseBinary,
+	runtimeDir = RUNTIME_DIR,
+	installBinaryFile = installBinaryAtomically,
 	createTempDir = () => mkdtempSync(path.join(tmpdir(), "sce-npm-install-")),
 	removeTempDir = (tempDir) =>
 		rmSync(tempDir, { recursive: true, force: true }),
@@ -362,25 +331,15 @@ export async function installBinaryWithDependencies({
 			);
 		}
 
-		extractArchiveFn(archivePath, tempDir);
+		const stagingDir = path.join(tempDir, "staging");
+		mkdirSync(stagingDir);
+		const stagedBinaryPath = extractArchiveFn(archivePath, {
+			archiveRoot: getArchiveRoot(version, supportedPlatform.targetTriple),
+			stagingDir,
+		});
 
-		const extractedBinaryPath = path.join(
-			tempDir,
-			getArchiveRoot(version, supportedPlatform.targetTriple),
-			"bin",
-			"sce",
-		);
-
-		if (!fileExists(extractedBinaryPath)) {
-			throw new Error(
-				`Extracted sce archive did not contain ${archiveName} -> bin/sce.`,
-			);
-		}
-
-		createRuntimeDir(RUNTIME_DIR, { recursive: true });
-		const installedBinaryPath = getInstalledBinaryPath(__dirname);
-		copyBinary(extractedBinaryPath, installedBinaryPath);
-		chmodBinary(installedBinaryPath, 0o755);
+		mkdirSync(runtimeDir, { recursive: true });
+		installBinaryFile(stagedBinaryPath, path.join(runtimeDir, "sce"));
 	} finally {
 		removeTempDir(tempDir);
 	}

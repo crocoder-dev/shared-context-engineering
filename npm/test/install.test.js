@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
@@ -9,6 +19,10 @@ import {
 	SIGNING_KEY_ENV_VAR,
 } from "../../scripts/lib/release-manifest-signing.mjs";
 import {
+	extractReleaseBinary,
+	installBinaryAtomically,
+} from "../lib/archive.js";
+import {
 	getReleaseBaseUrl,
 	installBinaryWithDependencies,
 	loadVerifiedReleaseManifest,
@@ -16,7 +30,7 @@ import {
 	readBundledReleaseManifestPublicKey,
 	verifyReleaseManifestSignature,
 } from "../lib/install.js";
-import { getInstalledBinaryPath } from "../lib/platform.js";
+import { createReleaseEntries, createTarArchive } from "./tar-fixture.js";
 
 const FIXTURE_VERSION = "0.1.0";
 const FIXTURE_TARGET_TRIPLE = "x86_64-unknown-linux-musl";
@@ -73,6 +87,78 @@ afterEach(() => {
 		rmSync(tempDir, { recursive: true, force: true });
 	}
 });
+
+const FIXTURE_ARCHIVE_ROOT = `sce-v${FIXTURE_VERSION}-${FIXTURE_TARGET_TRIPLE}`;
+const FIXTURE_BINARY_CONTENT = "#!/bin/sh\necho fixture-sce\n";
+const PREVIOUS_BINARY_CONTENT = "#!/bin/sh\necho previous-sce\n";
+
+function createScratchDir() {
+	const scratchDir = mkdtempSync(path.join(tmpdir(), "sce-npm-install-test-"));
+	tempDirs.push(scratchDir);
+	return scratchDir;
+}
+
+function expectPreviousInstallPreserved(runtimeDir) {
+	const installedPath = path.join(runtimeDir, "sce");
+
+	expect(readFileSync(installedPath, "utf8")).toBe(PREVIOUS_BINARY_CONTENT);
+	expect(statSync(installedPath).mode & 0o777).toBe(0o755);
+	expect(readdirSync(runtimeDir)).toEqual(["sce"]);
+}
+
+async function runFixtureInstall({
+	archiveEntries = createReleaseEntries(FIXTURE_ARCHIVE_ROOT, {
+		binaryContent: FIXTURE_BINARY_CONTENT,
+	}),
+	previousBinary,
+	expectedError,
+	removeTempDir = false,
+	...overrides
+} = {}) {
+	const archiveBuffer = createTarArchive(archiveEntries);
+	const checksum = createHash("sha256").update(archiveBuffer).digest("hex");
+	const { manifestPayload, publicKey, signature } = createManifestFixture({
+		artifacts: [createArtifactFixture({ checksum_sha256: checksum })],
+	});
+	const scratchDir = createScratchDir();
+	const runtimeDir = path.join(scratchDir, "runtime");
+	const tempDir = path.join(scratchDir, "download");
+
+	if (previousBinary !== undefined) {
+		mkdirSync(runtimeDir);
+		writeFileSync(path.join(runtimeDir, "sce"), previousBinary);
+		chmodSync(path.join(runtimeDir, "sce"), 0o755);
+	}
+
+	const install = installBinaryWithDependencies({
+		supportedPlatform: FIXTURE_PLATFORM,
+		version: FIXTURE_VERSION,
+		loadReleaseManifest: () =>
+			loadVerifiedReleaseManifest(FIXTURE_VERSION, {
+				downloadManifest: async () => manifestPayload,
+				downloadManifestSignature: async () => signature,
+				publicKeyPem: publicKey,
+			}),
+		createTempDir: () => {
+			mkdirSync(tempDir);
+			return tempDir;
+		},
+		...(removeTempDir ? {} : { removeTempDir: () => {} }),
+		downloadArchive: async (_url, destinationPath) => {
+			writeFileSync(destinationPath, archiveBuffer);
+		},
+		runtimeDir,
+		...overrides,
+	});
+
+	if (expectedError === undefined) {
+		await expect(install).resolves.toBeUndefined();
+	} else {
+		await expect(install).rejects.toThrow(expectedError);
+	}
+
+	return { runtimeDir, tempDir };
+}
 
 describe("release manifest verification primitives", () => {
 	test("builds the default release base URL from the publisher repository slug", () => {
@@ -365,72 +451,86 @@ describe("npm installer trust flow", () => {
 	});
 
 	test("installs after verifying the manifest signature and archive checksum", async () => {
-		const version = "0.1.0";
-		const targetTriple = "x86_64-unknown-linux-musl";
-		const archiveContents = "verified-archive";
-		const checksum = createHash("sha256").update(archiveContents).digest("hex");
-		const { manifestPayload, publicKey, signature } = createManifestFixture({
-			artifacts: [createArtifactFixture({ checksum_sha256: checksum })],
-		});
-		const tempDir = path.join(
-			tmpdir(),
-			`sce-npm-install-test-${Date.now()}-${Math.random()}`,
-		);
-		const installedBinaryPaths = [];
-		const chmodCalls = [];
-		tempDirs.push(tempDir);
+		const { runtimeDir } = await runFixtureInstall();
 
-		await expect(
-			installBinaryWithDependencies({
-				supportedPlatform: { targetTriple, os: "linux", arch: "x64" },
-				version,
-				loadReleaseManifest: () =>
-					loadVerifiedReleaseManifest(version, {
-						downloadManifest: async () => manifestPayload,
-						downloadManifestSignature: async () => signature,
-						publicKeyPem: publicKey,
-					}),
-				createTempDir: () => {
-					mkdirSync(tempDir, { recursive: true });
-					return tempDir;
-				},
-				removeTempDir: () => {},
-				downloadArchive: async (_url, destinationPath) => {
-					writeFileSync(destinationPath, archiveContents);
-				},
-				checksumFile: async () => checksum,
-				extractArchiveFn: (_archivePath, destinationDir) => {
-					const extractedBinaryPath = path.join(
-						destinationDir,
-						`sce-v${version}-${targetTriple}`,
-						"bin",
-						"sce",
-					);
-					mkdirSync(path.dirname(extractedBinaryPath), { recursive: true });
-					writeFileSync(extractedBinaryPath, "#!/usr/bin/env bash\nexit 0\n");
-				},
-				fileExists: existsSync,
-				createRuntimeDir: () => {},
-				copyBinary: (sourcePath, destinationPath) => {
-					installedBinaryPaths.push({ sourcePath, destinationPath });
-				},
-				chmodBinary: (destinationPath, mode) => {
-					chmodCalls.push({ destinationPath, mode });
-				},
-			}),
-		).resolves.toBeUndefined();
+		expect(readFileSync(path.join(runtimeDir, "sce"), "utf8")).toBe(
+			FIXTURE_BINARY_CONTENT,
+		);
+		expect(statSync(path.join(runtimeDir, "sce")).mode & 0o777).toBe(0o755);
+		expect(readdirSync(runtimeDir)).toEqual(["sce"]);
+	});
+});
 
-		expect(installedBinaryPaths).toHaveLength(1);
-		expect(installedBinaryPaths[0].sourcePath).toBe(
-			path.join(tempDir, `sce-v${version}-${targetTriple}`, "bin", "sce"),
-		);
-		expect(installedBinaryPaths[0].destinationPath).toBe(
-			getInstalledBinaryPath(path.join(process.cwd(), "lib")),
-		);
-		expect(chmodCalls).toContainEqual({
-			destinationPath: installedBinaryPaths[0].destinationPath,
-			mode: 0o755,
+describe("npm installer extraction and atomic install", () => {
+	test("writes only bin/sce into the staging directory", async () => {
+		const stagingContents = [];
+
+		await runFixtureInstall({
+			extractArchiveFn: (archivePath, options) => {
+				const stagedBinaryPath = extractReleaseBinary(archivePath, options);
+				stagingContents.push(readdirSync(options.stagingDir));
+				return stagedBinaryPath;
+			},
 		});
+
+		expect(stagingContents).toEqual([["sce"]]);
+	});
+
+	test("preserves a previous install when the archive checksum fails", async () => {
+		const { runtimeDir } = await runFixtureInstall({
+			previousBinary: PREVIOUS_BINARY_CONTENT,
+			checksumFile: async () => "0".repeat(64),
+			expectedError: "Downloaded sce archive checksum mismatch",
+		});
+
+		expectPreviousInstallPreserved(runtimeDir);
+	});
+
+	test("preserves a previous install when extraction rejects the archive", async () => {
+		const { runtimeDir } = await runFixtureInstall({
+			previousBinary: PREVIOUS_BINARY_CONTENT,
+			archiveEntries: [
+				...createReleaseEntries(FIXTURE_ARCHIVE_ROOT),
+				{ name: `${FIXTURE_ARCHIVE_ROOT}/../escape`, content: "x" },
+			],
+			expectedError: 'contains a ".." path segment',
+		});
+
+		expectPreviousInstallPreserved(runtimeDir);
+	});
+
+	test("preserves a previous install when interrupted between staging and rename", async () => {
+		const { runtimeDir } = await runFixtureInstall({
+			previousBinary: PREVIOUS_BINARY_CONTENT,
+			installBinaryFile: (sourcePath, destinationPath) =>
+				installBinaryAtomically(sourcePath, destinationPath, {
+					renameFile: () => {
+						throw new Error("simulated interruption");
+					},
+				}),
+			expectedError: "simulated interruption",
+		});
+
+		expectPreviousInstallPreserved(runtimeDir);
+	});
+
+	test("leaves no partial runtime/sce when a fresh install fails", async () => {
+		const { runtimeDir } = await runFixtureInstall({
+			archiveEntries: createReleaseEntries(FIXTURE_ARCHIVE_ROOT).slice(0, 4),
+			expectedError: "missing regular file",
+		});
+
+		expect(existsSync(path.join(runtimeDir, "sce"))).toBe(false);
+	});
+
+	test("removes the download temp directory after a failed install", async () => {
+		const { tempDir } = await runFixtureInstall({
+			archiveEntries: createReleaseEntries(FIXTURE_ARCHIVE_ROOT).slice(0, 4),
+			expectedError: "missing regular file",
+			removeTempDir: true,
+		});
+
+		expect(existsSync(tempDir)).toBe(false);
 	});
 });
 

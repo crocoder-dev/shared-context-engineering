@@ -106,15 +106,26 @@ Current-state facts this plan starts from:
     - Additional regression: `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh` -> `pack-smoke: OK (sce --help, sce version)` (the T01 fixture manifest already carries canonical identity fields).
   - Assumptions: per-artifact `version`/`binary` fields are not separately validated (AC3 covers top-level identity; the canonical archive name already encodes version and target). Version comparison is exact string equality.
   - Context impact: localized to the npm installer trust flow; affects `context/sce/cli-npm-distribution-contract.md` (manifest identity validation rules and new error surface). No architecture, glossary, or flake check changes.
-  - Context synchronization: pending
+  - Context synchronization: synced
 
-- [ ] T03: `Replace tar extraction with bounded validating extractor and atomic install` (status:todo)
+- [x] T03: `Replace tar extraction with bounded validating extractor and atomic install` (status:done)
   - Task ID: T03
   - Scope: In — new `npm/lib/` archive module reading gzip+ustar with size/entry caps and the allowed-entry rules; extract only `bin/sce` into a fresh staging dir; stage into `runtime/` with a temp name, `chmod 0755`, `fsync`, and `rename` over `runtime/sce`; clean up staging on any failure; tests with generated fixture archives for absolute path, `..` traversal, symlink, hardlink, duplicate entry, unexpected type (e.g. FIFO/char device), entry outside root, oversize payload, missing or non-regular `bin/sce`, checksum failure, and an interrupted install (failure injected between staging and rename) preserving a prior valid `runtime/sce`. Out — manifest identity rules (T02), flake/release wiring.
   - Dependencies: T02
   - Done when: `install.js` no longer spawns `tar`; all negative fixtures are rejected without writing outside staging; a prior valid install survives every failure path; the T01 smoke script still passes.
   - Verify: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`; `nix shell nixpkgs#ripgrep -c rg -n 'spawnSync' npm/lib`; rerun the T01 smoke script.
-  - Context synchronization: pending
+  - Completed: 2026-11-03
+  - Files changed: `npm/lib/archive.js` (new), `npm/lib/install.js`, `npm/test/archive.test.js` (new), `npm/test/tar-fixture.js` (new), `npm/test/install.test.js`, `flake.nix` (`npmSrc` only).
+  - Result: Added `npm/lib/archive.js` with `readReleaseBinaryFromArchive`, `extractReleaseBinary`, `installBinaryAtomically`, and `ARCHIVE_LIMITS` (64 MiB compressed, 256 MiB uncompressed via `gunzipSync` `maxOutputLength`, 192 MiB `bin/sce`, 16 entries, 4 KiB long names). The reader parses ustar/GNU headers itself (header checksum and magic verified, GNU `L` long names and pax `x` `path` supported, base-256 numeric fields and pax `size`/`linkpath` rejected) and accepts only `<root>/`, `<root>/bin/`, `<root>/bin/sce` (regular), `<root>/LICENSE`, `<root>/README.md`; it rejects absolute paths, `..`/empty/`.` segments, backslashes, symlinks, hardlinks, devices, FIFOs and other types, entries outside the root, unexpected or duplicate entries, wrong entry kinds, oversize payloads, truncated streams, and a missing `bin/sce`. Only `bin/sce` is written, to `<download-temp>/staging/sce` (`wx`, `0600`). `installBinaryAtomically` writes a `.sce.<pid>.<ts>.tmp` file in `runtime/`, `fchmod 0755`, `fsync`, renames it over `runtime/sce`, fsyncs the directory best-effort, and removes the temp file on any failure. `installBinaryWithDependencies` no longer spawns `tar`; its `fileExists`/`createRuntimeDir`/`copyBinary`/`chmodBinary` injection points were replaced by `extractArchiveFn(archivePath, { archiveRoot, stagingDir })`, `runtimeDir`, and `installBinaryFile`. Tests build fixture archives with an in-repo ustar/GNU writer (`npm/test/tar-fixture.js`) and cover every malicious case, a real GNU tar archive, prefix-split and long-name headers, and checksum, extraction, and interrupted-rename failures over a real temp `runtime/` that preserve a prior `0755` binary byte-identical with no leftover temp files.
+  - Verify outcomes:
+    - The planned `nix develop -c sh -c 'cd npm && <bun> test ./test/*.test.js'` form was blocked by repo bash policy `use-nix-for-bun`; ran the nixpkgs Bun form over `./test/archive.test.js ./test/install.test.js ./test/platform.test.js` (from `npm/`) -> 69 pass, 0 fail.
+    - `nix build .#checks.x86_64-linux.npm-bun-tests .#checks.x86_64-linux.npm-biome-check .#checks.x86_64-linux.npm-biome-format` -> exit 0 (69 pass in the sandbox, including the GNU tar compatibility test).
+    - `nix shell nixpkgs#ripgrep -c rg -n 'spawnSync|"-xzf"|spawnSync\("tar"' npm/lib` -> no match (exit 1).
+    - T01 smoke: `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh` -> `pack-smoke: OK (sce --help, sce version)` (a real GNU tar archive extracted by the new reader under Node).
+    - `nix develop -c biome check npm` -> no errors; one pre-existing warning (unused `getRepositorySlug`, untouched).
+  - Deviations: `flake.nix` `npmSrc` gained `npm/lib/archive.js`, `npm/test/archive.test.js`, and `npm/test/tar-fixture.js` now rather than in T04, because `install.js` imports the new module and the flake npm checks would otherwise break; the new files were registered with `git add -N` so the flake sees them. The T01 smoke files remain unwired until T04. Per user instruction during implementation, the new code carries no comments.
+  - Context impact: localized to the npm installer extraction/install surface; affects `context/sce/cli-npm-distribution-contract.md` (safe extraction rules, size limits, atomic install, removed host `tar` runtime requirement). No architecture or glossary changes.
+  - Context synchronization: synced
 
 - [ ] T04: `Wire packed-package smoke into flake checks and release-npm-package` (status:todo)
   - Task ID: T04

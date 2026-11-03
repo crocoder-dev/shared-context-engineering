@@ -306,11 +306,14 @@
             ./npm/README.md
             ./npm/package.json
             ./npm/bin/sce.js
+            ./npm/lib/archive.js
             ./npm/lib/install.js
             ./npm/lib/platform.js
             ./npm/lib/release-manifest-public-key.pem
+            ./npm/test/archive.test.js
             ./npm/test/install.test.js
             ./npm/test/platform.test.js
+            ./npm/test/tar-fixture.js
             ./scripts/lib/release-manifest-signing.mjs
           ];
         };
