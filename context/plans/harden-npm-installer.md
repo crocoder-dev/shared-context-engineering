@@ -16,19 +16,19 @@ Current-state facts this plan starts from:
 
 ## Acceptance criteria
 
-- [ ] AC1: A tarball produced by `npm pack` of `npm/` installs into an isolated prefix, and the installed `sce` bin (npm-generated link to `bin/sce.js`) is executable and successfully runs `sce --help` and `sce version` against a locally served fixture release, with no network access.
+- [x] AC1: A tarball produced by `npm pack` of `npm/` installs into an isolated prefix, and the installed `sce` bin (npm-generated link to `bin/sce.js`) is executable and successfully runs `sce --help` and `sce version` against a locally served fixture release, with no network access.
   - Validate: `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs` (new check) passes; the smoke script asserts exit 0 and expected stdout for both commands.
-- [ ] AC2: The root cause of the non-executable launcher is identified, fixed at its source, and recorded in the plan task evidence; the packed tarball entry `package/bin/sce.js` carries an executable mode.
+- [x] AC2: The root cause of the non-executable launcher is identified, fixed at its source, and recorded in the plan task evidence; the packed tarball entry `package/bin/sce.js` carries an executable mode.
   - Validate: `git ls-files -s npm/bin/sce.js` shows the fixed mode (if Git mode is the cause) and the smoke check inspects the packed tarball entry mode.
-- [ ] AC3: After signature verification and before any archive download, the installer rejects manifests whose `version` differs from the package version, whose `binary` is not `sce`, that have zero or more than one artifact for the current target, whose artifact `archive` is not `sce-v<version>-<target>.tar.gz`, or whose `checksum_sha256` is not 64 lowercase hex characters.
+- [x] AC3: After signature verification and before any archive download, the installer rejects manifests whose `version` differs from the package version, whose `binary` is not `sce`, that have zero or more than one artifact for the current target, whose artifact `archive` is not `sce-v<version>-<target>.tar.gz`, or whose `checksum_sha256` is not 64 lowercase hex characters.
   - Validate: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` — negative tests for each case assert the specific error and that the archive downloader was never called.
-- [ ] AC4: Archive extraction no longer shells out to unrestricted `tar -xzf`; the installer parses the gzip+ustar stream itself with bounded sizes, rejects absolute paths, `..` traversal, symlinks, hardlinks, duplicate entries, unexpected entry types, entries outside the expected root, oversize payloads, and a missing/non-regular `bin/sce`, and writes only `bin/sce` into an isolated staging directory.
+- [x] AC4: Archive extraction no longer shells out to unrestricted `tar -xzf`; the installer parses the gzip+ustar stream itself with bounded sizes, rejects absolute paths, `..` traversal, symlinks, hardlinks, duplicate entries, unexpected entry types, entries outside the expected root, oversize payloads, and a missing/non-regular `bin/sce`, and writes only `bin/sce` into an isolated staging directory.
   - Validate: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` — fixture archives for each malicious case are rejected and nothing is written outside staging; `nix shell nixpkgs#ripgrep -c rg -n '"-xzf"|spawnSync\("tar"' npm/lib` returns no match.
-- [ ] AC5: Installation is atomic: the binary is staged next to `runtime/sce`, chmodded `0755`, and renamed into place; a checksum failure, extraction failure, or interruption leaves a previously installed valid `runtime/sce` byte-identical and executable, and leaves no partial `runtime/sce`.
+- [x] AC5: Installation is atomic: the binary is staged next to `runtime/sce`, chmodded `0755`, and renamed into place; a checksum failure, extraction failure, or interruption leaves a previously installed valid `runtime/sce` byte-identical and executable, and leaves no partial `runtime/sce`.
   - Validate: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` — interrupted-install and failure tests over a real temp `runtime/` directory.
-- [ ] AC6: `nix run .#release-npm-package -- --version <.version> --out-dir <dir>` fails if the packed tarball's `bin/sce.js` is not executable or the packed-package smoke install fails.
+- [x] AC6: `nix run .#release-npm-package -- --version <.version> --out-dir <dir>` fails if the packed tarball's `bin/sce.js` is not executable or the packed-package smoke install fails.
   - Validate: run the app on a clean tree (passes); run it with `npm/bin/sce.js` temporarily set to `0644` in a scratch copy (fails with a permission diagnostic). Inspection of `.github/workflows/release-sce.yml` confirms it invokes this app before upload.
-- [ ] AC7: `npm/README.md` lists `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`, and `context/sce/cli-npm-distribution-contract.md` describes the manifest identity checks, safe extraction, atomic install, and the packed-package smoke verification.
+- [x] AC7: `npm/README.md` lists `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`, and `context/sce/cli-npm-distribution-contract.md` describes the manifest identity checks, safe extraction, atomic install, and the packed-package smoke verification.
   - Validate: `nix shell nixpkgs#ripgrep -c rg -n 'linux-gnu' npm/README.md` returns no match; inspect the contract file.
 
 ### Full validation
@@ -147,15 +147,57 @@ Current-state facts this plan starts from:
   - Context impact: affects verification and release surfaces. `context/sce/cli-npm-distribution-contract.md` (new `npm-pack-smoke` check, `--tarball` smoke mode, `release-npm-package` post-pack gate), `context/glossary.md` `npm JS flake checks` entry, and any flake-check enumeration in `context/overview.md`; possibly `context/sce/cli-release-artifact-contract.md` if it describes `release-npm-package` validation.
   - Context synchronization: synced
 
-- [ ] T05: `Correct npm README targets and update distribution contract` (status:todo)
+- [x] T05: `Correct npm README targets and update distribution contract` (status:done)
   - Task ID: T05
   - Scope: In — `npm/README.md` musl target triples and a short note on manifest identity/safe-extraction failures in troubleshooting; `context/sce/cli-npm-distribution-contract.md` install-flow, validation, atomic-install, and verification-baseline updates; glossary/overview entries for the new flake check. Out — documentation site changes.
   - Dependencies: T04
   - Done when: README matches `npm/lib/platform.js`; contract describes implemented behavior and the new verification commands.
   - Verify: `nix shell nixpkgs#ripgrep -c rg -n 'linux-gnu' npm/README.md` (no match); `nix develop -c biome check npm`.
-  - Context synchronization: pending
+  - Completed: 2026-11-03
+  - Files changed: `npm/README.md`, `context/sce/cli-npm-distribution-contract.md`, `context/glossary.md`.
+  - Result: `npm/README.md` now lists `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl` (matching `npm/lib/platform.js`). "How the installer works" now describes manifest identity validation, checksum verification of the canonical archive, bounded `bin/sce`-only extraction, atomic `0755` install, and the guarantee that a failed install preserves an existing binary. Troubleshooting gained a bullet for `Invalid sce release manifest` / `Invalid sce release artifact` / `No sce release artifact found` / `Invalid sce release archive` errors. Earlier task syncs had already brought the contract's install-flow, identity-validation, safe-extraction, atomic-install, smoke and verification-baseline sections up to date, so its only edit is the README-description bullet (musl matrix and new failure classes). The glossary `sce npm launcher package` entry now covers identity validation, the bounded reader, and the atomic install. `context/overview.md` and the glossary `npm JS flake checks` entry already listed `npm-pack-smoke` and were not changed.
+  - Verify outcomes:
+    - `nix shell nixpkgs#ripgrep -c rg -n 'linux-gnu' npm/README.md` -> no match (exit 1).
+    - `nix develop -c biome check npm` -> exit 0, no errors; one pre-existing warning (unused `getRepositorySlug` in `npm/lib/install.js`, untouched).
+  - Context impact: documentation-only; touches `context/sce/cli-npm-distribution-contract.md` and `context/glossary.md` directly as part of the task scope. No code, architecture, or flake changes.
+  - Context synchronization: synced
 
 ## Open questions
 
 - Is the loopback HTTPS + self-signed certificate fixture acceptable inside the Nix build sandbox for `npm-pack-smoke`? If sandbox loopback networking proves unavailable on a CI runner, the fallback is to keep the smoke as a `nix run` app invoked by `release-npm-package` and PR CI instead of a pure flake check.
 - Should the smoke additionally run the real `nix build .#default` binary inside the fixture archive on the host platform? This gives real-binary coverage for the host only, at the cost of making the check depend on the full CLI build; the plan defaults to a stub binary.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-11-03
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed!; `checks.x86_64-linux` includes `npm-pack-smoke`, `npm-bun-tests`, `npm-biome-check`, `npm-biome-format`)
+- `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` -> not run (blocked by repo bash policy `use-nix-for-bun`); equivalent `nix run nixpkgs#bun -- test ./test/*.test.js` from `npm/` -> exit 0 (69 pass, 0 fail across 3 files)
+- `nix run .#release-npm-package -- --version "$(cat .version)" --out-dir <scratch>` -> exit 0 (`pack-smoke: OK (sce --help, sce version)`; tarball and metadata JSON written)
+- `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs --rebuild` -> exit 0 (`pack-smoke: OK (sce --help, sce version)`)
+- `release-npm-package` from a scratch copy of the tracked tree with `npm/bin/sce.js` at `0644` -> exit 1 (`Packed package/bin/sce.js has mode -rw-r--r--; expected an executable mode`; tarball removed, out dir empty)
+- `git ls-files -s npm/bin/sce.js` -> exit 0 (`100755`)
+- `nix shell nixpkgs#ripgrep -c rg -n '"-xzf"|spawnSync\("tar"' npm/lib` -> exit 1 (no match)
+- `nix shell nixpkgs#ripgrep -c rg -n 'linux-gnu' npm/README.md` -> exit 1 (no match)
+
+### Success-criteria verification
+
+- [x] AC1: Packed tarball installs into an isolated prefix and the `sce` bin runs `--help` and `version` against a local fixture release offline -> `npm-pack-smoke` rebuild passed with exact-output assertions.
+- [x] AC2: Root cause identified, fixed at source, recorded; packed `package/bin/sce.js` is executable -> T01 evidence records Git mode `100644` root cause; `git ls-files -s` shows `100755`; smoke reports `packed package/bin/sce.js mode -rwxr-xr-x`.
+- [x] AC3: Manifest identity rejected before archive download -> Bun suite 69/0 including negative tests for version, binary, missing/duplicate target, archive name, and checksum, each asserting zero downloads.
+- [x] AC4: No unrestricted `tar -xzf`; bounded validating extractor -> Bun suite covers malicious fixture archives; ripgrep over `npm/lib` returns no match.
+- [x] AC5: Atomic install preserving prior valid `runtime/sce` -> Bun suite interrupted-install and failure tests over a real temp `runtime/` pass.
+- [x] AC6: `release-npm-package` fails on a non-executable launcher or failed smoke -> clean tree exit 0; `0644` scratch copy exit 1 with permission diagnostic; `.github/workflows/release-sce.yml` runs the app in "Build npm release package" before "Create GitHub release".
+- [x] AC7: README lists musl triples and contract describes identity checks, safe extraction, atomic install, smoke verification -> no `linux-gnu` match; README lines 26-27 list both musl triples; `context/sce/cli-npm-distribution-contract.md` covers all four topics.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The sandboxed `npm-pack-smoke` runs the installed bin through `node` (no `/usr/bin/env` in the sandbox); direct shebang execution is covered only by host runs such as `release-npm-package`.
+- Only the host platform (x86_64-linux) was exercised; the smoke uses a stub binary, not the real native `sce`.
