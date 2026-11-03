@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Packed-package smoke test for the @crocoder-dev/sce npm launcher.
-#
-# Packs a staged copy of the npm package, serves a locally generated fixture
-# release (stub `sce` binary, manifest signed with a throwaway key swapped into
-# the staged copy) over loopback HTTPS, installs the tarball into an isolated
-# prefix, and runs the installed `sce` bin. No network access is required.
-#
-# Requires: bash, coreutils, tar, gzip, node/npm (>=18), openssl.
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PACKAGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LAUNCHER_ENTRY="package/bin/sce.js"
 SERVER_START_TIMEOUT_SECONDS=10
 EXPECTED_HELP_OUTPUT="sce fixture help"
+SOURCE_TARBALL=""
 
 usage() {
   cat <<'EOF'
-Usage: pack-smoke.sh [--package-dir <path>]
+Usage: pack-smoke.sh [--package-dir <path> | --tarball <path>]
 
 Packs the npm launcher package, installs it into an isolated prefix against a
 loopback fixture release, and verifies `sce --help` and `sce version`.
+
+With --tarball, the launcher mode is asserted on the given packed tarball and
+its package contents are used instead of a package directory.
 EOF
 }
 
@@ -35,6 +30,12 @@ while [[ $# -gt 0 ]]; do
     --package-dir)
       [[ -n "${2:-}" ]] || fail "Missing value for --package-dir."
       PACKAGE_DIR="$(cd "$2" && pwd)"
+      shift 2
+      ;;
+    --tarball)
+      [[ -n "${2:-}" ]] || fail "Missing value for --tarball."
+      [[ -f "$2" ]] || fail "Tarball $2 does not exist."
+      SOURCE_TARBALL="$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"
       shift 2
       ;;
     --help | -h)
@@ -53,7 +54,9 @@ for tool in node npm openssl tar gzip sha256sum; do
     fail "Required tool '$tool' is not on PATH. Run via: nix shell nixpkgs#nodejs nixpkgs#openssl -c bash $0"
 done
 
-[[ -f "$PACKAGE_DIR/package.json" ]] || fail "No package.json found in $PACKAGE_DIR."
+if [[ -z "$SOURCE_TARBALL" ]]; then
+  [[ -f "$PACKAGE_DIR/package.json" ]] || fail "No package.json found in $PACKAGE_DIR."
+fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/sce-npm-pack-smoke.XXXXXX")"
 server_pid=""
@@ -73,7 +76,25 @@ prefix_dir="$work_dir/prefix"
 keys_dir="$work_dir/keys"
 mkdir -p "$stage_dir" "$release_dir" "$pack_dir" "$prefix_dir" "$keys_dir"
 
-cp -R "$PACKAGE_DIR/." "$stage_dir/"
+assert_launcher_mode() {
+  local tarball="$1"
+  local launcher_mode
+  launcher_mode="$(tar -tvzf "$tarball" "$LAUNCHER_ENTRY" | cut -d ' ' -f 1)" ||
+    fail "Packed tarball $tarball is missing $LAUNCHER_ENTRY."
+  [[ -n "$launcher_mode" ]] || fail "Packed tarball $tarball is missing $LAUNCHER_ENTRY."
+  if [[ "${launcher_mode:3:1}" != "x" ]]; then
+    fail "Packed $LAUNCHER_ENTRY has mode $launcher_mode; expected an executable mode (e.g. -rwxr-xr-x). Ensure npm/bin/sce.js is committed as Git mode 100755."
+  fi
+  printf 'pack-smoke: packed %s mode %s\n' "$LAUNCHER_ENTRY" "$launcher_mode"
+}
+
+if [[ -n "$SOURCE_TARBALL" ]]; then
+  assert_launcher_mode "$SOURCE_TARBALL"
+  tar -xzf "$SOURCE_TARBALL" -C "$stage_dir" --strip-components=1 --no-same-owner
+  [[ -f "$stage_dir/package.json" ]] || fail "Tarball $SOURCE_TARBALL has no package/package.json."
+else
+  cp -R "$PACKAGE_DIR/." "$stage_dir/"
+fi
 rm -rf "$stage_dir/runtime" "$stage_dir/node_modules"
 
 version="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" "$stage_dir/package.json")"
@@ -91,17 +112,14 @@ target_arch="$(node -p "JSON.parse(process.argv[1]).arch" "$platform_json")"
 
 printf 'pack-smoke: version %s, target %s\n' "$version" "$target_triple"
 
-# Throwaway manifest signing key; only the staged copy trusts it.
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$keys_dir/signing.pem" 2>/dev/null
 openssl pkey -in "$keys_dir/signing.pem" -pubout -out "$stage_dir/lib/release-manifest-public-key.pem"
 
-# Loopback TLS certificate trusted through NODE_EXTRA_CA_CERTS.
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
   -subj "/CN=127.0.0.1" \
   -addext "subjectAltName=IP:127.0.0.1" \
   -keyout "$keys_dir/tls-key.pem" -out "$keys_dir/tls-cert.pem" 2>/dev/null
 
-# Fixture release in the canonical archive layout.
 archive_root="sce-v${version}-${target_triple}"
 archive_name="${archive_root}.tar.gz"
 manifest_name="sce-v${version}-release-manifest.json"
@@ -145,17 +163,10 @@ node -e '
 openssl dgst -sha256 -sign "$keys_dir/signing.pem" "$release_dir/$manifest_name" |
   openssl base64 -A >"$release_dir/$manifest_name.sig"
 
-# Pack and verify the launcher entry mode inside the tarball.
 packed_name="$(cd "$pack_dir" && npm pack --silent "$stage_dir")"
 tarball="$pack_dir/$packed_name"
-launcher_mode="$(tar -tvzf "$tarball" "$LAUNCHER_ENTRY" | cut -d ' ' -f 1)"
-[[ -n "$launcher_mode" ]] || fail "Packed tarball is missing $LAUNCHER_ENTRY."
-if [[ "${launcher_mode:3:1}" != "x" ]]; then
-  fail "Packed $LAUNCHER_ENTRY has mode $launcher_mode; expected an executable mode (e.g. -rwxr-xr-x). Ensure npm/bin/sce.js is committed as Git mode 100755."
-fi
-printf 'pack-smoke: packed %s mode %s\n' "$LAUNCHER_ENTRY" "$launcher_mode"
+assert_launcher_mode "$tarball"
 
-# Serve the fixture release over loopback HTTPS.
 port_file="$work_dir/server-port"
 node "$SCRIPT_DIR/fixture-release-server.mjs" \
   --root "$release_dir" \
@@ -172,7 +183,6 @@ done
 [[ -s "$port_file" ]] || fail "Fixture release server did not start within ${SERVER_START_TIMEOUT_SECONDS}s."
 port="$(tr -d '\n' <"$port_file")"
 
-# Install into an isolated prefix with an isolated npm cache/config.
 SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:${port}" \
   NODE_EXTRA_CA_CERTS="$keys_dir/tls-cert.pem" \
   npm_config_cache="$work_dir/npm-cache" \
@@ -189,11 +199,17 @@ SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:${port}" \
 sce_bin="$prefix_dir/node_modules/.bin/sce"
 [[ -x "$sce_bin" ]] || fail "Installed sce bin $sce_bin is not executable."
 
-help_output="$("$sce_bin" --help)" || fail "sce --help exited non-zero."
+sce_cmd=("$sce_bin")
+if [[ ! -x /usr/bin/env ]]; then
+  printf 'pack-smoke: /usr/bin/env unavailable; running installed bin through node\n'
+  sce_cmd=(node "$sce_bin")
+fi
+
+help_output="$("${sce_cmd[@]}" --help)" || fail "sce --help exited non-zero."
 [[ "$help_output" == "$EXPECTED_HELP_OUTPUT" ]] ||
   fail "sce --help printed '$help_output'; expected '$EXPECTED_HELP_OUTPUT'."
 
-version_output="$("$sce_bin" version)" || fail "sce version exited non-zero."
+version_output="$("${sce_cmd[@]}" version)" || fail "sce version exited non-zero."
 [[ "$version_output" == "sce $version" ]] ||
   fail "sce version printed '$version_output'; expected 'sce $version'."
 
