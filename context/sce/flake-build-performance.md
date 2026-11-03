@@ -9,20 +9,20 @@ The root flake separates ordinary development from release-only work:
   release on Darwin.
 - `packages.ci-checks` is the explicit expensive tier. It forces the release
   package and, on Linux, audits the real release binary for forbidden
-  `/nix/store/` runtime references. On x86_64-linux it also links
-  `npm-nixos-vm`, sharing the same `sceReleasePackage` build.
+  `/nix/store/` runtime references.
 - `packages.x86_64-linux.npm-nixos-vm` is a NixOS VM test of the real packed
-  npm install against the release binary; it is not a flake check, so
-  `nix flake check` never boots a VM.
+  npm install against the release binary. It is local-only: neither a flake
+  check nor a `ci-checks` member, so no automated tier boots a VM. Build it with
+  `nix build .#npm-nixos-vm --print-build-logs`; it runs without `/dev/kvm`
+  under slower QEMU emulation.
 - `nix flake check` runs the normal test/lint/format/parity/static checks without
   building `.#sce-release`.
 - `devShells.default` provides development tools without `scePackage` or the
   Turso CLI. `devShells.database` adds Turso.
 - `.github/workflows/pr-ci.yml` runs native package smoke tests in `nix-ci` and
-  runs `.#ci-checks` separately in `release-validation` on every commit. Its
-  `ubuntu-latest` leg enables `/dev/kvm` through a udev rule, fails if KVM is
-  unavailable, and gives Nix the `nixos-test benchmark big-parallel kvm` system
-  features through the installer's `extra-conf`.
+  runs `.#ci-checks` separately in `release-validation` on every commit. Hosted
+  `ubuntu-latest` runners do not expose `/dev/kvm`, so CI does not run the
+  NixOS VM test.
 
 Git-commit embedding is release-only. Native packages and normal CLI check
 derivations do not receive `SCE_GIT_COMMIT`; release packages do.
