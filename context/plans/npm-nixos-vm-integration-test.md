@@ -111,13 +111,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. Adds the opt-in `.#npm-nixos-vm` package (x86_64-linux), relevant to `context/sce/cli-npm-distribution-contract.md` and `context/sce/flake-build-performance.md`. Full documentation is owned by T04, and `ciChecks` membership by T03.
   - Context synchronization: synced
 
-- [ ] T03: `Run the NixOS VM test in ci-checks with KVM on Linux CI` (status:todo)
+- [x] T03: `Run the NixOS VM test in ci-checks with KVM on Linux CI` (status:done)
   - Task ID: T03
   - Scope: In — `flake.nix` `ciChecks` links `npm-nixos-vm` on x86_64-linux next to `release-portability-audit`; `.github/workflows/pr-ci.yml` `release-validation` Linux leg enables `/dev/kvm` and passes `extra-conf` system features to the Nix installer, failing if KVM is missing. Out — macOS steps, `nix-ci` job, new runners unless the hosted runner is proven unable to run the test.
   - Dependencies: T02
   - Done when: `nix build .#ci-checks` on x86_64-linux builds `sce-release` once and runs the VM test; Darwin `ci-checks` evaluation unchanged; workflow passes actionlint.
   - Verify: `nix build .#ci-checks --print-build-logs`; `nix eval .#packages.aarch64-darwin.ci-checks.drvPath`; `nix build .#checks.x86_64-linux.workflow-actionlint`.
-  - Context synchronization: pending
+  - Completed: 2026-11-03
+  - Files changed: `flake.nix`, `.github/workflows/pr-ci.yml`
+  - Result: `ciChecks` now links `npm-nixos-vm` (`npmNixosVmTest`) on x86_64-linux only, using `optionalString (system == "x86_64-linux")`. The new guard is concatenated onto the existing Linux audit guard, so the build script and drv are byte-identical on other systems. In `.github/workflows/pr-ci.yml`, the `release-validation` job gets an `Enable KVM` step, gated on `matrix.os == 'ubuntu-latest'`. It installs the `99-kvm4all` udev rule, reloads and triggers it, and exits 1 with `::error::/dev/kvm is not available; the NixOS VM test requires KVM.` when `/dev/kvm` is not readable and writable. The Install Nix step passes `extra-conf: system-features = nixos-test benchmark big-parallel kvm` on ubuntu only (empty on macOS). The `nix-ci` job and the macOS steps are unchanged. On user request, the explanatory comment above `ciChecks` and the new workflow comment were removed.
+  - Verify:
+    - `nix build .#ci-checks --print-build-logs`: passed (exit 0). `result` contains `sce-release`, `release-portability-audit`, and `npm-nixos-vm`, and its out path equals `nix eval .#packages.x86_64-linux.ci-checks.outPath` (`9zpgkyb9…-sce-ci-checks`). The log shows the portability audit passing on `dm1zsfzx…-sce-0.4.0-pre-alpha-v12/bin/sce`, plus the VM test lines `pack-smoke: installed runtime/sce mode 755`, `real binary reported version 0.4.0-pre-alpha-v12`, `runtime/sce mode: 755`, `launcher mode: 755`, `parsed version: 0.4.0-pre-alpha-v12`, and `test script finished in 109.70s`. This host has no `/dev/kvm` (QEMU logged `failed to initialize kvm`), so the VM ran under TCG. `nix-store -qR` on the `ci-checks` drv finds a single `sce-0.4.0-pre-alpha-v12.drv` (`yc4j00d7…`), referenced by both `vm-test-run-npm-nixos-vm.drv` and `sce-release-portability-audit.drv`.
+    - `nix eval .#packages.aarch64-darwin.ci-checks.drvPath`: evaluates to `zxz1djgg…-sce-ci-checks.drv`, identical to the HEAD worktree. `x86_64-darwin` (`cc5cbl22…`) and `aarch64-linux` (`9w6kpm8m…`) are also identical to HEAD.
+    - `nix build .#checks.x86_64-linux.workflow-actionlint`: passed (also re-run after the comment removal).
+  - Deviations: The first guard was placed on its own line. That added a blank line to the Darwin build script and changed the aarch64-darwin drv. It was folded onto the existing `optionalString` line to keep non-x86_64-linux drvs unchanged. KVM availability on hosted `ubuntu-latest` is still proven only by a PR CI run (see Open questions).
+  - Context impact: localized. `ci-checks` membership on x86_64-linux and the KVM requirement of the Linux `release-validation` job affect `context/sce/flake-build-performance.md` and `context/sce/cli-npm-distribution-contract.md`. Full documentation is owned by T04.
+  - Context synchronization: synced
 
 - [ ] T04: `Document fixture smoke versus NixOS VM npm integration testing` (status:todo)
   - Task ID: T04

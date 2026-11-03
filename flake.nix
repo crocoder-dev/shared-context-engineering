@@ -1683,11 +1683,6 @@
               mkdir -p "$out"
             '';
 
-        # Explicit long-running validation tier. Its primary member is the
-        # static-musl release build; on Linux it also forces the release
-        # portability audit over the real binary. Building this aggregate
-        # (nix build .#ci-checks) is the expensive command, keeping
-        # nix flake check fast (it never builds .#sce-release).
         ciChecks =
           pkgs.runCommand "sce-ci-checks"
             { }
@@ -1698,6 +1693,8 @@
               ln -s ${sceReleasePackage} "$out/sce-release"
               ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
                 ln -s ${releasePortabilityAuditCheck} "$out/release-portability-audit"
+              ''}${pkgs.lib.optionalString (system == "x86_64-linux") ''
+                ln -s ${npmNixosVmTest} "$out/npm-nixos-vm"
               ''}
             '';
 
