@@ -37,6 +37,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
   - `sce-v<version>-npm.tgz`
   - `sce-v<version>-npm.json`
 - The helper also refuses to proceed when checked-in `.version`, `cli/Cargo.toml`, and `npm/package.json` are not already aligned.
+- After packing, the helper runs `npm/test/pack-smoke.sh --tarball <produced tgz>` against the tarball it just produced. If the packed `package/bin/sce.js` is not executable or the smoke install fails, it deletes the tarball and exits non-zero before writing metadata, so `.github/workflows/release-sce.yml` (which runs the helper before creating the GitHub Release) never uploads an unverified npm package.
 - `.github/workflows/release-sce.yml` publishes those npm assets alongside the canonical CLI archives, `sce-v<version>-release-manifest.json`, and `sce-v<version>-release-manifest.json.sig`.
 - Native archive portability is a release-artifact prerequisite for every npm-supported target triple. Archives selected through the signed release manifest must have passed macOS/Linux native portability audit and extracted-binary `sce version --format json` smoke validation before upload.
 
@@ -57,14 +58,16 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 
 ## Packed-package smoke test
 
-- `npm/test/pack-smoke.sh` (with helper `npm/test/fixture-release-server.mjs`) verifies the real packed artifact end to end without network access: it stages a copy of the package (or `--package-dir <path>`), swaps a throwaway RSA manifest-signing public key into the staged copy only, builds a stub `sce` archive in the canonical `sce-v<version>-<target>/{bin/sce,LICENSE,README.md}` layout with a matching signed manifest, serves it over loopback HTTPS (self-signed certificate trusted via `NODE_EXTRA_CA_CERTS`, selected via `SCE_NPM_RELEASE_BASE_URL`), runs `npm pack`, fails unless the packed `package/bin/sce.js` entry is executable, installs into an isolated `--prefix` with an isolated npm cache/config, and asserts exact output from `sce --help` and `sce version`.
+- `npm/test/pack-smoke.sh` (with helper `npm/test/fixture-release-server.mjs`) verifies the real packed artifact end to end without network access: it stages a copy of the package (or `--package-dir <path>`, or the `package/` contents of an already packed `--tarball <path>`, whose launcher mode is asserted first), swaps a throwaway RSA manifest-signing public key into the staged copy only, builds a stub `sce` archive in the canonical `sce-v<version>-<target>/{bin/sce,LICENSE,README.md}` layout with a matching signed manifest, serves it over loopback HTTPS (self-signed certificate trusted via `NODE_EXTRA_CA_CERTS`, selected via `SCE_NPM_RELEASE_BASE_URL`), runs `npm pack`, fails unless the packed `package/bin/sce.js` entry is executable, installs into an isolated `--prefix` with an isolated npm cache/config, and asserts exact output from `sce --help` and `sce version`.
 - The fixture archive is produced by real GNU `tar`, so the smoke also exercises the in-repo archive reader against the release pipeline's archive format under Node.
 - Only the host platform is exercised, with a stub binary; the production public key and manifest trust code are not modified.
+- Root `flake.nix` runs the smoke in the build sandbox as `checks.<system>.npm-pack-smoke` (part of `nix flake check`; loopback HTTPS works inside the sandbox). The sandbox has no `/usr/bin/env`, so there the installed bin is run as `node <bin>` after its `-x` check. Host runs, including the `release-npm-package` gate, exec the bin directly.
 
 ## Verification baseline
 
 - `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`
 - `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh`
+- `nix build .#checks.<system>.npm-pack-smoke --print-build-logs`
 - `nix develop -c sh -c 'cd npm && SCE_NPM_SKIP_DOWNLOAD=1 bun ./lib/install.js'`
 - `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path> --signing-key-file <path>`
 - `nix run .#release-npm-package -- --version <semver> --out-dir <path>`

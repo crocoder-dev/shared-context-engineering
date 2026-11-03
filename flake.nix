@@ -311,7 +311,9 @@
             ./npm/lib/platform.js
             ./npm/lib/release-manifest-public-key.pem
             ./npm/test/archive.test.js
+            ./npm/test/fixture-release-server.mjs
             ./npm/test/install.test.js
+            ./npm/test/pack-smoke.sh
             ./npm/test/platform.test.js
             ./npm/test/tar-fixture.js
             ./scripts/lib/release-manifest-signing.mjs
@@ -1155,9 +1157,13 @@
         releaseNpmPackageApp = pkgs.writeShellApplication {
           name = "release-npm-package";
           runtimeInputs = [
+            pkgs.bash
             pkgs.coreutils
+            pkgs.gnutar
+            pkgs.gzip
             pkgs.jq
             pkgs.nodejs
+            pkgs.openssl
           ];
           text = ''
             set -euo pipefail
@@ -1168,7 +1174,9 @@
 
             Builds the canonical npm package tarball for `sce` using the checked-in npm
             launcher package and writes the packed tarball plus package metadata into the
-            output directory.
+            output directory. The packed tarball must carry an executable bin/sce.js and
+            pass the packed-package smoke install (npm/test/pack-smoke.sh) before any
+            asset is reported.
             EOF
             }
 
@@ -1243,6 +1251,12 @@
             metadata_name="sce-v''${version}-npm.json"
 
             mv "$packed_name" "$out_dir/$package_name"
+
+            if ! bash npm/test/pack-smoke.sh --tarball "$out_dir/$package_name"; then
+              rm -f "$out_dir/$package_name"
+              printf 'Packed npm package failed the packed-package smoke verification; removed %s\n' "$out_dir/$package_name" >&2
+              exit 1
+            fi
 
             npm_pkg_name="$(${pkgs.nodejs}/bin/node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).name")"
 
@@ -1517,6 +1531,25 @@
           testCommand = "bun test ./test/*.test.js";
         };
 
+        npmPackSmoke = mkCopiedSourceCheck {
+          name = "npm-pack-smoke";
+          src = npmSrc;
+          workdir = "npm";
+          nativeBuildInputs = [
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.gnutar
+            pkgs.gzip
+            pkgs.nodejs
+            pkgs.openssl
+          ];
+          beforeCheck = ''
+            export HOME="$TMPDIR/home"
+            mkdir -p "$HOME"
+          '';
+          checkCommand = "bash ./test/pack-smoke.sh";
+        };
+
         npmBiomeCheck = mkBiomeCheck {
           name = "npm-biome-check";
           src = npmSrc;
@@ -1750,6 +1783,7 @@
             codex-hook-command = codexHookCommandCheck;
 
             npm-bun-tests = npmTests;
+            npm-pack-smoke = npmPackSmoke;
             npm-biome-check = npmBiomeCheck;
             npm-biome-format = npmBiomeFormat;
 

@@ -127,13 +127,25 @@ Current-state facts this plan starts from:
   - Context impact: localized to the npm installer extraction/install surface; affects `context/sce/cli-npm-distribution-contract.md` (safe extraction rules, size limits, atomic install, removed host `tar` runtime requirement). No architecture or glossary changes.
   - Context synchronization: synced
 
-- [ ] T04: `Wire packed-package smoke into flake checks and release-npm-package` (status:todo)
+- [x] T04: `Wire packed-package smoke into flake checks and release-npm-package` (status:done)
   - Task ID: T04
   - Scope: In — add new `npm/` files to `npmSrc`; add a `npm-pack-smoke` flake check running the T01 smoke script in the sandbox (nodejs, openssl); make `release-npm-package` assert the packed tarball's `package/bin/sce.js` is executable and run the smoke against the produced tarball before reporting success; confirm `release-sce.yml` already invokes `release-npm-package` (edit only if needed). Out — publish workflow behavior changes, real network release testing.
   - Dependencies: T03
   - Done when: `nix flake check` includes and passes the new check; `release-npm-package` fails on a `0644` launcher in a scratch copy and passes on the real tree.
   - Verify: `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs`; `nix run .#release-npm-package -- --version "$(cat .version)" --out-dir <scratch>`; `nix run nixpkgs#actionlint` if a workflow is touched.
-  - Context synchronization: pending
+  - Completed: 2026-11-03
+  - Files changed: `flake.nix`, `npm/test/pack-smoke.sh`.
+  - Result: `npmSrc` now includes `npm/test/fixture-release-server.mjs` and `npm/test/pack-smoke.sh`. New flake check `npm-pack-smoke` (`mkCopiedSourceCheck` over `npmSrc`, inputs bash/coreutils/gnutar/gzip/nodejs/openssl, `HOME` set inside the build dir) runs `bash ./test/pack-smoke.sh` in the sandbox and is registered in `checks`. `pack-smoke.sh` gained `--tarball <path>`: it checks the launcher mode in that packed tarball, extracts its `package/` contents into the stage directory, and then runs the usual key-swap/repack/install/run flow. When `/usr/bin/env` is missing (Nix sandbox), the installed bin is run as `node <bin>` after the existing `-x` check; on hosts it is still exec'd directly. `release-npm-package` adds bash/gnutar/gzip/openssl to its runtime inputs, runs `bash npm/test/pack-smoke.sh --tarball "$out_dir/$package_name"` after packing, and on failure deletes the tarball and exits 1 before writing metadata. `.github/workflows/release-sce.yml` already runs `nix run .#release-npm-package` in the "Build npm release package" step, before release creation/upload, so it was not edited. Per a user instruction during implementation, the descriptive comments in `pack-smoke.sh` were removed (only the shebangs and the functional `shellcheck disable` directive remain).
+  - Verify outcomes:
+    - `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs` -> exit 0; `packed package/bin/sce.js mode -rwxr-xr-x`, `pack-smoke: OK (sce --help, sce version)` (loopback HTTPS works inside the sandbox, which answers the plan's first open question).
+    - `nix run .#release-npm-package -- --version "$(cat .version)" --out-dir <scratch>` on the real tree -> exit 0; smoke OK; tarball and metadata written.
+    - Same app run from a scratch copy of the tracked tree with `npm/bin/sce.js` set to `0644` -> exit 1, `pack-smoke: Packed package/bin/sce.js has mode -rw-r--r--; expected an executable mode ...`, tarball removed, output dir left empty.
+    - `nix flake check` -> `all checks passed!`; `checks.x86_64-linux` includes `npm-pack-smoke`.
+    - `nix shell nixpkgs#shellcheck -c shellcheck npm/test/pack-smoke.sh` -> clean; `nix develop -c biome check npm` -> no errors (one pre-existing `getRepositorySlug` warning, untouched).
+    - actionlint not run: no workflow was touched.
+  - Deviations: the sandbox has no `/usr/bin/env`, so the launcher's `#!/usr/bin/env node` shebang cannot exec there. In that case the smoke runs the installed bin through `node` and relies on the `-x` check plus the packed-mode assertion. The direct-exec path is still exercised by `release-npm-package` and by host runs.
+  - Context impact: affects verification and release surfaces. `context/sce/cli-npm-distribution-contract.md` (new `npm-pack-smoke` check, `--tarball` smoke mode, `release-npm-package` post-pack gate), `context/glossary.md` `npm JS flake checks` entry, and any flake-check enumeration in `context/overview.md`; possibly `context/sce/cli-release-artifact-contract.md` if it describes `release-npm-package` validation.
+  - Context synchronization: synced
 
 - [ ] T05: `Correct npm README targets and update distribution contract` (status:todo)
   - Task ID: T05
