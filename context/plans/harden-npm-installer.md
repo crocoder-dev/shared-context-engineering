@@ -1,0 +1,116 @@
+# Plan: harden-npm-installer
+
+## Change summary
+
+Harden the `@crocoder-dev/sce` npm launcher package under `npm/` so that it is reliably executable after a real `npm pack` + `npm install`, only accepts a signed release manifest whose identity matches the package (version, binary `sce`, exactly one canonical target artifact with a valid SHA-256), and extracts the native binary through a bounded, entry-validating extractor instead of unrestricted `tar -xzf`, installing it atomically with mode `0755` while preserving an existing valid install on failure.
+
+This extends the existing architecture (npm launcher -> signed GitHub Release manifest -> SHA-256 verified archive -> native binary) rather than replacing it. The bundled public key, manifest signing flow, supported platform matrix (`darwin/arm64`, `linux/arm64`, `linux/x64`), and release archive layout (`sce-v<version>-<target>/{bin/sce,LICENSE,README.md}`) are preserved. It also adds a locally controlled packed-package smoke test to the flake check surface and to `release-npm-package`, and corrects `npm/README.md`, which currently lists GNU Linux targets while `npm/lib/platform.js` and the release pipeline use musl.
+
+Current-state facts this plan starts from:
+
+- `npm/bin/sce.js` and every other `npm/` file are tracked in Git as mode `100644`; `package.json` maps `bin.sce` to `./bin/sce.js`.
+- `npm/lib/install.js` verifies the manifest signature, then trusts `artifact.archive` (falling back to the canonical name), requires only a truthy `checksum_sha256`, uses the first `target_triple` match, never compares `manifest.version`/`binary` to the package, extracts with `tar -xzf` into the download temp dir, then `copyFileSync` + `chmodSync` directly onto `runtime/sce` (non-atomic).
+- `release-manifest` emits `{version, binary: "sce", artifacts: [...]}`; each artifact fragment carries `version`, `binary`, `archive`, `checksum_file`, `checksum_sha256`, `target_triple`, `os`, `arch`.
+- `flake.nix` `npmSrc` is an explicit file list; new `npm/` source or test files must be added to it to reach `npm-bun-tests` / Biome checks.
+- `release-npm-package` copies `npm/` with `cp -R` and runs `npm pack`; it performs no post-pack mode or execution check.
+
+## Acceptance criteria
+
+- [ ] AC1: A tarball produced by `npm pack` of `npm/` installs into an isolated prefix, and the installed `sce` bin (npm-generated link to `bin/sce.js`) is executable and successfully runs `sce --help` and `sce version` against a locally served fixture release, with no network access.
+  - Validate: `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs` (new check) passes; the smoke script asserts exit 0 and expected stdout for both commands.
+- [ ] AC2: The root cause of the non-executable launcher is identified, fixed at its source, and recorded in the plan task evidence; the packed tarball entry `package/bin/sce.js` carries an executable mode.
+  - Validate: `git ls-files -s npm/bin/sce.js` shows the fixed mode (if Git mode is the cause) and the smoke check inspects the packed tarball entry mode.
+- [ ] AC3: After signature verification and before any archive download, the installer rejects manifests whose `version` differs from the package version, whose `binary` is not `sce`, that have zero or more than one artifact for the current target, whose artifact `archive` is not `sce-v<version>-<target>.tar.gz`, or whose `checksum_sha256` is not 64 lowercase hex characters.
+  - Validate: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` — negative tests for each case assert the specific error and that the archive downloader was never called.
+- [ ] AC4: Archive extraction no longer shells out to unrestricted `tar -xzf`; the installer parses the gzip+ustar stream itself with bounded sizes, rejects absolute paths, `..` traversal, symlinks, hardlinks, duplicate entries, unexpected entry types, entries outside the expected root, oversize payloads, and a missing/non-regular `bin/sce`, and writes only `bin/sce` into an isolated staging directory.
+  - Validate: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` — fixture archives for each malicious case are rejected and nothing is written outside staging; `nix shell nixpkgs#ripgrep -c rg -n '"-xzf"|spawnSync\("tar"' npm/lib` returns no match.
+- [ ] AC5: Installation is atomic: the binary is staged next to `runtime/sce`, chmodded `0755`, and renamed into place; a checksum failure, extraction failure, or interruption leaves a previously installed valid `runtime/sce` byte-identical and executable, and leaves no partial `runtime/sce`.
+  - Validate: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` — interrupted-install and failure tests over a real temp `runtime/` directory.
+- [ ] AC6: `nix run .#release-npm-package -- --version <.version> --out-dir <dir>` fails if the packed tarball's `bin/sce.js` is not executable or the packed-package smoke install fails.
+  - Validate: run the app on a clean tree (passes); run it with `npm/bin/sce.js` temporarily set to `0644` in a scratch copy (fails with a permission diagnostic). Inspection of `.github/workflows/release-sce.yml` confirms it invokes this app before upload.
+- [ ] AC7: `npm/README.md` lists `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`, and `context/sce/cli-npm-distribution-contract.md` describes the manifest identity checks, safe extraction, atomic install, and the packed-package smoke verification.
+  - Validate: `nix shell nixpkgs#ripgrep -c rg -n 'linux-gnu' npm/README.md` returns no match; inspect the contract file.
+
+### Full validation
+
+- `nix flake check`
+- `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`
+- `nix run .#release-npm-package -- --version "$(cat .version)" --out-dir <scratch-dir>`
+
+### Context sync
+
+- `context/sce/cli-npm-distribution-contract.md` (install flow, validation rules, verification baseline)
+- `context/sce/cli-release-artifact-contract.md` (only if `release-npm-package` validation behavior is described there)
+- `context/glossary.md` (`npm JS flake checks` entry gains the packed-package smoke check)
+- `context/overview.md` (flake check list mention of the npm slice, if it enumerates checks)
+
+## Task context synchronization lifecycle
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `npm/bin/sce.js` (mode/shebang only), `npm/lib/install.js`, `npm/lib/platform.js`, new `npm/lib/` helper module(s) for archive reading, `npm/test/**`, a packed-package smoke script under `npm/test/` or `scripts/`, `npm/README.md`, `flake.nix` (`npmSrc`, new check, `release-npm-package`), `.github/workflows/release-sce.yml` only if it needs to surface the new validation, `context/sce/cli-npm-distribution-contract.md` and related context entries.
+- **Out of scope:** changing the native build pipeline, release archive layout, manifest schema or signing key, supported platform matrix, publish workflow topology, or any npm/crates/GitHub publication.
+- **Constraints:** no new npm runtime dependencies (use Node built-ins `zlib`, `fs`, `crypto`); Node `>=18` compatibility; Biome formatting/linting; all tooling via Nix; tests must not require network access; do not push or publish.
+- **Non-goal:** a general-purpose tar implementation — the reader supports only the ustar/GNU subset the release pipeline emits (regular files and directories, optional pax/GNU long-name headers if GNU tar emits them) and rejects everything else.
+
+## Assumptions
+
+- The safe extractor is a small in-repo ustar reader over `zlib.gunzipSync`/streamed gunzip with explicit size caps (compressed archive, total uncompressed bytes, entry count, `bin/sce` size); no `tar` npm dependency is justified for this subset.
+- Allowed archive entries are exactly the archive root directory, `bin/`, `bin/sce` (regular file), `LICENSE`, and `README.md` under `sce-v<version>-<target>/`; any other entry is rejected rather than ignored, matching what `release-artifacts` packs.
+- The packed-package smoke test uses a locally controlled fixture: a stub executable `sce` (shell script answering `--help` and `version`) packed in the canonical archive layout, a test-generated signing key swapped into the staged fixture copy of the package (the production `release-manifest-public-key.pem` and trust code are unchanged), and a loopback HTTPS server with a generated self-signed certificate trusted via `NODE_EXTRA_CA_CERTS`, pointed at by the existing `SCE_NPM_RELEASE_BASE_URL` override. Real native-binary execution on every platform is not claimed; only the host platform running the check is exercised.
+- The root cause of the permission failure is determined by reproduction in T01 (candidates: Git mode `100644` on `bin/sce.js` carried through `cp -R` + `npm pack`, and how npm/bin-links/other package managers treat bin targets); the fix targets whichever is reproduced.
+- Manifest version comparison is exact string equality with `npm/package.json` `version`.
+
+## Task stack
+
+- [ ] T01: `Fix launcher executable permission and add packed-package smoke test` (status:todo)
+  - Task ID: T01
+  - Scope: In — reproduce the non-executable launcher via real `npm pack` + `npm install --prefix <tmp>`; identify and fix the root cause (e.g. Git mode `100755` for `npm/bin/sce.js`, packaging step); add a smoke script that packs `npm/`, builds the local fixture release (stub binary archive, signed manifest with a test key swapped into the staged package copy, loopback HTTPS server), installs into an isolated prefix with `SCE_NPM_RELEASE_BASE_URL`, asserts the packed `package/bin/sce.js` mode, and runs `sce --help` and `sce version`. Out — manifest validation and extractor changes (T02/T03), flake/release wiring (T04).
+  - Dependencies: none
+  - Done when: the smoke script fails on the pre-fix tree for the reproduced reason and passes after the fix; root cause is recorded in task evidence.
+  - Verify: `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash <smoke-script>` before and after the fix; `git ls-files -s npm/bin/sce.js`; `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`.
+  - Context synchronization: pending
+
+- [ ] T02: `Validate signed manifest identity before archive download` (status:todo)
+  - Task ID: T02
+  - Scope: In — after `parseVerifiedReleaseManifest`, validate `version` equals package version, `binary === "sce"`, exactly one artifact for the target triple, `archive` equals `getArchiveName(version, target)`, `checksum_sha256` matches `/^[0-9a-f]{64}$/`; drop the `artifact.archive ??` fallback trust; update `selectReleaseArtifact` and existing fixtures (`abc123` checksum) accordingly; negative tests for version mismatch, wrong binary, missing/duplicate target, invalid archive name, invalid digest, each asserting no archive download. Out — extraction and install mechanics.
+  - Dependencies: T01
+  - Done when: every inconsistency is rejected with a specific error before `downloadArchive` is invoked, valid manifests still install, and the bundled key/signature flow is unchanged.
+  - Verify: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`; `nix develop -c biome check npm`.
+  - Context synchronization: pending
+
+- [ ] T03: `Replace tar extraction with bounded validating extractor and atomic install` (status:todo)
+  - Task ID: T03
+  - Scope: In — new `npm/lib/` archive module reading gzip+ustar with size/entry caps and the allowed-entry rules; extract only `bin/sce` into a fresh staging dir; stage into `runtime/` with a temp name, `chmod 0755`, `fsync`, and `rename` over `runtime/sce`; clean up staging on any failure; tests with generated fixture archives for absolute path, `..` traversal, symlink, hardlink, duplicate entry, unexpected type (e.g. FIFO/char device), entry outside root, oversize payload, missing or non-regular `bin/sce`, checksum failure, and an interrupted install (failure injected between staging and rename) preserving a prior valid `runtime/sce`. Out — manifest identity rules (T02), flake/release wiring.
+  - Dependencies: T02
+  - Done when: `install.js` no longer spawns `tar`; all negative fixtures are rejected without writing outside staging; a prior valid install survives every failure path; the T01 smoke script still passes.
+  - Verify: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`; `nix shell nixpkgs#ripgrep -c rg -n 'spawnSync' npm/lib`; rerun the T01 smoke script.
+  - Context synchronization: pending
+
+- [ ] T04: `Wire packed-package smoke into flake checks and release-npm-package` (status:todo)
+  - Task ID: T04
+  - Scope: In — add new `npm/` files to `npmSrc`; add a `npm-pack-smoke` flake check running the T01 smoke script in the sandbox (nodejs, openssl); make `release-npm-package` assert the packed tarball's `package/bin/sce.js` is executable and run the smoke against the produced tarball before reporting success; confirm `release-sce.yml` already invokes `release-npm-package` (edit only if needed). Out — publish workflow behavior changes, real network release testing.
+  - Dependencies: T03
+  - Done when: `nix flake check` includes and passes the new check; `release-npm-package` fails on a `0644` launcher in a scratch copy and passes on the real tree.
+  - Verify: `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs`; `nix run .#release-npm-package -- --version "$(cat .version)" --out-dir <scratch>`; `nix run nixpkgs#actionlint` if a workflow is touched.
+  - Context synchronization: pending
+
+- [ ] T05: `Correct npm README targets and update distribution contract` (status:todo)
+  - Task ID: T05
+  - Scope: In — `npm/README.md` musl target triples and a short note on manifest identity/safe-extraction failures in troubleshooting; `context/sce/cli-npm-distribution-contract.md` install-flow, validation, atomic-install, and verification-baseline updates; glossary/overview entries for the new flake check. Out — documentation site changes.
+  - Dependencies: T04
+  - Done when: README matches `npm/lib/platform.js`; contract describes implemented behavior and the new verification commands.
+  - Verify: `nix shell nixpkgs#ripgrep -c rg -n 'linux-gnu' npm/README.md` (no match); `nix develop -c biome check npm`.
+  - Context synchronization: pending
+
+## Open questions
+
+- Is the loopback HTTPS + self-signed certificate fixture acceptable inside the Nix build sandbox for `npm-pack-smoke`? If sandbox loopback networking proves unavailable on a CI runner, the fallback is to keep the smoke as a `nix run` app invoked by `release-npm-package` and PR CI instead of a pure flake check.
+- Should the smoke additionally run the real `nix build .#default` binary inside the fixture archive on the host platform? This gives real-binary coverage for the host only, at the cost of making the check depend on the full CLI build; the plan defaults to a stub binary.
