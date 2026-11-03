@@ -90,13 +90,24 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Factor release-fixture setup out of pack-smoke.sh into a shared harness` (status:todo)
+- [x] T01: `Factor release-fixture setup out of pack-smoke.sh into a shared harness` (status:done)
   - Task ID: T01
   - Scope: In — new shared harness under `npm/test/` (TLS cert generation, `fixture-release-server.mjs` start/wait/stop, throwaway-key staging, canonical archive + signed manifest build, isolated npm install, layout/mode/version assertions, `prepare`/`serve` entrypoint); `npm/test/pack-smoke.sh` rewritten as a consumer with unchanged CLI flags and `pack-smoke:` messages; `flake.nix` file sets if the new file needs inclusion. Out — new VM scenarios, canary script, installer code, server behavior changes.
   - Dependencies: none
   - Done when: pack-smoke fixture and `--binary` modes produce the same assertions and messages as before; the existing VM test still passes; the harness's `prepare` output can be served and installed by a separate process; shellcheck clean.
   - Verify: `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs`; host `--binary` smoke with `./result/bin/sce`; `nix build .#npm-nixos-vm --print-build-logs`; `nix shell nixpkgs#shellcheck -c shellcheck npm/test/*.sh`; re-run predecessor faults (non-executable launcher, garbage `--binary`) from a scratch cwd and confirm identical messages.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `npm/test/release-fixture.sh` (new, Git mode 100755, added intent-to-add so the flake sees it), `npm/test/pack-smoke.sh`, `flake.nix` (`npmSrc` file set gains `./npm/test/release-fixture.sh`).
+  - Result: `npm/test/release-fixture.sh` is a sourced Bash library (`fixture_require_tools`, `fixture_assert_launcher_mode`, `fixture_stage_package`, `fixture_resolve_platform`, `fixture_generate_keys`, `fixture_build_release`, `fixture_pack`, `fixture_serve_start`/`fixture_serve_stop`, `fixture_npm_install`, `fixture_assert_install_layout`; messages use the caller-set `FIXTURE_LOG_PREFIX`) and a CLI entrypoint. `prepare <dir> [--package-dir|--tarball] [--binary]` writes `stage/`, `pack/<tgz>`, `release/`, `keys/{signing,tls-cert,tls-key}.pem`, and a shell-sourceable `fixture.env` (`FIXTURE_VERSION`, `FIXTURE_TARGET_TRIPLE`, `FIXTURE_TARBALL`, `FIXTURE_RELEASE_DIR`, `FIXTURE_TLS_CERT`, `FIXTURE_TLS_KEY`), and refuses to run on an already prepared dir. `serve <dir> [--port-file f]` execs `fixture-release-server.mjs` in the foreground (default port file `<dir>/server-port`). `pack-smoke.sh` sources the harness with prefix `pack-smoke`, and its flags, usage text (plus one note that the fixture uses a throwaway key), step order, and messages are unchanged. `fixture-release-server.mjs` is unchanged. Deviation from the gate: `prepare` takes no `--expected-version`, because version assertions stay with the consumer.
+  - Verify outcomes:
+    - `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs`: passed (`pack-smoke: OK (sce --help, sce version)`).
+    - Host `--binary` smoke with a Nix-built `sce-release` (`nix build .#sce-release` into a scratch out-link, then `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh --binary <out>/bin/sce`): passed (`real binary reported version 0.4.0-pre-alpha-v12`, `OK (real binary: ...)`).
+    - `nix build .#npm-nixos-vm --print-build-logs`: passed on this host under TCG (no `/dev/kvm`). Every existing subtest finished, and the log shows the unchanged `pack-smoke:` lines and `parsed version: 0.4.0-pre-alpha-v12`.
+    - `nix shell nixpkgs#shellcheck -c shellcheck npm/test/*.sh` and with `-x`: passed, no findings.
+    - Predecessor faults from a scratch cwd, with output diffed against the pre-refactor script after normalizing temp paths: identical. Non-executable launcher: `pack-smoke: Packed package/bin/sce.js has mode -rw-r--r--; expected an executable mode ...`, exit 1. Garbage `--binary`: `pack-smoke: sce --help exited non-zero.`, exit 1. Clean fixture run: identical, exit 0.
+    - Separate-process reuse: `release-fixture.sh prepare <dir>`, then `release-fixture.sh serve <dir> --port-file f` in a background process, then sourcing `fixture.env` and running `npm install --offline` of `$FIXTURE_TARBALL` against it from another process. Passed: `sce fixture help`, `sce 0.4.0-pre-alpha-v12`, `runtime/sce` mode `755`. Re-running `prepare` on the same dir fails with `Fixture directory ... is already prepared.`
+  - Context impact: local to npm test tooling. The harness is a new reusable test surface. Durable docs for it are T06's scope (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
+  - Context synchronization: synced
 
 - [ ] T02: `Add VM subtest for skipped postinstall and npm rebuild recovery` (status:todo)
   - Task ID: T02

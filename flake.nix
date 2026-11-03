@@ -315,6 +315,7 @@
             ./npm/test/install.test.js
             ./npm/test/pack-smoke.sh
             ./npm/test/platform.test.js
+            ./npm/test/release-fixture.sh
             ./npm/test/tar-fixture.js
             ./scripts/lib/release-manifest-signing.mjs
           ];
