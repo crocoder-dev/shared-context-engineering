@@ -91,12 +91,21 @@ Current-state facts this plan starts from:
   - Context impact: localized to the npm launcher packaging/verification surface; affects `context/sce/cli-npm-distribution-contract.md` (launcher mode requirement, new local smoke script). No flake check or glossary changes yet (T04/T05).
   - Context synchronization: synced
 
-- [ ] T02: `Validate signed manifest identity before archive download` (status:todo)
+- [x] T02: `Validate signed manifest identity before archive download` (status:done)
   - Task ID: T02
   - Scope: In — after `parseVerifiedReleaseManifest`, validate `version` equals package version, `binary === "sce"`, exactly one artifact for the target triple, `archive` equals `getArchiveName(version, target)`, `checksum_sha256` matches `/^[0-9a-f]{64}$/`; drop the `artifact.archive ??` fallback trust; update `selectReleaseArtifact` and existing fixtures (`abc123` checksum) accordingly; negative tests for version mismatch, wrong binary, missing/duplicate target, invalid archive name, invalid digest, each asserting no archive download. Out — extraction and install mechanics.
   - Dependencies: T01
   - Done when: every inconsistency is rejected with a specific error before `downloadArchive` is invoked, valid manifests still install, and the bundled key/signature flow is unchanged.
   - Verify: `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'`; `nix develop -c biome check npm`.
+  - Completed: 2026-11-03
+  - Files changed: `npm/lib/platform.js`, `npm/lib/install.js`, `npm/test/install.test.js`, `npm/test/platform.test.js`.
+  - Result: Added `validateReleaseManifestIdentity(manifest, { version, targetTriple })` to `npm/lib/platform.js`; it requires a JSON object manifest, exact `version` equality with the package version, `binary === "sce"`, exactly one artifact for the target (via `selectReleaseArtifact`, which now rejects duplicates with `found N artifacts for target <triple>; expected exactly one.`), `archive === getArchiveName(version, target)`, and `checksum_sha256` matching `/^[0-9a-f]{64}$/`, returning `{ artifact, archiveName, expectedChecksum }`. `installBinaryWithDependencies` calls it immediately after `loadReleaseManifest`, before creating the temp dir or downloading; the `artifact.archive ??` fallback and the truthy-only checksum check were removed, so the downloaded archive name is always canonical. Signature verification, the bundled public key, and `parseVerifiedReleaseManifest` are unchanged. Test fixtures now use full canonical manifests (`binary`, `archive`, 64-hex checksum) instead of `abc123`; new negative tests cover version mismatch, wrong/missing binary, missing target, duplicate target, non-canonical/missing archive, and short/uppercase/non-hex/missing checksum, each asserting zero archive downloads; a positive test asserts the canonical archive URL is requested.
+  - Verify outcomes:
+    - `nix develop -c sh -c 'cd npm && bun test ./test/*.test.js'` -> 38 pass, 0 fail.
+    - `nix develop -c biome check npm` -> no errors; one pre-existing warning (unused `getRepositorySlug` in `npm/lib/install.js`, untouched).
+    - Additional regression: `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh` -> `pack-smoke: OK (sce --help, sce version)` (the T01 fixture manifest already carries canonical identity fields).
+  - Assumptions: per-artifact `version`/`binary` fields are not separately validated (AC3 covers top-level identity; the canonical archive name already encodes version and target). Version comparison is exact string equality.
+  - Context impact: localized to the npm installer trust flow; affects `context/sce/cli-npm-distribution-contract.md` (manifest identity validation rules and new error surface). No architecture, glossary, or flake check changes.
   - Context synchronization: pending
 
 - [ ] T03: `Replace tar extraction with bounded validating extractor and atomic install` (status:todo)

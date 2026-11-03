@@ -103,4 +103,20 @@ describe("selectReleaseArtifact", () => {
 			"No sce release artifact found for target x86_64-unknown-linux-musl.",
 		);
 	});
+
+	test("throws when target triple appears more than once", () => {
+		expect(() =>
+			selectReleaseArtifact(
+				{
+					artifacts: [
+						{ target_triple: "x86_64-unknown-linux-musl", archive: "a.tgz" },
+						{ target_triple: "x86_64-unknown-linux-musl", archive: "b.tgz" },
+					],
+				},
+				"x86_64-unknown-linux-musl",
+			),
+		).toThrow(
+			"Invalid sce release manifest: found 2 artifacts for target x86_64-unknown-linux-musl; expected exactly one.",
+		);
+	});
 });

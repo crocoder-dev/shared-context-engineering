@@ -18,12 +18,37 @@ import {
 } from "../lib/install.js";
 import { getInstalledBinaryPath } from "../lib/platform.js";
 
+const FIXTURE_VERSION = "0.1.0";
+const FIXTURE_TARGET_TRIPLE = "x86_64-unknown-linux-musl";
+const FIXTURE_ARCHIVE_NAME = `sce-v${FIXTURE_VERSION}-${FIXTURE_TARGET_TRIPLE}.tar.gz`;
+const FIXTURE_CHECKSUM = createHash("sha256")
+	.update("fixture-archive")
+	.digest("hex");
+const FIXTURE_PLATFORM = {
+	targetTriple: FIXTURE_TARGET_TRIPLE,
+	os: "linux",
+	arch: "x64",
+};
+
+function createArtifactFixture(overrides = {}) {
+	return {
+		version: FIXTURE_VERSION,
+		binary: "sce",
+		archive: FIXTURE_ARCHIVE_NAME,
+		checksum_file: `${FIXTURE_ARCHIVE_NAME}.sha256`,
+		checksum_sha256: FIXTURE_CHECKSUM,
+		target_triple: FIXTURE_TARGET_TRIPLE,
+		os: "linux",
+		arch: "x64",
+		...overrides,
+	};
+}
+
 function createManifestFixture(overrides = {}) {
 	const manifest = {
-		version: "0.1.0",
-		artifacts: [
-			{ target_triple: "x86_64-unknown-linux-musl", checksum_sha256: "abc123" },
-		],
+		version: FIXTURE_VERSION,
+		binary: "sce",
+		artifacts: [createArtifactFixture()],
 		...overrides,
 	};
 	const manifestPayload = JSON.stringify(manifest);
@@ -308,12 +333,7 @@ describe("npm installer trust flow", () => {
 			.update(archiveContents)
 			.digest("hex");
 		const { manifestPayload, publicKey, signature } = createManifestFixture({
-			artifacts: [
-				{
-					target_triple: "x86_64-unknown-linux-musl",
-					checksum_sha256: expectedChecksum,
-				},
-			],
+			artifacts: [createArtifactFixture({ checksum_sha256: expectedChecksum })],
 		});
 		let extractCalls = 0;
 
@@ -350,7 +370,7 @@ describe("npm installer trust flow", () => {
 		const archiveContents = "verified-archive";
 		const checksum = createHash("sha256").update(archiveContents).digest("hex");
 		const { manifestPayload, publicKey, signature } = createManifestFixture({
-			artifacts: [{ target_triple: targetTriple, checksum_sha256: checksum }],
+			artifacts: [createArtifactFixture({ checksum_sha256: checksum })],
 		});
 		const tempDir = path.join(
 			tmpdir(),
@@ -411,5 +431,127 @@ describe("npm installer trust flow", () => {
 			destinationPath: installedBinaryPaths[0].destinationPath,
 			mode: 0o755,
 		});
+	});
+});
+
+describe("npm installer manifest identity validation", () => {
+	async function expectRejectedBeforeDownload(manifestOverrides, message) {
+		const { manifestPayload, publicKey, signature } =
+			createManifestFixture(manifestOverrides);
+		let archiveDownloads = 0;
+
+		await expect(
+			installBinaryWithDependencies({
+				supportedPlatform: FIXTURE_PLATFORM,
+				version: FIXTURE_VERSION,
+				loadReleaseManifest: () =>
+					loadVerifiedReleaseManifest(FIXTURE_VERSION, {
+						downloadManifest: async () => manifestPayload,
+						downloadManifestSignature: async () => signature,
+						publicKeyPem: publicKey,
+					}),
+				createTempDir: () => {
+					throw new Error("temp dir must not be created");
+				},
+				downloadArchive: async () => {
+					archiveDownloads += 1;
+				},
+			}),
+		).rejects.toThrow(message);
+
+		expect(archiveDownloads).toBe(0);
+	}
+
+	test("rejects a manifest whose version differs from the package version", async () => {
+		await expectRejectedBeforeDownload(
+			{ version: "0.1.1" },
+			'Invalid sce release manifest: version "0.1.1" does not match npm package version "0.1.0".',
+		);
+	});
+
+	test("rejects a manifest whose binary is not sce", async () => {
+		await expectRejectedBeforeDownload(
+			{ binary: "not-sce" },
+			'Invalid sce release manifest: binary "not-sce" is not "sce".',
+		);
+	});
+
+	test("rejects a manifest with a missing binary field", async () => {
+		await expectRejectedBeforeDownload(
+			{ binary: undefined },
+			'Invalid sce release manifest: binary undefined is not "sce".',
+		);
+	});
+
+	test("rejects a manifest without an artifact for the current target", async () => {
+		await expectRejectedBeforeDownload(
+			{
+				artifacts: [
+					createArtifactFixture({ target_triple: "aarch64-apple-darwin" }),
+				],
+			},
+			`No sce release artifact found for target ${FIXTURE_TARGET_TRIPLE}.`,
+		);
+	});
+
+	test("rejects a manifest with duplicate artifacts for the current target", async () => {
+		await expectRejectedBeforeDownload(
+			{ artifacts: [createArtifactFixture(), createArtifactFixture()] },
+			`Invalid sce release manifest: found 2 artifacts for target ${FIXTURE_TARGET_TRIPLE}; expected exactly one.`,
+		);
+	});
+
+	test("rejects an artifact whose archive name is not canonical", async () => {
+		await expectRejectedBeforeDownload(
+			{ artifacts: [createArtifactFixture({ archive: "../evil.tar.gz" })] },
+			`Invalid sce release artifact for target ${FIXTURE_TARGET_TRIPLE}: archive "../evil.tar.gz" does not match expected "${FIXTURE_ARCHIVE_NAME}".`,
+		);
+	});
+
+	test("rejects an artifact with a missing archive name", async () => {
+		await expectRejectedBeforeDownload(
+			{ artifacts: [createArtifactFixture({ archive: undefined })] },
+			`Invalid sce release artifact for target ${FIXTURE_TARGET_TRIPLE}: archive undefined does not match expected "${FIXTURE_ARCHIVE_NAME}".`,
+		);
+	});
+
+	for (const [label, checksum] of [
+		["short", "abc123"],
+		["uppercase", FIXTURE_CHECKSUM.toUpperCase()],
+		["non-hex", "g".repeat(64)],
+		["missing", undefined],
+	]) {
+		test(`rejects an artifact with a ${label} checksum_sha256`, async () => {
+			await expectRejectedBeforeDownload(
+				{ artifacts: [createArtifactFixture({ checksum_sha256: checksum })] },
+				`Invalid sce release artifact ${FIXTURE_ARCHIVE_NAME}: checksum_sha256 must be 64 lowercase hexadecimal characters.`,
+			);
+		});
+	}
+
+	test("downloads the canonical archive name for a valid manifest", async () => {
+		const { manifestPayload, publicKey, signature } = createManifestFixture();
+		const archiveUrls = [];
+
+		await expect(
+			installBinaryWithDependencies({
+				supportedPlatform: FIXTURE_PLATFORM,
+				version: FIXTURE_VERSION,
+				loadReleaseManifest: () =>
+					loadVerifiedReleaseManifest(FIXTURE_VERSION, {
+						downloadManifest: async () => manifestPayload,
+						downloadManifestSignature: async () => signature,
+						publicKeyPem: publicKey,
+					}),
+				downloadArchive: async (url) => {
+					archiveUrls.push(url);
+				},
+				checksumFile: async () => "mismatch",
+			}),
+		).rejects.toThrow("Downloaded sce archive checksum mismatch");
+
+		expect(archiveUrls).toEqual([
+			`${getReleaseBaseUrl(FIXTURE_VERSION)}/${FIXTURE_ARCHIVE_NAME}`,
+		]);
 	});
 });

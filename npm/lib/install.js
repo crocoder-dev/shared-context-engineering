@@ -21,12 +21,11 @@ import { fileURLToPath } from "node:url";
 
 import {
 	formatUnsupportedPlatformMessage,
-	getArchiveName,
 	getArchiveRoot,
 	getInstalledBinaryPath,
 	getReleaseManifestName,
 	resolveSupportedPlatform,
-	selectReleaseArtifact,
+	validateReleaseManifestIdentity,
 } from "./platform.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -343,19 +342,10 @@ export async function installBinaryWithDependencies({
 	}
 
 	const releaseManifest = await loadReleaseManifest(version);
-	const artifact = selectReleaseArtifact(
+	const { archiveName, expectedChecksum } = validateReleaseManifestIdentity(
 		releaseManifest,
-		supportedPlatform.targetTriple,
+		{ version, targetTriple: supportedPlatform.targetTriple },
 	);
-	const archiveName =
-		artifact.archive ?? getArchiveName(version, supportedPlatform.targetTriple);
-	const expectedChecksum = artifact.checksum_sha256;
-
-	if (!expectedChecksum) {
-		throw new Error(
-			`Release artifact ${archiveName} is missing checksum_sha256 metadata.`,
-		);
-	}
 
 	const tempDir = createTempDir();
 
