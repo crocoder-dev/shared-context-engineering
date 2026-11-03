@@ -6,7 +6,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 
 - The npm package name is `@crocoder-dev/sce`.
 - The committed package source lives under `npm/`.
-- `npm/README.md` documents the package as a thin launcher, lists the supported npm platform-to-target-triple matrix, and distinguishes npm `postinstall`/download/signature/checksum/permission failures from runtime loader failures caused by bad native release artifact linkage.
+- `npm/README.md` documents the package as a thin launcher, lists the supported npm platform-to-target-triple matrix (musl Linux triples, matching `npm/lib/platform.js`), summarizes manifest identity validation, bounded extraction, and atomic install, and distinguishes npm `postinstall`/download/signature/manifest-identity/checksum/archive-validation/permission failures from runtime loader failures caused by bad native release artifact linkage.
 - `npm/package.json` exposes the `sce` binary through `bin/sce.js`.
 - `npm/bin/sce.js` is committed as Git mode `100755`. `release-npm-package` copies `npm/` with `cp -R` and `npm pack` records filesystem modes verbatim, so the launcher's executable bit in Git is what makes the packed `package/bin/sce.js` entry executable. npm, bun, and pnpm re-chmod bin targets while linking, which masks a non-executable entry for those installers but not for consumers that execute the packed file directly.
 - The npm package is a thin launcher package, not a separate build pipeline.
