@@ -176,13 +176,38 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local to the npm VM test. The new subtest is documented in T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
   - Context synchronization: synced
 
-- [ ] T05: `Add VM subtest for minimal runtime dependencies` (status:todo)
+- [x] T05: `Add VM subtest for minimal runtime dependencies` (status:done)
   - Task ID: T05
   - Scope: In — `nix/tests/npm-nixos-vm.nix`: a restricted bin dir containing only `node`; run `.bin/sce --help` and `version --format json` under `env -i PATH=<that dir> HOME=…`; run `runtime/sce --help` and `version --format json` under `env -i PATH=/var/empty`; parse JSON in the Python test script; assert that `tar`, `curl`, `gzip`, and `bash` do not resolve on the restricted PATH, that `runtime/sce` has no ELF `INTERP` header (via `binutils` `readelf -l`, used only by the test driver), and that `/lib64/ld-linux-x86-64.so.2` does not exist. Out — the Git scenario's environment (T04).
   - Dependencies: T04
   - Done when: the subtest passes without any fallback to the system PATH.
   - Verify: `nix build .#npm-nixos-vm --print-build-logs`; faults in a scratch copy: (a) add `tar` to the restricted dir, (b) feed a dynamically linked binary with an interpreter as `--binary`; record each failing assertion.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `nix/tests/npm-nixos-vm.nix`.
+  - Result: New `minimalScenario = mkScenario "minimal"` plus let bindings: `minimalNodeBinDir`, `minimalHomeDir`, `absentRuntimeTools` (`tar curl gzip bash`), `fhsLoader`, `readelf` (`binutils-unwrapped`, used only by the test driver), `minimalRuntimeBinary`, and the `env -i` prefixes `minimalLauncherEnv` (`PATH=<node-bin>`) and `minimalBinaryEnv` (`PATH=/var/empty`). The new `assertToolsAbsent label path` helper fails if any of those tools resolves on the given PATH.
+    - The VM node now sets `environment.stub-ld.enable = false`. The locked nixpkgs installs a stub loader at `/lib64/ld-linux-x86-64.so.2` by default, so without this the absence assertion can never hold. Earlier subtests are unaffected.
+    - New subtest `minimal runtime dependencies`:
+      - It prepares, serves, installs, and stops through the shared scenario helpers.
+      - It builds `node-bin/` with only a `node` symlink and asserts the listing is exactly `['node']`.
+      - It asserts that the four tools resolve on neither the launcher PATH nor `/var/empty`.
+      - Static checks: `readelf -h` confirms an ELF, `readelf -lW` shows no `INTERP`/`program interpreter`, and `/lib64/ld-linux-x86-64.so.2` is absent.
+      - It runs `.bin/sce --help` and `version --format json` under `env -i PATH=<node-bin> HOME=…`, then `runtime/sce --help` and `version --format json` under `env -i PATH=/var/empty HOME=…`, with absolute `env` and binary paths. Each JSON is parsed with `json.loads`, and `.version` is asserted. Nothing falls back to the system PATH.
+  - Verify outcomes:
+    - `nix build .#npm-nixos-vm --print-build-logs`: passed with KVM (`Hypervisor detected: KVM`). Every earlier subtest passed. The new subtest logs:
+      - `launcher PATH entries: ['node']`
+      - `launcher PATH: tar curl gzip bash do not resolve on PATH=…/minimal/node-bin` and `binary PATH: tar curl gzip bash do not resolve on PATH=/var/empty`
+      - `runtime/sce: no ELF INTERP program header`, `no FHS loader at /lib64/ld-linux-x86-64.so.2`
+      - `launcher: --help under env -i with only node on PATH`, `launcher: parsed version: 0.4.0-pre-alpha-v12`
+      - `runtime/sce: --help under env -i with PATH=/var/empty`, `runtime/sce: parsed version: 0.4.0-pre-alpha-v12`
+      - The subtest finished in 8.16s.
+    - Fault (a), a scratch worktree that symlinks `tar` into `node-bin/`, failed with `Test "minimal runtime dependencies" failed with error: "launcher PATH holds ['node', 'tar'], expected only node"`.
+    - Fault (a2), the same worktree change with the listing assertion removed to exercise the tool check, failed with `launcher PATH: tar resolves on PATH=/home/sce-tester/scenarios/minimal/node-bin` and a `Test "minimal runtime dependencies" failed` error.
+    - Fault (b), a scratch worktree where the minimal scenario's fixture uses `--binary ${pkgs.hello}/bin/hello`, failed with `Test "minimal runtime dependencies" failed with error: "runtime/sce requests an ELF interpreter: … [Requesting program interpreter: /nix/store/…-glibc-2.42-67/lib/ld-linux-x86-64.so.2]"`.
+    - All scratch worktrees were removed (`git worktree list` shows none for this repo), and the main worktree has no fault residue.
+    - `nix shell nixpkgs#nixfmt -c nixfmt --check nix/tests/npm-nixos-vm.nix`: passed.
+    - Observation outside T05's scope, unchanged: in the passing run, the T03 `archive checksum mismatch` `npm rebuild` printed `Downloaded sce archive checksum mismatch … received 0`. It then hung until the NixOS test driver's 900s `execute` timeout killed it (`npm rebuild exited 124`; guest clock 40s → 940s). The T03 assertion accepts any non-zero exit plus the message, so the subtest passed. The three fault runs completed that step normally (subtest 25–27s), and T03's own runs exited 1. The hang is intermittent. It points at a possible installer or fixture-server hang after a checksum mismatch, and at T03 accepting exit 124. Both are outside T05's scope and are left for a follow-up decision.
+  - Context impact: local to the npm VM test. The new subtest is documented in T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
+  - Context synchronization: synced
 
 - [ ] T06: `Document the VM scenarios and the fixture-versus-exact-artifact distinction` (status:todo)
   - Task ID: T06

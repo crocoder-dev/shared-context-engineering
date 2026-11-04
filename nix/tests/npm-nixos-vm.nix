@@ -33,6 +33,21 @@ let
   rebuildScenario = mkScenario "rebuild";
   reinstallScenario = mkScenario "reinstall";
   setupScenario = mkScenario "setup";
+  minimalScenario = mkScenario "minimal";
+
+  minimalNodeBinDir = "${minimalScenario.dir}/node-bin";
+  minimalHomeDir = "${minimalScenario.dir}/minimal-home";
+  absentRuntimeTools = [
+    "tar"
+    "curl"
+    "gzip"
+    "bash"
+  ];
+  fhsLoader = "/lib64/ld-linux-x86-64.so.2";
+  readelf = "${pkgs.binutils-unwrapped}/bin/readelf";
+  minimalRuntimeBinary = "${minimalScenario.installedDir}/runtime/sce";
+  minimalLauncherEnv = "${pkgs.coreutils}/bin/env -i PATH=${minimalNodeBinDir} HOME=${minimalHomeDir}";
+  minimalBinaryEnv = "${pkgs.coreutils}/bin/env -i PATH=/var/empty HOME=${minimalHomeDir}";
 
   setupRepoDir = "${setupScenario.dir}/repo";
   setupNestedDir = "${setupRepoDir}/nested/cwd";
@@ -145,6 +160,18 @@ let
       ${command}
     '';
 
+  assertToolsAbsent =
+    label: path:
+    asScenarioUser minimalScenario.dir ''
+      for tool in ${pkgs.lib.escapeShellArgs absentRuntimeTools}; do
+        if PATH=${path} command -v "$tool" >/dev/null; then
+          echo "${label}: $tool resolves on PATH=${path}" >&2
+          false
+        fi
+      done
+      echo "${label}: ${toString absentRuntimeTools} do not resolve on PATH=${path}"
+    '';
+
   # Reruns postinstall in place against the scenario's fixture server.
   rebuildScenarioPackage =
     scenario:
@@ -165,6 +192,8 @@ pkgs.testers.runNixOSTest {
     networking.useDHCP = false;
     networking.interfaces = { };
     virtualisation.vlans = [ ];
+
+    environment.stub-ld.enable = false;
 
     users.users.${testUser} = {
       isNormalUser = true;
@@ -426,5 +455,51 @@ pkgs.testers.runNixOSTest {
         )
         machine.fail("grep -rlE '${npmDir}|/nix/store' ${setupRepoDir}/context")
         print("no SCE source path in the cwd ancestry or the bootstrapped context")
+
+    def assert_minimal_version(label, version_json):
+        print(f"{label}: version --format json: {version_json.strip()}")
+        reported_version = json.loads(version_json)["version"]
+        assert reported_version == ${builtins.toJSON expectedVersion}, f"{label}: sce version reported {reported_version!r}"
+        print(f"{label}: parsed version: {reported_version}")
+
+    with subtest("minimal runtime dependencies"):
+        import json
+
+        print(machine.succeed(${prepareScenarioFixture minimalScenario}))
+        machine.succeed(${startScenarioServer minimalScenario})
+        try:
+            print(machine.succeed(${installScenarioPackage minimalScenario}))
+        finally:
+            machine.succeed(${stopScenarioServer minimalScenario})
+
+        machine.succeed(${asScenarioUser minimalScenario.dir ''
+          mkdir -p ${minimalNodeBinDir} ${minimalHomeDir}
+          ln -s ${pkgs.nodejs}/bin/node ${minimalNodeBinDir}/node
+        ''})
+        node_bin_entries = machine.succeed("ls -A ${minimalNodeBinDir}").split()
+        print(f"launcher PATH entries: {node_bin_entries}")
+        assert node_bin_entries == ["node"], f"launcher PATH holds {node_bin_entries}, expected only node"
+        print(machine.succeed(${assertToolsAbsent "launcher PATH" minimalNodeBinDir}))
+        print(machine.succeed(${assertToolsAbsent "binary PATH" "/var/empty"}))
+
+        machine.succeed("${readelf} -h ${minimalRuntimeBinary} >/dev/null")
+        program_headers = machine.succeed("${readelf} -lW ${minimalRuntimeBinary}")
+        assert "INTERP" not in program_headers and "program interpreter" not in program_headers, (
+            f"runtime/sce requests an ELF interpreter:\n{program_headers}"
+        )
+        print("runtime/sce: no ELF INTERP program header")
+        machine.fail("test -e ${fhsLoader}")
+        print("no FHS loader at ${fhsLoader}")
+
+        machine.succeed(${asScenarioUser minimalScenario.dir "${minimalLauncherEnv} ${minimalScenario.launcher} --help >/dev/null"})
+        print("launcher: --help under env -i with only node on PATH")
+        assert_minimal_version("launcher", machine.succeed(
+            ${asScenarioUser minimalScenario.dir "${minimalLauncherEnv} ${minimalScenario.launcher} version --format json"}
+        ))
+        machine.succeed(${asScenarioUser minimalScenario.dir "${minimalBinaryEnv} ${minimalRuntimeBinary} --help >/dev/null"})
+        print("runtime/sce: --help under env -i with PATH=/var/empty")
+        assert_minimal_version("runtime/sce", machine.succeed(
+            ${asScenarioUser minimalScenario.dir "${minimalBinaryEnv} ${minimalRuntimeBinary} version --format json"}
+        ))
   '';
 }
