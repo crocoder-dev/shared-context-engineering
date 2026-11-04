@@ -153,13 +153,28 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local to the npm VM test. The new subtest and the shared scenario helpers are documented as part of T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
   - Context synchronization: synced
 
-- [ ] T04: `Add VM subtest running sce setup --bootstrap-context in an isolated Git repository` (status:todo)
+- [x] T04: `Add VM subtest running sce setup --bootstrap-context in an isolated Git repository` (status:done)
   - Task ID: T04
   - Scope: In — `nix/tests/npm-nixos-vm.nix`: add `git` to the node; as the test user with a dedicated Git-enabled PATH (node, git, coreutils) and isolated HOME/XDG dirs, `git init` a temp repo, run the installed `sce setup --bootstrap-context` from that repo and once with `--repo <path>` from an unrelated cwd, assert the baseline directories and files, append a sentinel to `context/overview.md`, rerun, and assert success, an identical file list, and the preserved sentinel. Out — target installs (`--claude` etc.), hooks, auth.
   - Dependencies: T03
   - Done when: the subtest passes, and no SCE source path appears in the cwd or the repo.
   - Verify: `nix build .#npm-nixos-vm --print-build-logs`; fault in a scratch copy: overwrite the sentinel before the second run and record the failing assertion.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `nix/tests/npm-nixos-vm.nix`.
+  - Result: New `setupScenario = mkScenario "setup"` plus let bindings for the repo dir, a nested cwd (`repo/nested/cwd`), the sentinel, the expected baseline dirs/files, and `setupToolsPath = lib.makeBinPath [ nodejs git coreutils ]`. New helpers:
+    - `installScenarioPackage`: npm install with postinstall against the scenario fixture server. The reinstall subtest now uses it in place of its inline copy, with the same behavior.
+    - `asSetupUser`: wraps `asScenarioUser` and exports `PATH` to only `setupToolsPath`, isolated `XDG_CONFIG_HOME`/`XDG_STATE_HOME`/`XDG_DATA_HOME`/`XDG_CACHE_HOME` under the scenario HOME, and `GIT_CONFIG_NOSYSTEM=1`.
+    - The new subtest `real sce setup --bootstrap-context` prepares and serves its own fixture, installs the package, and stops the server. Under the setup PATH it asserts that `tar`/`curl`/`gzip`/`bash`/`jq` do not resolve. It then runs `git init` on `~/scenarios/setup/repo` and adds a placeholder `origin` remote, because setup requires the configured repository remote.
+    - First run: `sce setup --bootstrap-context` from the repo root. It asserts the four dirs and six files, an exact sorted `context/` tree, and the `tmp/.gitignore` contents.
+    - It appends the sentinel to `context/overview.md`. Second run: from the nested cwd, it asserts the same tree, a byte-identical `overview.md`, and the preserved sentinel.
+    - Finally it asserts that the nested cwd resolves to the repo, the repo holds only `.git`, `context`, and `nested`, no ancestor of the repo is a Git checkout or holds `cli/Cargo.toml`, and no bootstrapped file mentions `~/npm` or `/nix/store`.
+  - Deviation: the planned `--repo <path>` run was replaced by a run from a nested subdirectory of the repo. The CLI rejects `--bootstrap-context` combined with `--repo` (`Option '--bootstrap-context' must be used alone`, `cli/src/services/setup/mod.rs`), and the CLI is out of scope. Per the user's mid-task instruction, the new code carries no explanatory comments. `git` was not added to `environment.systemPackages`: the scenario reaches it only through its dedicated PATH.
+  - Verify outcomes:
+    - `nix build .#npm-nixos-vm --print-build-logs`: passed. Every earlier subtest still passes. The new subtest logs `first run cwd: …/scenarios/setup/repo`, `Context baseline ensured.`, `first run: context tree: ['context/architecture.md', 'context/context-map.md', 'context/decisions', 'context/glossary.md', 'context/handovers', 'context/overview.md', 'context/patterns.md', 'context/plans', 'context/tmp', 'context/tmp/.gitignore']`, then `second run cwd: …/repo/nested/cwd`, `Context baseline ensured.`, `second run: context tree unchanged`, `second run: sentinel preserved: 'sce-tester sentinel: keep this line'`, `repo entries: ['context', '.git', 'nested']`, and `no SCE source path in the cwd ancestry or the bootstrapped context`.
+    - Fault (a scratch `git worktree` at HEAD plus the new test file, overwriting `context/overview.md` with `# Overview\n` before the second run): the build failed with `Test "real sce setup --bootstrap-context" failed with error: "sentinel lost from context/overview.md: '# Overview\n'"`. The worktree was removed, and the main worktree has no fault residue.
+    - `nix shell nixpkgs#nixfmt -c nixfmt --check nix/tests/npm-nixos-vm.nix`: passed.
+  - Context impact: local to the npm VM test. The new subtest is documented in T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
+  - Context synchronization: synced
 
 - [ ] T05: `Add VM subtest for minimal runtime dependencies` (status:todo)
   - Task ID: T05
