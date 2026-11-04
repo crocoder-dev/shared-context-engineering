@@ -317,13 +317,52 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: release workflow topology. The `assemble`/`release-canary`/`release` split and the secret scoping are documented in T10 (`context/sce/cli-release-artifact-contract.md`, `context/sce/cli-npm-distribution-contract.md`). No root context file content is expected to change.
   - Context synchronization: synced
 
-- [ ] T09: `Make publish-npm.yml a reusable workflow with pre- and post-publish canaries` (status:todo)
+- [x] T09: `Make publish-npm.yml a reusable workflow with pre- and post-publish canaries` (status:done)
   - Task ID: T09
   - Scope: In — `.github/workflows/publish-npm.yml`: add a `workflow_call` trigger with `release_tag`/`dry_run`/`prerelease` inputs and an explicit `NPM_TOKEN` secret, keeping `workflow_dispatch` and `release: published`. Jobs: `resolve` (parity and tag checks), `github-release-canary` (no secrets; downloads the asset and runs `release-canary.sh --github-release`), `publish` (needs the canary; `NPM_TOKEN` only in the publish step's env; skips when the exact version already exists with matching integrity and fails on differing integrity; supports dry-run), and `registry-canary` (no secrets; `--registry-version` with bounded retries; skipped on dry-run). `.github/workflows/release-sce.yml`: a `publish-npm` job that `needs: release` and `uses: ./.github/workflows/publish-npm.yml`, passing the tag, the prerelease flag, `dry_run: false`, and only `NPM_TOKEN`. Out — crates.io publishing, npm provenance changes.
   - Dependencies: T08
   - Done when: the trigger and dependency chain meets AC9, and actionlint passes.
   - Verify: `nix build .#checks.x86_64-linux.workflow-actionlint`; `grep -n 'NPM_TOKEN\|secrets' .github/workflows/publish-npm.yml .github/workflows/release-sce.yml`; inspect for no `secrets: inherit` and no `latest` resolution in canary commands.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `.github/workflows/publish-npm.yml`, `.github/workflows/release-sce.yml`.
+  - Result:
+    - `publish-npm.yml` triggers: `release: published` (kept), `workflow_dispatch` (kept; `dry_run` still defaults to `true`), and a new `workflow_call` with `release_tag` (required string), `dry_run` (boolean, default `false`), `prerelease` (boolean, default `false`), and an explicitly declared optional `NPM_TOKEN` secret. The workflow-level `contents: read` and the per-tag concurrency group are unchanged.
+    - Trigger mapping: the tag is `inputs.release_tag || github.event.release.tag_name`. `DRY_RUN` is `github.event_name != 'release' && inputs.dry_run || false`, and `PRE_RELEASE` reads the release payload for `release` events or `inputs.prerelease` otherwise. Because a called workflow sees the caller's `event_name` (`push` or `workflow_dispatch` from `release-sce.yml`), a call always maps to the call inputs.
+    - The single `publish` job is now four jobs, each with `harden-runner` and job-level `contents: read`:
+      - `resolve`: checks out the tag and runs the existing `.version`/`npm/package.json`/tag/prerelease parity checks. It derives the `next`/`latest` dist-tag and the normalized `dry_run` value, downloads `sce-v<version>-npm.tgz` with `gh release download` (`github.token`), and verifies the packed name and version. It outputs `tag`, `version`, `npm_tag`, `dry_run`, and `npm_tarball_sha256`.
+      - `github-release-canary` (needs `resolve`, no secret reference): installs Nix, checks out the tag, and runs `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/release-canary.sh --github-release <tag> --expected-version <version> --expected-sha256 <resolve sha>` (B2).
+      - `publish` (needs `resolve` and `github-release-canary`; `if` requires both `success`):
+        - It downloads the asset again and fails unless its SHA-256 equals the canary-verified `resolve` hash.
+        - `Check registry for an existing publication` compares `npm view @crocoder-dev/sce@<version> dist.integrity` with the local `sha512-` integrity. An empty result or `E404` means unpublished. A matching value sets `already_published=true`. A differing value or any other registry error fails the job.
+        - The dry-run step runs `npm publish --dry-run`.
+        - The publish step is the only place `secrets.NPM_TOKEN` appears in this file, as `NODE_AUTH_TOKEN` in that step's `env`. The former separate token-check step is folded into it. It writes a temporary `--userconfig` containing the literal `${NODE_AUTH_TOKEN}` reference, so the token never touches disk. `setup-node` no longer sets `registry-url`, so no placeholder auth token is exported to other steps.
+        - Both publish steps are skipped when `already_published` is `true`, which makes reruns idempotent.
+      - `registry-canary` (needs `resolve` and `publish`; `if` requires both `success` and `dry_run != 'true'`; no secret reference): runs `release-canary.sh --registry-version <version> --expected-version <version> --expected-sha256 <resolve sha>`. The script's bounded 10 × 30s registry retries, its byte/`dist.integrity` comparison with the GitHub tgz, and its exact-semver guard apply.
+    - `release-sce.yml` has a new `publish-npm` job: `needs: [resolve-release, release]`, an `if` requiring both `success`, `permissions: contents: read`, and `uses: ./.github/workflows/publish-npm.yml`. It passes `release_tag: needs.resolve-release.outputs.tag`, `dry_run: false`, `prerelease: github.event_name == 'workflow_dispatch' && inputs.prerelease || false` (the same expression as the release step), and `secrets: NPM_TOKEN: ${{ secrets.NPM_TOKEN }}` only. There is no `secrets: inherit`.
+  - Deviations and assumptions:
+    - The handoff hash is computed in `resolve` from the GitHub Release asset. It is not passed in from `release-sce.yml`'s B1 canary output, which keeps the `workflow_call` interface to the three planned inputs.
+    - `github.token` is used for `gh release download` in `resolve` and `publish`. It is not a `secrets.` reference. The canary jobs use the public release URL, as in T07.
+  - Verify outcomes:
+    - Actionlint:
+      - `nix build .#checks.x86_64-linux.workflow-actionlint --print-build-logs`: passed (exit 0).
+      - `nix shell nixpkgs#actionlint nixpkgs#shellcheck -c actionlint .github/workflows/publish-npm.yml .github/workflows/release-sce.yml`: passed with no findings.
+    - `grep -n 'NPM_TOKEN\|secrets' .github/workflows/publish-npm.yml .github/workflows/release-sce.yml`:
+      - `publish-npm.yml`: the `workflow_call` `secrets:`/`NPM_TOKEN:` declaration (lines 23–24), `NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}` in the `Publish package to npm` step `env` (line 302), and that step's error text (line 307).
+      - `release-sce.yml`: the signing key in `assemble`'s manifest step (line 238, unchanged), and the `publish-npm` job's explicit `secrets: NPM_TOKEN` (lines 417–418).
+      - No canary job references a secret.
+    - `grep -n 'inherit\|latest'`: no `secrets: inherit`. The only `latest` hits are the `next`/`latest` publish dist-tag selection and the input descriptions. Both canary commands pass an exact `.version`-derived semver, never a dist-tag.
+    - The `needs`/`if` chain was inspected:
+      - `release` → `publish-npm` (`release-sce.yml`).
+      - `resolve` → `github-release-canary` → `publish` → `registry-canary` (`publish-npm.yml`).
+      - `npm publish` is reachable only after a successful B2 canary. The registry canary runs only after a successful, non-dry-run `publish`, and a failure there fails the workflow.
+    - Local behavior check: the `Check registry for an existing publication` step script was extracted with `yq` and run against the published `sce-v0.4.0-pre-alpha-v12-npm.tgz`:
+      - Unmodified tgz at version `0.4.0-pre-alpha-v12`: exit 0 with `already_published=true` (matching `sha512-Dt3odIlX…UKA==`).
+      - The same bytes under an unpublished `0.4.0-pre-alpha-v999`: exit 0 with `already_published=false`.
+      - A byte-appended tgz: exit 1 with `… already published with integrity sha512-Dt3o…, which does not match the GitHub Release tarball integrity sha512-Q6fp…`.
+      - The extracted publish step shows the heredoc writes the literal `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` line. The scratch directory was removed.
+    - Not proven here: live `workflow_call` handoff, B2 and registry canaries inside Actions, and real `npm publish`/rerun behavior. These need a real release run.
+  - Context impact: release and npm publication workflow topology (the `workflow_call` trigger, the four-job publish chain, `NPM_TOKEN` scoping, idempotent reruns). Durable documentation is T10's scope (`context/sce/cli-npm-distribution-contract.md`, `context/sce/cli-first-install-channels-contract.md`, `context/sce/cli-release-artifact-contract.md`). No root context file content is expected to change.
+  - Context synchronization: synced
 
 - [ ] T10: `Document release-security canary gates and npm publication topology` (status:todo)
   - Task ID: T10

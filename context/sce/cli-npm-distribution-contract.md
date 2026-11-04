@@ -45,13 +45,19 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 
 - npm registry publication is a separate downstream publish stage from GitHub release packaging.
 - `.github/workflows/publish-npm.yml` is the dedicated npm publish workflow.
-- It triggers from a published GitHub release or manual dispatch.
+- It runs through `workflow_call` from the `publish-npm` job of `.github/workflows/release-sce.yml`, which `needs: release` and passes `release_tag`, `prerelease`, `dry_run: false`, and only the `NPM_TOKEN` secret explicitly (no `secrets: inherit`). `release: published` (for externally created releases, because releases created with `GITHUB_TOKEN` do not fire it) and `workflow_dispatch` (defaulting to dry-run) start the same pipeline. The per-tag concurrency group serializes overlapping runs.
+- Its jobs run in order `resolve` → `github-release-canary` → `publish` → `registry-canary`:
+  - `resolve` performs the parity checks below, downloads the GitHub Release tarball, and records its SHA-256.
+  - `github-release-canary` (no secrets) runs `npm/test/release-canary.sh --github-release <tag> --expected-version <version> --expected-sha256 <sha>`. `npm publish` cannot run unless it passes.
+  - `publish` downloads the tarball again and requires the same SHA-256. It compares the registry `dist.integrity` for the exact version with the tarball's sha512: a match skips `npm publish` (an idempotent rerun), a different value fails, and an absent version is published. `NPM_TOKEN` is exposed only to the `Publish package to npm` step.
+  - `registry-canary` (no secrets, skipped on dry-run) runs `npm/test/release-canary.sh --registry-version <version> --expected-version <version> --expected-sha256 <sha>`. The script retries registry availability a bounded number of times and fails the workflow on any byte, integrity, or install mismatch.
+  - The live `workflow_call` handoff, both remote canaries, and rerun behavior can only be confirmed by a real release run.
 - It validates parity across repo-root `.version`, checked-in `npm/package.json`, and the target release tag before attempting publication.
 - It downloads the canonical `sce-v<version>-npm.tgz` asset from the corresponding GitHub release rather than rebuilding or mutating package metadata during publish.
 - It verifies the downloaded tarball still declares package name `@crocoder-dev/sce` and version `<.version>` before `npm publish`.
 - For GitHub prerelease events, manual dispatches marked `prerelease: true`, or checked-in semver prerelease versions containing `-`, the workflow publishes with npm dist-tag `next` so the package does not become `latest`.
 - When a publish run is explicitly marked prerelease, the workflow requires `.version` to be a semver prerelease version and fails before publishing if it is not.
-- Real publication requires `NPM_TOKEN`; manual dispatch can remain on a dry-run path via `npm publish --dry-run`.
+- Real publication requires `NPM_TOKEN`, supplied to the publish step through a temporary `--userconfig` that references `${NODE_AUTH_TOKEN}`. Dry-run runs use `npm publish --dry-run` and skip the registry canary.
 - The npm publish workflow publishes the already-versioned checked-in `npm/` package and does not invent or bump a release version during workflow execution.
 - The npm installer continues to trust GitHub Releases as the canonical host for signed manifest and native binary artifacts.
 - Native binary portability hygiene is owned by the shared release artifact surface before archive publication, including macOS `libiconv` install-name sanitization, Linux/macOS forbidden `/nix/store/` audits, and reusable-workflow extracted-binary smoke validation; npm continues to consume the signed release manifest and checksum-verified native archive without adding a separate npm-native build or dylib repair path.

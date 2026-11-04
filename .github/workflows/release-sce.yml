@@ -399,3 +399,20 @@ jobs:
             dist/flatpak-bundle/*.flatpak
             dist/flatpak-bundle/*.sha256
             dist/flatpak-bundle/*.json
+
+  publish-npm:
+    needs:
+      - resolve-release
+      - release
+    if: |
+      needs.resolve-release.result == 'success' &&
+      needs.release.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/publish-npm.yml
+    with:
+      release_tag: ${{ needs.resolve-release.outputs.tag }}
+      dry_run: false
+      prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
