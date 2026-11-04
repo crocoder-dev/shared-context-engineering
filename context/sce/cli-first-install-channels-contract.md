@@ -32,10 +32,10 @@ No other install channels are in scope for the current implementation stage.
 - npm registry publication should also consume the checked-in package version aligned to `.version` without workflow-side version bumping.
 - Release-to-npm topology:
   - `.github/workflows/release-sce.yml` runs `assemble` → `release-canary` (B1 exact-artifact canary, `npm/test/release-canary.sh --release-dir`) → `release` (GitHub Release creation) → `publish-npm`.
-  - `publish-npm` calls `.github/workflows/publish-npm.yml` through `workflow_call` and passes only `NPM_TOKEN`.
+  - `publish-npm` calls `.github/workflows/publish-npm.yml` through `workflow_call`, passes the B1 `npm_tarball_sha256` as `expected_npm_tarball_sha256`, and passes only `NPM_TOKEN` as a secret.
   - `publish-npm.yml` then runs `resolve` → `github-release-canary` (B2) → `publish` → `registry-canary`.
   - The signing key is confined to one `assemble` step and `NPM_TOKEN` to the `Publish package to npm` step. No canary job references a secret.
-  - `release: published` and `workflow_dispatch` start the same publish pipeline.
+  - `workflow_call` is the only trigger of `publish-npm.yml`; there is no `release: published` or `workflow_dispatch` entry point, so every publication is bound to a B1-verified digest.
   - Details and rerun guidance live in `cli-release-artifact-contract.md` and `cli-npm-distribution-contract.md`. The end-to-end chain can only be proven by a real release run.
 - Flatpak is source-built and must not consume `nix build .#sce`, native GitHub Release binary archives, npm native binaries, or any other prebuilt `sce` artifact.
 - GitHub Release Flatpak assets include source-manifest package assets and source-built `.flatpak` bundle assets for the source-built `dev.crocoder.sce` Flatpak channel. Automatic Flathub submission, prebuilt (non-source-built) Flatpak binaries/bundles, OSTree repositories, release-version bumping, and Flatpak publication beyond the approved GitHub Release asset upload remain out of scope.

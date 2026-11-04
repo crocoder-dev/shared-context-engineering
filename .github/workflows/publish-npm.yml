@@ -1,13 +1,14 @@
 name: Publish sce npm package
 
 on:
-  release:
-    types:
-      - published
   workflow_call:
     inputs:
       release_tag:
         description: "Release tag to publish (for example v0.1.0)"
+        required: true
+        type: string
+      expected_npm_tarball_sha256:
+        description: "SHA-256 of the npm tarball verified by the B1 release-canary job in release-sce.yml"
         required: true
         type: string
       dry_run:
@@ -24,27 +25,12 @@ on:
       NPM_TOKEN:
         description: "npm automation token used only by the publish step"
         required: false
-  workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Release tag to publish (for example v0.1.0)"
-        required: false
-      dry_run:
-        description: "Run npm publish --dry-run instead of publishing"
-        required: false
-        default: true
-        type: boolean
-      prerelease:
-        description: "Publish with the next dist-tag instead of latest; version must include semver prerelease metadata"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: publish-npm-${{ github.event.release.tag_name || inputs.release_tag || github.run_id }}
+  group: publish-npm-${{ inputs.release_tag }}
   cancel-in-progress: false
 
 jobs:
@@ -60,9 +46,9 @@ jobs:
       npm_tarball_sha256: ${{ steps.asset.outputs.npm_tarball_sha256 }}
     env:
       INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
-      EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
-      DRY_RUN: ${{ github.event_name != 'release' && inputs.dry_run || false }}
-      PRE_RELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || inputs.prerelease || false }}
+      EXPECTED_NPM_TARBALL_SHA256: ${{ inputs.expected_npm_tarball_sha256 }}
+      DRY_RUN: ${{ inputs.dry_run }}
+      PRE_RELEASE: ${{ inputs.prerelease }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
@@ -73,7 +59,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
+          ref: ${{ inputs.release_tag }}
           fetch-depth: 0
 
       - name: Set up Node.js
@@ -90,10 +76,10 @@ jobs:
           npm_version="$(node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
           version="$(tr -d '\n' < .version)"
           expected_tag="v${version}"
-          release_tag="${INPUT_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
+          release_tag="${INPUT_RELEASE_TAG:-}"
 
           if [ -z "$release_tag" ]; then
-            printf 'No release tag was provided. Trigger this workflow from a published GitHub release, workflow_call, or pass workflow_dispatch input release_tag.\n' >&2
+            printf 'No release tag was provided. Call this workflow from release-sce.yml through workflow_call.\n' >&2
             exit 1
           fi
 
@@ -173,9 +159,22 @@ jobs:
             exit 1
           fi
 
-          tarball_sha256="$(sha256sum "dist/npm/$package_file" | cut -d ' ' -f 1)"
-          printf 'GitHub Release npm tarball sha256: %s\n' "$tarball_sha256"
-          echo "npm_tarball_sha256=$tarball_sha256" >> "$GITHUB_OUTPUT"
+          actual_sha256="$(sha256sum "dist/npm/$package_file" | cut -d ' ' -f 1)"
+
+          if [[ ! "$EXPECTED_NPM_TARBALL_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            printf 'Missing or invalid B1 tarball SHA-256\n' >&2
+            exit 1
+          fi
+
+          if [ "$actual_sha256" != "$EXPECTED_NPM_TARBALL_SHA256" ]; then
+            printf 'GitHub Release tarball differs from B1-verified artifact\n' >&2
+            printf 'Expected: %s\n' "$EXPECTED_NPM_TARBALL_SHA256" >&2
+            printf 'Actual:   %s\n' "$actual_sha256" >&2
+            exit 1
+          fi
+
+          printf 'GitHub Release npm tarball sha256 matches the B1-verified artifact: %s\n' "$actual_sha256"
+          echo "npm_tarball_sha256=$EXPECTED_NPM_TARBALL_SHA256" >> "$GITHUB_OUTPUT"
 
   github-release-canary:
     needs: resolve

@@ -404,14 +404,17 @@ jobs:
     needs:
       - resolve-release
       - release
+      - release-canary
     if: |
       needs.resolve-release.result == 'success' &&
-      needs.release.result == 'success'
+      needs.release.result == 'success' &&
+      needs.release-canary.result == 'success'
     permissions:
       contents: read
     uses: ./.github/workflows/publish-npm.yml
     with:
       release_tag: ${{ needs.resolve-release.outputs.tag }}
+      expected_npm_tarball_sha256: ${{ needs.release-canary.outputs.npm_tarball_sha256 }}
       dry_run: false
       prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
     secrets:
