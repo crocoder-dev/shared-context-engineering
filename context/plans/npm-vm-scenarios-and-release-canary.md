@@ -109,13 +109,21 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local to npm test tooling. The harness is a new reusable test surface. Durable docs for it are T06's scope (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
   - Context synchronization: synced
 
-- [ ] T02: `Add VM subtest for skipped postinstall and npm rebuild recovery` (status:todo)
+- [x] T02: `Add VM subtest for skipped postinstall and npm rebuild recovery` (status:done)
   - Task ID: T02
   - Scope: In — `nix/tests/npm-nixos-vm.nix`: per-scenario directory, harness `prepare` + background `serve` as the test user, `npm install --ignore-scripts` of the packed tgz, assert absent `runtime/sce` and the launcher's non-zero exit with the missing-binary message, `npm rebuild @crocoder-dev/sce` with fixture env, assert mode `755`, parsed version, then a second rebuild and re-assert. Out — failure-injection scenarios, setup scenario, restricted PATH.
   - Dependencies: T01
   - Done when: the subtest passes in the VM and its log shows each assertion.
   - Verify: `nix build .#npm-nixos-vm --print-build-logs`; fault in a scratch copy: skip the rebuild step and record the failing assertion.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `nix/tests/npm-nixos-vm.nix`.
+  - Result: New let bindings for the scenario paths under `/home/sce-tester/scenarios/rebuild` and the missing-binary message, plus an `asScenarioUser` wrapper over `asUser` that isolates HOME, TMPDIR, npm cache, and npm userconfig per scenario. New subtest `skipped postinstall and npm rebuild recovery` runs as the test user. It runs `release-fixture.sh prepare` with `--package-dir ~/npm --binary <sceReleasePackage>/bin/sce` and starts `release-fixture.sh serve` detached through `setsid`, recording its PID and waiting for the port file. Next, `npm install --offline --ignore-scripts` of `$FIXTURE_TARBALL`. It asserts `runtime/sce` is absent and the launcher exits non-zero with `The native sce binary is not installed.`. Two passes of the `rebuild_and_assert` helper follow, each running `npm rebuild @crocoder-dev/sce --prefix … --offline --foreground-scripts` with `SCE_NPM_RELEASE_BASE_URL`/`NODE_EXTRA_CA_CERTS`, then asserting `runtime/sce` mode `755`, `--help`, and the parsed `version --format json` `.version`. The server is killed in a `finally`. Deviation: the shell snippets avoid an explicit `exit`, because in the `su -` login shell it sources `/etc/bash_logout`, which fails under `set -u` (`__ETC_BASHLOGOUT_SOURCED: unbound variable`) and turned `exit 0` into exit 1 on the first run.
+  - Verify outcomes:
+    - `nix build .#npm-nixos-vm --print-build-logs`: passed under TCG (no `/dev/kvm`). Every earlier subtest is unchanged. The new subtest log shows `ignore-scripts install: runtime/sce is absent` and ``launcher without binary exited 1: The native sce binary is not installed. Try reinstalling the package or run `npm rebuild sce` to retry the download.``. For each rebuild it shows postinstall `node ./lib/install.js` running and `rebuilt dependencies successfully`, then `first rebuild: runtime/sce mode: 755` and `first rebuild: parsed version: 0.4.0-pre-alpha-v12`. The same lines appear for `second rebuild`.
+    - Fault (scratch `git worktree` at HEAD plus the new test file, with `npm rebuild` replaced by `true`): build failed with `Test "skipped postinstall and npm rebuild recovery" failed with error: "command \`stat -c %a /home/sce-tester/scenarios/rebuild/prefix/node_modules/@crocoder-dev/sce/runtime/sce\` failed (exit code 1)"` (`stat: cannot statx … No such file or directory`). The worktree was then removed and the main worktree has no fault residue.
+    - `nix shell nixpkgs#nixfmt -c nixfmt --check nix/tests/npm-nixos-vm.nix`: passed.
+  - Context impact: local to the npm VM test. The new subtest is documented as part of T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
+  - Context synchronization: synced
 
 - [ ] T03: `Add VM subtest proving a failed reinstall preserves the existing binary` (status:todo)
   - Task ID: T03
