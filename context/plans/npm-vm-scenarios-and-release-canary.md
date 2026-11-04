@@ -209,13 +209,32 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local to the npm VM test. The new subtest is documented in T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
   - Context synchronization: synced
 
-- [ ] T06: `Document the VM scenarios and the fixture-versus-exact-artifact distinction` (status:todo)
+- [x] T06: `Document the VM scenarios and the fixture-versus-exact-artifact distinction` (status:done)
   - Task ID: T06
   - Scope: In — `context/sce/cli-npm-distribution-contract.md` (shared harness, each VM subtest and what it proves, explicit statement that pack-smoke and the VM repack with a throwaway key and do not prove the exact release artifact or production key, verification baseline); `context/context-map.md` annotation if needed. Out — canary and workflow documentation (T10).
   - Dependencies: T05
   - Done when: the docs cover the VM half of AC12, with names matching the test file.
   - Verify: inspect the contract; `grep -n 'npm-nixos-vm\|subtest' context/sce/cli-npm-distribution-contract.md`.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `context/sce/cli-npm-distribution-contract.md`, `context/context-map.md`.
+  - Result: The VM documentation was one oversized bullet under `Packed-package smoke test`. It now lives in a new `## NixOS VM real-install test` section, and a new `## Hermetic fixtures versus the exact release artifact` section follows it.
+    - The VM section covers the following:
+      - Local-only status: not in `checks.<system>` or `.#ci-checks`.
+      - The loopback-only node (`useDHCP = false`, no interfaces, no VLANs), the non-root `sce-tester`, and `environment.stub-ld.enable = false`.
+      - Per-scenario isolation under `/home/sce-tester/scenarios/<name>`, and the shared helpers (`mkScenario`, `asScenarioUser`, `prepareScenarioFixture`, `startScenarioServer`, `stopScenarioServer`, `installScenarioPackage`, `rebuildScenarioPackage`, `asSetupUser`).
+      - Every subtest in test-script order, under its exact name, with what it proves.
+      - The fixture-mode-versus-VM comparison, the linux/x64-only coverage, and how to run it locally.
+    - The new section has three points:
+      - Every `release-fixture.sh` consumer swaps in a throwaway key, re-signs, repacks, and serves over loopback HTTPS with an ephemeral certificate. That covers `npm-pack-smoke`, host pack-smoke, the `release-npm-package` gate, and all VM subtests.
+      - These consumers are hermetic development coverage only. They do not prove the exact published tarball bytes, the production public key, the production-signed manifest, or real GitHub Releases TLS and URLs.
+      - Only the planned release-security canary proves those.
+    - The verification baseline already listed the harness and the VM commands and is unchanged. The `context/context-map.md` annotation for the contract now names the four scenario subtests and the fixture-versus-exact-artifact statement. No content was dropped. The VM paragraph was restructured, not rewritten.
+  - Verify outcomes:
+    - Contract inspected: shared harness (existing bullet), every VM subtest, the throwaway-key/repack statement, and the verification baseline are present.
+    - `grep -n 'npm-nixos-vm\|subtest' context/sce/cli-npm-distribution-contract.md`: hits at lines 71, 73, 86, 90, and 101.
+    - Name parity: every `subtest("…")` name in `nix/tests/npm-nixos-vm.nix` (9 of 9) appears backticked in the contract. The `useDHCP`/`interfaces`/`vlans`/`stub-ld`/`sce-tester`/`scenarios/<name>` facts were checked against the test file, and the `--tarball` repack against `npm/test/release-fixture.sh`.
+  - Context impact: durable context docs only (`context/sce/cli-npm-distribution-contract.md` and its `context/context-map.md` entry). No code, and no root context file content changes.
+  - Context synchronization: synced
 
 - [ ] T07: `Add the release-security canary script for exact release artifacts` (status:todo)
   - Task ID: T07
