@@ -108,7 +108,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
   - `sce --help` runs, and `version --format json` reports the expected version.
   - The packed launcher mode is logged, not enforced, because published tarballs up to `v0.4.0-pre-alpha-v12` pack `bin/sce.js` as `0644`.
 - Failures print distinct `release-canary:` messages and exit 1. Success ends with `release-canary: OK (<mode> mode: …)`.
-- The script is not yet wired into any workflow. Its release-gate usage is not established here.
+- Release gates: `.github/workflows/release-sce.yml` runs the `--release-dir` mode as the pre-release (B1) gate in its secret-free `release-canary` job, and GitHub Release creation depends on it (see [cli-release-artifact-contract.md](cli-release-artifact-contract.md)). The `--github-release` and `--registry-version` modes are not yet wired into any workflow.
 
 ## Verification baseline
 
