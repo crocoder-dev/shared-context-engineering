@@ -30,6 +30,13 @@ No other install channels are in scope for the current implementation stage.
 - `npm` consumes release artifacts produced by Nix-managed build/release flows; npm-supported native archives must already be free of forbidden `/nix/store/` runtime references and smoke-validated before upload because the npm installer does not patch native dynamic-link metadata.
 - `Cargo` is a first-class supported install path and its publish metadata should stay aligned to `.version` without workflow-side version bumping.
 - npm registry publication should also consume the checked-in package version aligned to `.version` without workflow-side version bumping.
+- Release-to-npm topology:
+  - `.github/workflows/release-sce.yml` runs `assemble` → `release-canary` (B1 exact-artifact canary, `npm/test/release-canary.sh --release-dir`) → `release` (GitHub Release creation) → `publish-npm`.
+  - `publish-npm` calls `.github/workflows/publish-npm.yml` through `workflow_call` and passes only `NPM_TOKEN`.
+  - `publish-npm.yml` then runs `resolve` → `github-release-canary` (B2) → `publish` → `registry-canary`.
+  - The signing key is confined to one `assemble` step and `NPM_TOKEN` to the `Publish package to npm` step. No canary job references a secret.
+  - `release: published` and `workflow_dispatch` start the same publish pipeline.
+  - Details and rerun guidance live in `cli-release-artifact-contract.md` and `cli-npm-distribution-contract.md`. The end-to-end chain can only be proven by a real release run.
 - Flatpak is source-built and must not consume `nix build .#sce`, native GitHub Release binary archives, npm native binaries, or any other prebuilt `sce` artifact.
 - GitHub Release Flatpak assets include source-manifest package assets and source-built `.flatpak` bundle assets for the source-built `dev.crocoder.sce` Flatpak channel. Automatic Flathub submission, prebuilt (non-source-built) Flatpak binaries/bundles, OSTree repositories, release-version bumping, and Flatpak publication beyond the approved GitHub Release asset upload remain out of scope.
 - `Homebrew` can return in a later plan stage, but it is not part of current code truth.
