@@ -290,13 +290,32 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local to npm test tooling. The canary script and its modes are a new release-verification surface. Its durable documentation, with the B1/B2/registry gates, is T10's scope (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
   - Context synchronization: synced
 
-- [ ] T08: `Gate GitHub Release creation on the B1 canary in release-sce.yml` (status:todo)
+- [x] T08: `Gate GitHub Release creation on the B1 canary in release-sce.yml` (status:done)
   - Task ID: T08
   - Scope: In — `.github/workflows/release-sce.yml`: split `release` into `assemble` (signing secret only in the manifest step; uploads `dist/` with a SHA-pinned upload action), `release-canary` (no secrets, `contents: read`; downloads `dist/`, runs `release-canary.sh --release-dir` via Nix, outputs the tarball SHA-256), and `release` (needs both; re-checks the SHA-256 and creates the GitHub Release from the downloaded `dist/`). Out — the npm publish call (T09) and native build workflows.
   - Dependencies: T07
   - Done when: no path creates a release without a successful canary, and the secret appears in exactly one step.
   - Verify: `nix build .#checks.x86_64-linux.workflow-actionlint`; `grep -n 'SCE_RELEASE_MANIFEST_SIGNING_KEY\|secrets\.' .github/workflows/release-sce.yml`; inspect the job `needs`/`if` chain.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `.github/workflows/release-sce.yml`.
+  - Result: The former `release` job is now three jobs:
+    - `assemble` (`contents: read`): the same needs/`if` as before and the same checkout, Nix, artifact download, manifest, npm, and Flatpak steps. `SCE_RELEASE_MANIFEST_SIGNING_KEY` appears only in the `Assemble CLI release manifest` step's `env`. It uploads `dist/` as the `sce-assembled-dist` workflow artifact with the already pinned `actions/upload-artifact@043fb46d… # v7.0.1` (`if-no-files-found: error`).
+    - `release-canary` (`contents: read`, no `secrets.` reference): needs `resolve-release` and `assemble`, with `if` requiring both to succeed. It hardens the runner, checks out the tag, installs Nix, downloads `sce-assembled-dist` into `dist/`, and records the SHA-256 of `dist/npm/sce-v<version>-npm.tgz`. It then runs `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/release-canary.sh --release-dir dist/cli --tarball <tgz> --expected-version <version> --expected-sha256 <recorded>`. Only after the canary exits 0 does it write the `npm_tarball_sha256` job output.
+    - `release` (`contents: write`): needs `resolve-release`, `assemble`, and `release-canary`. Its `if` requires all three to be `success` and a non-empty `npm_tarball_sha256`. It downloads `sce-assembled-dist`, fails unless the tarball's `sha256sum` equals the canary output, then runs the unchanged `softprops/action-gh-release` step with the existing `files` globs. It no longer checks out the repository or installs Nix, because it only consumes `dist/`.
+    - The workflow-level permission dropped from `contents: write` to `contents: read`. `create-tag` (tag push) and `release` (release creation) get `contents: write` at job level. The called build workflows already declare `contents: read`.
+  - Deviation: the artifact is named `sce-assembled-dist`, not `sce-release-dist`, so it cannot match `assemble`'s own `sce-release-*` download pattern on a job re-run.
+  - Verify outcomes:
+    - `nix build .#checks.x86_64-linux.workflow-actionlint --print-build-logs`: passed (exit 0). `nix shell nixpkgs#actionlint nixpkgs#shellcheck -c actionlint .github/workflows/release-sce.yml`: passed with no findings.
+    - `grep -n 'SCE_RELEASE_MANIFEST_SIGNING_KEY\|secrets\.' .github/workflows/release-sce.yml`: one hit, line 238, the `Assemble CLI release manifest` step `env` in `assemble`. `release-canary` and `release` hold no secret reference.
+    - The `needs`/`if` chain was inspected. `release` is reachable only through `release-canary.result == 'success'` with a non-empty SHA output. The only release-creation step runs after the SHA re-check, and no other job creates a release.
+    - Local behavior with the published v12 assets laid out as `dist/cli` (manifest, `.sig`, x86_64 musl archive, `.sha256`, `SHA256SUMS`) and `dist/npm/sce-v0.4.0-pre-alpha-v12-npm.tgz`, with the step scripts extracted from the workflow by `yq`:
+      - Canary step: exit 0, `release-canary: OK (local mode: @crocoder-dev/sce@0.4.0-pre-alpha-v12, tarball sha256 ec6bf434…edf57)`, and `GITHUB_OUTPUT` holds `npm_tarball_sha256=ec6bf434…edf57`.
+      - Release verify step with that output: exit 0, `npm tarball sha256 matches the canary-verified bytes`. With a wrong SHA: exit 1, `npm tarball sha256 ec6bf434… does not match canary-verified sha256 0000…`.
+      - Fault, a byte-appended tarball in the scratch copy: the canary step exits 1 with `release-canary: Tarball … has no readable package/package.json.` and writes no output, so `release` would be skipped.
+    - The scratch directory was removed, and `git status` shows only the workflow change.
+    - Live execution inside GitHub Actions needs a real release run and is not proven here.
+  - Context impact: release workflow topology. The `assemble`/`release-canary`/`release` split and the secret scoping are documented in T10 (`context/sce/cli-release-artifact-contract.md`, `context/sce/cli-npm-distribution-contract.md`). No root context file content is expected to change.
+  - Context synchronization: synced
 
 - [ ] T09: `Make publish-npm.yml a reusable workflow with pre- and post-publish canaries` (status:todo)
   - Task ID: T09
