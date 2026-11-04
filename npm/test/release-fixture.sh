@@ -98,6 +98,12 @@ fixture_generate_keys() {
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$keys_dir/signing.pem" 2>/dev/null
   openssl pkey -in "$keys_dir/signing.pem" -pubout -out "$stage_dir/lib/release-manifest-public-key.pem"
 
+  fixture_generate_tls_cert "$keys_dir"
+}
+
+fixture_generate_tls_cert() {
+  local keys_dir="$1"
+
   openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
     -subj "/CN=127.0.0.1" \
     -addext "subjectAltName=IP:127.0.0.1" \

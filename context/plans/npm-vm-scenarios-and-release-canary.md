@@ -236,13 +236,59 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: durable context docs only (`context/sce/cli-npm-distribution-contract.md` and its `context/context-map.md` entry). No code, and no root context file content changes.
   - Context synchronization: synced
 
-- [ ] T07: `Add the release-security canary script for exact release artifacts` (status:todo)
+- [x] T07: `Add the release-security canary script for exact release artifacts` (status:done)
   - Task ID: T07
   - Scope: In — new `npm/test/release-canary.sh` reusing the T01 harness for install/assertions. Modes: `--release-dir <dir> --tarball <tgz>` serves the real manifest, signature, and archives over loopback HTTPS (B1). `--github-release <tag>` downloads the tgz with `gh release download` or the public URL and installs it with no installer env overrides (B2). `--registry-version <version>` downloads the exact `@crocoder-dev/sce@<version>`, compares bytes and `dist.integrity` against a given GitHub tgz, and installs it, with bounded retries for registry availability. Common checks in every mode: SHA-256 unchanged before and after, bundled key byte-equal to the checked-in key, `openssl dgst -verify` of the production manifest, launcher/`.bin` symlink/`runtime/sce` modes, and reported version equal to `--expected-version`. Out — workflow wiring, any key substitution or repacking.
   - Dependencies: T06
   - Done when: all three modes pass locally against the published `v0.4.0-pre-alpha-v12` artifacts; shellcheck clean.
   - Verify: download the v12 assets into a scratch dir and run `--release-dir`; run `--github-release v0.4.0-pre-alpha-v12` and `--registry-version 0.4.0-pre-alpha-v12` from a scratch cwd; faults: a byte-modified tgz, a tgz with a swapped key (scratch copy), and a wrong `--expected-version`, each failing with a distinct `release-canary:` message; `nix shell nixpkgs#shellcheck -c shellcheck npm/test/release-canary.sh`.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `npm/test/release-canary.sh` (new, file mode 755, untracked), `npm/test/release-fixture.sh`.
+  - Result: `npm/test/release-canary.sh` sources the harness with prefix `release-canary`. It requires `--expected-version` and exactly one mode:
+    - `--release-dir <dir> --tarball <tgz>` (B1): serves `<dir>` in place through `fixture_serve_start` and installs with `fixture_npm_install`. This is the only path that sets `SCE_NPM_RELEASE_BASE_URL`/`NODE_EXTRA_CA_CERTS`, and it sets them inside the harness.
+    - `--github-release <tag>` (B2): the tag must equal `v<expected-version>`. It downloads `sce-v<version>-npm.tgz`, the manifest, and the `.sig` from the public `releases/download` URL through Node `fetch`, then runs `npm install` of the downloaded tgz.
+    - `--registry-version <version>` (optional `--tarball`, default the GitHub asset): it retries `npm view @crocoder-dev/sce@<version> dist.integrity` plus `npm pack` of that exact version, bounded at 10 attempts × 30s. It fails unless `dist.integrity` and the packed registry bytes both equal the sha512 of the GitHub tgz. It then runs `npm install @crocoder-dev/sce@<version>` and asserts that the lockfile integrity equals `dist.integrity`.
+    - Every network, install, and `sce` invocation in the remote modes runs under `env -i` with only `PATH`, an isolated `HOME`/`TMPDIR`, and the npm cache/userconfig. No installer override can therefore leak in, and none is named in the script.
+    - Versions and tags must match a strict semver pattern, so a dist-tag or range is never resolved.
+    - Checks in every mode:
+      - The tarball SHA-256 is recorded before the run and must be unchanged after it. It must also equal the optional `--expected-sha256`.
+      - The packed `package.json` name is `@crocoder-dev/sce` and its version equals the expected version.
+      - The packed `package/lib/release-manifest-public-key.pem` is byte-equal (SHA-256) to the checked-in key.
+      - `openssl dgst -sha256 -verify` of the manifest `.sig` against the checked-in key passes, and the manifest `.version` equals the expected version.
+      - `fixture_assert_install_layout` passes (`runtime/sce` mode `755`, `.bin/sce` → `bin/sce.js`), and the installed `bin/sce.js` is executable.
+      - `--help` runs, and `version --format json` `.version` equals the expected version.
+    - The run ends with `release-canary: OK (<mode> mode: …, tarball sha256 …)`.
+    - In the harness, `fixture_generate_tls_cert` is split out of `fixture_generate_keys`, which now calls it, so `openssl req` stays only in the harness. pack-smoke behavior is unchanged.
+  - Deviations:
+    - The packed launcher mode is logged, not enforced. The published v12 tarball packs `bin/sce.js` as `-rw-r--r--`, so enforcing it would fail every mode against v12. The installed launcher mode, which npm sets, is asserted instead.
+    - Downloads use the public URL, not `gh`, so no token is needed.
+    - `--expected-sha256` was added so that a byte-modified tarball fails with a distinct message in B1, where no published hash exists.
+    - Per the user's instruction, the new code carries no comments at all, including the `# shellcheck source=` directive that `pack-smoke.sh` uses. Shellcheck therefore needs `-x -P SCRIPTDIR` to follow the sourced harness.
+  - Verify outcomes:
+    - v12 assets downloaded into a scratch dir (npm tgz/json, manifest, `.sig`, x86_64 musl archive, `.sha256`, `SHA256SUMS`). `--release-dir <scratch> --tarball <scratch>/sce-v0.4.0-pre-alpha-v12-npm.tgz --expected-version 0.4.0-pre-alpha-v12` from a scratch cwd: exit 0. It logged:
+      - tarball sha256 `ec6bf434…edf57` before and after
+      - bundled key byte-identical (sha256 `bfc3c81e…f212`)
+      - manifest verified (sha256 `071b460c…e03a`)
+      - packed launcher `-rw-r--r--`; installed `runtime/sce` mode `755`, `bin/sce.js` mode `755`, `.bin/sce` → `…/bin/sce.js`
+      - version `0.4.0-pre-alpha-v12`, and `release-canary: OK (local mode: …)`
+    - `--github-release v0.4.0-pre-alpha-v12` and `--registry-version 0.4.0-pre-alpha-v12` from a scratch cwd, with `SCE_NPM_SKIP_DOWNLOAD=1`, `SCE_NPM_RELEASE_BASE_URL=https://127.0.0.1:9`, and `NODE_EXTRA_CA_CERTS=/nonexistent` exported by the caller: both exit 0 with the same hash, key, manifest, mode, and version lines. Registry mode also logged `registry tarball byte-identical to the GitHub tarball (sha512-Dt3odIlX…UKA==)` and the matching installed integrity. The poisoned caller env had no effect.
+    - Faults, all on scratch copies (removed afterwards; `git status` shows only the two task files):
+      - Byte-appended tgz in B1 with `--expected-sha256 ec6bf434…`: `release-canary: Tarball sha256 855605eb… does not match --expected-sha256 ec6bf434….`
+      - The same tgz in registry mode: `release-canary: Tarball … has no readable package/package.json.`
+      - A validly repacked tgz with identical contents in registry mode: `release-canary: Registry dist.integrity sha512-Dt3o… does not match the GitHub tarball integrity sha512-4z6W….`
+      - Swapped public key: ``release-canary: Bundled package/lib/release-manifest-public-key.pem (sha256 0d45b4ec…) is not byte-identical to the checked-in npm/lib/release-manifest-public-key.pem (sha256 bfc3c81e…).``
+      - Wrong `--expected-version 0.4.0-pre-alpha-v11`: `release-canary: Packed package version '0.4.0-pre-alpha-v12' does not match --expected-version '0.4.0-pre-alpha-v11'.`
+      - `--registry-version latest`: `release-canary: --registry-version 'latest' is not an exact version; dist-tags and ranges are not resolved.`
+      - Each fault exits 1. No `sce-npm-release-canary.*` temp dirs remain.
+    - Shellcheck:
+      - `nix shell nixpkgs#shellcheck -c shellcheck -x -P SCRIPTDIR npm/test/release-canary.sh` and `... -x -P SCRIPTDIR npm/test/*.sh`: passed.
+      - Without `-x -P SCRIPTDIR`, shellcheck reports SC1091 (info) and SC2034 for the sourced harness. The same applies to the planned single-file `shellcheck npm/test/release-canary.sh` form, and `pack-smoke.sh` also fails in that form.
+    - Regression and grep checks:
+      - `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs`: passed (`pack-smoke: OK (sce --help, sce version)`).
+      - `rg -n 'createServer|openssl req' npm nix .github`: hits only `fixture-release-server.mjs` and `release-fixture.sh`.
+      - `rg -n 'SCE_NPM_RELEASE_BASE_URL|SCE_NPM_SKIP_DOWNLOAD|NODE_EXTRA_CA_CERTS' npm/test/release-canary.sh`: no hits.
+  - Context impact: local to npm test tooling. The canary script and its modes are a new release-verification surface. Its durable documentation, with the B1/B2/registry gates, is T10's scope (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
+  - Context synchronization: synced
 
 - [ ] T08: `Gate GitHub Release creation on the B1 canary in release-sce.yml` (status:todo)
   - Task ID: T08
