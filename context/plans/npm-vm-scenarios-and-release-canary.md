@@ -125,13 +125,33 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: local to the npm VM test. The new subtest is documented as part of T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
   - Context synchronization: synced
 
-- [ ] T03: `Add VM subtest proving a failed reinstall preserves the existing binary` (status:todo)
+- [x] T03: `Add VM subtest proving a failed reinstall preserves the existing binary` (status:done)
   - Task ID: T03
   - Scope: In — `nix/tests/npm-nixos-vm.nix`: successful install, record `sha256sum` and mode of `runtime/sce`; replace the manifest `.sig` with an invalid signature, `npm rebuild` must fail with the authenticity error; restore it, then corrupt the served archive so its checksum mismatches, `npm rebuild` must fail with the checksum error; after each failure assert unchanged hash, mode `755`, successful execution, and no `sce-npm-install-*`/`sce-npm-text-*` directories in the user's TMPDIR or temp siblings in `runtime/`; restore the valid fixture and assert a successful reinstall. Out — the JS unit-test permutations (malformed JSON, identity fields, archive entry types).
   - Dependencies: T02
   - Done when: the subtest passes and its log shows both failure messages and the unchanged-binary checks.
   - Verify: `nix build .#npm-nixos-vm --print-build-logs`; faults in a scratch copy: (a) overwrite `runtime/sce` between attempts, (b) leave a temp file beside `runtime/sce`; record each failing assertion.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `nix/tests/npm-nixos-vm.nix`.
+  - Result: The per-scenario paths are now built by one `mkScenario name` attrset (`dir`, `prefixDir`, `fixtureDir`, `tmpDir`, `portFile`, `pidFile`, `serverLog`, `installedDir`, `launcher`). The T02 fixture shell steps moved into Nix helpers `prepareScenarioFixture`, `startScenarioServer`, `stopScenarioServer`, and `rebuildScenarioPackage`. The rebuild subtest uses those helpers and behaves as before. New subtest `failed reinstall preserves existing binary` runs under `~/scenarios/reinstall`:
+    - It prepares and serves its own fixture, saves pristine copies of `release/` under `saved-release/`, and runs `npm install --foreground-scripts` with postinstall against the fixture server. It records the `runtime/sce` SHA-256.
+    - It replaces the manifest `.sig` with a well-formed signature, made with the fixture key, over different bytes. `npm rebuild` must then exit non-zero with `Release manifest authenticity check failed`.
+    - It restores the `.sig` and appends bytes to the served archive. `npm rebuild` must then exit non-zero with `Downloaded sce archive checksum mismatch`.
+    - It restores the archive and requires a successful `npm rebuild`.
+    - `assert_binary_preserved` runs after the initial install, after each failure, and after the restored reinstall. It asserts the recorded SHA-256, mode `755`, `--help`, and the parsed `version --format json` `.version`. It also asserts that the scenario TMPDIR has no `sce-npm-install-*`/`sce-npm-text-*` entries and that `runtime/` holds only `sce`.
+    - Installer code and the fixture server are unchanged.
+  - Verify outcomes:
+    - `nix build .#npm-nixos-vm --print-build-logs`: passed under TCG (no `/dev/kvm`). Every earlier subtest is unchanged, and the rebuild subtest still logs `first rebuild`/`second rebuild` mode `755` and version `0.4.0-pre-alpha-v12`. The new subtest logs the following:
+      - `Failed to install sce via npm: Release manifest authenticity check failed: signature verification did not succeed.` and `invalid manifest signature: npm rebuild exited 1`.
+      - `Failed to install sce via npm: Downloaded sce archive checksum mismatch for sce-v0.4.0-pre-alpha-v12-x86_64-unknown-linux-musl.tar.gz: expected 0d1aecdc…, received f262e7f9…` and `archive checksum mismatch: npm rebuild exited 1`.
+      - For `initial install`, `after invalid manifest signature`, `after archive checksum mismatch`, and `restored fixture reinstall`: sha256 `ba3565750ad5030412d8ca238ffb555367ecd6a9ae91f004399c444a6cdff484`, mode `755`, version `0.4.0-pre-alpha-v12`, `installer temp dirs in TMPDIR: none`, and `runtime/ entries: ['sce']`.
+    - Fault (a), in a scratch `git worktree` at HEAD plus the new test file, appended bytes to `runtime/sce` after the signature failure. The build failed with `Test "failed reinstall preserves existing binary" failed with error: "after invalid manifest signature: runtime/sce sha256 d86b3109…, expected ba356575…"`.
+    - Fault (b), in a separate scratch worktree, touched `runtime/.sce.4242.1.tmp` after the checksum failure. The build failed with `Test "failed reinstall preserves existing binary" failed with error: "after archive checksum mismatch: runtime/ holds ['sce', '.sce.4242.1.tmp'], expected only sce"`.
+    - Rerun with KVM after `/dev/kvm` became available: `nix build .#npm-nixos-vm --rebuild --print-build-logs` passed, and the guest logged `Hypervisor detected: KVM`. Every subtest passed, and the test script finished in 40.81s, against 49.79s under TCG.
+    - Both scratch worktrees were removed (`git worktree list` shows none), and the main worktree has no fault residue.
+    - `nix shell nixpkgs#nixfmt -c nixfmt --check nix/tests/npm-nixos-vm.nix`: passed.
+  - Context impact: local to the npm VM test. The new subtest and the shared scenario helpers are documented as part of T06 (`context/sce/cli-npm-distribution-contract.md`), and no root context file changes.
+  - Context synchronization: synced
 
 - [ ] T04: `Add VM subtest running sce setup --bootstrap-context in an isolated Git repository` (status:todo)
   - Task ID: T04

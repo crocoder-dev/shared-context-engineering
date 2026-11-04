@@ -14,13 +14,24 @@ let
   npmDir = "${homeDir}/npm";
   missingBinaryMessage = "The native sce binary is not installed.";
 
-  rebuildScenarioDir = "${homeDir}/scenarios/rebuild";
-  rebuildPrefixDir = "${rebuildScenarioDir}/prefix";
-  rebuildFixtureDir = "${rebuildScenarioDir}/fixture";
-  rebuildPortFile = "${rebuildScenarioDir}/server-port";
-  rebuildPidFile = "${rebuildScenarioDir}/server.pid";
-  rebuildInstalledDir = "${rebuildPrefixDir}/node_modules/@crocoder-dev/sce";
-  rebuildLauncher = "${rebuildPrefixDir}/node_modules/.bin/sce";
+  authenticityFailureMessage = "Release manifest authenticity check failed";
+  checksumFailureMessage = "Downloaded sce archive checksum mismatch";
+
+  # Per-scenario paths; every scenario owns its own directory under
+  # ~/scenarios so installs, fixtures, and temp dirs never overlap.
+  mkScenario = name: rec {
+    dir = "${homeDir}/scenarios/${name}";
+    prefixDir = "${dir}/prefix";
+    fixtureDir = "${dir}/fixture";
+    tmpDir = "${dir}/tmp";
+    portFile = "${dir}/server-port";
+    pidFile = "${dir}/server.pid";
+    serverLog = "${dir}/server.log";
+    installedDir = "${prefixDir}/node_modules/@crocoder-dev/sce";
+    launcher = "${prefixDir}/node_modules/.bin/sce";
+  };
+  rebuildScenario = mkScenario "rebuild";
+  reinstallScenario = mkScenario "reinstall";
 
   asUser =
     command:
@@ -45,6 +56,55 @@ let
       export npm_config_cache=${scenarioDir}/npm-cache
       export npm_config_userconfig=${scenarioDir}/npmrc
       ${command}
+    '';
+
+  # Prepares the scenario's release fixture with the real binary.
+  prepareScenarioFixture =
+    scenario:
+    asScenarioUser scenario.dir ''
+      mkdir -p "$HOME" "$TMPDIR" "$npm_config_cache"
+      : >"$npm_config_userconfig"
+      bash ${npmDir}/test/release-fixture.sh prepare ${scenario.fixtureDir} \
+        --package-dir ${npmDir} \
+        --binary ${sceReleasePackage}/bin/sce 2>&1
+    '';
+
+  # Starts the scenario's fixture server detached and waits for its port.
+  startScenarioServer =
+    scenario:
+    asScenarioUser scenario.dir ''
+      setsid bash ${npmDir}/test/release-fixture.sh serve ${scenario.fixtureDir} \
+        --port-file ${scenario.portFile} \
+        >${scenario.serverLog} 2>&1 </dev/null &
+      echo $! >${scenario.pidFile}
+      # No explicit `exit`: it runs /etc/bash_logout, which fails under `set -u`.
+      for _ in $(seq 100); do
+        [ -s ${scenario.portFile} ] && break
+        sleep 0.1
+      done
+      [ -s ${scenario.portFile} ] || {
+        cat ${scenario.serverLog} >&2
+        false
+      }
+    '';
+
+  stopScenarioServer =
+    scenario:
+    asScenarioUser scenario.dir ''
+      kill "$(cat ${scenario.pidFile})" 2>/dev/null || true
+    '';
+
+  # Reruns postinstall in place against the scenario's fixture server.
+  rebuildScenarioPackage =
+    scenario:
+    asScenarioUser scenario.dir ''
+      . ${scenario.fixtureDir}/fixture.env
+      SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:$(cat ${scenario.portFile})" \
+        NODE_EXTRA_CA_CERTS="$FIXTURE_TLS_CERT" \
+        npm rebuild @crocoder-dev/sce \
+        --prefix ${scenario.prefixDir} \
+        --offline \
+        --foreground-scripts 2>&1
     '';
 in
 pkgs.testers.runNixOSTest {
@@ -118,62 +178,34 @@ pkgs.testers.runNixOSTest {
         assert reported_version == ${builtins.toJSON expectedVersion}, f"sce version reported {reported_version!r}"
 
     def rebuild_and_assert(attempt):
-        print(machine.succeed(${asScenarioUser rebuildScenarioDir ''
-          . ${rebuildFixtureDir}/fixture.env
-          SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:$(cat ${rebuildPortFile})" \
-            NODE_EXTRA_CA_CERTS="$FIXTURE_TLS_CERT" \
-            npm rebuild @crocoder-dev/sce \
-            --prefix ${rebuildPrefixDir} \
-            --offline \
-            --foreground-scripts 2>&1
-        ''}))
-        runtime_mode = machine.succeed("stat -c %a ${rebuildInstalledDir}/runtime/sce").strip()
+        print(machine.succeed(${rebuildScenarioPackage rebuildScenario}))
+        runtime_mode = machine.succeed("stat -c %a ${rebuildScenario.installedDir}/runtime/sce").strip()
         print(f"{attempt}: runtime/sce mode: {runtime_mode}")
         assert runtime_mode == "755", f"{attempt}: runtime/sce mode {runtime_mode}, expected 755"
-        machine.succeed(${asScenarioUser rebuildScenarioDir "${rebuildLauncher} --help >/dev/null"})
+        machine.succeed(${asScenarioUser rebuildScenario.dir "${rebuildScenario.launcher} --help >/dev/null"})
         reported_version = machine.succeed(
-            ${asScenarioUser rebuildScenarioDir "${rebuildLauncher} version --format json | jq -er .version"}
+            ${asScenarioUser rebuildScenario.dir "${rebuildScenario.launcher} version --format json | jq -er .version"}
         ).strip()
         print(f"{attempt}: parsed version: {reported_version}")
         assert reported_version == ${builtins.toJSON expectedVersion}, f"{attempt}: sce version reported {reported_version!r}"
 
     with subtest("skipped postinstall and npm rebuild recovery"):
-        print(machine.succeed(${asScenarioUser rebuildScenarioDir ''
-          mkdir -p "$HOME" "$TMPDIR" "$npm_config_cache"
-          : >"$npm_config_userconfig"
-          bash ${npmDir}/test/release-fixture.sh prepare ${rebuildFixtureDir} \
-            --package-dir ${npmDir} \
-            --binary ${sceReleasePackage}/bin/sce 2>&1
-        ''}))
-        machine.succeed(${asScenarioUser rebuildScenarioDir ''
-          setsid bash ${npmDir}/test/release-fixture.sh serve ${rebuildFixtureDir} \
-            --port-file ${rebuildPortFile} \
-            >${rebuildScenarioDir}/server.log 2>&1 </dev/null &
-          echo $! >${rebuildPidFile}
-          # No explicit `exit`: it runs /etc/bash_logout, which fails under `set -u`.
-          for _ in $(seq 100); do
-            [ -s ${rebuildPortFile} ] && break
-            sleep 0.1
-          done
-          [ -s ${rebuildPortFile} ] || {
-            cat ${rebuildScenarioDir}/server.log >&2
-            false
-          }
-        ''})
+        print(machine.succeed(${prepareScenarioFixture rebuildScenario}))
+        machine.succeed(${startScenarioServer rebuildScenario})
         try:
-            print(machine.succeed(${asScenarioUser rebuildScenarioDir ''
-              . ${rebuildFixtureDir}/fixture.env
+            print(machine.succeed(${asScenarioUser rebuildScenario.dir ''
+              . ${rebuildScenario.fixtureDir}/fixture.env
               npm install \
-                --prefix ${rebuildPrefixDir} \
+                --prefix ${rebuildScenario.prefixDir} \
                 --offline \
                 --no-audit \
                 --no-fund \
                 --ignore-scripts \
                 "$FIXTURE_TARBALL" 2>&1
             ''}))
-            machine.fail("test -e ${rebuildInstalledDir}/runtime/sce")
+            machine.fail("test -e ${rebuildScenario.installedDir}/runtime/sce")
             print("ignore-scripts install: runtime/sce is absent")
-            status, output = machine.execute(${asScenarioUser rebuildScenarioDir "${rebuildLauncher} --help 2>&1"})
+            status, output = machine.execute(${asScenarioUser rebuildScenario.dir "${rebuildScenario.launcher} --help 2>&1"})
             print(f"launcher without binary exited {status}: {output.strip()}")
             assert status != 0, "launcher without runtime/sce exited 0"
             assert ${builtins.toJSON missingBinaryMessage} in output, f"launcher output lacks the missing-binary message: {output!r}"
@@ -181,8 +213,98 @@ pkgs.testers.runNixOSTest {
             rebuild_and_assert("first rebuild")
             rebuild_and_assert("second rebuild")
         finally:
-            machine.succeed(${asScenarioUser rebuildScenarioDir ''
-              kill "$(cat ${rebuildPidFile})" 2>/dev/null || true
+            machine.succeed(${stopScenarioServer rebuildScenario})
+
+    def runtime_sha256():
+        return machine.succeed(
+            "sha256sum ${reinstallScenario.installedDir}/runtime/sce | cut -d ' ' -f 1"
+        ).strip()
+
+    def assert_binary_preserved(label, expected_sha256):
+        actual_sha256 = runtime_sha256()
+        print(f"{label}: runtime/sce sha256: {actual_sha256}")
+        assert actual_sha256 == expected_sha256, f"{label}: runtime/sce sha256 {actual_sha256}, expected {expected_sha256}"
+        runtime_mode = machine.succeed("stat -c %a ${reinstallScenario.installedDir}/runtime/sce").strip()
+        print(f"{label}: runtime/sce mode: {runtime_mode}")
+        assert runtime_mode == "755", f"{label}: runtime/sce mode {runtime_mode}, expected 755"
+        machine.succeed(${asScenarioUser reinstallScenario.dir "${reinstallScenario.launcher} --help >/dev/null"})
+        reported_version = machine.succeed(
+            ${asScenarioUser reinstallScenario.dir "${reinstallScenario.launcher} version --format json | jq -er .version"}
+        ).strip()
+        print(f"{label}: parsed version: {reported_version}")
+        assert reported_version == ${builtins.toJSON expectedVersion}, f"{label}: sce version reported {reported_version!r}"
+        staging_dirs = machine.succeed(
+            "find ${reinstallScenario.tmpDir} -mindepth 1 -maxdepth 1"
+            " \\( -name 'sce-npm-install-*' -o -name 'sce-npm-text-*' \\) -print"
+        ).strip()
+        print(f"{label}: installer temp dirs in TMPDIR: {staging_dirs or 'none'}")
+        assert staging_dirs == "", f"{label}: installer temp dirs left behind: {staging_dirs}"
+        runtime_entries = machine.succeed("ls -A ${reinstallScenario.installedDir}/runtime").split()
+        print(f"{label}: runtime/ entries: {runtime_entries}")
+        assert runtime_entries == ["sce"], f"{label}: runtime/ holds {runtime_entries}, expected only sce"
+
+    def assert_rebuild_fails(label, expected_message):
+        status, output = machine.execute(${rebuildScenarioPackage reinstallScenario})
+        print(output)
+        print(f"{label}: npm rebuild exited {status}")
+        assert status != 0, f"{label}: npm rebuild exited 0"
+        assert expected_message in output, f"{label}: npm rebuild output lacks {expected_message!r}"
+        print(f"{label}: failed with {expected_message!r}")
+
+    with subtest("failed reinstall preserves existing binary"):
+        print(machine.succeed(${prepareScenarioFixture reinstallScenario}))
+        # Pristine copies of the served release files, restored after each tamper.
+        machine.succeed(${asScenarioUser reinstallScenario.dir ''
+          . ${reinstallScenario.fixtureDir}/fixture.env
+          mkdir -p ${reinstallScenario.dir}/saved-release
+          cp -pR "$FIXTURE_RELEASE_DIR"/. ${reinstallScenario.dir}/saved-release/
+        ''})
+        machine.succeed(${startScenarioServer reinstallScenario})
+        try:
+            print(machine.succeed(${asScenarioUser reinstallScenario.dir ''
+              . ${reinstallScenario.fixtureDir}/fixture.env
+              SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:$(cat ${reinstallScenario.portFile})" \
+                NODE_EXTRA_CA_CERTS="$FIXTURE_TLS_CERT" \
+                npm install \
+                --prefix ${reinstallScenario.prefixDir} \
+                --offline \
+                --no-audit \
+                --no-fund \
+                --foreground-scripts \
+                "$FIXTURE_TARBALL" 2>&1
+            ''}))
+            installed_sha256 = runtime_sha256()
+            assert_binary_preserved("initial install", installed_sha256)
+
+            # A well-formed signature over different bytes, so verification
+            # (not decoding) is what rejects it.
+            machine.succeed(${asScenarioUser reinstallScenario.dir ''
+              . ${reinstallScenario.fixtureDir}/fixture.env
+              printf 'not the release manifest\n' |
+                openssl dgst -sha256 -sign ${reinstallScenario.fixtureDir}/keys/signing.pem |
+                openssl base64 -A \
+                  >"$FIXTURE_RELEASE_DIR/sce-v$FIXTURE_VERSION-release-manifest.json.sig"
             ''})
+            assert_rebuild_fails("invalid manifest signature", ${builtins.toJSON authenticityFailureMessage})
+            assert_binary_preserved("after invalid manifest signature", installed_sha256)
+
+            machine.succeed(${asScenarioUser reinstallScenario.dir ''
+              . ${reinstallScenario.fixtureDir}/fixture.env
+              sig="sce-v$FIXTURE_VERSION-release-manifest.json.sig"
+              cp -p ${reinstallScenario.dir}/saved-release/"$sig" "$FIXTURE_RELEASE_DIR/$sig"
+              printf 'corrupted\n' >>"$FIXTURE_RELEASE_DIR/sce-v$FIXTURE_VERSION-$FIXTURE_TARGET_TRIPLE.tar.gz"
+            ''})
+            assert_rebuild_fails("archive checksum mismatch", ${builtins.toJSON checksumFailureMessage})
+            assert_binary_preserved("after archive checksum mismatch", installed_sha256)
+
+            machine.succeed(${asScenarioUser reinstallScenario.dir ''
+              . ${reinstallScenario.fixtureDir}/fixture.env
+              archive="sce-v$FIXTURE_VERSION-$FIXTURE_TARGET_TRIPLE.tar.gz"
+              cp -p ${reinstallScenario.dir}/saved-release/"$archive" "$FIXTURE_RELEASE_DIR/$archive"
+            ''})
+            print(machine.succeed(${rebuildScenarioPackage reinstallScenario}))
+            assert_binary_preserved("restored fixture reinstall", installed_sha256)
+        finally:
+            machine.succeed(${stopScenarioServer reinstallScenario})
   '';
 }
