@@ -89,7 +89,26 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 
 - Every consumer of `npm/test/release-fixture.sh` substitutes a throwaway RSA manifest-signing key. That covers `npm-pack-smoke`, host `pack-smoke.sh` runs, the `release-npm-package` post-pack gate, and every `npm-nixos-vm` subtest. Each consumer writes the throwaway public key into a staged package copy, re-signs a freshly built manifest with the throwaway private key, and repacks (or, for `--tarball`, repacks the extracted contents). They serve that repacked tarball and a rebuilt archive over loopback HTTPS with an ephemeral self-signed certificate, selected through `SCE_NPM_RELEASE_BASE_URL` and `NODE_EXTRA_CA_CERTS`.
 - These checks are therefore hermetic development coverage of the package layout, installer behavior, and native binary runtime. They do not prove the exact published `sce-v<version>-npm.tgz` bytes, the bundled production public key `npm/lib/release-manifest-public-key.pem`, the production-signed release manifest, or real GitHub Releases TLS and download URLs. A passing VM or pack-smoke run is not release evidence for those properties.
-- Proving the exact artifact and production key is the job of the planned release-security canary, which installs the unmodified tarball with its bundled key. It is not part of the fixture harness.
+- Proving the exact artifact and production key is the job of the release-security canary (below), which installs the unmodified tarball with its bundled key. It is not part of the fixture harness.
+
+## Release-security canary
+
+- `npm/test/release-canary.sh` installs the exact, unmodified `sce-v<version>-npm.tgz` with its bundled production key. It never re-signs, repacks, or substitutes a key. It sources `release-fixture.sh` with the `release-canary` log prefix for the tool check, the loopback server, the offline fixture install, and the layout assertions. It requires `--expected-version` and an exact version: dist-tags and ranges are rejected, never resolved.
+- Modes (exactly one):
+  - `--release-dir <dir> --tarball <tgz>`: serves the real manifest, `.sig`, and archives from `<dir>` over loopback HTTPS with an ephemeral certificate. It is the only mode that sets `SCE_NPM_RELEASE_BASE_URL`/`NODE_EXTRA_CA_CERTS`, and it sets them through the harness install.
+  - `--github-release v<version>`: downloads the tgz, manifest, and `.sig` from the public `releases/download` URL and installs with no installer overrides.
+  - `--registry-version <version>` (optional `--tarball`, default the GitHub asset): with bounded retries (10 × 30s), it requires the registry `dist.integrity` and the `npm pack` bytes of that exact version to equal the GitHub tgz. It then installs `@crocoder-dev/sce@<version>` from the registry and checks the lockfile integrity.
+  - Both remote modes run every download, install, and `sce` call under `env -i` with only `PATH`, an isolated `HOME`/`TMPDIR`, and the npm cache/userconfig, so caller-set installer overrides cannot leak in.
+- Every mode asserts the following:
+  - The tarball SHA-256 is unchanged by the run and equals the optional `--expected-sha256`.
+  - The packed name and version are correct.
+  - The packed `package/lib/release-manifest-public-key.pem` is byte-identical to the checked-in `npm/lib/release-manifest-public-key.pem`.
+  - `openssl dgst -verify` of the production manifest against that key passes, and the manifest version matches.
+  - `runtime/sce` has mode `755`, `.bin/sce` resolves to `bin/sce.js`, and the installed launcher is executable.
+  - `sce --help` runs, and `version --format json` reports the expected version.
+  - The packed launcher mode is logged, not enforced, because published tarballs up to `v0.4.0-pre-alpha-v12` pack `bin/sce.js` as `0644`.
+- Failures print distinct `release-canary:` messages and exit 1. Success ends with `release-canary: OK (<mode> mode: …)`.
+- The script is not yet wired into any workflow. Its release-gate usage is not established here.
 
 ## Verification baseline
 
@@ -99,6 +118,7 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
 - `nix build .#checks.<system>.npm-pack-smoke --print-build-logs`
 - `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/release-fixture.sh prepare <dir>` then `... release-fixture.sh serve <dir>` (reusable hermetic fixture for other consumers)
 - `nix build .#npm-nixos-vm --print-build-logs` (x86_64-linux; uses KVM when `/dev/kvm` exists, otherwise slower QEMU emulation)
+- `nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/release-canary.sh --expected-version <v> (--release-dir <dist/cli> --tarball <tgz> | --github-release v<v> | --registry-version <v>)` (exact-artifact canary; the remote modes need network)
 - `nix develop -c sh -c 'cd npm && SCE_NPM_SKIP_DOWNLOAD=1 bun ./lib/install.js'`
 - `nix run .#release-manifest -- --version <semver> --artifacts-dir <path> --out-dir <path> --signing-key-file <path>`
 - `nix run .#release-npm-package -- --version <semver> --out-dir <path>`
