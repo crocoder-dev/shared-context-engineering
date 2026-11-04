@@ -4,6 +4,26 @@ on:
   release:
     types:
       - published
+  workflow_call:
+    inputs:
+      release_tag:
+        description: "Release tag to publish (for example v0.1.0)"
+        required: true
+        type: string
+      dry_run:
+        description: "Run npm publish --dry-run instead of publishing"
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: "Publish with the next dist-tag instead of latest; version must include semver prerelease metadata"
+        required: false
+        default: false
+        type: boolean
+    secrets:
+      NPM_TOKEN:
+        description: "npm automation token used only by the publish step"
+        required: false
   workflow_dispatch:
     inputs:
       release_tag:
@@ -28,15 +48,22 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  resolve:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+      npm_tag: ${{ steps.resolve.outputs.npm_tag }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      npm_tarball_sha256: ${{ steps.asset.outputs.npm_tarball_sha256 }}
     env:
-      DISPATCH_RELEASE_TAG: ${{ inputs.release_tag }}
+      INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
       EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
-      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
-      PRE_RELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
+      DRY_RUN: ${{ github.event_name != 'release' && inputs.dry_run || false }}
+      PRE_RELEASE: ${{ github.event_name == 'release' && github.event.release.prerelease || inputs.prerelease || false }}
       GH_TOKEN: ${{ github.token }}
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
@@ -53,9 +80,9 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
 
       - name: Verify checked-in npm release version parity
+        id: resolve
         shell: bash
         run: |
           set -euo pipefail
@@ -63,10 +90,10 @@ jobs:
           npm_version="$(node -p "JSON.parse(require('fs').readFileSync('npm/package.json', 'utf8')).version")"
           version="$(tr -d '\n' < .version)"
           expected_tag="v${version}"
-          release_tag="${DISPATCH_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
+          release_tag="${INPUT_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
 
           if [ -z "$release_tag" ]; then
-            printf 'No release tag was provided. Trigger this workflow from a published GitHub release or pass workflow_dispatch input release_tag.\n' >&2
+            printf 'No release tag was provided. Trigger this workflow from a published GitHub release, workflow_call, or pass workflow_dispatch input release_tag.\n' >&2
             exit 1
           fi
 
@@ -91,85 +118,240 @@ jobs:
           fi
 
           if [ "${PRE_RELEASE:-false}" = "true" ] || [ "$version_is_prerelease" = "true" ]; then
-            printf 'Publishing checked-in npm prerelease package version %s from tag %s with npm dist-tag next\n' "$version" "$release_tag"
+            npm_tag="next"
           else
-            printf 'Publishing checked-in npm package version %s from tag %s with npm dist-tag latest\n' "$version" "$release_tag"
+            npm_tag="latest"
           fi
 
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            dry_run=true
+          else
+            dry_run=false
+          fi
+
+          printf 'Publishing checked-in npm package version %s from tag %s with npm dist-tag %s (dry run: %s)\n' "$version" "$release_tag" "$npm_tag" "$dry_run"
+
+          {
+            echo "tag=$release_tag"
+            echo "version=$version"
+            echo "npm_tag=$npm_tag"
+            echo "dry_run=$dry_run"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Download canonical npm release asset
+        id: asset
         shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
 
-          version="$(tr -d '\n' < .version)"
-          release_tag="${DISPATCH_RELEASE_TAG:-${EVENT_RELEASE_TAG:-}}"
-          package_file="sce-v${version}-npm.tgz"
+          package_file="sce-v${RELEASE_VERSION}-npm.tgz"
 
           mkdir -p dist/npm
-          gh release download "$release_tag" \
+          gh release download "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --pattern "$package_file" \
             --dir dist/npm
 
           if [ ! -f "dist/npm/$package_file" ]; then
-            printf 'Expected npm release asset %s for tag %s\n' "$package_file" "$release_tag" >&2
+            printf 'Expected npm release asset %s for tag %s\n' "$package_file" "$RELEASE_TAG" >&2
             exit 1
           fi
 
-      - name: Verify downloaded package metadata parity
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          version="$(tr -d '\n' < .version)"
-          package_file="dist/npm/sce-v${version}-npm.tgz"
-          package_version="$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
-          package_name="$(tar -xOf "$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).name")"
+          package_version="$(tar -xOf "dist/npm/$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")"
+          package_name="$(tar -xOf "dist/npm/$package_file" package/package.json | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).name")"
 
           if [ "$package_name" != "@crocoder-dev/sce" ]; then
             printf 'Downloaded package name %s is not @crocoder-dev/sce\n' "$package_name" >&2
             exit 1
           fi
 
-          if [ "$package_version" != "$version" ]; then
-            printf 'Downloaded npm package version %s does not match .version %s\n' "$package_version" "$version" >&2
+          if [ "$package_version" != "$RELEASE_VERSION" ]; then
+            printf 'Downloaded npm package version %s does not match .version %s\n' "$package_version" "$RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+          tarball_sha256="$(sha256sum "dist/npm/$package_file" | cut -d ' ' -f 1)"
+          printf 'GitHub Release npm tarball sha256: %s\n' "$tarball_sha256"
+          echo "npm_tarball_sha256=$tarball_sha256" >> "$GITHUB_OUTPUT"
+
+  github-release-canary:
+    needs: resolve
+    if: needs.resolve.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
+
+      - name: Run release-security canary on the GitHub Release
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          NPM_TARBALL_SHA256: ${{ needs.resolve.outputs.npm_tarball_sha256 }}
+        run: |
+          set -euo pipefail
+
+          nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/release-canary.sh \
+            --github-release "$RELEASE_TAG" \
+            --expected-version "$RELEASE_VERSION" \
+            --expected-sha256 "$NPM_TARBALL_SHA256"
+
+  publish:
+    needs:
+      - resolve
+      - github-release-canary
+    if: |
+      needs.resolve.result == 'success' &&
+      needs.github-release-canary.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+      NPM_DIST_TAG: ${{ needs.resolve.outputs.npm_tag }}
+      DRY_RUN: ${{ needs.resolve.outputs.dry_run }}
+      NPM_TARBALL_SHA256: ${{ needs.resolve.outputs.npm_tarball_sha256 }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      - name: Download canary-verified npm release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_file="dist/npm/sce-v${RELEASE_VERSION}-npm.tgz"
+
+          mkdir -p dist/npm
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$(basename "$package_file")" \
+            --dir dist/npm
+
+          actual_sha256="$(sha256sum "$package_file" | cut -d ' ' -f 1)"
+          if [ "$actual_sha256" != "$NPM_TARBALL_SHA256" ]; then
+            printf 'npm tarball sha256 %s does not match canary-verified sha256 %s\n' "$actual_sha256" "$NPM_TARBALL_SHA256" >&2
+            exit 1
+          fi
+
+          echo "npm tarball sha256 matches the canary-verified bytes: $actual_sha256"
+
+      - name: Check registry for an existing publication
+        id: registry
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_file="dist/npm/sce-v${RELEASE_VERSION}-npm.tgz"
+          local_integrity="sha512-$(openssl dgst -sha512 -binary "$package_file" | openssl base64 -A)"
+          view_err="$(mktemp)"
+
+          if registry_integrity="$(npm view "@crocoder-dev/sce@${RELEASE_VERSION}" dist.integrity 2>"$view_err")"; then
+            :
+          elif grep -q 'E404' "$view_err"; then
+            registry_integrity=""
+          else
+            cat "$view_err" >&2
+            printf 'Could not query the npm registry for @crocoder-dev/sce@%s\n' "$RELEASE_VERSION" >&2
+            exit 1
+          fi
+
+          if [ -z "$registry_integrity" ]; then
+            printf '@crocoder-dev/sce@%s is not on the registry yet\n' "$RELEASE_VERSION"
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          elif [ "$registry_integrity" = "$local_integrity" ]; then
+            printf '@crocoder-dev/sce@%s is already published with matching integrity %s; skipping npm publish\n' "$RELEASE_VERSION" "$registry_integrity"
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            printf '@crocoder-dev/sce@%s is already published with integrity %s, which does not match the GitHub Release tarball integrity %s\n' "$RELEASE_VERSION" "$registry_integrity" "$local_integrity" >&2
             exit 1
           fi
 
       - name: npm publish dry run
-        if: env.DRY_RUN == 'true'
-        run: |
-          version="$(tr -d '\n' < .version)"
-          npm_tag="latest"
-          case "$version" in
-            *-*) npm_tag="next" ;;
-          esac
-          if [ "${PRE_RELEASE:-false}" = "true" ]; then
-            npm_tag="next"
-          fi
-          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public --tag "$npm_tag" --dry-run
+        if: env.DRY_RUN == 'true' && steps.registry.outputs.already_published != 'true'
+        run: npm publish "dist/npm/sce-v${RELEASE_VERSION}-npm.tgz" --access public --tag "$NPM_DIST_TAG" --dry-run
 
-      - name: Ensure npm token is configured
-        if: env.DRY_RUN != 'true'
+      - name: Publish package to npm
+        if: env.DRY_RUN != 'true' && steps.registry.outputs.already_published != 'true'
         shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${NPM_TOKEN:-}" ]; then
+
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
             printf 'NPM_TOKEN secret is required for npm publication.\n' >&2
             exit 1
           fi
 
-      - name: Publish package to npm
-        if: env.DRY_RUN != 'true'
+          npmrc="$RUNNER_TEMP/publish-npmrc"
+          cat > "$npmrc" <<'EOF'
+          //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+          EOF
+          npm publish "dist/npm/sce-v${RELEASE_VERSION}-npm.tgz" \
+            --userconfig "$npmrc" \
+            --registry https://registry.npmjs.org \
+            --access public \
+            --tag "$NPM_DIST_TAG"
+
+  registry-canary:
+    needs:
+      - resolve
+      - publish
+    if: |
+      needs.resolve.result == 'success' &&
+      needs.publish.result == 'success' &&
+      needs.resolve.outputs.dry_run != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@05e31511f85b41b11d1cf0ef85d0992719546e2c # v2.21.0
+        with:
+          egress-policy: audit
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/determinate-nix-action@527f17dd63d2d60d3e5552934bc84b9a33a14d11 # v3.22.2
+
+      - name: Run release-security canary on the published registry version
+        shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          NPM_TARBALL_SHA256: ${{ needs.resolve.outputs.npm_tarball_sha256 }}
         run: |
-          version="$(tr -d '\n' < .version)"
-          npm_tag="latest"
-          case "$version" in
-            *-*) npm_tag="next" ;;
-          esac
-          if [ "${PRE_RELEASE:-false}" = "true" ]; then
-            npm_tag="next"
-          fi
-          npm publish "dist/npm/sce-v${version}-npm.tgz" --access public --tag "$npm_tag"
+          set -euo pipefail
+
+          nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/release-canary.sh \
+            --registry-version "$RELEASE_VERSION" \
+            --expected-version "$RELEASE_VERSION" \
+            --expected-sha256 "$NPM_TARBALL_SHA256"
