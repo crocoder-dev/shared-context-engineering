@@ -52,6 +52,10 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
   - `publish` downloads the tarball again and requires the same SHA-256. It compares the registry `dist.integrity` for the exact version with the tarball's sha512: a match skips `npm publish` (an idempotent rerun), a different value fails, and an absent version is published. `NPM_TOKEN` is exposed only to the `Publish package to npm` step.
   - `registry-canary` (no secrets, skipped on dry-run) runs `npm/test/release-canary.sh --registry-version <version> --expected-version <version> --expected-sha256 <sha>`. The script retries registry availability a bounded number of times and fails the workflow on any byte, integrity, or install mismatch.
   - The live `workflow_call` handoff, both remote canaries, and rerun behavior can only be confirmed by a real release run.
+- Manual reruns:
+  - Use "Re-run failed jobs" on the original `release-sce.yml` run to resume after a transient failure. A rerun of `publish-npm` reuses the same tag and the GitHub Release that already exists.
+  - Dispatching `publish-npm.yml` through `workflow_dispatch` with `release_tag: v<version>` and `dry_run: false` reruns publication against an existing GitHub Release. Dispatch defaults to `dry_run: true`, and a dry run skips `registry-canary`.
+  - Republishing is idempotent. When the exact version is already on the registry with matching `dist.integrity`, the `publish` job skips `npm publish` and `registry-canary` still runs. A different integrity value fails the run and is never overwritten.
 - It validates parity across repo-root `.version`, checked-in `npm/package.json`, and the target release tag before attempting publication.
 - It downloads the canonical `sce-v<version>-npm.tgz` asset from the corresponding GitHub release rather than rebuilding or mutating package metadata during publish.
 - It verifies the downloaded tarball still declares package name `@crocoder-dev/sce` and version `<.version>` before `npm publish`.
@@ -114,7 +118,12 @@ This file captures the implemented npm distribution slice of the `sce` CLI insta
   - `sce --help` runs, and `version --format json` reports the expected version.
   - The packed launcher mode is logged, not enforced, because published tarballs up to `v0.4.0-pre-alpha-v12` pack `bin/sce.js` as `0644`.
 - Failures print distinct `release-canary:` messages and exit 1. Success ends with `release-canary: OK (<mode> mode: …)`.
-- Release gates: `.github/workflows/release-sce.yml` runs the `--release-dir` mode as the pre-release (B1) gate in its secret-free `release-canary` job, and GitHub Release creation depends on it (see [cli-release-artifact-contract.md](cli-release-artifact-contract.md)). The `--github-release` and `--registry-version` modes are not yet wired into any workflow.
+- Release gates (every canary job is secret-free and passes `--expected-version` and `--expected-sha256`):
+  - B1, before the GitHub Release: the `release-canary` job in `.github/workflows/release-sce.yml` runs `--release-dir` against the assembled `dist/`. The `release` job cannot create a GitHub Release unless it passes (see [cli-release-artifact-contract.md](cli-release-artifact-contract.md)).
+  - B2, before `npm publish`: the `github-release-canary` job in `.github/workflows/publish-npm.yml` runs `--github-release` against the published GitHub Release assets. The `publish` job needs it.
+  - Registry, after `npm publish`: the `registry-canary` job in `.github/workflows/publish-npm.yml` runs `--registry-version` against the exact published version. It is skipped on dry-run and fails the workflow on mismatch or an unusable install.
+- Only B1 sets `SCE_NPM_RELEASE_BASE_URL`/`NODE_EXTRA_CA_CERTS`. B2 and the registry gate set none of `SCE_NPM_RELEASE_BASE_URL`, `SCE_NPM_SKIP_DOWNLOAD`, or `NODE_EXTRA_CA_CERTS`.
+- Local runs of all three modes against the already published `v0.4.0-pre-alpha-v12` artifacts exercise the canary script. That release predates the hardened installer, so these runs are not evidence for the new installer code or for the gates inside GitHub Actions.
 
 ## Verification baseline
 

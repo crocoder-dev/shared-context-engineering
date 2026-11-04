@@ -14,29 +14,29 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: One release-fixture harness serves every hermetic and canary install: pack-smoke fixture and `--binary` modes behave as before, `fixture-release-server.mjs` is the only HTTPS server implementation, and no other file generates its own TLS server or duplicates the sign/serve/install steps.
+- [x] AC1: One release-fixture harness serves every hermetic and canary install: pack-smoke fixture and `--binary` modes behave as before, `fixture-release-server.mjs` is the only HTTPS server implementation, and no other file generates its own TLS server or duplicates the sign/serve/install steps.
   - Validate: `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs` passes; `nix build .#sce-release && nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh --binary ./result/bin/sce` passes; `nix shell nixpkgs#ripgrep -c rg -n 'createServer|openssl req' npm nix .github` hits only the shared harness and `fixture-release-server.mjs`.
-- [ ] AC2: In the VM, a package installed with `--ignore-scripts` has no `runtime/sce`, its launcher exits non-zero with the missing-binary message, and `npm rebuild @crocoder-dev/sce` with the fixture server available runs postinstall to install a mode-`755` `runtime/sce` that reports `.version`; a second rebuild leaves a working, executable install.
+- [x] AC2: In the VM, a package installed with `--ignore-scripts` has no `runtime/sce`, its launcher exits non-zero with the missing-binary message, and `npm rebuild @crocoder-dev/sce` with the fixture server available runs postinstall to install a mode-`755` `runtime/sce` that reports `.version`; a second rebuild leaves a working, executable install.
   - Validate: `nix build .#npm-nixos-vm --print-build-logs` passes and the log shows the `skipped postinstall and npm rebuild recovery` subtest with the asserted message, mode, and version for both rebuilds.
-- [ ] AC3: In the VM, after a successful install, a reinstall attempt against an invalid manifest signature and then against an archive checksum mismatch each fails, leaves `runtime/sce` with the recorded SHA-256 and mode `755` and still executable, and leaves no `sce-npm-install-*`/`sce-npm-text-*` temp directories or temp siblings of `runtime/sce`; restoring the valid fixture makes the next reinstall succeed.
+- [x] AC3: In the VM, after a successful install, a reinstall attempt against an invalid manifest signature and then against an archive checksum mismatch each fails, leaves `runtime/sce` with the recorded SHA-256 and mode `755` and still executable, and leaves no `sce-npm-install-*`/`sce-npm-text-*` temp directories or temp siblings of `runtime/sce`; restoring the valid fixture makes the next reinstall succeed.
   - Validate: `nix build .#npm-nixos-vm --print-build-logs` log shows the `failed reinstall preserves existing binary` subtest with both failure messages, unchanged hashes, empty staging checks, and the final successful reinstall.
-- [ ] AC4: In the VM, as the non-root user, from a working directory outside any SCE checkout, `sce setup --bootstrap-context` in a fresh Git repository creates the `context/` baseline (directories `plans`, `handovers`, `decisions`, `tmp`; files `overview.md`, `architecture.md`, `patterns.md`, `glossary.md`, `context-map.md`, `tmp/.gitignore`); a second run succeeds, creates nothing new, and preserves a sentinel appended to an existing context file.
+- [x] AC4: In the VM, as the non-root user, from a working directory outside any SCE checkout, `sce setup --bootstrap-context` in a fresh Git repository creates the `context/` baseline (directories `plans`, `handovers`, `decisions`, `tmp`; files `overview.md`, `architecture.md`, `patterns.md`, `glossary.md`, `context-map.md`, `tmp/.gitignore`); a second run succeeds, creates nothing new, and preserves a sentinel appended to an existing context file.
   - Validate: `nix build .#npm-nixos-vm --print-build-logs` log shows the `real sce setup --bootstrap-context` subtest with the created paths and the preserved sentinel.
-- [ ] AC5: In the VM, the installed launcher (`--help`, `version --format json`) runs under `env -i` with a PATH containing only a directory that links `node`, and `runtime/sce` runs directly under `env -i` with an empty PATH; neither PATH contains tar, curl, gzip, or bash, the binary has no ELF interpreter, and no FHS loader exists at `/lib64/ld-linux-x86-64.so.2`. The Git-dependent scenario uses its own separate PATH, and no subtest falls back to the system PATH.
+- [x] AC5: In the VM, the installed launcher (`--help`, `version --format json`) runs under `env -i` with a PATH containing only a directory that links `node`, and `runtime/sce` runs directly under `env -i` with an empty PATH; neither PATH contains tar, curl, gzip, or bash, the binary has no ELF interpreter, and no FHS loader exists at `/lib64/ld-linux-x86-64.so.2`. The Git-dependent scenario uses its own separate PATH, and no subtest falls back to the system PATH.
   - Validate: `nix build .#npm-nixos-vm --print-build-logs` log shows the `minimal runtime dependencies` subtest assertions; inspect `nix/tests/npm-nixos-vm.nix` for the restricted environments and the absence of any fallback to the full PATH.
-- [ ] AC6: The VM test stays local-only, non-root, and loopback-only, and the installer is unchanged: `npm-nixos-vm` is in neither `checks.<system>` nor `ci-checks`, every scenario runs as the non-root user with a per-scenario isolated directory, and `npm/lib` and `npm/bin` are unchanged by this plan.
+- [x] AC6: The VM test stays local-only, non-root, and loopback-only, and the installer is unchanged: `npm-nixos-vm` is in neither `checks.<system>` nor `ci-checks`, every scenario runs as the non-root user with a per-scenario isolated directory, and `npm/lib` and `npm/bin` are unchanged by this plan.
   - Validate: `nix eval .#checks.x86_64-linux --apply builtins.attrNames` does not list `npm-nixos-vm`; `nix build .#ci-checks --print-build-logs && ls result/` shows only `sce-release` and `release-portability-audit`; `git diff a4611a4b -- npm/lib npm/bin` is empty; inspect the VM node for `useDHCP = false`, `interfaces = { }`, `vlans = [ ]`.
-- [ ] AC7: The release-security canary installs the exact, unmodified tarball and the production key: its SHA-256 is identical before and after the run, the packed `package/lib/release-manifest-public-key.pem` is byte-identical to the checked-in `npm/lib/release-manifest-public-key.pem`, the production-signed manifest verifies against that key, and the installed launcher, `.bin/sce` symlink target, and `runtime/sce` modes and the reported version are asserted. Local-directory, GitHub-release, and registry modes each pass against the already published `v0.4.0-pre-alpha-v12` artifacts, and the GitHub/registry modes set none of `SCE_NPM_RELEASE_BASE_URL`, `SCE_NPM_SKIP_DOWNLOAD`, or `NODE_EXTRA_CA_CERTS`.
+- [x] AC7: The release-security canary installs the exact, unmodified tarball and the production key: its SHA-256 is identical before and after the run, the packed `package/lib/release-manifest-public-key.pem` is byte-identical to the checked-in `npm/lib/release-manifest-public-key.pem`, the production-signed manifest verifies against that key, and the installed launcher, `.bin/sce` symlink target, and `runtime/sce` modes and the reported version are asserted. Local-directory, GitHub-release, and registry modes each pass against the already published `v0.4.0-pre-alpha-v12` artifacts, and the GitHub/registry modes set none of `SCE_NPM_RELEASE_BASE_URL`, `SCE_NPM_SKIP_DOWNLOAD`, or `NODE_EXTRA_CA_CERTS`.
   - Validate: run the three canary modes against `v0.4.0-pre-alpha-v12` (commands recorded in T07) and capture exit 0 with the printed hashes, key comparison, modes, and version; `nix shell nixpkgs#ripgrep -c rg -n 'SCE_NPM_RELEASE_BASE_URL|SCE_NPM_SKIP_DOWNLOAD|NODE_EXTRA_CA_CERTS' npm/test/release-canary.sh` shows them only in the local-directory mode path.
-- [ ] AC8: `release-sce.yml` cannot create a GitHub Release unless the B1 canary passed on the exact assembled artifacts, and the signing private key is referenced only in the manifest-signing step of a job distinct from the canary job.
+- [x] AC8: `release-sce.yml` cannot create a GitHub Release unless the B1 canary passed on the exact assembled artifacts, and the signing private key is referenced only in the manifest-signing step of a job distinct from the canary job.
   - Validate: inspect `.github/workflows/release-sce.yml`: the release-creation job `needs` the canary job and gates on its success; `SCE_RELEASE_MANIFEST_SIGNING_KEY` appears only in one step's `env`; the canary job has no `secrets.` reference; `nix build .#checks.x86_64-linux.workflow-actionlint` passes.
-- [ ] AC9: npm publication runs from `release-sce.yml` through `workflow_call` only after release creation succeeds, the GitHub-release canary must pass before `npm publish`, the registry canary runs after publication against the exact version with bounded retries and fails the workflow on mismatch or unusable install, `NPM_TOKEN` is passed explicitly (not `secrets: inherit`) and exposed only to the publish step, no canary job references a secret, and `workflow_dispatch` with a release tag and `release: published` still start the same pipeline.
+- [x] AC9: npm publication runs from `release-sce.yml` through `workflow_call` only after release creation succeeds, the GitHub-release canary must pass before `npm publish`, the registry canary runs after publication against the exact version with bounded retries and fails the workflow on mismatch or unusable install, `NPM_TOKEN` is passed explicitly (not `secrets: inherit`) and exposed only to the publish step, no canary job references a secret, and `workflow_dispatch` with a release tag and `release: published` still start the same pipeline.
   - Validate: inspect `.github/workflows/publish-npm.yml` and `.github/workflows/release-sce.yml` for those job dependencies, triggers, secret references, and the retry bound; `nix build .#checks.x86_64-linux.workflow-actionlint` passes. Live execution of B2 and the registry canary inside GitHub Actions is not provable before a real release and must be reported as such.
-- [ ] AC10: Each new check fails when its critical assertion is deliberately violated: recovery subtest (rebuild skipped), failed-reinstall subtest (binary replaced or temp file left behind), setup subtest (sentinel overwritten), minimal-runtime subtest (tar added to the restricted PATH, or a binary with an ELF interpreter), and the canary (tarball byte change, swapped public key, wrong expected version).
+- [x] AC10: Each new check fails when its critical assertion is deliberately violated: recovery subtest (rebuild skipped), failed-reinstall subtest (binary replaced or temp file left behind), setup subtest (sentinel overwritten), minimal-runtime subtest (tar added to the restricted PATH, or a binary with an ELF interpreter), and the canary (tarball byte change, swapped public key, wrong expected version).
   - Validate: plan task evidence records each injected fault, made only in scratch copies, with the exact failing subtest or `release-canary:` message; `git status` is clean of fault residue.
-- [ ] AC11: Existing JavaScript installer tests for malformed manifests, invalid archive entries, and fault permutations are retained and pass, and the VM does not re-implement those permutations.
+- [x] AC11: Existing JavaScript installer tests for malformed manifests, invalid archive entries, and fault permutations are retained and pass, and the VM does not re-implement those permutations.
   - Validate: `nix build .#checks.x86_64-linux.npm-bun-tests --print-build-logs` passes; `git diff a4611a4b --stat -- npm/test/*.test.js` shows no removals.
-- [ ] AC12: Durable docs state that the hermetic VM/pack-smoke fixtures substitute a throwaway key and repack, while only the release-security canary proves the exact artifact and production key; they describe each VM scenario, the three canary gates, the `workflow_call` trigger topology and secret scoping, manual reruns, and what still needs a real release to validate.
+- [x] AC12: Durable docs state that the hermetic VM/pack-smoke fixtures substitute a throwaway key and repack, while only the release-security canary proves the exact artifact and production key; they describe each VM scenario, the three canary gates, the `workflow_call` trigger topology and secret scoping, manual reruns, and what still needs a real release to validate.
   - Validate: inspect `context/sce/cli-npm-distribution-contract.md`, `context/sce/cli-release-artifact-contract.md`, and `context/sce/cli-first-install-channels-contract.md` for those points with command and job names matching the workflows and flake.
 
 ### Full validation
@@ -364,15 +364,81 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: release and npm publication workflow topology (the `workflow_call` trigger, the four-job publish chain, `NPM_TOKEN` scoping, idempotent reruns). Durable documentation is T10's scope (`context/sce/cli-npm-distribution-contract.md`, `context/sce/cli-first-install-channels-contract.md`, `context/sce/cli-release-artifact-contract.md`). No root context file content is expected to change.
   - Context synchronization: synced
 
-- [ ] T10: `Document release-security canary gates and npm publication topology` (status:todo)
+- [x] T10: `Document release-security canary gates and npm publication topology` (status:done)
   - Task ID: T10
   - Scope: In — `context/sce/cli-npm-distribution-contract.md` (release-security canary, the B1/B2/registry gates, updated Registry publication topology covering the `workflow_call` trigger, secret scoping, reruns, and idempotent republish), `context/sce/cli-release-artifact-contract.md` (assemble/canary/release job split), `context/sce/cli-first-install-channels-contract.md` (release-to-npm topology), and `context/context-map.md` annotations if needed. Each doc states what can only be validated by a real release. Out — VM docs (T06).
   - Dependencies: T09
   - Done when: the docs cover the release half of AC12, with job and script names matching the workflows.
   - Verify: inspect the three contracts; `grep -n 'release-canary' context/sce/*.md .github/workflows/*.yml`.
-  - Context synchronization: pending
+  - Completed: 2026-11-04
+  - Files changed: `context/sce/cli-npm-distribution-contract.md`, `context/sce/cli-release-artifact-contract.md`, `context/sce/cli-first-install-channels-contract.md`, `context/context-map.md`.
+  - Result:
+    - `cli-npm-distribution-contract.md`:
+      - Replaced the stale "remote modes are not yet wired" line with a "Release gates" list: B1 is the `release-canary` job in `release-sce.yml`, B2 is the `github-release-canary` job in `publish-npm.yml`, and the post-publish gate is `registry-canary`.
+      - Added the rule that only B1 sets installer overrides.
+      - Added the caveat that local `v0.4.0-pre-alpha-v12` runs exercise the script only, not the new installer code or the gates inside Actions.
+      - Added "Manual reruns": re-running failed jobs, a `workflow_dispatch` of `publish-npm.yml` with `release_tag` and `dry_run: false` (dispatch defaults to dry-run), and idempotent republish on matching `dist.integrity` (fails on a mismatch).
+      - The existing T09-synced topology bullets (`workflow_call`, `NPM_TOKEN` scoping, real-release-only proof) are kept.
+    - `cli-release-artifact-contract.md`: labels `release-canary` as the B1 gate. Adds rerun guidance (reuses `sce-assembled-dist`, still requires the canary-recorded SHA-256) and a pointer to the downstream B2 and registry gates.
+    - `cli-first-install-channels-contract.md`: new "Release-to-npm topology" bullet covering the job chain across both workflows, secret confinement, triggers, and real-release-only proof.
+    - `context-map.md`: the npm-contract annotation now names the three gates and the `workflow_call`/`NPM_TOKEN`/rerun/idempotent-republish topology.
+  - Verify outcomes:
+    - `grep -n 'release-canary' context/sce/*.md .github/workflows/*.yml`: passed.
+      - Doc job names `release-canary`, `github-release-canary`, and `registry-canary` match `release-sce.yml:271` and `publish-npm.yml:180`/`:321`.
+      - Step names `Assemble CLI release manifest` (`release-sce.yml:236`) and `Publish package to npm` (`publish-npm.yml:298`) and the artifact `sce-assembled-dist` match the workflows.
+    - Inspected the three contracts against the workflow triggers, `needs`/`if` chains, secret references, and `workflow_dispatch` `dry_run: true` default: consistent.
+  - Context impact: durable docs only (`context/sce/` contracts and `context/context-map.md`); no code or root context file changes.
+  - Context synchronization: synced
 
 ## Open questions
 
 - The launcher's missing-binary message tells users to run `npm rebuild sce`, but the package is `@crocoder-dev/sce`, and `npm rebuild sce` does not rebuild it. The plan asserts the current text and leaves `npm/bin/sce.js` alone. Correcting the message is a one-line launcher change, which would also update the VM assertion. Should it be included?
 - B2 inside GitHub Actions, the registry canary, the `workflow_call` handoff, and the idempotent-rerun path can only be proven by a real release run. Before that, the evidence will be actionlint, workflow inspection, and local canary runs against the already published `v0.4.0-pre-alpha-v12` artifacts. That release predates the hardened installer, so a pass exercises the canary script, not the new installer code.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-11-04
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all `checks.x86_64-linux` derivations passed)
+- `nix build .#npm-nixos-vm --print-build-logs` -> exit 0 (all nine subtests passed; test script finished in 54.86s; no `exited 124` in the log)
+- `nix build .#ci-checks --print-build-logs` -> exit 0 (`result/` holds only `release-portability-audit` and `sce-release`)
+- `nix build .#checks.x86_64-linux.npm-bun-tests --print-build-logs` -> exit 0
+- `nix build .#checks.x86_64-linux.workflow-actionlint` -> exit 0
+- `nix build .#checks.x86_64-linux.npm-pack-smoke --print-build-logs` -> exit 0
+- `nix build .#sce-release && nix shell nixpkgs#nodejs nixpkgs#openssl -c bash npm/test/pack-smoke.sh --binary ./result/bin/sce` -> exit 0 (`pack-smoke: OK (real binary: sce --help, sce version --format json)`, version `0.4.0-pre-alpha-v12`)
+- `nix shell nixpkgs#ripgrep -c rg -n 'createServer|openssl req' npm nix .github` -> exit 0 (hits only `npm/test/fixture-release-server.mjs` and `npm/test/release-fixture.sh`)
+- `nix shell nixpkgs#ripgrep -c rg -n 'SCE_NPM_RELEASE_BASE_URL|SCE_NPM_SKIP_DOWNLOAD|NODE_EXTRA_CA_CERTS' npm/test/release-canary.sh` -> exit 1 (no hits; the overrides are set only in `fixture_npm_install` in `release-fixture.sh`, which only the `--release-dir` path calls)
+- `bash npm/test/release-canary.sh --release-dir <scratch v12 assets> --tarball <scratch>/sce-v0.4.0-pre-alpha-v12-npm.tgz --expected-version 0.4.0-pre-alpha-v12` -> exit 0 (`release-canary: OK (local mode …)`)
+- `bash npm/test/release-canary.sh --github-release v0.4.0-pre-alpha-v12 --expected-version 0.4.0-pre-alpha-v12` -> exit 0 (`release-canary: OK (github mode …)`)
+- `bash npm/test/release-canary.sh --registry-version 0.4.0-pre-alpha-v12 --expected-version 0.4.0-pre-alpha-v12` -> exit 0 (registry tarball byte-identical; `release-canary: OK (registry mode …)`)
+- `nix eval .#checks.x86_64-linux --apply builtins.attrNames` -> exit 0 (`npm-nixos-vm` not listed)
+- `git diff a4611a4b --stat -- npm/lib npm/bin` -> exit 0 (empty)
+- `git diff a4611a4b --stat -- 'npm/test/*.test.js'` -> exit 0 (empty; no removals)
+
+### Success-criteria verification
+
+- [x] AC1: One shared release-fixture harness -> the `npm-pack-smoke` check and the host `--binary` smoke passed; `createServer|openssl req` hits only `fixture-release-server.mjs` and `release-fixture.sh`.
+- [x] AC2: Skipped postinstall and `npm rebuild` recovery -> VM log: `launcher without binary exited 1: The native sce binary is not installed. …`; `runtime/sce` mode 755 and `parsed version: 0.4.0-pre-alpha-v12` after the first and the second rebuild.
+- [x] AC3: Failed reinstall preserves the binary -> VM log: `Release manifest authenticity check failed` and `Downloaded sce archive checksum mismatch` (each `npm rebuild exited 1`); `runtime/sce` sha256 `97fb0fd6…fe5a` and mode 755 unchanged; `installer temp dirs in TMPDIR: none` and `runtime/ entries: ['sce']` after each failure; the restored-fixture reinstall succeeded.
+- [x] AC4: `sce setup --bootstrap-context` -> VM log as `sce-tester` (uid 1000) in a fresh Git repository: `Context baseline ensured.`, the full context tree listed, `second run: context tree unchanged`, `sentinel preserved`.
+- [x] AC5: Minimal runtime -> VM log: `launcher PATH entries: ['node']`; `tar curl gzip bash do not resolve` on the launcher PATH and on `PATH=/var/empty`; `no ELF INTERP program header`; `no FHS loader at /lib64/ld-linux-x86-64.so.2`. Inspected `nix/tests/npm-nixos-vm.nix`: `env -i` environments at lines 49–50; the setup scenario exports its own `setupToolsPath`.
+- [x] AC6: Local-only, non-root, loopback-only, installer unchanged -> `npm-nixos-vm` absent from `checks.x86_64-linux`; `ci-checks` holds only `sce-release` and `release-portability-audit`; the `npm/lib` and `npm/bin` diff is empty; the VM node sets `useDHCP = false`, `interfaces = { }`, `vlans = [ ]`; scenarios run under `/home/sce-tester/scenarios/<name>`.
+- [x] AC7: Exact-artifact canary -> all three modes exit 0 against `v0.4.0-pre-alpha-v12`: tarball sha256 `ec6bf434…edf57` unchanged, bundled key byte-identical (`bfc3c81e…f212`), manifest verified, `runtime/sce` and `bin/sce.js` mode 755, `.bin/sce` → `bin/sce.js`, version `0.4.0-pre-alpha-v12`; the override variables are absent from `release-canary.sh`.
+- [x] AC8: B1 gate -> inspected `release-sce.yml`: `release` needs `release-canary` and gates on its success plus a non-empty `npm_tarball_sha256`; `SCE_RELEASE_MANIFEST_SIGNING_KEY` appears only in the `env` of the `Assemble CLI release manifest` step in `assemble`; `release-canary` has no `secrets.` reference; actionlint passed.
+- [x] AC9: npm publication topology -> `publish-npm` in `release-sce.yml` needs `release` and calls `publish-npm.yml` through `uses:` with `NPM_TOKEN` passed explicitly (no `secrets: inherit`); `publish` needs `github-release-canary`; `registry-canary` needs `publish` and runs `--registry-version`, bounded at 10 × 30s in `release-canary.sh`; `secrets.NPM_TOKEN` appears only in the `Publish package to npm` step; the `release: published`, `workflow_call`, and `workflow_dispatch` triggers are present; actionlint passed. Live B2 and registry execution in GitHub Actions is not provable before a real release.
+- [x] AC10: Fault injection -> task evidence records each fault in scratch worktrees or copies with its failing message (T02 rebuild skipped; T03 binary replaced and temp sibling left; T04 sentinel overwritten; T05 tar on the PATH and an ELF-interpreter binary; T07 tarball byte change, swapped key, wrong expected version); `git worktree list` shows no scratch worktrees, and `git status` shows no fault residue.
+- [x] AC11: Existing JS installer tests -> `npm-bun-tests` passed; the `npm/test/*.test.js` diff against `a4611a4b` is empty.
+- [x] AC12: Durable docs -> inspected `cli-npm-distribution-contract.md`, `cli-release-artifact-contract.md`, and `cli-first-install-channels-contract.md`: throwaway-key repack versus the production-key canary, each VM scenario, the B1/B2/registry gates, the `workflow_call` topology, `NPM_TOKEN` scoping, manual reruns, and real-release-only proof; job and step names match the workflows.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- B2 (`github-release-canary`), `registry-canary`, the `workflow_call` handoff, and the idempotent-republish path are proven only by inspection and local canary runs. They need a real release to confirm.
+- The v12 canary runs exercise the canary script, not the hardened installer, because v12 predates it.
+- T05 recorded an intermittent hang after the archive-checksum-mismatch `npm rebuild` (exit 124, which the T03 assertion accepts). It did not recur in this run (`npm rebuild exited 1`), but the root cause and the permissive T03 assertion remain open follow-ups.
