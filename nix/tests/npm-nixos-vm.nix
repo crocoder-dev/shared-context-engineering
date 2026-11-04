@@ -32,6 +32,30 @@ let
   };
   rebuildScenario = mkScenario "rebuild";
   reinstallScenario = mkScenario "reinstall";
+  setupScenario = mkScenario "setup";
+
+  setupRepoDir = "${setupScenario.dir}/repo";
+  setupNestedDir = "${setupRepoDir}/nested/cwd";
+  setupSentinel = "sce-tester sentinel: keep this line";
+  setupToolsPath = pkgs.lib.makeBinPath [
+    pkgs.nodejs
+    pkgs.git
+    pkgs.coreutils
+  ];
+  setupBaselineDirs = [
+    "context/plans"
+    "context/handovers"
+    "context/decisions"
+    "context/tmp"
+  ];
+  setupBaselineFiles = [
+    "context/overview.md"
+    "context/architecture.md"
+    "context/patterns.md"
+    "context/glossary.md"
+    "context/context-map.md"
+    "context/tmp/.gitignore"
+  ];
 
   asUser =
     command:
@@ -92,6 +116,33 @@ let
     scenario:
     asScenarioUser scenario.dir ''
       kill "$(cat ${scenario.pidFile})" 2>/dev/null || true
+    '';
+
+  installScenarioPackage =
+    scenario:
+    asScenarioUser scenario.dir ''
+      . ${scenario.fixtureDir}/fixture.env
+      SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:$(cat ${scenario.portFile})" \
+        NODE_EXTRA_CA_CERTS="$FIXTURE_TLS_CERT" \
+        npm install \
+        --prefix ${scenario.prefixDir} \
+        --offline \
+        --no-audit \
+        --no-fund \
+        --foreground-scripts \
+        "$FIXTURE_TARBALL" 2>&1
+    '';
+
+  asSetupUser =
+    command:
+    asScenarioUser setupScenario.dir ''
+      export PATH=${setupToolsPath}
+      export XDG_CONFIG_HOME="$HOME/.config"
+      export XDG_STATE_HOME="$HOME/.local/state"
+      export XDG_DATA_HOME="$HOME/.local/share"
+      export XDG_CACHE_HOME="$HOME/.cache"
+      export GIT_CONFIG_NOSYSTEM=1
+      ${command}
     '';
 
   # Reruns postinstall in place against the scenario's fixture server.
@@ -261,18 +312,7 @@ pkgs.testers.runNixOSTest {
         ''})
         machine.succeed(${startScenarioServer reinstallScenario})
         try:
-            print(machine.succeed(${asScenarioUser reinstallScenario.dir ''
-              . ${reinstallScenario.fixtureDir}/fixture.env
-              SCE_NPM_RELEASE_BASE_URL="https://127.0.0.1:$(cat ${reinstallScenario.portFile})" \
-                NODE_EXTRA_CA_CERTS="$FIXTURE_TLS_CERT" \
-                npm install \
-                --prefix ${reinstallScenario.prefixDir} \
-                --offline \
-                --no-audit \
-                --no-fund \
-                --foreground-scripts \
-                "$FIXTURE_TARBALL" 2>&1
-            ''}))
+            print(machine.succeed(${installScenarioPackage reinstallScenario}))
             installed_sha256 = runtime_sha256()
             assert_binary_preserved("initial install", installed_sha256)
 
@@ -306,5 +346,85 @@ pkgs.testers.runNixOSTest {
             assert_binary_preserved("restored fixture reinstall", installed_sha256)
         finally:
             machine.succeed(${stopScenarioServer reinstallScenario})
+
+    def setup_tree():
+        return machine.succeed(
+            "cd ${setupRepoDir} && find context -mindepth 1 | LC_ALL=C sort"
+        ).split()
+
+    def assert_setup_baseline(label):
+        tree = setup_tree()
+        print(f"{label}: context tree: {tree}")
+        for path in ${builtins.toJSON setupBaselineDirs}:
+            machine.succeed(f"test -d ${setupRepoDir}/{path}")
+        for path in ${builtins.toJSON setupBaselineFiles}:
+            machine.succeed(f"test -f ${setupRepoDir}/{path}")
+        expected_tree = sorted(${builtins.toJSON (setupBaselineDirs ++ setupBaselineFiles)})
+        assert tree == expected_tree, f"{label}: context tree {tree}, expected {expected_tree}"
+        return tree
+
+    with subtest("real sce setup --bootstrap-context"):
+        print(machine.succeed(${prepareScenarioFixture setupScenario}))
+        machine.succeed(${startScenarioServer setupScenario})
+        try:
+            print(machine.succeed(${installScenarioPackage setupScenario}))
+        finally:
+            machine.succeed(${stopScenarioServer setupScenario})
+
+        print(machine.succeed(${asSetupUser ''
+          echo "setup PATH: $PATH"
+          for tool in tar curl gzip bash jq; do
+            if command -v "$tool" >/dev/null; then
+              echo "$tool resolves on the setup PATH" >&2
+              false
+            fi
+          done
+          git init --quiet ${setupRepoDir}
+          git -C ${setupRepoDir} remote add origin https://example.invalid/sce-tester/setup.git
+          mkdir -p ${setupNestedDir}
+        ''}))
+
+        print(machine.succeed(${asSetupUser ''
+          cd ${setupRepoDir}
+          echo "first run cwd: $(pwd)"
+          ${setupScenario.launcher} setup --bootstrap-context 2>&1
+        ''}))
+        first_tree = assert_setup_baseline("first run")
+        tmp_gitignore = machine.succeed("cat ${setupRepoDir}/context/tmp/.gitignore")
+        assert tmp_gitignore == "*\n!.gitignore\n", f"context/tmp/.gitignore is {tmp_gitignore!r}"
+
+        machine.succeed(${asSetupUser ''
+          printf '%s\n' ${pkgs.lib.escapeShellArg setupSentinel} >>${setupRepoDir}/context/overview.md
+        ''})
+        overview_before = machine.succeed("cat ${setupRepoDir}/context/overview.md")
+
+        print(machine.succeed(${asSetupUser ''
+          cd ${setupNestedDir}
+          echo "second run cwd: $(pwd)"
+          ${setupScenario.launcher} setup --bootstrap-context 2>&1
+        ''}))
+        second_tree = assert_setup_baseline("second run")
+        assert second_tree == first_tree, f"second run changed the context tree: {first_tree} -> {second_tree}"
+        print("second run: context tree unchanged")
+        overview_after = machine.succeed("cat ${setupRepoDir}/context/overview.md")
+        sentinel = ${builtins.toJSON setupSentinel}
+        assert sentinel in overview_after, f"sentinel lost from context/overview.md: {overview_after!r}"
+        assert overview_after == overview_before, f"context/overview.md changed: {overview_before!r} -> {overview_after!r}"
+        print(f"second run: sentinel preserved: {sentinel!r}")
+
+        repo_root = machine.succeed(${asSetupUser "git -C ${setupNestedDir} rev-parse --show-toplevel"}).strip()
+        assert repo_root == "${setupRepoDir}", f"nested cwd resolves to repo {repo_root!r}"
+        repo_entries = machine.succeed("ls -A ${setupRepoDir}").split()
+        print(f"repo entries: {repo_entries}")
+        assert sorted(repo_entries) == [".git", "context", "nested"], f"repo holds {repo_entries}"
+        for cwd in ["${setupRepoDir}", "${setupNestedDir}"]:
+            assert not cwd.startswith("${npmDir}/"), f"cwd {cwd} is inside the staged npm source"
+        machine.fail(
+            "cd ${setupRepoDir}/.. && while :; do"
+            " [ -e .git ] || [ -e cli/Cargo.toml ] && exit 0;"
+            " [ \"$PWD\" = / ] && exit 1; cd ..; done"
+        )
+        machine.fail("grep -rlE '${npmDir}|/nix/store' ${setupRepoDir}/context")
+        print("no SCE source path in the cwd ancestry or the bootstrapped context")
   '';
 }
