@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use crate::services::agent_trace::{
     agent_trace_session_url, validate_agent_trace_value, AgentTrace, DirectEvidenceSource,
-    HunkContributor, RepositoryRoot,
+    HunkContributor, LineChangeAttribution, LineChangeCounts, RepositoryRoot,
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
@@ -512,6 +512,16 @@ async fn non_exclusive_mutation_lineage_is_not_overridden_by_a_direct_match() {
         HunkContributor::Unknown
     );
     assert!(related_sessions(&trace).is_empty());
+    let line_changes = trace.metadata.sce.line_changes;
+    assert_eq!(line_changes.ai, LineChangeCounts::default());
+    assert_eq!(
+        line_changes.non_exclusive,
+        LineChangeCounts {
+            added: BOILERPLATE.len() as u64,
+            removed: 0,
+        }
+    );
+    assert_eq!(line_changes.unknown, LineChangeCounts::default());
 }
 
 #[tokio::test]
@@ -742,6 +752,9 @@ async fn insert_rows(db: &RepositoryAgentTraceDb, rows: &[DiffTraceRow]) {
 struct PersistedTrace {
     json: String,
     value: Value,
+    trace: AgentTrace,
+    committed: ParsedPatch,
+    intersection_touched_lines: usize,
 }
 
 async fn persist_trace(
@@ -781,7 +794,7 @@ async fn persist_trace(
         .result
     };
 
-    run_post_commit_agent_trace_flow_with(
+    let trace = run_post_commit_agent_trace_flow_with(
         &flow,
         None,
         REMOTE_URL,
@@ -792,6 +805,7 @@ async fn persist_trace(
     )
     .await
     .expect("agent trace flow");
+    let intersection_touched_lines = touched_line_count(&flow.intersection_patch);
 
     let traces: Vec<String> = db
         .query_map("SELECT trace_json FROM agent_traces", (), |row| {
@@ -805,6 +819,9 @@ async fn persist_trace(
     PersistedTrace {
         json: traces[0].clone(),
         value,
+        trace,
+        committed: flow.post_commit_data.parsed_patch,
+        intersection_touched_lines,
     }
 }
 
@@ -1247,4 +1264,72 @@ async fn mutation_lineage_still_attributes_when_claude_direct_evidence_lacks_a_c
     assert_eq!(conversation["contributor"]["type"], "ai");
     assert_eq!(conversation["contributor"]["model_id"], MODEL_C);
     assert!(persisted.value.get("tool").is_none());
+}
+
+async fn persisted_line_changes(rows: &[DiffTraceRow], lineage: bool) -> LineChangeAttribution {
+    let repo = HistoryRepo::new();
+    let (_db_dir, mut db) = open_db().await;
+    insert_rows(&db, rows).await;
+    let mutation_rows = if lineage {
+        repo.mutation_rows(AttributionKind::AiExclusive)
+    } else {
+        Vec::new()
+    };
+    let persisted = persist_trace(&repo, &mut db, &mutation_rows).await;
+
+    assert_eq!(touched_line_count(&persisted.committed), BOILERPLATE.len());
+    assert_eq!(
+        persisted.intersection_touched_lines,
+        rows.len() * BOILERPLATE.len()
+    );
+    let persisted_counts: LineChangeAttribution =
+        serde_json::from_value(persisted.value["metadata"]["sce"]["line_changes"].clone())
+            .expect("persisted line_changes deserialize");
+    assert_eq!(persisted_counts, persisted.trace.metadata.sce.line_changes);
+    persisted_counts
+}
+
+const fn added(count: usize) -> LineChangeCounts {
+    LineChangeCounts {
+        added: count as u64,
+        removed: 0,
+    }
+}
+
+#[tokio::test]
+async fn persisted_agent_trace_counts_causal_lineage_lines_as_ai() {
+    let counts =
+        persisted_line_changes(&[fresh_row(SESSION_X, MODEL_X, EXACT_C_POSITIONS)], true).await;
+    assert_eq!(
+        counts,
+        LineChangeAttribution {
+            ai: added(BOILERPLATE.len()),
+            ..LineChangeAttribution::default()
+        }
+    );
+}
+
+#[tokio::test]
+async fn persisted_agent_trace_counts_direct_only_lines_as_ai() {
+    let counts =
+        persisted_line_changes(&[fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS)], false).await;
+    assert_eq!(
+        counts,
+        LineChangeAttribution {
+            ai: added(BOILERPLATE.len()),
+            ..LineChangeAttribution::default()
+        }
+    );
+}
+
+#[tokio::test]
+async fn persisted_agent_trace_counts_unresolved_lines_as_unknown() {
+    let counts = persisted_line_changes(&[], false).await;
+    assert_eq!(
+        counts,
+        LineChangeAttribution {
+            unknown: added(BOILERPLATE.len()),
+            ..LineChangeAttribution::default()
+        }
+    );
 }

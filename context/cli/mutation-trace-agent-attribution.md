@@ -195,8 +195,17 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   recorded before the parent commit are outside the query window, positional
   exactness rejects drifted boilerplate, and lineage attributes only the
   transition that most recently produced the committed line.
+- **How are touched lines counted?** Each committed touched line receives
+  exactly one final decision — `Ai`, `NonExclusive`, or `Unknown` — and
+  `metadata.sce.line_changes` increments one `{ai, non_exclusive, unknown}`
+  bucket per line from that decision. `non_exclusive` means lineage resolved a
+  non-exclusive or unscoped transition (not human authorship); `unknown` means
+  unresolved. Hunk `mixed` is presentation only. Counters cover the canonical
+  committed patch exactly and do not depend on hunk grouping. See
+  [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md).
 - **What remains unsupported?** Removed lines are never resolved by lineage
-  (only exact fresh direct evidence can cover them). Direct-only edits whose
+  (only exact fresh direct evidence can cover them; otherwise they count as
+  `unknown`, even when the line's original author is known). Direct-only edits whose
   line numbers drift through later uncaptured edits now resolve to unknown or
   `mixed` instead of `ai`. The freshness bound uses the committer time of the
   first parent, so an uncommitted edit made before the parent commit (partial

@@ -6,8 +6,8 @@ Rust library seam at `cli/src/services/agent_trace.rs` that produces the minimal
 
 Given per-row direct candidate patches, mutation lineage evidence, and a `post_commit_patch` (canonical source of truth):
 
-1. Resolve every `post_commit_patch` touched line independently with the precedence in [../cli/mutation-trace-agent-attribution.md](../cli/mutation-trace-agent-attribution.md#evidence-precedence): AI-exclusive mutation lineage wins; non-exclusive mutation lineage keeps the line non-AI; otherwise a fresh, exact `(file, kind, line_number, content)`, single-session direct candidate attributes it; otherwise the line is unattributed. Historical `(kind, content)` similarity never attributes a line.
-2. Classify each `post_commit_patch` hunk from its attributed lines:
+1. Resolve every `post_commit_patch` touched line independently to exactly one final `LineAttribution` decision with the precedence in [../cli/mutation-trace-agent-attribution.md](../cli/mutation-trace-agent-attribution.md#evidence-precedence): AI-exclusive mutation lineage wins (`Ai`); non-exclusive mutation lineage keeps the line non-AI (`NonExclusive`); otherwise a fresh, exact `(file, kind, line_number, content)`, single-session direct candidate attributes it (`Ai`); otherwise the line is unresolved (`Unknown`). Historical `(kind, content)` similarity never attributes a line. Hunk classification, metadata, and `metadata.sce.line_changes` all derive from this one decision map.
+2. Classify each `post_commit_patch` hunk from its `Ai` line decisions (a hunk of only `NonExclusive` lines is therefore `unknown`; the contributor schema has no non-exclusive type):
    - **`ai`** — every touched line in the hunk is attributed.
    - **`mixed`** — a non-empty proper subset of the hunk's touched lines is attributed.
    - **`unknown`** — no touched line in the hunk is attributed.
@@ -44,8 +44,8 @@ File identity requires an established coordinate system (`DiffTracePathOrigin`, 
 | `AgentTraceTool`        | Optional top-level tool metadata object carrying optional `name` + optional `version`                        |
 | `AgentTraceMetadata`    | Top-level implementation metadata object carrying SCE-owned metadata                                         |
 | `AgentTraceSceMetadata` | Nested `metadata.sce` object carrying the compiled SCE CLI package `version` plus `line_changes`             |
-| `LineChangeCounts`      | `{ added, removed }` `u64` touched-line counters for one hunk-classification bucket                          |
-| `LineChangeAttribution` | `metadata.sce.line_changes` shape: `{ ai, mixed, unknown }`, each a `LineChangeCounts`, `#[serde(default)]`  |
+| `LineChangeCounts`      | `{ added, removed }` `u64` touched-line counters for one per-line attribution bucket                         |
+| `LineChangeAttribution` | `metadata.sce.line_changes` shape: `{ ai, non_exclusive, unknown }`, each a `LineChangeCounts`, `#[serde(default)]` |
 | `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
 All types are `serde`-serializable with `snake_case` field naming. `Conversation.url` is always serialized as `https://sce.crocoder.dev/conversations/{agent_trace.id}` for the generated top-level trace ID. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when every attributed line in the hunk has one agreed concrete value. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and populated from the sessions of attributed lines as deduplicated session links.
@@ -67,7 +67,12 @@ Current output includes top-level metadata fields with this contract:
 - when `vcs` is emitted, `vcs.type` is sourced from the schema-aligned enum (`git | jj | hg | svn`) and `vcs.revision` is sourced from `AgentTraceMetadataInput.commit_revision`
 - `tool` is derived from accepted direct sources only (see rule 5 above); `AgentTraceMetadataInput` no longer carries tool metadata. When emitted it serializes as `{ "name": string, "version"?: string }`
 - `metadata.sce.version` is always emitted and is sourced from `env!("CARGO_PKG_VERSION")`, the compiled `sce` CLI package version; it is implementation metadata and does not change top-level Agent Trace `version` semantics
-- `metadata.sce.line_changes` is always emitted (`{ ai, mixed, unknown }`, each `{ added, removed }`) and carries exact touched-line attribution counts derived from `PatchHunk.lines` on the canonical `post_commit_patch` — the same hunk-level classification already used for `Conversation.contributor.type` (no independent second classification pass for the common per-file/per-hunk path); a `mixed` hunk's *entire* touched-line count is recorded, not just the subset also present in `intersection_patch`; the deleted-`.patch` embedded-expansion branch counts only the deleted file's own literal `post_commit_patch` hunks (classified by `old_path` against the top-level `intersection_patch`, since a deleted file's `new_path` is always empty and would otherwise collide with other deleted files in the same patch), never the embedded reconstructed hunks used to synthesize that branch's `Conversation` entries; `#[serde(default)]` on `line_changes` and its parent keeps pre-existing `metadata.sce.version`-only payloads deserializing with all-zero counts
+- `metadata.sce.line_changes` is always emitted (`{ ai, non_exclusive, unknown }`, each `{ added, removed }`) and carries exact **per-line** attribution counts: `line_change_attribution(...)` walks every touched line of the canonical `post_commit_patch` once and increments exactly one bucket from that line's final `LineAttribution` decision — the same decision map the hunk classification uses, never a second attribution pass. Buckets mean:
+  - `ai` — accepted AI-attributed lines (AI-exclusive mutation lineage, or accepted direct evidence for an unresolved line);
+  - `non_exclusive` — mutation evidence established a non-exclusive or unscoped (contended/ineligible) transition; this is not a claim of human authorship, and direct AI evidence cannot move these lines to `ai`;
+  - `unknown` — attribution is unresolved (no accepted evidence, or only conflicting direct candidates).
+
+  `mixed` is only a hunk-level presentation classification and has no counter bucket; a mixed hunk contributes each of its lines to that line's own bucket. Counter totals exactly cover the canonical committed patch (`ai + non_exclusive + unknown` equals its added and removed touched-line counts), are independent of hunk boundaries and range presentation, never count hunk context lines, and never deduplicate identical lines. Removed lines are not yet resolved by mutation lineage, so they count as `ai` only with accepted exact direct evidence and are otherwise `unknown`. The deleted-`.patch` embedded-expansion branch counts only the deleted file's literal `post_commit_patch` lines, never the embedded reconstructed hunks used to synthesize that branch's `Conversation` entries. `#[serde(default)]` on `line_changes`, its buckets, and its parent keeps older payloads deserializing (the previous `mixed` key is ignored and `non_exclusive` defaults to zero); historical traces are not migrated
 - every `Conversation.url` is the absolute URI `https://sce.crocoder.dev/conversations/{agent_trace.id}` derived from the generated top-level `AgentTrace.id`; all conversations in one payload therefore share the same URL
 
 ```json
@@ -84,7 +89,7 @@ Current output includes top-level metadata fields with this contract:
       "version": "0.2.0",
       "line_changes": {
         "ai": { "added": 5, "removed": 0 },
-        "mixed": { "added": 0, "removed": 0 },
+        "non_exclusive": { "added": 0, "removed": 0 },
         "unknown": { "added": 0, "removed": 0 }
       }
     }
@@ -119,6 +124,7 @@ Current output includes top-level metadata fields with this contract:
 
 - Golden fixtures under `cli/src/services/agent_trace/fixtures/**/golden.json` pin deterministic literal values for top-level `id`, `timestamp`, optional `vcs`, `metadata.sce.version`, `metadata.sce.line_changes`, per-conversation `url`, range-level `content_hash`, and expected file/conversation shapes.
 - Evidence fixtures (`direct_only`, `exclusive_without_direct`, `direct_plus_mutation`, `partial_combined`, `newer_nonexclusive_blocks`, `mutation_only_no_provenance`) pair `direct.patch` + `mutation_ai.patch` + `post_commit.patch` and drive `build_agent_trace_from_evidence`, pinning mutation-only coverage with and without resolved provenance, the combined model-agreement and session-union rules, the absence of fabricated metadata when provenance is unknown, and the direct-only case (empty `mutation_ai_patch`), whose classification and provenance match the direct-intersection rule.
+- Per-line counter tests in `agent_trace/tests.rs` cover mixed, all-AI, and all-unknown hunks; non-exclusive override of direct AI evidence; conflicting direct sessions; mutation-only attribution without a model; removed lines without direct evidence; duplicate identical lines; multi-hunk/multi-file totals; deleted `.patch` files; the `resolve_line` precedence table; and a seeded randomized test asserting exact totals and invariance under hunk re-partitioning, file reordering, and single-decision demotion. `hooks/commit_hooks/attribution_tests.rs` checks persisted `agent_traces.trace_json` counters against the in-memory trace through the real Git + Turso post-commit flow.
 - Tests validate golden fixtures and built payloads against the embedded schema, assert core runtime metadata directly (`version`, `timestamp`, optional `vcs`, and `metadata.sce.version`), and compare `vcs`, optional `tool`, `metadata.sce.line_changes`, and normalized `files` against fixture truth. Expected fixture URLs are normalized to the runtime `AgentTrace.id` before the existing file-shape comparison because UUIDv7 generation includes non-deterministic bits.
 
 ## Relationship to existing patch service

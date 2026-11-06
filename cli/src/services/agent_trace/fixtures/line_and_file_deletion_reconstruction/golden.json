@@ -11,9 +11,9 @@
     "sce": {
       "version": "0.2.0",
       "line_changes": {
-        "ai": { "added": 0, "removed": 0 },
-        "mixed": { "added": 2, "removed": 0 },
-        "unknown": { "added": 0, "removed": 0 }
+        "ai": { "added": 1, "removed": 0 },
+        "non_exclusive": { "added": 0, "removed": 0 },
+        "unknown": { "added": 1, "removed": 0 }
       }
     }
   },
