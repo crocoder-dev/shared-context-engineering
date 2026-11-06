@@ -6,19 +6,17 @@ use chrono::{DateTime, Utc};
 use serde_json::{to_string as serialize_to_json, Value};
 
 use crate::services::agent_trace::{
-    agent_trace_persisted_url, build_agent_trace_from_evidence, patch_has_touched_lines,
-    patches_have_overlap, validate_agent_trace_value, AgentTrace, AgentTraceEvidence,
-    AgentTraceMetadataInput, AgentTraceVcsType,
+    agent_trace_persisted_url, build_agent_trace_from_evidence, direct_evidence_patch,
+    has_direct_evidence, patch_has_touched_lines, validate_agent_trace_value, AgentTrace,
+    AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType,
 };
 use crate::services::agent_trace_db::{
     AgentTraceInsert, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
     RecentDiffTracePatches,
 };
 use crate::services::config::{self, ResolvedHookRuntimeConfig};
-use crate::services::patch::{
-    combine_patches as combine_patches_fn, intersect_patches as intersect_patches_fn,
-    parse_patch as parse_patch_from_text, ParsedPatch,
-};
+use crate::services::mutation_trace::attribution::MutationAttributionResult;
+use crate::services::patch::{parse_patch as parse_patch_from_text, ParsedPatch};
 use crate::services::sync::auto_sync;
 
 use super::commit_patch_id::compute_commit_patch_id;
@@ -205,7 +203,7 @@ where
     Ok(format!(
         "post-commit hook processed intersection: commit={}, intersection_files={}",
         result.post_commit_data.commit_oid,
-        result.combined_recent_patch.files.len()
+        result.intersection_patch.files.len()
     ))
 }
 
@@ -241,15 +239,10 @@ pub(crate) async fn run_post_commit_agent_trace_flow<
     )
     .await?;
 
-    let direct_intersection = intersect_patches_fn(
-        &flow_result.combined_recent_patch,
-        &flow_result.post_commit_data.parsed_patch,
-    );
-    let mutation_ai_patch =
-        crate::services::mutation_trace::runtime::resolve_post_commit_mutation_ai_patch(
+    let mutation =
+        crate::services::mutation_trace::runtime::resolve_post_commit_mutation_attribution(
             repository_root,
             &mut db,
-            &direct_intersection,
             &flow_result.post_commit_data.parsed_patch,
         )
         .await;
@@ -265,7 +258,7 @@ pub(crate) async fn run_post_commit_agent_trace_flow<
         flow_result,
         vcs_type,
         remote_url,
-        &mutation_ai_patch,
+        &mutation,
         commit_patch_id.as_deref(),
         |trace_value| {
             validate_agent_trace_value(trace_value)
@@ -314,7 +307,7 @@ pub(crate) async fn run_post_commit_agent_trace_flow_with<V, I>(
     flow_result: &PostCommitIntersectionFlowResult,
     vcs_type: Option<AgentTraceVcsType>,
     remote_url: &str,
-    mutation_ai_patch: &ParsedPatch,
+    mutation: &MutationAttributionResult,
     commit_patch_id: Option<&str>,
     validate_agent_trace: V,
     persist_agent_trace: I,
@@ -335,8 +328,9 @@ where
 
     let agent_trace = build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patch: &flow_result.combined_recent_patch,
-            mutation_ai_patch,
+            direct_patches: &flow_result.direct_patches,
+            mutation_ai_patch: &mutation.mutation_ai_patch,
+            mutation_non_ai_patch: &mutation.resolved_non_ai_patch,
         },
         &flow_result.post_commit_data.parsed_patch,
         AgentTraceMetadataInput {
@@ -377,6 +371,14 @@ where
 }
 
 pub(crate) const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
+pub(crate) const COMMIT_TIME_RESOLUTION_MILLIS: i64 = 1000;
+
+pub(crate) fn direct_evidence_cutoff_ms(now_ms: i64, prior_commit_time_ms: Option<i64>) -> i64 {
+    let recent_cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+    prior_commit_time_ms.map_or(recent_cutoff_ms, |commit_time_ms| {
+        recent_cutoff_ms.max(commit_time_ms.saturating_add(COMMIT_TIME_RESOLUTION_MILLIS))
+    })
+}
 
 pub(crate) async fn run_post_commit_intersection_flow(
     repository_root: &Path,
@@ -446,6 +448,7 @@ pub(crate) async fn staged_diff_has_ai_overlap<
     let result = staged_diff_has_ai_overlap_with(
         repository_root,
         capture_staged_patch_from_git,
+        |root| Ok(capture_head_timestamp_from_git(root).ok()),
         current_unix_time_ms,
         async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
     )
@@ -465,14 +468,16 @@ pub(crate) async fn staged_diff_has_ai_overlap<
     result
 }
 
-pub(crate) async fn staged_diff_has_ai_overlap_with<C, N, Q>(
+pub(crate) async fn staged_diff_has_ai_overlap_with<C, H, N, Q>(
     repository_root: &Path,
     capture_staged_patch: C,
+    capture_head_commit_time_ms: H,
     now_ms: N,
     query_recent_patches: Q,
 ) -> StagedDiffAiOverlapResult
 where
     C: FnOnce(&Path) -> Result<ParsedPatch>,
+    H: FnOnce(&Path) -> Result<Option<i64>>,
     N: FnOnce() -> Result<i64>,
     Q: std::ops::AsyncFnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
 {
@@ -484,19 +489,24 @@ where
         return StagedDiffAiOverlapResult::NoOverlap;
     }
 
+    let Ok(head_commit_time_ms) = capture_head_commit_time_ms(repository_root) else {
+        return StagedDiffAiOverlapResult::Error;
+    };
     let Ok(now_ms) = now_ms() else {
         return StagedDiffAiOverlapResult::Error;
     };
-    let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+    let cutoff_ms = direct_evidence_cutoff_ms(now_ms, head_commit_time_ms);
 
     let Ok(recent_patches) = query_recent_patches(cutoff_ms, now_ms).await else {
         return StagedDiffAiOverlapResult::Error;
     };
 
-    let has_overlap = recent_patches.patches.into_iter().any(|recent_patch| {
-        let combined_recent_patch = combine_patches_fn(&[recent_patch.patch]);
-        patches_have_overlap(&combined_recent_patch, &staged_patch)
-    });
+    let direct_patches: Vec<ParsedPatch> = recent_patches
+        .patches
+        .into_iter()
+        .map(|recent_patch| recent_patch.patch)
+        .collect();
+    let has_overlap = has_direct_evidence(&direct_patches, &staged_patch);
 
     if has_overlap {
         StagedDiffAiOverlapResult::Overlap
@@ -548,7 +558,7 @@ where
     let post_commit_data = capture_post_commit_patch(repository_root)?;
 
     let now_ms = now_ms()?;
-    let cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
+    let cutoff_ms = direct_evidence_cutoff_ms(now_ms, post_commit_data.parent_commit_time_ms);
 
     let recent_patches = query_recent_patches(cutoff_ms, now_ms).await?;
 
@@ -560,16 +570,13 @@ where
     let (tool_name, tool_version) =
         latest_overlapping_patch_tool(&recent_patches.patches, &post_commit_data.parsed_patch);
 
-    let recent_patches_slice: Vec<ParsedPatch> = recent_patches
+    let direct_patches: Vec<ParsedPatch> = recent_patches
         .patches
         .into_iter()
         .map(|p| p.patch)
         .collect();
 
-    let combined_recent_patch = combine_patches_fn(&recent_patches_slice);
-
-    let intersection_patch =
-        intersect_patches_fn(&combined_recent_patch, &post_commit_data.parsed_patch);
+    let intersection_patch = direct_evidence_patch(&direct_patches, &post_commit_data.parsed_patch);
 
     let serialized_intersection = serialize_to_json(&intersection_patch)
         .context("Failed to serialize intersection patch.")?;
@@ -587,7 +594,8 @@ where
     persist_intersection(insert_input).await?;
 
     Ok(PostCommitIntersectionFlowResult {
-        combined_recent_patch,
+        direct_patches,
+        intersection_patch,
         post_commit_data,
         tool_name,
         tool_version,
@@ -602,9 +610,7 @@ fn latest_overlapping_patch_tool(
         .iter()
         .rev()
         .find(|recent_patch| {
-            let combined_recent_patch =
-                combine_patches_fn(std::slice::from_ref(&recent_patch.patch));
-            patches_have_overlap(&combined_recent_patch, post_commit_patch)
+            has_direct_evidence(std::slice::from_ref(&recent_patch.patch), post_commit_patch)
         })
         .map_or((None, None), |recent_patch| {
             (
@@ -699,12 +705,14 @@ pub fn apply_commit_msg_coauthor_policy(
 pub struct PostCommitPatchData {
     pub commit_oid: String,
     pub commit_time_ms: i64,
+    pub parent_commit_time_ms: Option<i64>,
     pub parsed_patch: ParsedPatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitIntersectionFlowResult {
-    pub combined_recent_patch: ParsedPatch,
+    pub direct_patches: Vec<ParsedPatch>,
+    pub intersection_patch: ParsedPatch,
     pub post_commit_data: PostCommitPatchData,
     pub tool_name: Option<String>,
     pub tool_version: Option<String>,
@@ -713,6 +721,12 @@ pub struct PostCommitIntersectionFlowResult {
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
     let commit_oid = capture_head_oid_from_git(repository_root)?;
     let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
+    let parent_commit_time_ms = capture_commit_timestamp_from_git(
+        repository_root,
+        "HEAD^",
+        "Failed to capture parent commit timestamp from git.",
+    )
+    .ok();
     let patch_text = capture_head_patch_from_git(repository_root)?;
     let parsed_patch = parse_patch_from_text(&patch_text, None).map_err(|e| {
         anyhow!(post_commit_patch_error(
@@ -724,6 +738,7 @@ pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<Post
     Ok(PostCommitPatchData {
         commit_oid,
         commit_time_ms,
+        parent_commit_time_ms,
         parsed_patch,
     })
 }
@@ -738,10 +753,22 @@ pub(crate) fn capture_head_oid_from_git(repository_root: &Path) -> Result<String
 }
 
 pub(crate) fn capture_head_timestamp_from_git(repository_root: &Path) -> Result<i64> {
+    capture_commit_timestamp_from_git(
+        repository_root,
+        "HEAD",
+        "Failed to capture HEAD commit timestamp from git.",
+    )
+}
+
+pub(crate) fn capture_commit_timestamp_from_git(
+    repository_root: &Path,
+    revision: &str,
+    failure_context: &str,
+) -> Result<i64> {
     let output = run_git_command_capture_stdout(
         repository_root,
-        &["show", "--format=%ct", "--no-patch", "HEAD"],
-        "Failed to capture HEAD commit timestamp from git.",
+        &["show", "--format=%ct", "--no-patch", revision, "--"],
+        failure_context,
     )?;
     let timestamp_str = output.trim();
     let timestamp_seconds: i64 = timestamp_str.parse().map_err(|_| {
@@ -772,6 +799,10 @@ pub(crate) fn post_commit_patch_error(detail: &str, context: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "commit_hooks/attribution_tests.rs"]
+mod attribution_tests;
+
+#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::path::Path;
@@ -784,6 +815,7 @@ mod tests {
     use crate::services::agent_trace_db::{AgentTraceInsert, ParsedDiffTracePatch};
 
     use crate::services::error::CliError;
+    use crate::services::mutation_trace::attribution::MutationAttributionResult;
     use crate::services::observability::traits::Logger;
     use crate::services::patch::{parse_patch, ParsedPatch};
 
@@ -884,7 +916,8 @@ mod tests {
 
     fn flow_result(root: &Path) -> PostCommitIntersectionFlowResult {
         PostCommitIntersectionFlowResult {
-            combined_recent_patch: empty_patch(),
+            direct_patches: Vec::new(),
+            intersection_patch: empty_patch(),
             post_commit_data: capture_post_commit_patch_from_git(root)
                 .expect("post-commit patch capture"),
             tool_name: None,
@@ -896,6 +929,14 @@ mod tests {
         ParsedPatch { files: Vec::new() }
     }
 
+    fn empty_mutation() -> MutationAttributionResult {
+        MutationAttributionResult {
+            mutation_ai_patch: empty_patch(),
+            resolved_non_ai_patch: empty_patch(),
+            unresolved_patch: empty_patch(),
+        }
+    }
+
     async fn run_flow_capturing(
         flow_result: &PostCommitIntersectionFlowResult,
         commit_patch_id: Option<&str>,
@@ -905,7 +946,7 @@ mod tests {
             flow_result,
             None,
             REMOTE_URL,
-            &empty_patch(),
+            &empty_mutation(),
             commit_patch_id,
             |trace_value| {
                 validate_agent_trace_value(trace_value).map_err(|error| anyhow!(error.to_string()))
@@ -1078,7 +1119,7 @@ diff --git a//tmp/commit-message.txt b//tmp/commit-message.txt
             &flow_result,
             None,
             REMOTE_URL,
-            &empty_patch(),
+            &empty_mutation(),
             Some(&commit_patch_id),
             |_| Err(anyhow!("validation rejected")),
             async |_insert: AgentTraceInsert<'_>| -> Result<()> {
@@ -1098,7 +1139,7 @@ diff --git a//tmp/commit-message.txt b//tmp/commit-message.txt
             &flow_result,
             None,
             REMOTE_URL,
-            &empty_patch(),
+            &empty_mutation(),
             Some(&commit_patch_id),
             |_| Ok(()),
             async |_insert: AgentTraceInsert<'_>| -> Result<()> {

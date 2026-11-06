@@ -1,18 +1,24 @@
 //! Minimal agent-trace domain model and hunk classification contract.
 //!
 //! This module defines the domain types for producing a minimal agent-trace
-//! JSON payload from patch data. The classification logic computes the
-//! intersection of a constructed patch and a post-commit patch
-//! (`intersection_patch = intersect_patches(constructed_patch, post_commit_patch)`),
-//! then compares `intersection_patch` against `post_commit_patch` hunk by hunk,
-//! anchored to `post_commit_patch` as the canonical source of truth.
+//! JSON payload from patch data. Each `post_commit_patch` touched line is
+//! resolved independently: AI-exclusive mutation lineage wins, non-exclusive
+//! mutation lineage blocks direct evidence, and otherwise only an exact,
+//! single-session direct match attributes the line.
 //!
 //! Classification rules:
-//! - **exact** line-by-line match between `intersection_patch` and `post_commit_patch` hunk => `ai`
-//! - same hunk slot in `post_commit_patch` but not exact line-by-line match => `mixed`
-//! - hunk present in `post_commit_patch` but missing from `intersection_patch` => `unknown`
+//! - every touched line in the `post_commit_patch` hunk is attributed => `ai`
+//! - some touched lines in the hunk are attributed => `mixed`
+//! - no touched line in the hunk is attributed => `unknown`
 
-use std::{collections::BTreeSet, error::Error, fmt, io::Cursor, path::Path, sync::OnceLock};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    error::Error,
+    fmt,
+    io::Cursor,
+    path::Path,
+    sync::OnceLock,
+};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, FixedOffset};
@@ -22,11 +28,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::{NoContext, Timestamp, Uuid};
 
+use super::mutation_trace::attribution::{logical_path, PatchLineLocation, PatchLineProvenance};
 use super::patch::{
-    intersect_patches, parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk,
-    TouchedLine, TouchedLineKind,
+    parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk, TouchedLineKind,
 };
 use super::version::PACKAGE_VERSION;
+
+mod evidence;
+
+pub(crate) use evidence::{direct_evidence_patch, has_direct_evidence};
+use evidence::{direct_line_evidence, DirectLineEvidence};
 
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 pub(crate) const SCE_WEB_BASE_URL: &str = "https://sce.crocoder.dev";
@@ -94,8 +105,9 @@ pub struct AgentTraceMetadataInput<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentTraceEvidence<'a> {
-    pub direct_patch: &'a ParsedPatch,
+    pub direct_patches: &'a [ParsedPatch],
     pub mutation_ai_patch: &'a ParsedPatch,
+    pub mutation_non_ai_patch: &'a ParsedPatch,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -336,51 +348,155 @@ pub struct AgentTrace {
     pub files: Vec<TraceFile>,
 }
 
-type CoverageLineKey<'a> = (TouchedLineKind, u64, &'a str);
+type MutationLineKey<'a> = (&'a str, TouchedLineKind, u64, &'a str);
 
-fn coverage_line_key(line: &TouchedLine) -> CoverageLineKey<'_> {
-    (line.kind, line.line_number, line.content.as_str())
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedLine {
+    provenance: PatchLineProvenance,
+    direct_supported: bool,
 }
 
-fn combined_covered_line_count(
-    post_commit_hunk: &PatchHunk,
-    direct_hunk: Option<&PatchHunk>,
-    mutation_hunk: Option<&PatchHunk>,
-) -> usize {
-    let mut direct_pool: Vec<CoverageLineKey<'_>> = direct_hunk
-        .map(|hunk| hunk.lines.iter().map(coverage_line_key).collect())
-        .unwrap_or_default();
-    let mut mutation_pool: Vec<CoverageLineKey<'_>> = mutation_hunk
-        .map(|hunk| hunk.lines.iter().map(coverage_line_key).collect())
-        .unwrap_or_default();
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum MutationLineEvidence {
+    Ai(PatchLineProvenance),
+    NonAi,
+    Unresolved,
+}
 
-    post_commit_hunk
-        .lines
-        .iter()
-        .filter(|line| {
-            let key = coverage_line_key(line);
-            if let Some(index) = direct_pool.iter().position(|candidate| *candidate == key) {
-                direct_pool.swap_remove(index);
-                true
-            } else if let Some(index) = mutation_pool.iter().position(|candidate| *candidate == key)
-            {
-                mutation_pool.swap_remove(index);
-                true
-            } else {
-                false
+struct MutationEvidenceIndex<'a> {
+    ai: HashMap<MutationLineKey<'a>, PatchLineProvenance>,
+    non_ai: HashSet<MutationLineKey<'a>>,
+}
+
+impl<'a> MutationEvidenceIndex<'a> {
+    fn new(mutation_ai_patch: &'a ParsedPatch, mutation_non_ai_patch: &'a ParsedPatch) -> Self {
+        let mut ai = HashMap::new();
+        for file in &mutation_ai_patch.files {
+            for hunk in &file.hunks {
+                for line in &hunk.lines {
+                    ai.insert(
+                        (
+                            logical_path(file),
+                            line.kind,
+                            line.line_number,
+                            line.content.as_str(),
+                        ),
+                        PatchLineProvenance {
+                            session_id: line.session_id.clone(),
+                            model_id: hunk.model_id.clone(),
+                        },
+                    );
+                }
             }
-        })
-        .count()
+        }
+        let non_ai = mutation_non_ai_patch
+            .files
+            .iter()
+            .flat_map(|file| {
+                file.hunks.iter().flat_map(move |hunk| {
+                    hunk.lines.iter().map(move |line| {
+                        (
+                            logical_path(file),
+                            line.kind,
+                            line.line_number,
+                            line.content.as_str(),
+                        )
+                    })
+                })
+            })
+            .collect();
+        MutationEvidenceIndex { ai, non_ai }
+    }
+
+    fn lookup(&self, key: &MutationLineKey<'_>) -> MutationLineEvidence {
+        if let Some(provenance) = self.ai.get(key) {
+            MutationLineEvidence::Ai(provenance.clone())
+        } else if self.non_ai.contains(key) {
+            MutationLineEvidence::NonAi
+        } else {
+            MutationLineEvidence::Unresolved
+        }
+    }
 }
 
-fn classify_hunk_combined(
-    post_commit_hunk: &PatchHunk,
-    direct_hunk: Option<&PatchHunk>,
-    mutation_hunk: Option<&PatchHunk>,
-) -> HunkContributor {
-    let total = post_commit_hunk.lines.len();
-    let covered = combined_covered_line_count(post_commit_hunk, direct_hunk, mutation_hunk);
+fn resolve_line(
+    mutation: MutationLineEvidence,
+    direct: Option<&DirectLineEvidence>,
+) -> Option<ResolvedLine> {
+    match (mutation, direct) {
+        (MutationLineEvidence::Ai(mutation), Some(DirectLineEvidence::Unique(direct)))
+            if direct.session_id == mutation.session_id =>
+        {
+            Some(ResolvedLine {
+                provenance: PatchLineProvenance {
+                    session_id: mutation.session_id,
+                    model_id: mutation.model_id.or_else(|| direct.model_id.clone()),
+                },
+                direct_supported: true,
+            })
+        }
+        (MutationLineEvidence::Ai(mutation), _) => Some(ResolvedLine {
+            provenance: mutation,
+            direct_supported: false,
+        }),
+        (MutationLineEvidence::Unresolved, Some(DirectLineEvidence::Unique(direct))) => {
+            Some(ResolvedLine {
+                provenance: direct.clone(),
+                direct_supported: true,
+            })
+        }
+        (MutationLineEvidence::NonAi | MutationLineEvidence::Unresolved, _) => None,
+    }
+}
 
+fn resolve_patch_lines(
+    target: &ParsedPatch,
+    direct_patches: &[ParsedPatch],
+    mutation: &MutationEvidenceIndex<'_>,
+) -> BTreeMap<PatchLineLocation, ResolvedLine> {
+    let direct = direct_line_evidence(direct_patches, target);
+    let mut resolved = BTreeMap::new();
+    for (file_index, file) in target.files.iter().enumerate() {
+        let path = logical_path(file);
+        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+            for (line_index, line) in hunk.lines.iter().enumerate() {
+                let location = PatchLineLocation {
+                    file_index,
+                    hunk_index,
+                    line_index,
+                };
+                let key = (path, line.kind, line.line_number, line.content.as_str());
+                if let Some(line) = resolve_line(mutation.lookup(&key), direct.get(&location)) {
+                    resolved.insert(location, line);
+                }
+            }
+        }
+    }
+    resolved
+}
+
+fn hunk_resolved_lines(
+    resolved: &BTreeMap<PatchLineLocation, ResolvedLine>,
+    file_index: usize,
+    hunk_index: usize,
+) -> impl Iterator<Item = &ResolvedLine> {
+    resolved
+        .range(
+            PatchLineLocation {
+                file_index,
+                hunk_index,
+                line_index: 0,
+            }..=PatchLineLocation {
+                file_index,
+                hunk_index,
+                line_index: usize::MAX,
+            },
+        )
+        .map(|(_, line)| line)
+}
+
+fn classify_hunk(hunk: &PatchHunk, covered: usize) -> HunkContributor {
+    let total = hunk.lines.len();
     if total > 0 && covered == total {
         HunkContributor::Ai
     } else if covered > 0 {
@@ -390,27 +506,17 @@ fn classify_hunk_combined(
     }
 }
 
-fn combined_model_id(
-    direct_hunk: Option<&PatchHunk>,
-    mutation_hunk: Option<&PatchHunk>,
-) -> Option<String> {
-    match (direct_hunk, mutation_hunk) {
-        (Some(direct), Some(mutation)) if direct.model_id == mutation.model_id => {
-            direct.model_id.clone()
+fn agreed_model_id<'r>(lines: impl Iterator<Item = &'r ResolvedLine>) -> Option<String> {
+    let mut model: Option<&str> = None;
+    for line in lines {
+        let candidate = line.provenance.model_id.as_deref()?;
+        match model {
+            None => model = Some(candidate),
+            Some(existing) if existing == candidate => {}
+            Some(_) => return None,
         }
-        (Some(direct), None) => direct.model_id.clone(),
-        (None, Some(mutation)) => mutation.model_id.clone(),
-        (None, None) | (Some(_), Some(_)) => None,
     }
-}
-
-pub(crate) fn patches_have_overlap(
-    candidate_patch: &ParsedPatch,
-    target_patch: &ParsedPatch,
-) -> bool {
-    let intersection_patch = intersect_patches(candidate_patch, target_patch);
-
-    patch_has_touched_lines(&intersection_patch)
+    model.map(ToOwned::to_owned)
 }
 
 pub(crate) fn patch_has_touched_lines(patch: &ParsedPatch) -> bool {
@@ -488,8 +594,8 @@ fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
 
 fn build_trace_file(
     post_commit_file: &PatchFileChange,
-    intersection_patch: &ParsedPatch,
-    mutation_ai_patch: &ParsedPatch,
+    file_index: usize,
+    resolved: &BTreeMap<PatchLineLocation, ResolvedLine>,
     conversation_url: &str,
     line_changes: &mut LineChangeAttribution,
 ) -> Option<TraceFile> {
@@ -497,48 +603,22 @@ fn build_trace_file(
         return None;
     }
 
-    let intersection_file = intersection_patch
-        .files
-        .iter()
-        .find(|ifile| ifile.new_path == post_commit_file.new_path);
-    let mutation_file = mutation_ai_patch
-        .files
-        .iter()
-        .find(|mfile| trace_path(mfile) == trace_path(post_commit_file));
-
     let conversations = post_commit_file
         .hunks
         .iter()
-        .map(|post_commit_hunk| {
-            let matched_intersection_hunk = intersection_file.and_then(|ifile| {
-                ifile
-                    .hunks
-                    .iter()
-                    .find(|h| h.old_start == post_commit_hunk.old_start)
-            });
-            let matched_mutation_hunk = mutation_file.and_then(|mfile| {
-                mfile
-                    .hunks
-                    .iter()
-                    .find(|h| h.old_start == post_commit_hunk.old_start)
-            });
-            let contributor_kind = classify_hunk_combined(
-                post_commit_hunk,
-                matched_intersection_hunk,
-                matched_mutation_hunk,
-            );
+        .enumerate()
+        .map(|(hunk_index, post_commit_hunk)| {
+            let covered = hunk_resolved_lines(resolved, file_index, hunk_index).count();
+            let contributor_kind = classify_hunk(post_commit_hunk, covered);
             let contributor_model_id = match contributor_kind {
                 HunkContributor::Ai | HunkContributor::Mixed => {
-                    combined_model_id(matched_intersection_hunk, matched_mutation_hunk)
+                    agreed_model_id(hunk_resolved_lines(resolved, file_index, hunk_index))
                 }
                 HunkContributor::Unknown => None,
             };
             record_hunk_line_changes(line_changes, contributor_kind, post_commit_hunk);
-            let related_session_ids = matched_intersection_hunk
-                .into_iter()
-                .chain(matched_mutation_hunk)
-                .flat_map(|hunk| hunk.lines.iter())
-                .filter_map(|line| line.session_id.as_deref())
+            let related_session_ids = hunk_resolved_lines(resolved, file_index, hunk_index)
+                .filter_map(|line| line.provenance.session_id.as_deref())
                 .filter(|session_id| !session_id.is_empty())
                 .collect::<BTreeSet<_>>();
             let related = (!related_session_ids.is_empty()).then(|| {
@@ -575,57 +655,51 @@ pub fn build_agent_trace_from_evidence(
     metadata: AgentTraceMetadataInput<'_>,
 ) -> Result<AgentTrace> {
     let AgentTraceEvidence {
-        direct_patch,
+        direct_patches,
         mutation_ai_patch,
+        mutation_non_ai_patch,
     } = evidence;
 
     let commit_time = parse_commit_timestamp(metadata.commit_timestamp)?;
     let id = generate_agent_trace_id(commit_time)?;
     let conversation_url = agent_trace_conversation_url(&id);
     let timestamp = metadata.commit_timestamp.to_owned();
-    let intersection_patch = intersect_patches(direct_patch, post_commit_patch);
-    let empty_mutation_ai_patch = ParsedPatch { files: Vec::new() };
+    let mutation = MutationEvidenceIndex::new(mutation_ai_patch, mutation_non_ai_patch);
+    let resolved = resolve_patch_lines(post_commit_patch, direct_patches, &mutation);
+    let empty_patch = ParsedPatch { files: Vec::new() };
+    let no_mutation = MutationEvidenceIndex::new(&empty_patch, &empty_patch);
 
     let mut files = Vec::new();
     let mut line_changes = LineChangeAttribution::default();
 
-    for post_commit_file in &post_commit_patch.files {
+    for (file_index, post_commit_file) in post_commit_patch.files.iter().enumerate() {
         if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
-            let direct_file = intersection_patch
-                .files
-                .iter()
-                .find(|ifile| ifile.old_path == post_commit_file.old_path);
-            let mutation_file = mutation_ai_patch
-                .files
-                .iter()
-                .find(|mfile| trace_path(mfile) == trace_path(post_commit_file));
-            for hunk in &post_commit_file.hunks {
-                let direct_hunk = direct_file
-                    .and_then(|ifile| ifile.hunks.iter().find(|h| h.old_start == hunk.old_start));
-                let mutation_hunk = mutation_file
-                    .and_then(|mfile| mfile.hunks.iter().find(|h| h.old_start == hunk.old_start));
-                let kind = classify_hunk_combined(hunk, direct_hunk, mutation_hunk);
-                record_hunk_line_changes(&mut line_changes, kind, hunk);
+            for (hunk_index, hunk) in post_commit_file.hunks.iter().enumerate() {
+                let covered = hunk_resolved_lines(&resolved, file_index, hunk_index).count();
+                record_hunk_line_changes(&mut line_changes, classify_hunk(hunk, covered), hunk);
             }
 
-            let embedded_intersection = intersect_patches(direct_patch, &embedded_patch);
+            let embedded_resolved =
+                resolve_patch_lines(&embedded_patch, direct_patches, &no_mutation);
             let mut discarded_line_changes = LineChangeAttribution::default();
-            files.extend(embedded_patch.files.iter().filter_map(|embedded_file| {
-                build_trace_file(
-                    embedded_file,
-                    &embedded_intersection,
-                    &empty_mutation_ai_patch,
-                    &conversation_url,
-                    &mut discarded_line_changes,
-                )
-            }));
+            files.extend(embedded_patch.files.iter().enumerate().filter_map(
+                |(embedded_index, embedded_file)| {
+                    build_trace_file(
+                        embedded_file,
+                        embedded_index,
+                        &embedded_resolved,
+                        &conversation_url,
+                        &mut discarded_line_changes,
+                    )
+                },
+            ));
             continue;
         }
 
         if let Some(trace_file) = build_trace_file(
             post_commit_file,
-            &intersection_patch,
-            mutation_ai_patch,
+            file_index,
+            &resolved,
             &conversation_url,
             &mut line_changes,
         ) {
@@ -633,16 +707,16 @@ pub fn build_agent_trace_from_evidence(
         }
     }
 
-    let tool = if !intersection_patch.files.is_empty()
-        && (metadata.tool_name.is_some() || metadata.tool_version.is_some())
-    {
-        Some(AgentTraceTool {
-            name: metadata.tool_name.map(ToOwned::to_owned),
-            version: metadata.tool_version.map(ToOwned::to_owned),
-        })
-    } else {
-        None
-    };
+    let direct_supported = resolved.values().any(|line| line.direct_supported);
+    let tool =
+        if direct_supported && (metadata.tool_name.is_some() || metadata.tool_version.is_some()) {
+            Some(AgentTraceTool {
+                name: metadata.tool_name.map(ToOwned::to_owned),
+                version: metadata.tool_version.map(ToOwned::to_owned),
+            })
+        } else {
+            None
+        };
 
     Ok(AgentTrace {
         version: default_agent_trace_version(),

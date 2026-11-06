@@ -283,7 +283,6 @@
             (pkgs.lib.fileset.maybeMissing ./.version)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/default_paths.rs)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/agent_trace/fixtures)
-            (pkgs.lib.fileset.maybeMissing ./cli/src/services/patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/structured_patch/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/hooks/claude_mutation_scope/fixtures)
             (pkgs.lib.fileset.maybeMissing ./cli/src/services/hooks/codex_mutation_scope/fixtures)

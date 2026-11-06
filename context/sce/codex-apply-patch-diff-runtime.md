@@ -44,10 +44,11 @@ the idempotent `cx_<session_id>` session prefix, and a reported non-blank model
 ID preserved without a fabricated provider prefix. Timestamp failure skips the
 insert. Every successful or fail-open path returns empty stdout.
 
-After commit, the existing `combine_patches` and `intersect_patches` behavior
-uses the event-scoped identities and historical `kind`+`content` fallback. It
-does not prove which physical occurrence of repeated identical content came
-from a particular event. Delete File, pure rename, and Bash-created filesystem
+After commit, attribution-grade direct matching requires exact line numbers,
+so these event-scoped synthetic identities never attribute a committed line;
+Codex edits are attributed through Codex mutation scopes and causal lineage
+instead. Synthetic identities do not prove which physical occurrence of
+repeated identical content came from a particular event. Delete File, pure rename, and Bash-created filesystem
 mutations have no line-level evidence in this complementary pipeline.
 
 This path writes only `diff_traces`; the Codex mutation-scope adapter writes

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::services::mutation_trace::types::ScopeId;
 use crate::services::patch::{
-    ParsedPatch, PatchFileChange, PatchHunk, TouchedLine, TouchedLineKind,
+    FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk, TouchedLine, TouchedLineKind,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,10 +120,17 @@ impl MutationLineage {
             .cloned()
             .unwrap_or_default();
 
+        if file.kind == FileChangeKind::Added && !old.is_empty() {
+            return Err(LineageError {
+                path: logical_path,
+                reason: String::from("added file is already tracked with content"),
+            });
+        }
+
         let new = apply_hunks(&logical_path, &old, file, origin)?;
 
-        if !file.old_path.is_empty() {
-            self.files.remove(&file.old_path);
+        if tracks_source && file.old_path != file.new_path {
+            self.files.insert(file.old_path.clone(), Vec::new());
         }
         if !file.new_path.is_empty() {
             self.files.insert(file.new_path.clone(), new);

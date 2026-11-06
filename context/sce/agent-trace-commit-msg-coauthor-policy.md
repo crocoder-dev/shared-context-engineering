@@ -33,17 +33,16 @@
 
 ## Staged AI-overlap evidence gate
 
-- `cli/src/services/agent_trace.rs` owns the pure patch-overlap helper (`patches_have_overlap`) for Agent Trace evidence checks; fixture-backed unit coverage in `cli/src/services/agent_trace/tests.rs` covers overlap, no-overlap, empty/untouched patches, and Claude structured-patch-derived input.
+- `cli/src/services/agent_trace.rs` owns the pure direct-evidence predicate `has_direct_evidence`, which reports an exact `(file, kind, line_number, content)` touched-line match between candidate rows and the staged patch. Historical `(kind, content)`-only similarity is not evidence.
 - `cli/src/services/hooks/mod.rs` owns the staged-diff AI-overlap evidence gate, which is now wired into `run_commit_msg_subcommand_in_repo`:
   - `StagedDiffAiOverlapResult` enum (`Overlap`/`NoOverlap`/`Error`) is the three-valued result from the injectable `_with` variant, enabling testable branch coverage and caller-side error logging.
-  - `staged_diff_has_ai_overlap_with` is the injectable variant that accepts staged-patch/time/recent-trace dependencies and returns `StagedDiffAiOverlapResult`; available for future test coverage.
+  - `staged_diff_has_ai_overlap_with` is the injectable variant that accepts staged-patch, `HEAD` commit time, clock, and recent-trace dependencies and returns `StagedDiffAiOverlapResult`; `hooks/commit_hooks/attribution_tests.rs` covers stale, historical-only, and fresh exact rows.
   - `staged_diff_has_ai_overlap` is the live wrapper that opens Agent Trace DB through the no-migration hook path, delegates to `_with`, and logs `sce.hooks.commit_msg.ai_overlap_error` on `Error` results.
 - Live helper path:
   - opens Agent Trace DB through `RepositoryAgentTraceDb::open_for_hooks_without_migrations_at()` and `ensure_schema_ready_for_hooks()`;
   - captures the staged patch with `git diff --cached --patch --no-ext-diff`;
-  - queries recent diff traces using the same bounded 7-day window as post-commit;
-  - combines each recent patch and checks overlap through `agent_trace::patches_have_overlap`, which uses the existing patch intersection primitive;
-  - short-circuits on the first positive overlap.
+  - queries diff traces recorded after the current `HEAD` commit's committer-time second, bounded by 7 days (`direct_evidence_cutoff_ms`; with no `HEAD`, just the 7-day bound), so rows describing already-committed work are ignored;
+  - reports `Overlap` only when a fresh row exactly matches a staged touched line through `agent_trace::has_direct_evidence`.
 - No-evidence/error posture: DB open/readiness failure, staged-diff capture/parse failure, clock/query failure, empty staged diff, no recent rows, malformed-only rows, or zero overlap all return `StagedDiffAiOverlapResult::Error` or `NoOverlap`, both mapping to `ai_contribution_present = false`. There is no fail-open mode.
 
 ## Verification evidence

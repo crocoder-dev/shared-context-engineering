@@ -6,9 +6,8 @@ use std::time::Duration;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::mutation_trace::attribution::{
-    exclude_direct_coverage, logical_path, patch_for_locations,
-    patch_for_locations_with_provenance, MutationAttributionResult, PatchLineLocation,
-    PatchLineProvenance,
+    logical_path, patch_for_locations, patch_for_locations_with_provenance,
+    MutationAttributionResult, PatchLineLocation, PatchLineProvenance,
 };
 use crate::services::mutation_trace::lineage::{LineProvenance, MutationLineage, TransitionOrigin};
 use crate::services::mutation_trace::store::{
@@ -96,11 +95,7 @@ pub struct BoundedMutationAttribution {
 impl BoundedMutationAttribution {
     fn empty() -> Self {
         BoundedMutationAttribution {
-            result: MutationAttributionResult {
-                mutation_ai_patch: empty_patch(),
-                resolved_non_ai_patch: empty_patch(),
-                unresolved_patch: empty_patch(),
-            },
+            result: empty_attribution(),
             loaded_pages: 0,
             loaded_rows: 0,
             inspected_events: 0,
@@ -115,12 +110,19 @@ fn empty_patch() -> ParsedPatch {
     ParsedPatch { files: Vec::new() }
 }
 
+fn empty_attribution() -> MutationAttributionResult {
+    MutationAttributionResult {
+        mutation_ai_patch: empty_patch(),
+        resolved_non_ai_patch: empty_patch(),
+        unresolved_patch: empty_patch(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_bounded_mutation_attribution<P, R>(
     page_source: &P,
     tree_source: &R,
     worktree: &WorktreeId,
-    direct_coverage: &ParsedPatch,
     committed_patch: &ParsedPatch,
     commit_tree: &TreeId,
     revision_ceiling: Option<u64>,
@@ -129,8 +131,7 @@ where
     P: MutationEventPageSource + ?Sized,
     R: TreeReadSource,
 {
-    let target = exclude_direct_coverage(committed_patch, direct_coverage);
-    let target_paths = target_logical_paths(&target);
+    let target_paths = target_logical_paths(committed_patch);
     if target_paths.is_empty() {
         return BoundedMutationAttribution::empty();
     }
@@ -150,7 +151,7 @@ where
     } else {
         Some(replay(&events, &target_paths, commit_tree, tree_source, &mut state).await)
     };
-    finish(&target, lineage.as_ref(), &state, page_source).await
+    finish(committed_patch, lineage.as_ref(), &state, page_source).await
 }
 
 struct ReplayState {
@@ -432,42 +433,39 @@ where
     }
 }
 
-pub(crate) async fn resolve_post_commit_mutation_ai_patch(
+pub(crate) async fn resolve_post_commit_mutation_attribution(
     repository_root: &Path,
     db: &mut RepositoryAgentTraceDb,
-    direct_coverage: &ParsedPatch,
     committed_patch: &ParsedPatch,
-) -> ParsedPatch {
+) -> MutationAttributionResult {
     let Ok(git_dir) = resolve_git_dir(repository_root).await else {
-        return empty_patch();
+        return empty_attribution();
     };
     let Ok(worktree) = resolve_worktree_id(repository_root).await else {
-        return empty_patch();
+        return empty_attribution();
     };
     let Ok(snapshot) = GitSnapshotService::new(repository_root).await else {
-        return empty_patch();
+        return empty_attribution();
     };
     let Ok(commit_tree) = snapshot.head_tree().await else {
-        return empty_patch();
+        return empty_attribution();
     };
     let store = MutationTraceStore::new(db);
 
     let Some(revision_ceiling) = capture_revision_cut(&git_dir, &store, &worktree).await else {
-        return empty_patch();
+        return empty_attribution();
     };
 
     resolve_bounded_mutation_attribution(
         &store,
         &snapshot,
         &worktree,
-        direct_coverage,
         committed_patch,
         &commit_tree,
         Some(revision_ceiling),
     )
     .await
     .result
-    .mutation_ai_patch
 }
 
 async fn capture_revision_cut(
@@ -484,3 +482,7 @@ async fn capture_revision_cut(
         .ok()
         .flatten()
 }
+
+#[cfg(test)]
+#[path = "mutation_attribution/tests.rs"]
+mod tests;
