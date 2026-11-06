@@ -244,6 +244,7 @@ pub(crate) async fn run_post_commit_agent_trace_flow<
         crate::services::mutation_trace::runtime::resolve_post_commit_mutation_attribution(
             repository_root,
             &mut db,
+            &flow_result.post_commit_data.commit_oid,
             &flow_result.post_commit_data.parsed_patch,
         )
         .await;

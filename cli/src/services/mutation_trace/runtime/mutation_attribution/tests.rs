@@ -94,6 +94,38 @@ impl TreeRepo {
         TreeId(self.git(&["write-tree"]))
     }
 
+    fn trees_with(&self, files: &[(&str, Option<&str>)]) -> TreeId {
+        for (path, content) in files {
+            let path = self.root().join(path);
+            match content {
+                Some(content) => std::fs::write(&path, content).expect("write file"),
+                None => {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        self.git(&["add", "-A"]);
+        TreeId(self.git(&["write-tree"]))
+    }
+
+    /// Commits whatever `tree` last staged and returns the commit OID.
+    fn commit(&self, message: &str) -> String {
+        self.git(&[
+            "-c",
+            "user.name=Attribution Test",
+            "-c",
+            "user.email=attribution@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            message,
+        ]);
+        self.git(&["rev-parse", "HEAD"])
+    }
+
     async fn snapshot(&self) -> GitSnapshotService {
         GitSnapshotService::new(self.root())
             .await
@@ -132,12 +164,24 @@ async fn resolve(
     commit_tree: &TreeId,
     ceiling: Option<u64>,
 ) -> BoundedMutationAttribution {
+    resolve_from(repo, rows, committed, commit_tree, None, ceiling).await
+}
+
+async fn resolve_from(
+    repo: &TreeRepo,
+    rows: Vec<MutationEventPageRow>,
+    committed: &ParsedPatch,
+    commit_tree: &TreeId,
+    parent_tree: Option<&TreeId>,
+    ceiling: Option<u64>,
+) -> BoundedMutationAttribution {
     resolve_bounded_mutation_attribution(
         &VecPages { rows },
         &repo.snapshot().await,
         &WorktreeId(WORKTREE.to_owned()),
         committed,
         commit_tree,
+        parent_tree,
         ceiling,
     )
     .await
@@ -412,4 +456,389 @@ async fn an_event_beyond_the_revision_ceiling_keeps_the_line_unknown() {
 
     assert_eq!(attribution.loaded_rows, 1);
     assert_barrier_keeps_line_unknown(&attribution, &committed);
+}
+
+fn removed_line_numbers(patch: &ParsedPatch) -> Vec<u64> {
+    patch
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter())
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.kind == TouchedLineKind::Removed)
+        .map(|line| line.line_number)
+        .collect()
+}
+
+fn removed_in(patch: &ParsedPatch, old_path: &str) -> Vec<u64> {
+    removed_line_numbers(&ParsedPatch {
+        files: patch
+            .files
+            .iter()
+            .filter(|file| file.old_path == old_path)
+            .cloned()
+            .collect(),
+    })
+}
+
+const ABC: &str = "a\nb\nc\n";
+const AC: &str = "a\nc\n";
+
+struct RemovalCase {
+    repo: TreeRepo,
+    parent: TreeId,
+    commit: TreeId,
+    committed: ParsedPatch,
+}
+
+async fn removal_case(parent: &str, commit: &str) -> RemovalCase {
+    let repo = TreeRepo::new();
+    let parent = repo.tree(Some(parent));
+    let commit = repo.tree(Some(commit));
+    let committed = committed_patch(&repo.snapshot().await, &parent, &commit).await;
+    RemovalCase {
+        repo,
+        parent,
+        commit,
+        committed,
+    }
+}
+
+impl RemovalCase {
+    async fn resolve(&self, rows: Vec<MutationEventPageRow>) -> BoundedMutationAttribution {
+        let ceiling = rows.iter().map(|row| row.revision).max();
+        resolve_from(
+            &self.repo,
+            rows,
+            &self.committed,
+            &self.commit,
+            Some(&self.parent),
+            ceiling,
+        )
+        .await
+    }
+}
+
+fn assert_removal_unresolved(attribution: &BoundedMutationAttribution, expected: &[u64]) {
+    assert!(removed_line_numbers(&attribution.result.mutation_ai_patch).is_empty());
+    assert!(removed_line_numbers(&attribution.result.resolved_non_ai_patch).is_empty());
+    assert_eq!(
+        removed_line_numbers(&attribution.result.unresolved_patch),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn a_proven_ai_exclusive_removal_is_attributed_with_scope_provenance() {
+    let case = removal_case(ABC, AC).await;
+    let attribution = case
+        .resolve(vec![event(1, &case.parent, &case.commit, true)])
+        .await;
+
+    assert!(attribution.removal_replay_anchored);
+    assert_eq!(
+        removed_line_numbers(&attribution.result.mutation_ai_patch),
+        vec![2]
+    );
+    let hunk = &attribution.result.mutation_ai_patch.files[0].hunks[0];
+    assert_eq!(hunk.lines[0].content, "b");
+    assert_eq!(hunk.lines[0].session_id.as_deref(), Some(AUTHOR_SESSION));
+    assert_eq!(hunk.model_id.as_deref(), Some(AUTHOR_MODEL));
+    assert!(removed_line_numbers(&attribution.result.unresolved_patch).is_empty());
+
+    let trace = build_trace(&case.committed, &attribution.result, &[]);
+    assert!(trace.files.is_empty(), "deleted lines produce no ranges");
+    assert_eq!(trace.metadata.sce.line_changes.ai.removed, 1);
+    assert_eq!(trace.metadata.sce.line_changes.unknown.removed, 0);
+}
+
+#[tokio::test]
+async fn a_proven_non_exclusive_removal_is_non_exclusive() {
+    let case = removal_case(ABC, AC).await;
+    let attribution = case
+        .resolve(vec![event(1, &case.parent, &case.commit, false)])
+        .await;
+
+    assert!(removed_line_numbers(&attribution.result.mutation_ai_patch).is_empty());
+    assert_eq!(
+        removed_line_numbers(&attribution.result.resolved_non_ai_patch),
+        vec![2]
+    );
+    let trace = build_trace(&case.committed, &attribution.result, &[]);
+    assert_eq!(trace.metadata.sce.line_changes.non_exclusive.removed, 1);
+}
+
+#[tokio::test]
+async fn history_without_the_parent_tree_leaves_removals_unresolved() {
+    let case = removal_case(ABC, AC).await;
+    let elsewhere = case.repo.tree(Some("a\nb\nc\nz\n"));
+    let attribution = case
+        .resolve(vec![event(1, &elsewhere, &case.commit, true)])
+        .await;
+
+    assert!(!attribution.removal_replay_anchored);
+    assert_removal_unresolved(&attribution, &[2]);
+}
+
+#[tokio::test]
+async fn a_history_gap_after_the_parent_anchor_leaves_removals_unresolved() {
+    let case = removal_case(ABC, AC).await;
+    let diverged = case.repo.tree(Some("a\nc\nx\n"));
+    let attribution = case
+        .resolve(vec![
+            event(1, &case.parent, &case.commit, true),
+            event(2, &diverged, &case.commit, true),
+        ])
+        .await;
+
+    assert!(!attribution.removal_replay_anchored);
+    assert_removal_unresolved(&attribution, &[2]);
+}
+
+#[tokio::test]
+async fn a_parent_transition_outside_the_replay_window_leaves_removals_unresolved() {
+    let case = removal_case(ABC, AC).await;
+    let newest = MAX_MUTATION_ATTRIBUTION_EVENTS as u64 + 1;
+    let mut rows = vec![event(1, &case.parent, &case.commit, true)];
+    rows.extend((2..=newest).map(|revision| event(revision, &case.commit, &case.commit, true)));
+    let attribution = case.resolve(rows).await;
+
+    assert_eq!(attribution.loaded_rows, MAX_MUTATION_ATTRIBUTION_EVENTS);
+    assert!(!attribution.removal_replay_anchored);
+    assert_removal_unresolved(&attribution, &[2]);
+}
+
+#[tokio::test]
+async fn an_unobserved_tail_removal_stays_unresolved() {
+    let case = removal_case(ABC, AC).await;
+    let attribution = case
+        .resolve(vec![event(1, &case.parent, &case.parent, true)])
+        .await;
+
+    assert!(attribution.removal_replay_anchored);
+    assert_removal_unresolved(&attribution, &[2]);
+}
+
+#[tokio::test]
+async fn an_unobserved_tail_only_distrusts_the_paths_it_touches() {
+    let repo = TreeRepo::new();
+    let parent = repo.trees_with(&[(PLAN_PATH, Some(ABC)), ("other.txt", Some("o\n"))]);
+    let observed = repo.trees_with(&[(PLAN_PATH, Some(AC))]);
+    let commit = repo.trees_with(&[("other.txt", Some("o2\n"))]);
+    let committed = committed_patch(&repo.snapshot().await, &parent, &commit).await;
+
+    let attribution = resolve_from(
+        &repo,
+        vec![event(1, &parent, &observed, true)],
+        &committed,
+        &commit,
+        Some(&parent),
+        Some(1),
+    )
+    .await;
+
+    assert_eq!(
+        removed_in(&attribution.result.mutation_ai_patch, PLAN_PATH),
+        vec![2]
+    );
+    assert_eq!(
+        removed_in(&attribution.result.unresolved_patch, "other.txt"),
+        vec![1]
+    );
+}
+
+#[tokio::test]
+async fn a_partially_staged_removal_is_not_attributed_from_the_larger_worktree_change() {
+    let case = removal_case("A\nB\nC\n", "A\nC\n").await;
+    let worktree = case.repo.tree(Some("A\n"));
+    let attribution = case
+        .resolve(vec![event(1, &case.parent, &worktree, true)])
+        .await;
+
+    assert!(attribution.removal_replay_anchored);
+    assert_removal_unresolved(&attribution, &[2]);
+}
+
+#[tokio::test]
+async fn a_restored_then_redeleted_line_keeps_no_stale_ai_removal() {
+    let case = removal_case(ABC, AC).await;
+    let restored = case.repo.tree(Some("a\nc\nb\n"));
+    let attribution = case
+        .resolve(vec![
+            event(1, &case.parent, &case.commit, true),
+            event(2, &case.commit, &restored, false),
+            event(3, &restored, &case.commit, false),
+        ])
+        .await;
+
+    assert!(attribution.removal_replay_anchored);
+    assert_removal_unresolved(&attribution, &[2]);
+}
+
+#[tokio::test]
+async fn an_exact_return_to_the_parent_tree_reanchors_at_the_latest_removal() {
+    let case = removal_case(ABC, AC).await;
+    let attribution = case
+        .resolve(vec![
+            event(1, &case.parent, &case.commit, true),
+            event(2, &case.commit, &case.parent, false),
+            event(3, &case.parent, &case.commit, false),
+        ])
+        .await;
+
+    assert!(removed_line_numbers(&attribution.result.mutation_ai_patch).is_empty());
+    assert_eq!(
+        removed_line_numbers(&attribution.result.resolved_non_ai_patch),
+        vec![2]
+    );
+}
+
+#[tokio::test]
+async fn a_duplicate_removal_maps_to_its_own_parent_line() {
+    let case = removal_case("x\na\nx\n", "x\na\n").await;
+    let attribution = case
+        .resolve(vec![event(1, &case.parent, &case.commit, true)])
+        .await;
+
+    let removed: Vec<_> = attribution.result.mutation_ai_patch.files[0].hunks[0]
+        .lines
+        .iter()
+        .map(|line| (line.line_number, line.content.as_str()))
+        .collect();
+    assert_eq!(removed, vec![(3, "x")]);
+}
+
+#[tokio::test]
+async fn removed_and_added_lines_resolve_independently() {
+    let case = removal_case(ABC, "a\nB\nc\nnew\n").await;
+    let attribution = case
+        .resolve(vec![event(1, &case.parent, &case.commit, true)])
+        .await;
+
+    assert_eq!(
+        removed_line_numbers(&attribution.result.mutation_ai_patch),
+        vec![2]
+    );
+    assert_eq!(
+        added_line_numbers(&attribution.result.mutation_ai_patch),
+        vec![2, 4]
+    );
+
+    let without_parent = resolve(
+        &case.repo,
+        vec![event(1, &case.parent, &case.commit, true)],
+        &case.committed,
+        &case.commit,
+        Some(1),
+    )
+    .await;
+    assert_eq!(
+        added_line_numbers(&without_parent.result.mutation_ai_patch),
+        vec![2, 4],
+        "added lines resolve the same without a parent anchor"
+    );
+    assert_eq!(
+        removed_line_numbers(&without_parent.result.unresolved_patch),
+        vec![2]
+    );
+}
+
+#[tokio::test]
+async fn a_renamed_file_resolves_removals_under_its_old_path() {
+    let repo = TreeRepo::new();
+    let parent = repo.trees_with(&[("old.md", Some("one\ntwo\nthree\nfour\nfive\n"))]);
+    let commit = repo.trees_with(&[("old.md", None), ("new.md", Some("one\ntwo\nfour\nfive\n"))]);
+    let committed = committed_patch(&repo.snapshot().await, &parent, &commit).await;
+    assert_eq!(committed.files[0].old_path, "old.md");
+    assert_eq!(committed.files[0].new_path, "new.md");
+
+    let attribution = resolve_from(
+        &repo,
+        vec![event(1, &parent, &commit, true)],
+        &committed,
+        &commit,
+        Some(&parent),
+        Some(1),
+    )
+    .await;
+    assert_eq!(
+        removed_in(&attribution.result.mutation_ai_patch, "old.md"),
+        vec![3]
+    );
+}
+
+#[tokio::test]
+async fn committed_trees_follow_the_captured_commit_after_head_moves() {
+    let repo = TreeRepo::new();
+    let parent = repo.tree(Some(ABC));
+    repo.commit("parent");
+    let commit = repo.tree(Some(AC));
+    let commit_oid = repo.commit("commit");
+    repo.tree(Some("a\n"));
+    repo.commit("later");
+    assert_ne!(TreeId(repo.git(&["rev-parse", "HEAD^{tree}"])), commit);
+
+    let snapshot = repo.snapshot().await;
+    let trees = snapshot
+        .committed_trees(&commit_oid)
+        .await
+        .expect("committed trees");
+    assert_eq!(trees.commit_tree, commit);
+    assert_eq!(trees.parent_tree.as_ref(), Some(&parent));
+
+    let committed = committed_patch(&snapshot, &parent, &commit).await;
+    let attribution = resolve_from(
+        &repo,
+        vec![event(1, &parent, &commit, true)],
+        &committed,
+        &trees.commit_tree,
+        trees.parent_tree.as_ref(),
+        Some(1),
+    )
+    .await;
+    assert_eq!(
+        removed_line_numbers(&attribution.result.mutation_ai_patch),
+        vec![2]
+    );
+}
+
+#[tokio::test]
+async fn root_and_merge_commits_have_no_parent_tree() {
+    let repo = TreeRepo::new();
+    repo.tree(Some(ABC));
+    let root = repo.commit("root");
+    let snapshot = repo.snapshot().await;
+    assert_eq!(
+        snapshot
+            .committed_trees(&root)
+            .await
+            .expect("root trees")
+            .parent_tree,
+        None
+    );
+
+    repo.git(&["checkout", "-q", "-b", "side"]);
+    repo.tree(Some("a\nb\nc\nside\n"));
+    repo.commit("side");
+    repo.git(&["checkout", "-q", "main"]);
+    repo.tree(Some("main\na\nb\nc\n"));
+    repo.commit("main");
+    repo.git(&[
+        "-c",
+        "user.name=Attribution Test",
+        "-c",
+        "user.email=attribution@example.invalid",
+        "merge",
+        "-q",
+        "--no-ff",
+        "--no-edit",
+        "side",
+    ]);
+    let merge = repo.git(&["rev-parse", "HEAD"]);
+    let trees = snapshot.committed_trees(&merge).await.expect("merge trees");
+    assert_eq!(trees.parent_tree, None);
+    assert_eq!(
+        trees.commit_tree,
+        TreeId(repo.git(&["rev-parse", "HEAD^{tree}"]))
+    );
+    assert!(snapshot.committed_trees("HEAD").await.is_err());
 }

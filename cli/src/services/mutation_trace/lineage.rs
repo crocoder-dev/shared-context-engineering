@@ -20,7 +20,10 @@ pub enum TransitionOrigin {
 }
 
 impl TransitionOrigin {
-    fn added_provenance(&self) -> LineProvenance {
+    /// The provenance of a line this transition adds, and equally of a parent
+    /// line this transition removes: the effective actor is the transition,
+    /// never the actor that originally introduced the line.
+    fn provenance(&self) -> LineProvenance {
         match self {
             TransitionOrigin::MutationAi(scope_id) => LineProvenance::MutationAi {
                 scope_id: scope_id.clone(),
@@ -37,15 +40,63 @@ pub struct LineageError {
     pub reason: String,
 }
 
+/// Stable identity of one line of the exact parent commit: its parent-side
+/// path and 1-based line number. It never changes while the line survives,
+/// however other lines move around it.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ParentLineId {
+    pub path: String,
+    pub line_number: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ProvenanceLine {
     content: String,
     provenance: LineProvenance,
+    /// Set only for lines carried unchanged from the parent baseline; lines
+    /// introduced by any later transition have no parent identity.
+    parent_identity: Option<ParentLineId>,
+}
+
+/// The effective removal of a parent line: who removed it, and the content it
+/// had. Its provenance is invalidated to `Unknown` once the same content is
+/// plausibly restored, because text equality never proves identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RemovalRecord {
+    content: String,
+    provenance: LineProvenance,
+}
+
+#[derive(Debug, Default)]
+struct TransitionEffects {
+    removed: Vec<(ParentLineId, String)>,
+    added: Vec<(String, String)>,
+}
+
+impl TransitionEffects {
+    /// Records the parent identity of every removed line that has one; lines
+    /// introduced after the parent are removed without a trace.
+    fn record_removed(&mut self, region: &[ProvenanceLine], offsets: &BTreeSet<usize>) {
+        for offset in offsets {
+            let line = &region[*offset];
+            if let Some(identity) = &line.parent_identity {
+                self.removed.push((identity.clone(), line.content.clone()));
+            }
+        }
+    }
+
+    fn record_added(&mut self, path: &str, content: &str) {
+        self.added.push((path.to_owned(), content.to_owned()));
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MutationLineage {
     files: BTreeMap<String, Vec<ProvenanceLine>>,
+    removals: BTreeMap<ParentLineId, RemovalRecord>,
+    /// Maps a tracked path to the parent path whose lines it holds, following
+    /// only renames the replay observed.
+    parent_paths: BTreeMap<String, String>,
 }
 
 fn unknown_lines(content: Option<&str>) -> Vec<ProvenanceLine> {
@@ -56,6 +107,25 @@ fn unknown_lines(content: Option<&str>) -> Vec<ProvenanceLine> {
             .map(|line| ProvenanceLine {
                 content: line.to_owned(),
                 provenance: LineProvenance::Unknown,
+                parent_identity: None,
+            })
+            .collect(),
+    }
+}
+
+fn parent_lines(path: &str, content: Option<&str>) -> Vec<ProvenanceLine> {
+    match content {
+        None => Vec::new(),
+        Some(text) => text
+            .lines()
+            .zip(1_u64..)
+            .map(|(line, line_number)| ProvenanceLine {
+                content: line.to_owned(),
+                provenance: LineProvenance::Unknown,
+                parent_identity: Some(ParentLineId {
+                    path: path.to_owned(),
+                    line_number,
+                }),
             })
             .collect(),
     }
@@ -69,14 +139,33 @@ impl MutationLineage {
                 .iter()
                 .map(|(path, content)| (path.clone(), unknown_lines(content.as_deref())))
                 .collect(),
+            removals: BTreeMap::new(),
+            parent_paths: BTreeMap::new(),
         }
     }
 
+    /// Starts a lineage at the exact parent commit: every baseline line gets
+    /// a stable parent identity so later removals of it can be recorded.
+    #[must_use]
+    pub fn from_parent(files: &BTreeMap<String, Option<String>>) -> Self {
+        MutationLineage {
+            files: files
+                .iter()
+                .map(|(path, content)| (path.clone(), parent_lines(path, content.as_deref())))
+                .collect(),
+            removals: BTreeMap::new(),
+            parent_paths: files
+                .iter()
+                .filter(|(_, content)| content.is_some())
+                .map(|(path, _)| (path.clone(), path.clone()))
+                .collect(),
+        }
+    }
+
+    /// Restarts from an unanchored baseline. Every parent identity and
+    /// removal claim is dropped: none survives an unverified reset.
     pub fn reset_all(&mut self, files: &BTreeMap<String, Option<String>>) {
-        self.files = files
-            .iter()
-            .map(|(path, content)| (path.clone(), unknown_lines(content.as_deref())))
-            .collect();
+        *self = MutationLineage::from_baseline(files);
     }
 
     pub fn apply(
@@ -84,16 +173,49 @@ impl MutationLineage {
         patch: &ParsedPatch,
         origin: &TransitionOrigin,
     ) -> Result<(), LineageError> {
+        let mut effects = TransitionEffects::default();
         for file in &patch.files {
-            self.apply_file(file, origin)?;
+            self.apply_file(file, origin, &mut effects)?;
+        }
+        self.invalidate_restored_removals(&effects.added);
+        for (identity, content) in effects.removed {
+            self.removals.insert(
+                identity,
+                RemovalRecord {
+                    content,
+                    provenance: origin.provenance(),
+                },
+            );
         }
         Ok(())
+    }
+
+    /// An added line whose content equals an earlier-removed line of the same
+    /// parent file may be a restoration of it. Identity cannot be proven from
+    /// text, so the earlier removal claim becomes unknown for good.
+    fn invalidate_restored_removals(&mut self, added: &[(String, String)]) {
+        if self.removals.is_empty() {
+            return;
+        }
+        let mut restorable: BTreeSet<(&str, &str)> = BTreeSet::new();
+        for (path, content) in added {
+            restorable.insert((path, content));
+            if let Some(parent_path) = self.parent_paths.get(path) {
+                restorable.insert((parent_path, content));
+            }
+        }
+        for (identity, record) in &mut self.removals {
+            if restorable.contains(&(identity.path.as_str(), record.content.as_str())) {
+                record.provenance = LineProvenance::Unknown;
+            }
+        }
     }
 
     fn apply_file(
         &mut self,
         file: &PatchFileChange,
         origin: &TransitionOrigin,
+        effects: &mut TransitionEffects,
     ) -> Result<(), LineageError> {
         let tracks_source = !file.old_path.is_empty() && self.files.contains_key(&file.old_path);
         let tracks_dest = !file.new_path.is_empty() && self.files.contains_key(&file.new_path);
@@ -127,8 +249,21 @@ impl MutationLineage {
             });
         }
 
-        let new = apply_hunks(&logical_path, &old, file, origin)?;
+        let new = apply_hunks(&logical_path, &old, file, origin, effects)?;
 
+        let renamed = !file.old_path.is_empty()
+            && !file.new_path.is_empty()
+            && file.old_path != file.new_path;
+        if renamed {
+            match self.parent_paths.remove(&file.old_path) {
+                Some(parent_path) if tracks_source => {
+                    self.parent_paths.insert(file.new_path.clone(), parent_path);
+                }
+                _ => {
+                    self.parent_paths.remove(&file.new_path);
+                }
+            }
+        }
         if tracks_source && file.old_path != file.new_path {
             self.files.insert(file.old_path.clone(), Vec::new());
         }
@@ -154,6 +289,116 @@ impl MutationLineage {
             _ => LineProvenance::Unknown,
         }
     }
+
+    /// The tracked paths, including every path a rename moved lines into.
+    pub fn tracked_paths(&self) -> impl Iterator<Item = &str> {
+        self.files.keys().map(String::as_str)
+    }
+
+    /// Whether the tracked lines of `path` are exactly the lines of `content`.
+    #[must_use]
+    pub fn matches_content(&self, path: &str, content: Option<&str>) -> bool {
+        let Some(tracked) = self.files.get(path) else {
+            return false;
+        };
+        let expected: Vec<&str> = content
+            .map(|text| text.lines().collect())
+            .unwrap_or_default();
+        tracked.len() == expected.len()
+            && tracked
+                .iter()
+                .zip(&expected)
+                .all(|(line, expected)| line.content == *expected)
+    }
+
+    /// Makes every removal claim that the lines at `path` bear on unknown:
+    /// removals from `path` itself and from the parent path it holds.
+    pub fn distrust_removals(&mut self, path: &str) {
+        let parent_path = self.parent_paths.get(path).cloned();
+        for (identity, record) in &mut self.removals {
+            if identity.path == path || parent_path.as_deref() == Some(identity.path.as_str()) {
+                record.provenance = LineProvenance::Unknown;
+            }
+        }
+    }
+
+    /// The parent path whose lines `path` holds, when the replay established it.
+    #[must_use]
+    pub fn parent_path_of(&self, path: &str) -> Option<&str> {
+        self.parent_paths.get(path).map(String::as_str)
+    }
+
+    /// Every recorded parent-line removal with its effective provenance.
+    #[cfg(test)]
+    #[must_use]
+    pub fn removed_identities(&self) -> Vec<(ParentLineId, LineProvenance)> {
+        self.removals
+            .iter()
+            .map(|(identity, record)| (identity.clone(), record.provenance.clone()))
+            .collect()
+    }
+
+    fn removals_of(&self, parent_path: &str) -> BTreeMap<u64, &RemovalRecord> {
+        self.removals
+            .iter()
+            .filter(|(identity, _)| identity.path == parent_path)
+            .map(|(identity, record)| (identity.line_number, record))
+            .collect()
+    }
+
+    /// Resolves the committed old-side removed lines of one canonical file
+    /// against the replayed parent identities.
+    ///
+    /// The committed file must hold the lines of `parent_path` by an observed
+    /// path history. Where the canonical diff and the replay disagree about
+    /// which parent lines were removed, they chose different alignments among
+    /// equal content, so every committed removal sharing that content is
+    /// ambiguous and stays `Unknown`.
+    #[must_use]
+    pub fn committed_removals(
+        &self,
+        current_path: &str,
+        parent_path: &str,
+        committed: &[(u64, &str)],
+    ) -> Vec<LineProvenance> {
+        if self.parent_path_of(current_path) != Some(parent_path) {
+            return vec![LineProvenance::Unknown; committed.len()];
+        }
+        let recorded = self.removals_of(parent_path);
+        let mut committed_numbers: BTreeSet<u64> = BTreeSet::new();
+        let mut repeated: BTreeSet<u64> = BTreeSet::new();
+        for (line_number, _) in committed {
+            if !committed_numbers.insert(*line_number) {
+                repeated.insert(*line_number);
+            }
+        }
+
+        let mut ambiguous: BTreeSet<&str> = BTreeSet::new();
+        for (line_number, record) in &recorded {
+            if !committed_numbers.contains(line_number) {
+                ambiguous.insert(&record.content);
+            }
+        }
+        for (line_number, content) in committed {
+            if !recorded.contains_key(line_number) {
+                ambiguous.insert(content);
+            }
+        }
+
+        committed
+            .iter()
+            .map(|(line_number, content)| match recorded.get(line_number) {
+                Some(record)
+                    if record.content == *content
+                        && !ambiguous.contains(content)
+                        && !repeated.contains(line_number) =>
+                {
+                    record.provenance.clone()
+                }
+                _ => LineProvenance::Unknown,
+            })
+            .collect()
+    }
 }
 
 fn apply_hunks(
@@ -161,6 +406,7 @@ fn apply_hunks(
     old: &[ProvenanceLine],
     file: &PatchFileChange,
     origin: &TransitionOrigin,
+    effects: &mut TransitionEffects,
 ) -> Result<Vec<ProvenanceLine>, LineageError> {
     let mut hunks: Vec<&PatchHunk> = file.hunks.iter().collect();
     hunks.sort_by_key(|hunk| (hunk.old_start, hunk.new_start));
@@ -169,7 +415,7 @@ fn apply_hunks(
     let mut cursor: usize = 0;
 
     for hunk in hunks {
-        cursor = apply_one_hunk(path, old, hunk, origin, &mut new, cursor)?;
+        cursor = apply_one_hunk(path, old, hunk, origin, &mut new, cursor, effects)?;
     }
 
     new.extend_from_slice(&old[cursor..]);
@@ -183,6 +429,7 @@ fn apply_one_hunk(
     origin: &TransitionOrigin,
     new: &mut Vec<ProvenanceLine>,
     mut cursor: usize,
+    effects: &mut TransitionEffects,
 ) -> Result<usize, LineageError> {
     let fail = |reason: &str| LineageError {
         path: path.to_owned(),
@@ -252,6 +499,7 @@ fn apply_one_hunk(
             return Err(fail("the same old line is removed twice"));
         }
     }
+    effects.record_removed(region, &removed_indices);
 
     let mut carried: Vec<&ProvenanceLine> = region
         .iter()
@@ -277,8 +525,10 @@ fn apply_one_hunk(
         if let Some(content) = added_by_number.get(&line_number) {
             new.push(ProvenanceLine {
                 content: (*content).to_owned(),
-                provenance: origin.added_provenance(),
+                provenance: origin.provenance(),
+                parent_identity: None,
             });
+            effects.record_added(path, content);
         } else {
             let carried_line = carried
                 .pop()
