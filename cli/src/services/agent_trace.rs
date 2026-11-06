@@ -136,13 +136,10 @@ pub struct AgentTraceMetadata {
 #[serde(rename_all = "snake_case")]
 pub struct AgentTraceSceMetadata {
     pub version: String,
-    /// Exact touched-line attribution counts derived from canonical
-    /// `post_commit_patch` hunks, bucketed by hunk classification.
     #[serde(default)]
     pub line_changes: LineChangeAttribution,
 }
 
-/// Exact added/removed touched-line counts for one hunk-classification bucket.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LineChangeCounts {
@@ -150,39 +147,43 @@ pub struct LineChangeCounts {
     pub removed: u64,
 }
 
-/// Exact touched-line attribution counts, bucketed by hunk classification.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LineChangeAttribution {
     #[serde(default)]
     pub ai: LineChangeCounts,
     #[serde(default)]
-    pub mixed: LineChangeCounts,
+    pub non_exclusive: LineChangeCounts,
     #[serde(default)]
     pub unknown: LineChangeCounts,
 }
 
-/// Tally one `post_commit_patch` hunk's touched lines into the bucket matching
-/// `kind`. A hunk's entire touched-line count is recorded in a single bucket:
-/// a `mixed` hunk contributes all of its touched lines, not just the subset
-/// that also appears in the AI intersection.
-fn record_hunk_line_changes(
-    counts: &mut LineChangeAttribution,
-    kind: HunkContributor,
-    hunk: &PatchHunk,
-) {
-    let bucket = match kind {
-        HunkContributor::Ai => &mut counts.ai,
-        HunkContributor::Mixed => &mut counts.mixed,
-        HunkContributor::Unknown => &mut counts.unknown,
-    };
-
-    for line in &hunk.lines {
-        match line.kind {
-            TouchedLineKind::Added => bucket.added += 1,
-            TouchedLineKind::Removed => bucket.removed += 1,
+fn line_change_attribution(
+    patch: &ParsedPatch,
+    decisions: &BTreeMap<PatchLineLocation, LineAttribution>,
+) -> LineChangeAttribution {
+    let mut counts = LineChangeAttribution::default();
+    for (file_index, file) in patch.files.iter().enumerate() {
+        for (hunk_index, hunk) in file.hunks.iter().enumerate() {
+            for (line_index, line) in hunk.lines.iter().enumerate() {
+                let location = PatchLineLocation {
+                    file_index,
+                    hunk_index,
+                    line_index,
+                };
+                let bucket = match decisions.get(&location) {
+                    Some(LineAttribution::Ai(_)) => &mut counts.ai,
+                    Some(LineAttribution::NonExclusive) => &mut counts.non_exclusive,
+                    Some(LineAttribution::Unknown) | None => &mut counts.unknown,
+                };
+                match line.kind {
+                    TouchedLineKind::Added => bucket.added += 1,
+                    TouchedLineKind::Removed => bucket.removed += 1,
+                }
+            }
         }
     }
+    counts
 }
 
 fn parse_commit_timestamp(commit_timestamp: &str) -> Result<DateTime<FixedOffset>> {
@@ -348,6 +349,22 @@ struct ResolvedLine {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+enum LineAttribution {
+    Ai(ResolvedLine),
+    NonExclusive,
+    Unknown,
+}
+
+impl LineAttribution {
+    fn accepted_ai(&self) -> Option<&ResolvedLine> {
+        match self {
+            Self::Ai(line) => Some(line),
+            Self::NonExclusive | Self::Unknown => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum MutationLineEvidence {
     Ai(PatchLineProvenance),
     NonAi,
@@ -413,7 +430,7 @@ impl<'a> MutationEvidenceIndex<'a> {
 fn resolve_line(
     mutation: MutationLineEvidence,
     direct: Option<&DirectLineEvidence>,
-) -> Option<ResolvedLine> {
+) -> LineAttribution {
     match (mutation, direct) {
         (
             MutationLineEvidence::Ai(mutation),
@@ -421,24 +438,27 @@ fn resolve_line(
                 provenance: direct,
                 sources,
             })),
-        ) if direct.session_id == mutation.session_id => Some(ResolvedLine {
+        ) if direct.session_id == mutation.session_id => LineAttribution::Ai(ResolvedLine {
             provenance: PatchLineProvenance {
                 session_id: mutation.session_id,
                 model_id: mutation.model_id.or_else(|| direct.model_id.clone()),
             },
             direct_sources: sources.clone(),
         }),
-        (MutationLineEvidence::Ai(mutation), _) => Some(ResolvedLine {
+        (MutationLineEvidence::Ai(mutation), _) => LineAttribution::Ai(ResolvedLine {
             provenance: mutation,
             direct_sources: BTreeSet::new(),
         }),
+        (MutationLineEvidence::NonAi, _) => LineAttribution::NonExclusive,
         (MutationLineEvidence::Unresolved, Some(DirectLineEvidence::Accepted(accepted))) => {
-            Some(ResolvedLine {
+            LineAttribution::Ai(ResolvedLine {
                 provenance: accepted.provenance.clone(),
                 direct_sources: accepted.sources.clone(),
             })
         }
-        (MutationLineEvidence::NonAi | MutationLineEvidence::Unresolved, _) => None,
+        (MutationLineEvidence::Unresolved, Some(DirectLineEvidence::Conflicting) | None) => {
+            LineAttribution::Unknown
+        }
     }
 }
 
@@ -447,7 +467,7 @@ fn resolve_patch_lines(
     direct_sources: &[DirectEvidenceSource<'_>],
     repository_root: &RepositoryRoot,
     mutation: &MutationEvidenceIndex<'_>,
-) -> BTreeMap<PatchLineLocation, ResolvedLine> {
+) -> BTreeMap<PatchLineLocation, LineAttribution> {
     let direct = direct_line_evidence(direct_sources, target, repository_root);
     let mut resolved = BTreeMap::new();
     for (file_index, file) in target.files.iter().enumerate() {
@@ -460,9 +480,10 @@ fn resolve_patch_lines(
                     line_index,
                 };
                 let key = (path, line.kind, line.line_number, line.content.as_str());
-                if let Some(line) = resolve_line(mutation.lookup(&key), direct.get(&location)) {
-                    resolved.insert(location, line);
-                }
+                resolved.insert(
+                    location,
+                    resolve_line(mutation.lookup(&key), direct.get(&location)),
+                );
             }
         }
     }
@@ -470,7 +491,7 @@ fn resolve_patch_lines(
 }
 
 fn hunk_resolved_lines(
-    resolved: &BTreeMap<PatchLineLocation, ResolvedLine>,
+    resolved: &BTreeMap<PatchLineLocation, LineAttribution>,
     file_index: usize,
     hunk_index: usize,
 ) -> impl Iterator<Item = &ResolvedLine> {
@@ -486,7 +507,7 @@ fn hunk_resolved_lines(
                 line_index: usize::MAX,
             },
         )
-        .map(|(_, line)| line)
+        .filter_map(|(_, line)| line.accepted_ai())
 }
 
 fn classify_hunk(hunk: &PatchHunk, covered: usize) -> HunkContributor {
@@ -589,9 +610,8 @@ fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
 fn build_trace_file(
     post_commit_file: &PatchFileChange,
     file_index: usize,
-    resolved: &BTreeMap<PatchLineLocation, ResolvedLine>,
+    resolved: &BTreeMap<PatchLineLocation, LineAttribution>,
     conversation_url: &str,
-    line_changes: &mut LineChangeAttribution,
 ) -> Option<TraceFile> {
     if post_commit_file.hunks.is_empty() {
         return None;
@@ -610,7 +630,6 @@ fn build_trace_file(
                 }
                 HunkContributor::Unknown => None,
             };
-            record_hunk_line_changes(line_changes, contributor_kind, post_commit_hunk);
             let related_session_ids = hunk_resolved_lines(resolved, file_index, hunk_index)
                 .filter_map(|line| line.provenance.session_id.as_deref())
                 .filter(|session_id| !session_id.is_empty())
@@ -666,26 +685,20 @@ pub fn build_agent_trace_from_evidence(
         repository_root,
         &mutation,
     );
+    let line_changes = line_change_attribution(post_commit_patch, &resolved);
     let empty_patch = ParsedPatch { files: Vec::new() };
     let no_mutation = MutationEvidenceIndex::new(&empty_patch, &empty_patch);
 
     let mut files = Vec::new();
-    let mut line_changes = LineChangeAttribution::default();
 
     for (file_index, post_commit_file) in post_commit_patch.files.iter().enumerate() {
         if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
-            for (hunk_index, hunk) in post_commit_file.hunks.iter().enumerate() {
-                let covered = hunk_resolved_lines(&resolved, file_index, hunk_index).count();
-                record_hunk_line_changes(&mut line_changes, classify_hunk(hunk, covered), hunk);
-            }
-
             let embedded_resolved = resolve_patch_lines(
                 &embedded_patch,
                 direct_sources,
                 repository_root,
                 &no_mutation,
             );
-            let mut discarded_line_changes = LineChangeAttribution::default();
             files.extend(embedded_patch.files.iter().enumerate().filter_map(
                 |(embedded_index, embedded_file)| {
                     build_trace_file(
@@ -693,26 +706,22 @@ pub fn build_agent_trace_from_evidence(
                         embedded_index,
                         &embedded_resolved,
                         &conversation_url,
-                        &mut discarded_line_changes,
                     )
                 },
             ));
             continue;
         }
 
-        if let Some(trace_file) = build_trace_file(
-            post_commit_file,
-            file_index,
-            &resolved,
-            &conversation_url,
-            &mut line_changes,
-        ) {
+        if let Some(trace_file) =
+            build_trace_file(post_commit_file, file_index, &resolved, &conversation_url)
+        {
             files.push(trace_file);
         }
     }
 
     let accepted_sources: BTreeSet<usize> = resolved
         .values()
+        .filter_map(LineAttribution::accepted_ai)
         .flat_map(|line| line.direct_sources.iter().copied())
         .collect();
     let tool = accepted_direct_tool(direct_sources, &accepted_sources);
