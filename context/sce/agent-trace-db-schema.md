@@ -20,7 +20,7 @@ The `post_commit_patch_intersections` baseline migration creates:
 - `commit_id TEXT NOT NULL`
 - `post_commit_time_ms INTEGER NOT NULL`
 - `recent_window_cutoff_ms INTEGER NOT NULL`
-- `recent_window_end_ms INTEGER NOT NULL`
+- `recent_window_end_ms INTEGER NOT NULL` — exclusive upper bound of the post-commit direct-evidence window: the start of the captured commit's committer-timestamp second. Equal to `recent_window_cutoff_ms` (an empty window) when the commit time is untrusted.
 - `loaded_diff_trace_count INTEGER NOT NULL CHECK (loaded_diff_trace_count >= 0)`
 - `skipped_diff_trace_count INTEGER NOT NULL CHECK (skipped_diff_trace_count >= 0)`
 - `intersection_patch TEXT NOT NULL`

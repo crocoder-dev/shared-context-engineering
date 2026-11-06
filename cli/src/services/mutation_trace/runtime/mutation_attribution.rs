@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::agent_trace_db::CommitTimeCutoff;
 use crate::services::mutation_trace::attribution::{
     logical_path, patch_for_locations, patch_for_locations_with_provenance,
     MutationAttributionResult, PatchLineLocation, PatchLineProvenance,
@@ -58,6 +59,33 @@ impl MutationEventPageSource for MutationTraceStore<'_> {
 
     async fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
         MutationTraceStore::load_scope_provenance(self, scope_id).await
+    }
+}
+
+struct CommitBoundedEvents<'s, 'db> {
+    store: &'s MutationTraceStore<'db>,
+    cutoff: CommitTimeCutoff,
+}
+
+impl MutationEventPageSource for CommitBoundedEvents<'_, '_> {
+    async fn load_mutation_event_page(
+        &self,
+        worktree: &WorktreeId,
+        revision_cursor: Option<u64>,
+        requested_limit: usize,
+    ) -> Result<Vec<MutationEventPageRow>> {
+        self.store
+            .load_mutation_event_page_before_commit(
+                worktree,
+                revision_cursor,
+                requested_limit,
+                self.cutoff,
+            )
+            .await
+    }
+
+    async fn load_scope_provenance(&self, scope_id: &ScopeId) -> Result<Option<ScopeProvenance>> {
+        self.store.load_scope_provenance(scope_id).await
     }
 }
 
@@ -648,7 +676,11 @@ pub(crate) async fn resolve_post_commit_mutation_attribution(
     db: &mut RepositoryAgentTraceDb,
     commit_oid: &str,
     committed_patch: &ParsedPatch,
+    cutoff: Option<CommitTimeCutoff>,
 ) -> MutationAttributionResult {
+    let Some(cutoff) = cutoff else {
+        return empty_attribution();
+    };
     let Ok(git_dir) = resolve_git_dir(repository_root).await else {
         return empty_attribution();
     };
@@ -672,7 +704,10 @@ pub(crate) async fn resolve_post_commit_mutation_attribution(
     };
 
     resolve_bounded_mutation_attribution(
-        &store,
+        &CommitBoundedEvents {
+            store: &store,
+            cutoff,
+        },
         &snapshot,
         &worktree,
         committed_patch,

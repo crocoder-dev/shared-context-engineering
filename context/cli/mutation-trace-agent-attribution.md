@@ -118,8 +118,11 @@ alongside `diff_trees`).
   (`revision <= ceiling`, applied as an exclusive `ceiling + 1` first cursor).
   Every request asks for `min(MUTATION_ATTRIBUTION_PAGE_SIZE, 128 − loaded)`
   rows; at most four pages under the 32/128 constants. Event 128 may contribute;
-  event 129 is never loaded. Traversal is current-worktree-only and
-  timestamp-independent; no `created_at` participates.
+  event 129 is never loaded. Traversal is current-worktree-only. The generic
+  consumer is timestamp-independent; the post-commit entrypoint pages through a
+  commit-bounded source whose SQL also requires `created_at` before the
+  [commit-time cutoff](#commit-time-cutoff), so the 128-event budget counts only
+  temporally eligible events.
 - **Replay oldest to newest.** The window is reversed. The baseline is the
   oldest retained event's `before_tree`, every line `Unknown`, read with
   `file_at_tree`. Each event's transition is `diff_trees(before, after)` parsed
@@ -220,8 +223,9 @@ history before a gap leaves removals unknown.
 ## Commit attribution cut
 
 `resolve_post_commit_mutation_attribution(repository_root, &db, commit_oid,
-committed_patch) -> MutationAttributionResult` is the read-only post-commit
-entrypoint. It returns the mutation-AI, resolved non-AI, and unresolved line
+committed_patch, cutoff) -> MutationAttributionResult` is the read-only
+post-commit entrypoint. A `None` cutoff (untrusted commit time) returns an
+empty result immediately. It returns the mutation-AI, resolved non-AI, and unresolved line
 sets. It
 resolves the invoking worktree's identity from Git topology
 ([`git_snapshot::resolve_git_dir` + `resolve_worktree_id`](mutation-trace-runtime-coordinator.md),
@@ -245,6 +249,67 @@ history at all each yield an empty result (every line unresolved), so
 post-commit falls back to trusted direct-only Agent Trace behavior. The entrypoint creates no identity and writes
 no mutation-cursor state.
 
+The revision ceiling is only a stable-snapshot bound. It is read inside
+post-commit processing, after Git has already created the commit, so events
+recorded between commit creation and the hook (for example an agent deleting a
+line again after the working tree was restored) still sit below it. Temporal
+eligibility comes from the commit-time cutoff below.
+
+## Commit-time cutoff
+
+This is a conservative risk-reduction rule, not a causal commit boundary.
+
+- **Source.** `capture_post_commit_patch_from_git` reads `HEAD` once for the
+  commit OID, then reads the committer timestamp with `git show --format=%ct
+  --no-patch <oid>` and the parent timestamp from `<oid>^`. Mutable `HEAD` is
+  never read again. A root commit keeps `parent_commit_time_ms = None`.
+- **Cutoff.** `CommitTimeCutoff` (`agent_trace_db/mod.rs`) is the start of the
+  committer-timestamp Unix second. Evidence is eligible only when its
+  database-generated `created_at` is strictly before that instant, so anything
+  recorded during the commit's second or later is excluded. Git timestamps have
+  one-second resolution, so the system cannot tell which side of the commit an
+  event in that second falls on; it prefers a false negative.
+- **Insertion time, not event time.** The rule uses `created_at` (database
+  insertion time). `diff_traces.time_ms` is the reported event time and can be
+  old for a late insert, so it never replaces the insertion-time check.
+- **Both sources.** Mutation events and direct evidence use the same rule.
+  Filtering only one would let the other reintroduce a late AI claim: a late
+  direct row could otherwise recover an `Unknown` line that lineage correctly
+  left unresolved.
+- **Before the limit.** The predicate is part of every mutation page query:
+
+  ```sql
+  WHERE worktree_id = ?1
+    [AND revision < ?cursor]
+    AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?cutoff_seconds, 'unixepoch')
+  ORDER BY revision DESC LIMIT ?limit
+  ```
+
+  Filtering after loading the newest 128 events would let a burst of late
+  events fill the window and push out eligible older ones. Only the post-commit
+  path uses `load_mutation_event_page_before_commit`; `load_mutation_event_page`
+  and its other consumers are unchanged.
+- **Trust check.** `trusted_commit_time_cutoff` accepts the timestamp only when
+  `GIT_COMMITTER_DATE` is absent from the hook environment, the value is a
+  whole non-negative Unix second with a four-digit UTC year, the commit second
+  does not start after post-commit entry (no future tolerance; Git and the
+  database read the same host clock), and it started at most
+  `COMMIT_TIME_MAX_AGE_MILLIS` (5 minutes) before entry. The check cannot prove
+  the timestamp is authentic. A slow, legitimate hook beyond 5 minutes loses
+  attribution; that false negative is accepted.
+- **Fail closed.** When the timestamp is untrusted, `attribution_cutoff` is
+  `None`: no direct-evidence query runs, mutation attribution returns an empty
+  result, and every committed touched line is `Unknown`. The Agent Trace is
+  still built and persisted with its usual schema and the real commit
+  timestamp, and the commit itself is never blocked. Nothing falls back to the
+  current time or an unlimited query. If the commit OID or metadata cannot be
+  read, the flow errors before any evidence is queried.
+- **Assumptions.** The rule depends on the committer timestamp and the database
+  clock roughly agreeing. It does not protect against backdated or
+  future-dated commits that pass the trust check, clock rollback, significant
+  skew, evidence delayed before insertion, or old evidence that already
+  matched an unrelated change.
+
 ## Evidence precedence
 
 Each committed touched line is resolved independently in
@@ -260,9 +325,10 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
 | unresolved | conflicting sessions, historical-only, or none | unknown |
 
 - **When is direct evidence sufficient?** Only when lineage left the line
-  unresolved and a direct candidate is (1) *fresh* — recorded after the
+  unresolved and a direct candidate is (1) *fresh* — reported after the
   parent commit's committer-time second (`direct_evidence_cutoff_ms`), still
-  inside the 7-day window; (2) an *exact* touched-line match on repository
+  inside the 7-day window, reported before and inserted into the database
+  before the [commit-time cutoff](#commit-time-cutoff); (2) an *exact* touched-line match on repository
   file identity, `kind`, `line_number`, and `content` — file identity is the
   normalized repository-relative path (absolute paths only inside the
   repository root, Claude structured relative paths resolved only against
@@ -338,9 +404,12 @@ The former `intersect_patches` / `combine_patches` helpers and their historical
 ## Post-commit composition
 
 - **Evidence stays separated.** `post_commit_patch_intersections` stores only
-  the trusted direct-evidence projection (fresh, exact, single-session) and its
-  `recent_window_cutoff_ms` records the freshness-bounded cutoff. Mutation
-  evidence never enters `diff_traces`.
+  the trusted direct-evidence projection (fresh, exact, single-session).
+  `recent_window_cutoff_ms` records the inclusive freshness lower bound and
+  `recent_window_end_ms` the exclusive upper bound: the start of the commit
+  second (rows must also have `created_at` before it). When the commit time is
+  untrusted, both hold the lower bound, an empty window, and no rows load.
+  Mutation evidence never enters `diff_traces`.
 - **No fabricated direct provenance.** The mutation-AI patch is target-shaped
   and carries only the resolved observational session/model metadata described
   above; it carries no tool or tool-version metadata. `ScopeId`, `ActorKind`,
@@ -408,3 +477,18 @@ observable tree difference.
   `ai.removed = 3`, `non_exclusive.removed = 1`, `unknown.removed = 1`, and
   `"files": []`. A mixed add/modify/delete commit keeps the same added-line
   attribution and ranges as an unanchored replay.
+- Commit-time cutoff. `runtime/mutation_attribution/tests.rs`: rows created at
+  `:03.999` are eligible and `:04.000`, `:04.001`, `:04.999`, `:05.000` are not;
+  140 late events do not consume the 128-event budget, pages span
+  correctly, and the cap still holds. `hooks/commit_hooks/attribution_tests.rs`:
+  the same boundary for `diff_traces` (including old `time_ms` with late
+  `created_at`) while the staged preflight query is unchanged; a late AI
+  deletion stays `unknown` (an unbounded control would credit it); a
+  pre-commit AI deletion keeps its session and model; a delayed hook keeps the
+  earlier session while a late restore-and-redelete is ignored; an in-second
+  pre-commit event is the documented false negative; late direct evidence
+  cannot claim lines; an overridden, future, or stale commit time disables
+  both sources while still persisting a trace; a failed metadata read queries
+  nothing; timestamps follow the captured OID after `HEAD` moves. Each flow
+  test checks `ai + non_exclusive + unknown` against the committed added and
+  removed lines.
