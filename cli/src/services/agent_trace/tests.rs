@@ -1118,7 +1118,7 @@ fn assert_counters_cover(trace: &super::AgentTrace, committed: &ParsedPatch) {
 }
 
 const MIXED_PATH: &str = "src/mixed.rs";
-const MIXED_HUNK: &str = "diff --git a/src/mixed.rs b/src/mixed.rs\n--- a/src/mixed.rs\n+++ b/src/mixed.rs\n@@ -1,3 +1,5 @@\n keep\n-old direct\n-old unknown\n+new direct\n+new lineage\n+new contended\n+new manual\n keep too\n";
+const MIXED_HUNK: &str = "diff --git a/src/mixed.rs b/src/mixed.rs\n--- a/src/mixed.rs\n+++ b/src/mixed.rs\n@@ -1,4 +1,6 @@\n keep\n-old direct\n-old unknown\n+new direct\n+new lineage\n+new contended\n+new manual\n keep too\n";
 const MIXED_DIRECT: &[(char, u64, &str)] = &[(REMOVED, 2, "old direct"), (ADDED, 2, "new direct")];
 const MIXED_LINEAGE: &[(char, u64, &str)] = &[(ADDED, 3, "new lineage")];
 const MIXED_CONTENDED: &[(char, u64, &str)] = &[(ADDED, 4, "new contended")];
