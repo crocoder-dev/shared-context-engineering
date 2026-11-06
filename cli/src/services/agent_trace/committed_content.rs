@@ -15,6 +15,7 @@ pub enum CommittedFile {
     Blob(Vec<u8>),
     NotLineAddressable,
     Missing,
+    #[cfg(test)]
     Unverified,
 }
 
