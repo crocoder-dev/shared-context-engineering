@@ -200,17 +200,26 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   `metadata.sce.line_changes` increments one `{ai, non_exclusive, unknown}`
   bucket per line from that decision. `non_exclusive` means lineage resolved a
   non-exclusive or unscoped transition (not human authorship); `unknown` means
-  unresolved. Hunk `mixed` is presentation only. Counters cover the canonical
-  committed patch exactly and do not depend on hunk grouping. See
+  unresolved. Counters cover the canonical committed patch exactly and do not
+  depend on hunk grouping. See
   [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md).
+- **How do decisions become exported ranges?** Only surviving added lines get
+  ranges, at their post-commit positions. Contiguous lines with the same
+  decision, accepted session, and model coalesce; ranges group into one
+  conversation per accepted session (or per model for session-less AI, or per
+  unresolved decision kind). A Git hunk never decides a contributor, and SCE
+  does not emit `mixed` for partial AI coverage. Hashes cover the exact
+  committed bytes of each range. See
+  [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md#ranges-and-conversations).
 - **What remains unsupported?** Removed lines are never resolved by lineage
   (only exact fresh direct evidence can cover them; otherwise they count as
-  `unknown`, even when the line's original author is known). Direct-only edits whose
-  line numbers drift through later uncaptured edits now resolve to unknown or
-  `mixed` instead of `ai`. The freshness bound uses the committer time of the
+  `unknown`, even when the line's original author is known). Removed lines have
+  no post-commit position, so their decisions appear only in counters, never as
+  ranges. Direct-only edits whose line numbers drift through later uncaptured
+  edits resolve to `unknown` instead of `ai`. The freshness bound uses the committer time of the
   first parent, so an uncommitted edit made before the parent commit (partial
   staging) loses direct attribution. Mutation scopes without a recorded model
-  still produce hunks without `model_id`.
+  still produce ranges without `model_id`.
 
 The former `intersect_patches` / `combine_patches` helpers and their historical
 `(kind, content)` fallback were removed from `patch.rs`.

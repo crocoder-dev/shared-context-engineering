@@ -2,28 +2,29 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     error::Error,
     fmt,
-    io::Cursor,
-    path::Path,
     sync::OnceLock,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, FixedOffset};
 use jsonschema::{validator_for, Validator};
-use murmur3::murmur3_32;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::mutation_trace::attribution::{logical_path, PatchLineLocation, PatchLineProvenance};
-use super::patch::{
-    parse_patch, FileChangeKind, ParsedPatch, PatchFileChange, PatchHunk, TouchedLineKind,
-};
+use super::patch::{ParsedPatch, PatchFileChange, TouchedLineKind};
 use super::version::PACKAGE_VERSION;
 
+mod committed_content;
 mod evidence;
+mod ranges;
 mod repository_path;
 
+#[cfg(test)]
+pub use committed_content::NoCommittedFiles;
+use committed_content::{content_hash, CommittedFileCache, CommittedLines};
+pub use committed_content::{CommittedFile, CommittedFileReader, GitCommittedFiles};
 pub use evidence::DirectEvidenceSource;
 use evidence::{
     accepted_direct_tool, direct_line_evidence, AcceptedDirectLine, DirectLineEvidence,
@@ -37,11 +38,6 @@ pub(crate) const SCE_WEB_BASE_URL: &str = "https://sce.crocoder.dev";
 pub(crate) fn sce_config_schema_url() -> String {
     format!("{SCE_WEB_BASE_URL}/v{PACKAGE_VERSION}/config.json")
 }
-
-const RANGE_CONTENT_HASH_PREFIX: &str = "murmur3:";
-const RANGE_CONTENT_HASH_INPUT_VERSION: &[u8] = b"sce-agent-trace-range-content-hash-v1\0";
-const TOUCHED_LINE_ADDED_TAG: &[u8] = b"added\0";
-const TOUCHED_LINE_REMOVED_TAG: &[u8] = b"removed\0";
 
 pub(crate) fn agent_trace_conversation_url(agent_trace_id: &str) -> String {
     format!("{SCE_WEB_BASE_URL}/conversations/{agent_trace_id}")
@@ -242,30 +238,22 @@ pub(crate) fn validate_agent_trace_value(value: &Value) -> Result<(), AgentTrace
     Err(AgentTraceValidationError::SchemaValidation { errors })
 }
 
-/// Classification of a single hunk's origin relative to the AI candidate patch.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HunkContributor {
-    /// All touched lines in the `post_commit_patch` hunk are present identically
-    /// in `intersection_patch`.
+pub enum ContributorType {
+    Human,
     Ai,
-    /// The `post_commit_patch` hunk has a corresponding slot in `intersection_patch`
-    /// but the content differs.
     Mixed,
-    /// The `post_commit_patch` hunk has no corresponding slot in `intersection_patch`
-    /// (missing from AI candidate).
     Unknown,
 }
 
-/// A single conversation entry derived from one `post_commit_patch` hunk.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Conversation {
     /// Absolute lookup URL for the generated top-level agent trace.
     pub url: String,
-    /// Classification of this hunk's origin.
-    pub contributor: Contributor,
-    /// Line ranges in the new file, derived from the `post_commit_patch` hunk metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contributor: Option<Contributor>,
     pub ranges: Vec<LineRange>,
     /// Optional related resources for this conversation entry.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -283,34 +271,32 @@ pub struct ConversationRelated {
     pub url: String,
 }
 
-/// Nested contributor object for a conversation entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Contributor {
-    /// Classification of this hunk's origin.
     #[serde(rename = "type")]
-    pub kind: HunkContributor,
+    pub kind: ContributorType,
     /// Model provenance for this contributor; omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
 }
 
-/// A single line range in the new file.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LineRange {
     pub start_line: u64,
     pub end_line: u64,
-    pub content_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contributor: Option<Contributor>,
 }
 
 /// A file-level entry in the minimal agent-trace payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TraceFile {
-    /// Post-change file path (from `post_commit_patch`).
     pub path: String,
-    /// One conversation per `post_commit_patch` hunk, in `post_commit_patch` hunk order.
     pub conversations: Vec<Conversation>,
 }
 
@@ -336,7 +322,6 @@ pub struct AgentTrace {
     /// Implementation-specific metadata for SCE-generated traces.
     #[serde(default = "default_agent_trace_metadata")]
     pub metadata: AgentTraceMetadata,
-    /// File-level trace entries, one per file present in `post_commit_patch`.
     pub files: Vec<TraceFile>,
 }
 
@@ -490,50 +475,6 @@ fn resolve_patch_lines(
     resolved
 }
 
-fn hunk_resolved_lines(
-    resolved: &BTreeMap<PatchLineLocation, LineAttribution>,
-    file_index: usize,
-    hunk_index: usize,
-) -> impl Iterator<Item = &ResolvedLine> {
-    resolved
-        .range(
-            PatchLineLocation {
-                file_index,
-                hunk_index,
-                line_index: 0,
-            }..=PatchLineLocation {
-                file_index,
-                hunk_index,
-                line_index: usize::MAX,
-            },
-        )
-        .filter_map(|(_, line)| line.accepted_ai())
-}
-
-fn classify_hunk(hunk: &PatchHunk, covered: usize) -> HunkContributor {
-    let total = hunk.lines.len();
-    if total > 0 && covered == total {
-        HunkContributor::Ai
-    } else if covered > 0 {
-        HunkContributor::Mixed
-    } else {
-        HunkContributor::Unknown
-    }
-}
-
-fn agreed_model_id<'r>(lines: impl Iterator<Item = &'r ResolvedLine>) -> Option<String> {
-    let mut model: Option<&str> = None;
-    for line in lines {
-        let candidate = line.provenance.model_id.as_deref()?;
-        match model {
-            None => model = Some(candidate),
-            Some(existing) if existing == candidate => {}
-            Some(_) => return None,
-        }
-    }
-    model.map(ToOwned::to_owned)
-}
-
 pub(crate) fn patch_has_touched_lines(patch: &ParsedPatch) -> bool {
     patch
         .files
@@ -541,131 +482,155 @@ pub(crate) fn patch_has_touched_lines(patch: &ParsedPatch) -> bool {
         .any(|file| file.hunks.iter().any(|hunk| !hunk.lines.is_empty()))
 }
 
-pub(crate) fn range_content_hash(hunk: &PatchHunk) -> String {
-    let mut input = Vec::new();
-    input.extend_from_slice(RANGE_CONTENT_HASH_INPUT_VERSION);
-
-    for line in &hunk.lines {
-        let kind_tag = match line.kind {
-            TouchedLineKind::Added => TOUCHED_LINE_ADDED_TAG,
-            TouchedLineKind::Removed => TOUCHED_LINE_REMOVED_TAG,
-        };
-        let content = line.content.as_bytes();
-
-        input.extend_from_slice(kind_tag);
-        input.extend_from_slice(&(content.len() as u64).to_be_bytes());
-        input.extend_from_slice(content);
-        input.push(0);
-    }
-
-    let hash = murmur3_32(&mut Cursor::new(input), 0)
-        .expect("murmur3 hashing from in-memory cursor should not fail");
-    format!("{RANGE_CONTENT_HASH_PREFIX}{hash:08x}")
-}
-
-fn line_range_from_hunk(file: &PatchFileChange, hunk: &PatchHunk) -> LineRange {
-    let (start_line, line_count) = match file.kind {
-        FileChangeKind::Deleted if hunk.new_count == 0 => (hunk.old_start, hunk.old_count),
-        _ => (hunk.new_start, hunk.new_count),
-    };
-    let end_line = start_line.saturating_add(line_count.saturating_sub(1));
-
-    LineRange {
-        start_line,
-        end_line,
-        content_hash: range_content_hash(hunk),
-    }
-}
-
-fn trace_path(file: &PatchFileChange) -> &str {
-    if file.new_path.is_empty() {
-        &file.old_path
-    } else {
-        &file.new_path
-    }
-}
-
-fn parse_embedded_deleted_patch(file: &PatchFileChange) -> Option<ParsedPatch> {
-    if file.kind != FileChangeKind::Deleted
-        || !Path::new(&file.old_path)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("patch"))
-    {
-        return None;
-    }
-
-    let embedded_patch = file
-        .hunks
-        .iter()
-        .flat_map(|hunk| hunk.lines.iter())
-        .filter(|line| line.kind == TouchedLineKind::Removed)
-        .map(|line| line.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let parsed_patch = parse_patch(&embedded_patch, None).ok()?;
-    (!parsed_patch.files.is_empty()).then_some(parsed_patch)
-}
-
-fn build_trace_file(
-    post_commit_file: &PatchFileChange,
+fn attributed_added_lines<'p>(
+    file: &'p PatchFileChange,
     file_index: usize,
     resolved: &BTreeMap<PatchLineLocation, LineAttribution>,
-    conversation_url: &str,
-) -> Option<TraceFile> {
-    if post_commit_file.hunks.is_empty() {
-        return None;
-    }
-
-    let conversations = post_commit_file
+) -> Vec<(&'p str, ranges::AttributedLine)> {
+    let mut lines: Vec<_> = file
         .hunks
         .iter()
         .enumerate()
-        .map(|(hunk_index, post_commit_hunk)| {
-            let covered = hunk_resolved_lines(resolved, file_index, hunk_index).count();
-            let contributor_kind = classify_hunk(post_commit_hunk, covered);
-            let contributor_model_id = match contributor_kind {
-                HunkContributor::Ai | HunkContributor::Mixed => {
-                    agreed_model_id(hunk_resolved_lines(resolved, file_index, hunk_index))
-                }
-                HunkContributor::Unknown => None,
-            };
-            let related_session_ids = hunk_resolved_lines(resolved, file_index, hunk_index)
-                .filter_map(|line| line.provenance.session_id.as_deref())
-                .filter(|session_id| !session_id.is_empty())
-                .collect::<BTreeSet<_>>();
-            let related = (!related_session_ids.is_empty()).then(|| {
-                related_session_ids
-                    .into_iter()
-                    .map(|session_id| ConversationRelated {
-                        kind: String::from("session"),
-                        url: agent_trace_session_url(session_id),
-                    })
-                    .collect()
-            });
+        .flat_map(|(hunk_index, hunk)| {
+            hunk.lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| line.kind == TouchedLineKind::Added)
+                .map(move |(line_index, line)| {
+                    let location = PatchLineLocation {
+                        file_index,
+                        hunk_index,
+                        line_index,
+                    };
+                    (
+                        line.content.as_str(),
+                        ranges::AttributedLine {
+                            line_number: line.line_number,
+                            attribution: ranges::RangeAttribution::from_decision(
+                                resolved.get(&location),
+                            ),
+                        },
+                    )
+                })
+        })
+        .collect();
+    lines.sort_by_key(|(_, line)| line.line_number);
+    lines
+}
 
-            Conversation {
-                url: conversation_url.to_owned(),
-                contributor: Contributor {
-                    kind: contributor_kind,
-                    model_id: contributor_model_id,
-                },
-                ranges: vec![line_range_from_hunk(post_commit_file, post_commit_hunk)],
-                related,
-            }
+fn validate_added_line_positions(
+    path: &str,
+    lines: &[(&str, ranges::AttributedLine)],
+    committed: Option<&CommittedLines<'_>>,
+    revision: &str,
+) -> Result<()> {
+    let mut previous = 0;
+    for (content, line) in lines {
+        if line.line_number <= previous {
+            bail!(
+                "Invalid Agent Trace range position for '{path}': line {} is zero or repeated.",
+                line.line_number
+            );
+        }
+        previous = line.line_number;
+        if committed.is_some_and(|committed| !committed.line_matches(line.line_number, content)) {
+            bail!(
+                "Invalid Agent Trace range position for '{path}': line {} does not match the committed content at revision '{revision}'.",
+                line.line_number
+            );
+        }
+    }
+    Ok(())
+}
+
+fn session_related(session_id: Option<&str>) -> Option<Vec<ConversationRelated>> {
+    session_id.map(|session_id| {
+        vec![ConversationRelated {
+            kind: String::from("session"),
+            url: agent_trace_session_url(session_id),
+        }]
+    })
+}
+
+fn build_trace_file(
+    file: &PatchFileChange,
+    file_index: usize,
+    resolved: &BTreeMap<PatchLineLocation, LineAttribution>,
+    conversation_url: &str,
+    committed_files: &mut CommittedFileCache<'_>,
+    revision: &str,
+) -> Result<Option<TraceFile>> {
+    let lines = attributed_added_lines(file, file_index, resolved);
+    if lines.is_empty() {
+        return Ok(None);
+    }
+
+    let path = logical_path(file);
+    let committed = match committed_files.get(path) {
+        CommittedFile::Blob(bytes) => Some(CommittedLines::new(bytes)),
+        CommittedFile::NotLineAddressable => return Ok(None),
+        CommittedFile::Unavailable => None,
+    };
+    validate_added_line_positions(path, &lines, committed.as_ref(), revision)?;
+
+    let lines: Vec<ranges::AttributedLine> = lines.into_iter().map(|(_, line)| line).collect();
+    let conversations = ranges::group_conversations(ranges::coalesce_ranges(&lines))
+        .into_iter()
+        .map(|group| Conversation {
+            url: conversation_url.to_owned(),
+            contributor: group.contributor(),
+            ranges: group
+                .ranges
+                .iter()
+                .map(|range| LineRange {
+                    start_line: range.start_line,
+                    end_line: range.end_line,
+                    content_hash: committed
+                        .as_ref()
+                        .and_then(|committed| committed.span(range.start_line, range.end_line))
+                        .map(content_hash),
+                    contributor: group.range_contributor(range),
+                })
+                .collect(),
+            related: session_related(group.session_id()),
         })
         .collect();
 
-    Some(TraceFile {
-        path: trace_path(post_commit_file).to_string(),
+    Ok(Some(TraceFile {
+        path: path.to_owned(),
         conversations,
-    })
+    }))
+}
+
+fn build_trace_files(
+    post_commit_patch: &ParsedPatch,
+    resolved: &BTreeMap<PatchLineLocation, LineAttribution>,
+    conversation_url: &str,
+    committed_files: &dyn CommittedFileReader,
+    revision: &str,
+) -> Result<Vec<TraceFile>> {
+    let mut committed_files = CommittedFileCache::new(committed_files);
+    let mut files = Vec::new();
+    for (file_index, file) in post_commit_patch.files.iter().enumerate() {
+        if let Some(trace_file) = build_trace_file(
+            file,
+            file_index,
+            resolved,
+            conversation_url,
+            &mut committed_files,
+            revision,
+        )? {
+            files.push(trace_file);
+        }
+    }
+    Ok(files)
 }
 
 pub fn build_agent_trace_from_evidence(
     evidence: AgentTraceEvidence<'_>,
     post_commit_patch: &ParsedPatch,
     metadata: AgentTraceMetadataInput<'_>,
+    committed_files: &dyn CommittedFileReader,
 ) -> Result<AgentTrace> {
     let AgentTraceEvidence {
         repository_root,
@@ -686,38 +651,13 @@ pub fn build_agent_trace_from_evidence(
         &mutation,
     );
     let line_changes = line_change_attribution(post_commit_patch, &resolved);
-    let empty_patch = ParsedPatch { files: Vec::new() };
-    let no_mutation = MutationEvidenceIndex::new(&empty_patch, &empty_patch);
-
-    let mut files = Vec::new();
-
-    for (file_index, post_commit_file) in post_commit_patch.files.iter().enumerate() {
-        if let Some(embedded_patch) = parse_embedded_deleted_patch(post_commit_file) {
-            let embedded_resolved = resolve_patch_lines(
-                &embedded_patch,
-                direct_sources,
-                repository_root,
-                &no_mutation,
-            );
-            files.extend(embedded_patch.files.iter().enumerate().filter_map(
-                |(embedded_index, embedded_file)| {
-                    build_trace_file(
-                        embedded_file,
-                        embedded_index,
-                        &embedded_resolved,
-                        &conversation_url,
-                    )
-                },
-            ));
-            continue;
-        }
-
-        if let Some(trace_file) =
-            build_trace_file(post_commit_file, file_index, &resolved, &conversation_url)
-        {
-            files.push(trace_file);
-        }
-    }
+    let files = build_trace_files(
+        post_commit_patch,
+        &resolved,
+        &conversation_url,
+        committed_files,
+        metadata.commit_revision,
+    )?;
 
     let accepted_sources: BTreeSet<usize> = resolved
         .values()

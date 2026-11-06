@@ -3,7 +3,7 @@ use std::process::Command;
 use super::*;
 use crate::services::agent_trace::{
     build_agent_trace_from_evidence, AgentTrace, AgentTraceEvidence, AgentTraceMetadataInput,
-    DirectEvidenceSource, HunkContributor, RepositoryRoot,
+    ContributorType, DirectEvidenceSource, NoCommittedFiles, RepositoryRoot,
 };
 
 const PLAN_PATH: &str = "plan.md";
@@ -177,6 +177,7 @@ fn build_trace(
             commit_revision: "0000000000000000000000000000000000000001",
             vcs_type: None,
         },
+        &NoCommittedFiles,
     )
     .expect("agent trace builds")
 }
@@ -208,8 +209,22 @@ fn assert_barrier_keeps_line_unknown(
         &[old_session_historical_match()],
     );
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, HunkContributor::Unknown);
-    assert_eq!(conversation.contributor.model_id, None);
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Unknown
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id,
+        None
+    );
     assert_eq!(conversation.related, None);
     let json = serde_json::to_string(&trace).expect("trace serializes");
     assert!(!json.contains(OLD_SESSION));
@@ -247,9 +262,21 @@ async fn an_observed_ai_event_attributes_the_line_over_an_old_historical_match()
         &[old_session_historical_match()],
     );
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, HunkContributor::Ai);
     assert_eq!(
-        conversation.contributor.model_id.as_deref(),
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Ai
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id
+            .as_deref(),
         Some(AUTHOR_MODEL)
     );
     let related: Vec<_> = conversation
