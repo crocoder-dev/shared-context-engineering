@@ -159,8 +159,12 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
 - **When is direct evidence sufficient?** Only when lineage left the line
   unresolved and a direct candidate is (1) *fresh* — recorded after the
   parent commit's committer-time second (`direct_evidence_cutoff_ms`), still
-  inside the 7-day window; (2) an *exact* touched-line match on file identity,
-  `kind`, `line_number`, and `content`; and (3) *unambiguous* — every fresh
+  inside the 7-day window; (2) an *exact* touched-line match on repository
+  file identity, `kind`, `line_number`, and `content` — file identity is the
+  normalized repository-relative path (absolute paths only inside the
+  repository root, Claude structured paths resolved against their recorded
+  `cwd`, no suffix equivalence, `..` escapes rejected; see
+  `agent_trace/repository_path.rs`); and (3) *unambiguous* — every fresh
   exact candidate for that line comes from one session. Each candidate row is
   kept separate (never merged into one patch), so evidence is consumed by its exact
   occurrence and a duplicate line elsewhere in the file is not covered.
@@ -172,8 +176,16 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   a textual match. Disagreeing direct candidates for one line fail closed to
   unknown; SCE never picks the newest or first row. Overridden candidates do
   not reach `conversation.related`, `contributor.model_id`, or the `tool`
-  object (emitted only when a direct candidate supports a final line
-  attribution).
+  object. The `tool` object is derived only from the direct rows supporting
+  finally accepted lines and is omitted when those rows name different tools
+  or any lacks a tool name; a differing version is dropped.
+- **Which evidence may influence outputs?** Only accepted evidence. The same
+  acceptance (`agent_trace/evidence.rs`: repository file identity → exact line
+  match → single-session resolution) feeds the staged co-author preflight, the
+  persisted direct intersection, and the builder; the builder then reconciles
+  with mutation lineage before deriving session, model, and tool metadata. The
+  co-author preflight runs before mutation resolution and does not consult
+  mutation events, but still rejects conflicting direct candidates.
 - **What happens when history is incomplete?** Gaps, the 128-event window, the
   revision ceiling, and the unobserved tail keep lines `Unknown`, as before.
   An unknown line then needs fresh, exact, single-session direct evidence;

@@ -3,7 +3,7 @@ use std::process::Command;
 use super::*;
 use crate::services::agent_trace::{
     build_agent_trace_from_evidence, AgentTrace, AgentTraceEvidence, AgentTraceMetadataInput,
-    HunkContributor,
+    DirectEvidenceSource, HunkContributor, RepositoryRoot,
 };
 
 const PLAN_PATH: &str = "plan.md";
@@ -160,9 +160,14 @@ fn build_trace(
     attribution: &MutationAttributionResult,
     direct_patches: &[ParsedPatch],
 ) -> AgentTrace {
+    let direct_sources: Vec<_> = direct_patches
+        .iter()
+        .map(DirectEvidenceSource::repository_relative)
+        .collect();
     build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patches,
+            repository_root: &RepositoryRoot::new(std::path::Path::new("/workspace/project")),
+            direct_sources: &direct_sources,
             mutation_ai_patch: &attribution.mutation_ai_patch,
             mutation_non_ai_patch: &attribution.resolved_non_ai_patch,
         },
@@ -171,8 +176,6 @@ fn build_trace(
             commit_timestamp: COMMIT_TIMESTAMP,
             commit_revision: "0000000000000000000000000000000000000001",
             vcs_type: None,
-            tool_name: None,
-            tool_version: None,
         },
     )
     .expect("agent trace builds")

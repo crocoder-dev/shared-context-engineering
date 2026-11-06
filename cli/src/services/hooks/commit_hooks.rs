@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -8,7 +8,8 @@ use serde_json::{to_string as serialize_to_json, Value};
 use crate::services::agent_trace::{
     agent_trace_persisted_url, build_agent_trace_from_evidence, direct_evidence_patch,
     has_direct_evidence, patch_has_touched_lines, validate_agent_trace_value, AgentTrace,
-    AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType,
+    AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType, DirectEvidenceSource,
+    RepositoryRoot,
 };
 use crate::services::agent_trace_db::{
     AgentTraceInsert, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
@@ -326,9 +327,16 @@ where
             })?
             .to_rfc3339();
 
+    let repository_root = RepositoryRoot::resolve(&flow_result.repository_root);
+    let direct_sources: Vec<DirectEvidenceSource<'_>> = flow_result
+        .direct_traces
+        .iter()
+        .map(DirectEvidenceSource::from)
+        .collect();
     let agent_trace = build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patches: &flow_result.direct_patches,
+            repository_root: &repository_root,
+            direct_sources: &direct_sources,
             mutation_ai_patch: &mutation.mutation_ai_patch,
             mutation_non_ai_patch: &mutation.resolved_non_ai_patch,
         },
@@ -337,8 +345,6 @@ where
             commit_timestamp: &commit_timestamp,
             commit_revision: &flow_result.post_commit_data.commit_oid,
             vcs_type,
-            tool_name: flow_result.tool_name.as_deref(),
-            tool_version: flow_result.tool_version.as_deref(),
         },
     )
     .context("Failed to build Agent Trace payload from post-commit intersection flow result.")?;
@@ -501,12 +507,16 @@ where
         return StagedDiffAiOverlapResult::Error;
     };
 
-    let direct_patches: Vec<ParsedPatch> = recent_patches
+    let direct_sources: Vec<DirectEvidenceSource<'_>> = recent_patches
         .patches
-        .into_iter()
-        .map(|recent_patch| recent_patch.patch)
+        .iter()
+        .map(DirectEvidenceSource::from)
         .collect();
-    let has_overlap = has_direct_evidence(&direct_patches, &staged_patch);
+    let has_overlap = has_direct_evidence(
+        &direct_sources,
+        &staged_patch,
+        &RepositoryRoot::resolve(repository_root),
+    );
 
     if has_overlap {
         StagedDiffAiOverlapResult::Overlap
@@ -567,16 +577,16 @@ where
     #[allow(clippy::cast_possible_wrap)]
     let skipped_count = recent_patches.skipped_count() as i64;
 
-    let (tool_name, tool_version) =
-        latest_overlapping_patch_tool(&recent_patches.patches, &post_commit_data.parsed_patch);
-
-    let direct_patches: Vec<ParsedPatch> = recent_patches
+    let direct_sources: Vec<DirectEvidenceSource<'_>> = recent_patches
         .patches
-        .into_iter()
-        .map(|p| p.patch)
+        .iter()
+        .map(DirectEvidenceSource::from)
         .collect();
-
-    let intersection_patch = direct_evidence_patch(&direct_patches, &post_commit_data.parsed_patch);
+    let intersection_patch = direct_evidence_patch(
+        &direct_sources,
+        &post_commit_data.parsed_patch,
+        &RepositoryRoot::resolve(repository_root),
+    );
 
     let serialized_intersection = serialize_to_json(&intersection_patch)
         .context("Failed to serialize intersection patch.")?;
@@ -594,30 +604,11 @@ where
     persist_intersection(insert_input).await?;
 
     Ok(PostCommitIntersectionFlowResult {
-        direct_patches,
+        repository_root: repository_root.to_path_buf(),
+        direct_traces: recent_patches.patches,
         intersection_patch,
         post_commit_data,
-        tool_name,
-        tool_version,
     })
-}
-
-fn latest_overlapping_patch_tool(
-    recent_patches: &[ParsedDiffTracePatch],
-    post_commit_patch: &ParsedPatch,
-) -> (Option<String>, Option<String>) {
-    recent_patches
-        .iter()
-        .rev()
-        .find(|recent_patch| {
-            has_direct_evidence(std::slice::from_ref(&recent_patch.patch), post_commit_patch)
-        })
-        .map_or((None, None), |recent_patch| {
-            (
-                recent_patch.tool_name.clone(),
-                recent_patch.tool_version.clone(),
-            )
-        })
 }
 
 pub(crate) async fn run_post_commit_subcommand_with_trace<
@@ -711,11 +702,10 @@ pub struct PostCommitPatchData {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitIntersectionFlowResult {
-    pub direct_patches: Vec<ParsedPatch>,
+    pub repository_root: PathBuf,
+    pub direct_traces: Vec<ParsedDiffTracePatch>,
     pub intersection_patch: ParsedPatch,
     pub post_commit_data: PostCommitPatchData,
-    pub tool_name: Option<String>,
-    pub tool_version: Option<String>,
 }
 
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
@@ -812,18 +802,18 @@ mod tests {
     use anyhow::{anyhow, Result};
 
     use crate::services::agent_trace::{validate_agent_trace_value, AgentTrace};
-    use crate::services::agent_trace_db::{AgentTraceInsert, ParsedDiffTracePatch};
+    use crate::services::agent_trace_db::AgentTraceInsert;
 
     use crate::services::error::CliError;
     use crate::services::mutation_trace::attribution::MutationAttributionResult;
     use crate::services::observability::traits::Logger;
-    use crate::services::patch::{parse_patch, ParsedPatch};
+    use crate::services::patch::ParsedPatch;
 
     use super::super::commit_patch_id::compute_commit_patch_id;
     use super::{
-        capture_post_commit_patch_from_git, latest_overlapping_patch_tool,
-        resolve_post_commit_commit_patch_id, run_post_commit_agent_trace_flow_with,
-        PostCommitIntersectionFlowResult, COMMIT_PATCH_ID_UNAVAILABLE_EVENT,
+        capture_post_commit_patch_from_git, resolve_post_commit_commit_patch_id,
+        run_post_commit_agent_trace_flow_with, PostCommitIntersectionFlowResult,
+        COMMIT_PATCH_ID_UNAVAILABLE_EVENT,
     };
 
     const REMOTE_URL: &str = "https://example.invalid/repo.git";
@@ -916,12 +906,11 @@ mod tests {
 
     fn flow_result(root: &Path) -> PostCommitIntersectionFlowResult {
         PostCommitIntersectionFlowResult {
-            direct_patches: Vec::new(),
+            repository_root: root.to_path_buf(),
+            direct_traces: Vec::new(),
             intersection_patch: empty_patch(),
             post_commit_data: capture_post_commit_patch_from_git(root)
                 .expect("post-commit patch capture"),
-            tool_name: None,
-            tool_version: None,
         }
     }
 
@@ -966,60 +955,6 @@ mod tests {
         insert
             .trace_json
             .replace(&insert.agent_trace_id, TRACE_ID_PLACEHOLDER)
-    }
-
-    fn diff_trace_patch(id: i64, tool_name: &str, patch_text: &str) -> ParsedDiffTracePatch {
-        ParsedDiffTracePatch {
-            id,
-            time_ms: id,
-            session_id: format!("{tool_name}_session"),
-            patch: parse_patch(patch_text, None).expect("diff trace patch parses"),
-            tool_name: Some(tool_name.to_string()),
-            tool_version: None,
-            payload_type: String::from("patch"),
-        }
-    }
-
-    const COMMITTED_FILE_PATCH: &str = "\
-diff --git a/src/lib.rs b/src/lib.rs
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -1,0 +2,1 @@
-+committed line
-";
-
-    const SCRATCH_FILE_PATCH: &str = "\
-diff --git a//tmp/commit-message.txt b//tmp/commit-message.txt
---- /dev/null
-+++ b//tmp/commit-message.txt
-@@ -0,0 +1,1 @@
-+commit subject
-";
-
-    #[test]
-    fn tool_comes_from_newest_overlapping_diff_trace_not_newest_overall() {
-        let post_commit_patch = parse_patch(COMMITTED_FILE_PATCH, None).expect("post-commit patch");
-        let recent_patches = vec![
-            diff_trace_patch(1, "claude", COMMITTED_FILE_PATCH),
-            diff_trace_patch(2, "pi", SCRATCH_FILE_PATCH),
-        ];
-
-        let (tool_name, tool_version) =
-            latest_overlapping_patch_tool(&recent_patches, &post_commit_patch);
-
-        assert_eq!(tool_name.as_deref(), Some("claude"));
-        assert_eq!(tool_version, None);
-    }
-
-    #[test]
-    fn tool_is_absent_when_no_diff_trace_overlaps_commit() {
-        let post_commit_patch = parse_patch(COMMITTED_FILE_PATCH, None).expect("post-commit patch");
-        let recent_patches = vec![diff_trace_patch(1, "pi", SCRATCH_FILE_PATCH)];
-
-        assert_eq!(
-            latest_overlapping_patch_tool(&recent_patches, &post_commit_patch),
-            (None, None)
-        );
     }
 
     #[tokio::test]

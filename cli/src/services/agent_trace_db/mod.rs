@@ -170,7 +170,6 @@ pub struct DiffTracePatchRow {
     pub payload_type: String,
 }
 
-/// Parsed recent diff trace patch ready for comparison flows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedDiffTracePatch {
     pub id: i64,
@@ -180,9 +179,9 @@ pub struct ParsedDiffTracePatch {
     pub tool_name: Option<String>,
     pub tool_version: Option<String>,
     pub payload_type: String,
+    pub path_base_dir: Option<String>,
 }
 
-/// Deterministic skipped-row report for invalid recent diff trace patches.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SkippedDiffTracePatch {
     pub id: i64,
@@ -191,7 +190,6 @@ pub struct SkippedDiffTracePatch {
     pub reason: String,
 }
 
-/// Parsed recent diff trace query result with accounting for valid and skipped rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecentDiffTracePatches {
     pub patches: Vec<ParsedDiffTracePatch>,
@@ -553,6 +551,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
         let is_structured = row.payload_type == PAYLOAD_TYPE_STRUCTURED;
         let parse_result = match row.payload_type.as_str() {
             PAYLOAD_TYPE_PATCH => parse_patch(&row.patch, Some(row.session_id.as_str()))
+                .map(|patch| (patch, None))
                 .map_err(|error| skipped_diff_trace_patch_reason(&error)),
             PAYLOAD_TYPE_STRUCTURED => match serde_json::from_str::<Value>(&row.patch) {
                 Ok(payload) => match derive_claude_structured_patch(
@@ -561,7 +560,9 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     u64::try_from(row.time_ms).expect("diff trace time_ms should be non-negative"),
                     row.tool_version.as_deref(),
                 ) {
-                    ClaudeStructuredPatchDerivationResult::Derived(derived) => Ok(derived.patch),
+                    ClaudeStructuredPatchDerivationResult::Derived(derived) => {
+                        Ok((derived.patch, structured_payload_cwd(&payload)))
+                    }
                     ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
                         Err(reason.to_string())
                     }
@@ -572,7 +573,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
         };
 
         match parse_result {
-            Ok(mut patch) => {
+            Ok((mut patch, path_base_dir)) => {
                 for file in &mut patch.files {
                     for hunk in &mut file.hunks {
                         hunk.model_id.clone_from(&row.model_id);
@@ -592,6 +593,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     tool_name: row.tool_name,
                     tool_version: row.tool_version,
                     payload_type: row.payload_type,
+                    path_base_dir,
                 });
             }
             Err(reason) => skipped.push(SkippedDiffTracePatch {
@@ -604,6 +606,15 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
     }
 
     RecentDiffTracePatches { patches, skipped }
+}
+
+fn structured_payload_cwd(payload: &Value) -> Option<String> {
+    payload
+        .get("cwd")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|cwd| std::path::Path::new(cwd).is_absolute())
+        .map(ToOwned::to_owned)
 }
 
 fn skipped_diff_trace_patch_reason(error: &ParseError) -> String {

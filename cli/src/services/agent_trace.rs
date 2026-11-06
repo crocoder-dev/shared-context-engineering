@@ -1,16 +1,3 @@
-//! Minimal agent-trace domain model and hunk classification contract.
-//!
-//! This module defines the domain types for producing a minimal agent-trace
-//! JSON payload from patch data. Each `post_commit_patch` touched line is
-//! resolved independently: AI-exclusive mutation lineage wins, non-exclusive
-//! mutation lineage blocks direct evidence, and otherwise only an exact,
-//! single-session direct match attributes the line.
-//!
-//! Classification rules:
-//! - every touched line in the `post_commit_patch` hunk is attributed => `ai`
-//! - some touched lines in the hunk are attributed => `mixed`
-//! - no touched line in the hunk is attributed => `unknown`
-
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     error::Error,
@@ -35,9 +22,14 @@ use super::patch::{
 use super::version::PACKAGE_VERSION;
 
 mod evidence;
+mod repository_path;
 
+pub use evidence::DirectEvidenceSource;
+use evidence::{
+    accepted_direct_tool, direct_line_evidence, AcceptedDirectLine, DirectLineEvidence,
+};
 pub(crate) use evidence::{direct_evidence_patch, has_direct_evidence};
-use evidence::{direct_line_evidence, DirectLineEvidence};
+pub use repository_path::RepositoryRoot;
 
 pub const AGENT_TRACE_VERSION: &str = "0.1.0";
 pub(crate) const SCE_WEB_BASE_URL: &str = "https://sce.crocoder.dev";
@@ -99,13 +91,12 @@ pub struct AgentTraceMetadataInput<'a> {
     pub commit_timestamp: &'a str,
     pub commit_revision: &'a str,
     pub vcs_type: Option<AgentTraceVcsType>,
-    pub tool_name: Option<&'a str>,
-    pub tool_version: Option<&'a str>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AgentTraceEvidence<'a> {
-    pub direct_patches: &'a [ParsedPatch],
+    pub repository_root: &'a RepositoryRoot,
+    pub direct_sources: &'a [DirectEvidenceSource<'a>],
     pub mutation_ai_patch: &'a ParsedPatch,
     pub mutation_non_ai_patch: &'a ParsedPatch,
 }
@@ -353,7 +344,7 @@ type MutationLineKey<'a> = (&'a str, TouchedLineKind, u64, &'a str);
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ResolvedLine {
     provenance: PatchLineProvenance,
-    direct_supported: bool,
+    direct_sources: BTreeSet<usize>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -424,25 +415,27 @@ fn resolve_line(
     direct: Option<&DirectLineEvidence>,
 ) -> Option<ResolvedLine> {
     match (mutation, direct) {
-        (MutationLineEvidence::Ai(mutation), Some(DirectLineEvidence::Unique(direct)))
-            if direct.session_id == mutation.session_id =>
-        {
-            Some(ResolvedLine {
-                provenance: PatchLineProvenance {
-                    session_id: mutation.session_id,
-                    model_id: mutation.model_id.or_else(|| direct.model_id.clone()),
-                },
-                direct_supported: true,
-            })
-        }
+        (
+            MutationLineEvidence::Ai(mutation),
+            Some(DirectLineEvidence::Accepted(AcceptedDirectLine {
+                provenance: direct,
+                sources,
+            })),
+        ) if direct.session_id == mutation.session_id => Some(ResolvedLine {
+            provenance: PatchLineProvenance {
+                session_id: mutation.session_id,
+                model_id: mutation.model_id.or_else(|| direct.model_id.clone()),
+            },
+            direct_sources: sources.clone(),
+        }),
         (MutationLineEvidence::Ai(mutation), _) => Some(ResolvedLine {
             provenance: mutation,
-            direct_supported: false,
+            direct_sources: BTreeSet::new(),
         }),
-        (MutationLineEvidence::Unresolved, Some(DirectLineEvidence::Unique(direct))) => {
+        (MutationLineEvidence::Unresolved, Some(DirectLineEvidence::Accepted(accepted))) => {
             Some(ResolvedLine {
-                provenance: direct.clone(),
-                direct_supported: true,
+                provenance: accepted.provenance.clone(),
+                direct_sources: accepted.sources.clone(),
             })
         }
         (MutationLineEvidence::NonAi | MutationLineEvidence::Unresolved, _) => None,
@@ -451,10 +444,11 @@ fn resolve_line(
 
 fn resolve_patch_lines(
     target: &ParsedPatch,
-    direct_patches: &[ParsedPatch],
+    direct_sources: &[DirectEvidenceSource<'_>],
+    repository_root: &RepositoryRoot,
     mutation: &MutationEvidenceIndex<'_>,
 ) -> BTreeMap<PatchLineLocation, ResolvedLine> {
-    let direct = direct_line_evidence(direct_patches, target);
+    let direct = direct_line_evidence(direct_sources, target, repository_root);
     let mut resolved = BTreeMap::new();
     for (file_index, file) in target.files.iter().enumerate() {
         let path = logical_path(file);
@@ -655,7 +649,8 @@ pub fn build_agent_trace_from_evidence(
     metadata: AgentTraceMetadataInput<'_>,
 ) -> Result<AgentTrace> {
     let AgentTraceEvidence {
-        direct_patches,
+        repository_root,
+        direct_sources,
         mutation_ai_patch,
         mutation_non_ai_patch,
     } = evidence;
@@ -665,7 +660,12 @@ pub fn build_agent_trace_from_evidence(
     let conversation_url = agent_trace_conversation_url(&id);
     let timestamp = metadata.commit_timestamp.to_owned();
     let mutation = MutationEvidenceIndex::new(mutation_ai_patch, mutation_non_ai_patch);
-    let resolved = resolve_patch_lines(post_commit_patch, direct_patches, &mutation);
+    let resolved = resolve_patch_lines(
+        post_commit_patch,
+        direct_sources,
+        repository_root,
+        &mutation,
+    );
     let empty_patch = ParsedPatch { files: Vec::new() };
     let no_mutation = MutationEvidenceIndex::new(&empty_patch, &empty_patch);
 
@@ -679,8 +679,12 @@ pub fn build_agent_trace_from_evidence(
                 record_hunk_line_changes(&mut line_changes, classify_hunk(hunk, covered), hunk);
             }
 
-            let embedded_resolved =
-                resolve_patch_lines(&embedded_patch, direct_patches, &no_mutation);
+            let embedded_resolved = resolve_patch_lines(
+                &embedded_patch,
+                direct_sources,
+                repository_root,
+                &no_mutation,
+            );
             let mut discarded_line_changes = LineChangeAttribution::default();
             files.extend(embedded_patch.files.iter().enumerate().filter_map(
                 |(embedded_index, embedded_file)| {
@@ -707,16 +711,11 @@ pub fn build_agent_trace_from_evidence(
         }
     }
 
-    let direct_supported = resolved.values().any(|line| line.direct_supported);
-    let tool =
-        if direct_supported && (metadata.tool_name.is_some() || metadata.tool_version.is_some()) {
-            Some(AgentTraceTool {
-                name: metadata.tool_name.map(ToOwned::to_owned),
-                version: metadata.tool_version.map(ToOwned::to_owned),
-            })
-        } else {
-            None
-        };
+    let accepted_sources: BTreeSet<usize> = resolved
+        .values()
+        .flat_map(|line| line.direct_sources.iter().copied())
+        .collect();
+    let tool = accepted_direct_tool(direct_sources, &accepted_sources);
 
     Ok(AgentTrace {
         version: default_agent_trace_version(),

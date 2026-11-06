@@ -13,14 +13,17 @@ Given per-row direct candidate patches, mutation lineage evidence, and a `post_c
    - **`unknown`** — no touched line in the hunk is attributed.
 3. Map `Conversation.contributor.model_id` for `ai` / `mixed` hunks only when every attributed line has the same known model. A mutation-attributed line uses its scope model, falling back to a same-session exact direct candidate's model.
 4. Derive optional `conversation.related` entries from the sessions of attributed lines only, emitted as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated and deterministically ordered. Overridden or conflicting direct candidates never appear.
-5. Emit the top-level `tool` object only when at least one final line attribution is supported by a direct candidate.
+5. Derive the top-level `tool` object only from the direct sources that support finally accepted lines (after mutation reconciliation). It is omitted when no direct source survived, when surviving sources name different tools, or when any surviving source lacks a tool name; `version` is kept only when every surviving source reports the same one. Row order never picks a winner, and rejected or overridden sources never contribute.
 6. Emit one `Conversation` per `post_commit_patch` hunk, each carrying the trace lookup `url`, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
 
 ## Separated direct/mutation evidence
 
 `build_agent_trace_from_evidence(evidence, post_commit_patch, metadata)` is the only supported generator entrypoint. `AgentTraceEvidence` keeps the sources separate:
 
-- `direct_patches` — one `ParsedPatch` per freshness-bounded `diff_traces` row, never combined, so conflicting sessions and duplicate occurrences stay visible. Matching lives in `agent_trace/evidence.rs`.
+- `repository_root` — `RepositoryRoot` anchoring attribution-grade file identity (`agent_trace/repository_path.rs`).
+- `direct_sources` — one `DirectEvidenceSource` per freshness-bounded `diff_traces` row (patch, optional absolute `base_dir`, `tool_name`, `tool_version`), never combined, so conflicting sessions, duplicate occurrences, and per-row tool metadata stay attached until resolution. Matching lives in `agent_trace/evidence.rs`.
+
+Only *accepted* direct evidence may influence authorship, co-author eligibility, or tool provenance: a candidate is accepted when its file resolves to the same repository identity as the target file (`agent_trace/repository_path.rs`), its touched line matches exactly on `(kind, line_number, content)`, and every matching candidate for that line comes from one session. Conflicting candidates are rejected everywhere.
 - `mutation_ai_patch` — target-shaped committed lines that causal lineage attributed to an AI-exclusive scope, with resolved scope provenance.
 - `mutation_non_ai_patch` — target-shaped committed lines that lineage resolved to a non-exclusive transition; these block direct attribution.
 
@@ -29,7 +32,7 @@ Given per-row direct candidate patches, mutation lineage evidence, and a `post_c
 | Type                    | Purpose                                                                                                      |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `HunkContributor`       | Enum: `Ai`, `Mixed`, `Unknown`                                                                               |
-| `AgentTraceEvidence`    | Builder input: borrowed per-row `direct_patches`, target-shaped `mutation_ai_patch` (with scope provenance), and `mutation_non_ai_patch` |
+| `AgentTraceEvidence`    | Builder input: `repository_root`, borrowed per-row `direct_sources`, target-shaped `mutation_ai_patch` (with scope provenance), and `mutation_non_ai_patch` |
 | `Contributor`           | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent  |
 | `ConversationRelated`   | Schema-aligned related-link entry shape (`type` as free-form string + `url`) for optional `conversation.related` |
 | `LineRange`             | New-file line span with `start_line` + `end_line` + `content_hash`                                           |
@@ -60,7 +63,7 @@ Current output includes top-level metadata fields with this contract:
 - `timestamp` is sourced from explicit commit metadata input (`AgentTraceMetadataInput.commit_timestamp`) and must be RFC 3339
 - `vcs` is emitted only when explicit commit metadata input includes `AgentTraceMetadataInput.vcs_type`
 - when `vcs` is emitted, `vcs.type` is sourced from the schema-aligned enum (`git | jj | hg | svn`) and `vcs.revision` is sourced from `AgentTraceMetadataInput.commit_revision`
-- `tool` is omitted when `intersection_patch.files` is empty (no AI content overlapped with the post-commit patch) or when both `AgentTraceMetadataInput.tool_name` and `AgentTraceMetadataInput.tool_version` are `None`; when `intersection_patch.files` is non-empty and either metadata value is present, builder construction sets `AgentTrace.tool` and it serializes as `{ "name"?: string, "version"?: string }` with each nested field omitted when absent
+- `tool` is derived from accepted direct sources only (see rule 5 above); `AgentTraceMetadataInput` no longer carries tool metadata. When emitted it serializes as `{ "name": string, "version"?: string }`
 - `metadata.sce.version` is always emitted and is sourced from `env!("CARGO_PKG_VERSION")`, the compiled `sce` CLI package version; it is implementation metadata and does not change top-level Agent Trace `version` semantics
 - `metadata.sce.line_changes` is always emitted (`{ ai, mixed, unknown }`, each `{ added, removed }`) and carries exact touched-line attribution counts derived from `PatchHunk.lines` on the canonical `post_commit_patch` — the same hunk-level classification already used for `Conversation.contributor.type` (no independent second classification pass for the common per-file/per-hunk path); a `mixed` hunk's *entire* touched-line count is recorded, not just the subset also present in `intersection_patch`; the deleted-`.patch` embedded-expansion branch counts only the deleted file's own literal `post_commit_patch` hunks (classified by `old_path` against the top-level `intersection_patch`, since a deleted file's `new_path` is always empty and would otherwise collide with other deleted files in the same patch), never the embedded reconstructed hunks used to synthesize that branch's `Conversation` entries; `#[serde(default)]` on `line_changes` and its parent keeps pre-existing `metadata.sce.version`-only payloads deserializing with all-zero counts
 - every `Conversation.url` is the absolute URI `https://sce.crocoder.dev/conversations/{agent_trace.id}` derived from the generated top-level `AgentTrace.id`; all conversations in one payload therefore share the same URL
@@ -108,7 +111,7 @@ Current output includes top-level metadata fields with this contract:
 ## Public API
 
 - `range_content_hash(hunk) -> String` — internal helper that computes the serialized range-level `murmur3:<lowercase-hex>` content fingerprint from `PatchHunk.lines` using versioned, length-delimited touched-line serialization in patch order. The hash input includes touched-line kind and content, and excludes hunk positions, line numbers, file paths, trace metadata, contributor/model metadata, VCS metadata, tool metadata, and database IDs.
-- `build_agent_trace_from_evidence(evidence: AgentTraceEvidence, post_commit_patch, metadata) -> Result<AgentTrace>` — separated-evidence entrypoint (see [Separated direct/mutation evidence](#separated-directmutation-evidence)): identical top-level metadata behavior, classifies each hunk from the union of direct and mutation-derived AI coverage, unions direct/mutation related sessions, and emits a model only when the present evidence sources agree under the combined rule; top-level `tool` remains bound to the direct intersection.
+- `build_agent_trace_from_evidence(evidence: AgentTraceEvidence, post_commit_patch, metadata) -> Result<AgentTrace>` — separated-evidence entrypoint (see [Separated direct/mutation evidence](#separated-directmutation-evidence)): identical top-level metadata behavior, classifies each hunk from the union of direct and mutation-derived AI coverage, unions direct/mutation related sessions, and emits a model only when the present evidence sources agree under the combined rule; top-level `tool` is derived from the direct sources supporting finally accepted lines.
 
 ## Test fixture contract
 
@@ -118,7 +121,7 @@ Current output includes top-level metadata fields with this contract:
 
 ## Relationship to existing patch service
 
-Consumes `ParsedPatch`/`PatchHunk`/`TouchedLine` types and the path-identity helper `paths_refer_to_same_file` from `cli/src/services/patch.rs`. It does not introduce a separate patch model.
+Consumes `ParsedPatch`/`PatchHunk`/`TouchedLine` types from `cli/src/services/patch.rs`; file identity comes from `agent_trace/repository_path.rs`. It does not introduce a separate patch model.
 
 ## Out of scope
 

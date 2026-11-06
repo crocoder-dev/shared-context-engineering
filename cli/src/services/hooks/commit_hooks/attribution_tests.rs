@@ -8,12 +8,13 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 
 use crate::services::agent_trace::{
-    agent_trace_session_url, validate_agent_trace_value, AgentTrace, HunkContributor,
+    agent_trace_session_url, validate_agent_trace_value, AgentTrace, DirectEvidenceSource,
+    HunkContributor, RepositoryRoot,
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
     AgentTraceInsert, DiffTraceInsert, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
-    RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
+    RecentDiffTracePatches, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::mutation_trace::attribution::MutationAttributionResult;
 use crate::services::mutation_trace::runtime::GitSnapshotService;
@@ -54,6 +55,8 @@ const MODEL_X: &str = "model-x";
 const SCOPE_A: &str = "scope-a";
 const SCOPE_B: &str = "scope-b";
 const SCOPE_C: &str = "scope-c";
+const CLAUDE_TOOL: &str = "claude";
+const OPENCODE_TOOL: &str = "opencode";
 
 const fn ms(seconds: i64) -> i64 {
     seconds * 1_000
@@ -74,8 +77,12 @@ fn plan(done: [bool; 3]) -> String {
 }
 
 fn boilerplate_patch(old_start: u64, new_start: u64) -> String {
+    boilerplate_patch_at(PLAN_PATH, old_start, new_start)
+}
+
+fn boilerplate_patch_at(path: &str, old_start: u64, new_start: u64) -> String {
     let mut text = format!(
-        "diff --git a/{PLAN_PATH} b/{PLAN_PATH}\n--- a/{PLAN_PATH}\n+++ b/{PLAN_PATH}\n@@ -{old_start},0 +{new_start},3 @@\n"
+        "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -{old_start},0 +{new_start},3 @@\n"
     );
     for line in BOILERPLATE {
         text.push('+');
@@ -225,6 +232,7 @@ struct DiffTraceRow {
     time_ms: i64,
     session_id: &'static str,
     model_id: &'static str,
+    tool_name: &'static str,
     patch: String,
 }
 
@@ -234,12 +242,14 @@ fn stale_rows() -> Vec<DiffTraceRow> {
             time_ms: ms(COMMIT_A_TIME_S) - 500,
             session_id: SESSION_A,
             model_id: MODEL_A,
+            tool_name: CLAUDE_TOOL,
             patch: boilerplate_patch(EXACT_C_POSITIONS.0, EXACT_C_POSITIONS.1),
         },
         DiffTraceRow {
             time_ms: ms(COMMIT_B_TIME_S) - 500,
             session_id: SESSION_B,
             model_id: MODEL_B,
+            tool_name: CLAUDE_TOOL,
             patch: boilerplate_patch(COMMIT_B_POSITIONS.0, COMMIT_B_POSITIONS.1),
         },
     ]
@@ -254,7 +264,21 @@ fn fresh_row(
         time_ms: ms(COMMIT_C_TIME_S) - 500,
         session_id,
         model_id,
+        tool_name: CLAUDE_TOOL,
         patch: boilerplate_patch(positions.0, positions.1),
+    }
+}
+
+fn fresh_row_at(
+    path: &str,
+    session_id: &'static str,
+    model_id: &'static str,
+    tool_name: &'static str,
+) -> DiffTraceRow {
+    DiffTraceRow {
+        tool_name,
+        patch: boilerplate_patch_at(path, EXACT_C_POSITIONS.0, EXACT_C_POSITIONS.1),
+        ..fresh_row(session_id, model_id, EXACT_C_POSITIONS)
     }
 }
 
@@ -270,9 +294,10 @@ fn parsed_row(id: i64, row: &DiffTraceRow) -> ParsedDiffTracePatch {
         time_ms: row.time_ms,
         session_id: row.session_id.to_owned(),
         patch,
-        tool_name: Some(String::from("claude")),
+        tool_name: Some(row.tool_name.to_owned()),
         tool_version: None,
         payload_type: String::from(PAYLOAD_TYPE_PATCH),
+        path_base_dir: None,
     }
 }
 
@@ -555,7 +580,8 @@ fn one_direct_source_line_covers_only_its_own_duplicate_occurrence() {
 
     let trace = crate::services::agent_trace::build_agent_trace_from_evidence(
         crate::services::agent_trace::AgentTraceEvidence {
-            direct_patches: std::slice::from_ref(&direct),
+            repository_root: &RepositoryRoot::new(Path::new("/workspace/project")),
+            direct_sources: &[DirectEvidenceSource::repository_relative(&direct)],
             mutation_ai_patch: &ParsedPatch { files: Vec::new() },
             mutation_non_ai_patch: &ParsedPatch { files: Vec::new() },
         },
@@ -564,8 +590,6 @@ fn one_direct_source_line_covers_only_its_own_duplicate_occurrence() {
             commit_timestamp: "2026-11-06T12:23:44Z",
             commit_revision: "0000000000000000000000000000000000000001",
             vcs_type: None,
-            tool_name: None,
-            tool_version: None,
         },
     )
     .expect("trace builds");
@@ -584,13 +608,21 @@ async fn staged_overlap(
     rows: &[DiffTraceRow],
     head_time_s: Option<i64>,
 ) -> StagedDiffAiOverlapResult {
+    staged_overlap_in(Path::new("."), rows, head_time_s).await
+}
+
+async fn staged_overlap_in(
+    root: &Path,
+    rows: &[DiffTraceRow],
+    head_time_s: Option<i64>,
+) -> StagedDiffAiOverlapResult {
     let staged = parse_patch(
         &boilerplate_patch(EXACT_C_POSITIONS.0, EXACT_C_POSITIONS.1),
         None,
     )
     .expect("staged patch parses");
     staged_diff_has_ai_overlap_with(
-        Path::new("."),
+        root,
         |_| Ok(staged),
         |_| Ok(head_time_s.map(ms)),
         || Ok(ms(COMMIT_C_TIME_S)),
@@ -671,31 +703,41 @@ async fn insert_mutation_rows(db: &RepositoryAgentTraceDb, rows: &[MutationEvent
     }
 }
 
-#[tokio::test]
-async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
-    let repo = HistoryRepo::new();
+async fn open_db() -> (tempfile::TempDir, RepositoryAgentTraceDb) {
     let db_dir = tempfile::tempdir().expect("db dir");
-    let mut db = RepositoryAgentTraceDb::new_at(db_dir.path().join("agent-trace.db"))
+    let db = RepositoryAgentTraceDb::new_at(db_dir.path().join("agent-trace.db"))
         .await
         .expect("open agent trace db");
+    (db_dir, db)
+}
 
-    let mut rows = stale_rows();
-    rows.push(fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS));
-    for row in &rows {
+async fn insert_rows(db: &RepositoryAgentTraceDb, rows: &[DiffTraceRow]) {
+    for row in rows {
         db.insert_diff_trace(DiffTraceInsert {
             time_ms: row.time_ms,
             session_id: row.session_id,
             patch: &row.patch,
             model_id: Some(row.model_id),
-            tool_name: "claude",
+            tool_name: row.tool_name,
             tool_version: None,
             payload_type: PAYLOAD_TYPE_PATCH,
         })
         .await
         .expect("insert diff trace");
     }
-    let mutation_rows = repo.mutation_rows(AttributionKind::AiExclusive);
-    insert_mutation_rows(&db, &mutation_rows).await;
+}
+
+struct PersistedTrace {
+    json: String,
+    value: Value,
+}
+
+async fn persist_trace(
+    repo: &HistoryRepo,
+    db: &mut RepositoryAgentTraceDb,
+    mutation_rows: &[MutationEventPageRow],
+) -> PersistedTrace {
+    insert_mutation_rows(db, mutation_rows).await;
 
     let flow = run_post_commit_intersection_flow_with(
         repo.root(),
@@ -712,7 +754,7 @@ async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
     .expect("intersection flow");
 
     let mutation = {
-        let store = MutationTraceStore::new(&mut db);
+        let store = MutationTraceStore::new(db);
         resolve_bounded_mutation_attribution(
             &store,
             &GitSnapshotService::new(repo.root())
@@ -721,7 +763,7 @@ async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
             &WorktreeId(WORKTREE.to_owned()),
             &flow.post_commit_data.parsed_patch,
             repo.commit_tree(),
-            Some(mutation_rows.len() as u64),
+            mutation_rows.iter().map(|row| row.revision).max(),
         )
         .await
         .result
@@ -739,6 +781,36 @@ async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
     .await
     .expect("agent trace flow");
 
+    let traces: Vec<String> = db
+        .query_map("SELECT trace_json FROM agent_traces", (), |row| {
+            Ok(row.get(0)?)
+        })
+        .await
+        .expect("read agent traces");
+    assert_eq!(traces.len(), 1);
+    let value: Value = serde_json::from_str(&traces[0]).expect("trace JSON");
+    validate_agent_trace_value(&value).expect("persisted trace validates");
+    PersistedTrace {
+        json: traces[0].clone(),
+        value,
+    }
+}
+
+#[tokio::test]
+async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
+    let repo = HistoryRepo::new();
+    let (_db_dir, mut db) = open_db().await;
+
+    let mut rows = stale_rows();
+    rows.push(fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS));
+    insert_rows(&db, &rows).await;
+    let persisted = persist_trace(
+        &repo,
+        &mut db,
+        &repo.mutation_rows(AttributionKind::AiExclusive),
+    )
+    .await;
+
     let intersections: Vec<(i64, String)> = db
         .query_map(
             "SELECT loaded_diff_trace_count, intersection_patch FROM post_commit_patch_intersections",
@@ -750,19 +822,9 @@ async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
     assert_eq!(intersections.len(), 1);
     assert_eq!(intersections[0].0, 1);
     assert_contains_none(&intersections[0].1, &[SESSION_A, SESSION_B]);
+    assert_contains_none(&persisted.json, &[SESSION_A, SESSION_B, MODEL_A, MODEL_B]);
 
-    let traces: Vec<String> = db
-        .query_map("SELECT trace_json FROM agent_traces", (), |row| {
-            Ok(row.get(0)?)
-        })
-        .await
-        .expect("read agent traces");
-    assert_eq!(traces.len(), 1);
-    let persisted: Value = serde_json::from_str(&traces[0]).expect("trace JSON");
-    validate_agent_trace_value(&persisted).expect("persisted trace validates");
-    assert_contains_none(&traces[0], &[SESSION_A, SESSION_B, MODEL_A, MODEL_B]);
-
-    let conversation = &persisted["files"][0]["conversations"][0];
+    let conversation = &persisted.value["files"][0]["conversations"][0];
     assert_eq!(conversation["contributor"]["type"], "ai");
     assert_eq!(conversation["contributor"]["model_id"], MODEL_C);
     let related: BTreeMap<String, String> = conversation["related"]
@@ -780,4 +842,185 @@ async fn persisted_agent_trace_keeps_causal_session_and_drops_stale_sessions() {
         related.into_keys().collect::<Vec<_>>(),
         vec![agent_trace_session_url(SESSION_C)]
     );
+    assert_eq!(persisted.value["tool"]["name"], CLAUDE_TOOL);
+}
+
+#[tokio::test]
+async fn persisted_agent_trace_omits_tool_metadata_from_rejected_direct_evidence() {
+    let repo = HistoryRepo::new();
+    let (_db_dir, mut db) = open_db().await;
+
+    insert_rows(
+        &db,
+        &[fresh_row_at(PLAN_PATH, SESSION_X, MODEL_X, OPENCODE_TOOL)],
+    )
+    .await;
+    let persisted = persist_trace(
+        &repo,
+        &mut db,
+        &repo.mutation_rows(AttributionKind::AiExclusive),
+    )
+    .await;
+
+    let conversation = &persisted.value["files"][0]["conversations"][0];
+    assert_eq!(conversation["contributor"]["type"], "ai");
+    assert_eq!(conversation["contributor"]["model_id"], MODEL_C);
+    assert!(persisted.value.get("tool").is_none());
+    assert_contains_none(&persisted.json, &[OPENCODE_TOOL, SESSION_X, MODEL_X]);
+}
+
+#[tokio::test]
+async fn staged_coauthor_check_rejects_conflicting_direct_sessions() {
+    assert_eq!(
+        staged_overlap(
+            &[
+                fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS),
+                fresh_row(SESSION_X, MODEL_X, EXACT_C_POSITIONS),
+            ],
+            Some(COMMIT_B_TIME_S)
+        )
+        .await,
+        StagedDiffAiOverlapResult::NoOverlap
+    );
+    assert_eq!(
+        staged_overlap(
+            &[
+                fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS),
+                fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS),
+            ],
+            Some(COMMIT_B_TIME_S)
+        )
+        .await,
+        StagedDiffAiOverlapResult::Overlap
+    );
+}
+
+fn file_identity_cases(repo: &HistoryRepo, outside: &Path) -> Vec<(String, bool)> {
+    vec![
+        (PLAN_PATH.to_owned(), true),
+        (format!("{}/{PLAN_PATH}", repo.root().display()), true),
+        (format!("./context/../{PLAN_PATH}"), true),
+        (String::from("plans/plan.md"), false),
+        (format!("vendor/{PLAN_PATH}"), false),
+        (format!("{}/{PLAN_PATH}", outside.display()), false),
+        (format!("../{PLAN_PATH}"), false),
+    ]
+}
+
+#[tokio::test]
+async fn staged_coauthor_check_requires_repository_file_identity() {
+    let repo = HistoryRepo::new();
+    let outside = tempfile::tempdir().expect("outside dir");
+    for (path, expected) in file_identity_cases(&repo, outside.path()) {
+        let rows = [fresh_row_at(&path, SESSION_C, MODEL_C, CLAUDE_TOOL)];
+        let expected = if expected {
+            StagedDiffAiOverlapResult::Overlap
+        } else {
+            StagedDiffAiOverlapResult::NoOverlap
+        };
+        assert_eq!(
+            staged_overlap_in(repo.root(), &rows, Some(COMMIT_B_TIME_S)).await,
+            expected,
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn post_commit_direct_evidence_requires_repository_file_identity() {
+    let repo = HistoryRepo::new();
+    let outside = tempfile::tempdir().expect("outside dir");
+    for (path, expected) in file_identity_cases(&repo, outside.path()) {
+        let rows = [fresh_row_at(&path, SESSION_C, MODEL_C, CLAUDE_TOOL)];
+        let (flow, persisted) = intersection_flow(&repo, &rows).await;
+        let trace = agent_trace(&flow, &no_mutation()).await;
+
+        let (kind, tool, lines) = if expected {
+            (HunkContributor::Ai, Some(CLAUDE_TOOL), BOILERPLATE.len())
+        } else {
+            (HunkContributor::Unknown, None, 0)
+        };
+        assert_eq!(
+            trace.files[0].conversations[0].contributor.kind, kind,
+            "{path}"
+        );
+        assert_eq!(
+            trace.tool.as_ref().and_then(|tool| tool.name.as_deref()),
+            tool,
+            "{path}"
+        );
+        assert_eq!(touched_line_count(&persisted.patch), lines, "{path}");
+    }
+}
+
+fn claude_write_payload(cwd: &str, file_path: &str) -> String {
+    serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "session_id": SESSION_C,
+        "cwd": cwd,
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": file_path,
+            "content": plan([true, true, true]),
+        },
+        "tool_response": { "originalFile": null },
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn claude_structured_rows_resolve_paths_against_their_recorded_cwd() {
+    let repo = HistoryRepo::new();
+    let root = repo.root().display().to_string();
+    let cases = [
+        (
+            format!("{root}/context"),
+            format!("{root}/{PLAN_PATH}"),
+            true,
+        ),
+        (
+            format!("{root}/context"),
+            String::from("plans/plan.md"),
+            true,
+        ),
+        (root.clone(), format!("{root}/{PLAN_PATH}"), true),
+        (
+            format!("{root}/other"),
+            String::from("plans/plan.md"),
+            false,
+        ),
+        (root.clone(), String::from("plans/plan.md"), false),
+    ];
+    for (cwd, file_path, expected) in cases {
+        let (_db_dir, mut db) = open_db().await;
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms: ms(COMMIT_C_TIME_S) - 500,
+            session_id: SESSION_C,
+            patch: &claude_write_payload(&cwd, &file_path),
+            model_id: Some(MODEL_C),
+            tool_name: CLAUDE_TOOL,
+            tool_version: Some("2.0.0"),
+            payload_type: PAYLOAD_TYPE_STRUCTURED,
+        })
+        .await
+        .expect("insert structured diff trace");
+
+        let persisted = persist_trace(&repo, &mut db, &[]).await;
+        let conversation = &persisted.value["files"][0]["conversations"][0];
+        if expected {
+            assert_eq!(
+                conversation["contributor"]["type"], "ai",
+                "{cwd} {file_path}"
+            );
+            assert_eq!(conversation["contributor"]["model_id"], MODEL_C);
+            assert_eq!(persisted.value["tool"]["name"], CLAUDE_TOOL);
+            assert_eq!(persisted.value["tool"]["version"], "2.0.0");
+        } else {
+            assert_eq!(
+                conversation["contributor"]["type"], "unknown",
+                "{cwd} {file_path}"
+            );
+            assert!(persisted.value.get("tool").is_none());
+        }
+    }
 }

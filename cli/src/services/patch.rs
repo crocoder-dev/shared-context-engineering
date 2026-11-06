@@ -14,8 +14,6 @@
 //! unified-diff formats and produces deterministic `ParsedPatch` structs from
 //! raw patch text.
 
-use std::path::{Component, Path};
-
 use serde::{Deserialize, Serialize};
 
 /// Top-level parsed patch containing one or more file changes.
@@ -143,38 +141,6 @@ pub fn load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError> 
     serde_json::from_str(input).map_err(|e| PatchLoadError {
         message: format!("invalid patch JSON: {e}"),
     })
-}
-
-pub(crate) fn paths_refer_to_same_file(path_a: &str, path_b: &str) -> bool {
-    if path_a == path_b {
-        return true;
-    }
-
-    let a_components = normalized_path_components(path_a);
-    let b_components = normalized_path_components(path_b);
-
-    if a_components.is_empty() || b_components.is_empty() {
-        return false;
-    }
-
-    path_has_relative_suffix(&a_components, &b_components)
-        || path_has_relative_suffix(&b_components, &a_components)
-}
-
-fn normalized_path_components(path: &str) -> Vec<&str> {
-    Path::new(path)
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => part.to_str(),
-            _ => None,
-        })
-        .collect()
-}
-
-fn path_has_relative_suffix<'a>(full_path: &[&'a str], suffix_candidate: &[&'a str]) -> bool {
-    full_path.len() > suffix_candidate.len()
-        && full_path.ends_with(suffix_candidate)
-        && !suffix_candidate.is_empty()
 }
 
 /// Parse raw unified-diff text into a `ParsedPatch`.
