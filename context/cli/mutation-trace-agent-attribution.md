@@ -15,7 +15,8 @@ introduced, that event's provenance is dead and no older event can resurrect it.
 
 `cli/src/services/mutation_trace/lineage.rs` is a pure module (no Git, SQLite,
 filesystem, or mutation state). It tracks, per repo path, a vector of
-`(content, LineProvenance)` lines and advances it one transition at a time.
+`(content, LineProvenance, Option<ParentLineId>)` lines and advances it one
+transition at a time.
 
 File identity is **exact logical repository path** equality only. A file's
 logical path is `new_path` when non-empty and otherwise `old_path`; the lineage
@@ -61,6 +62,42 @@ added line numbers):
 Any structurally inconsistent transition (content mismatch, inconsistent hunk
 lengths, out-of-range hunk) returns `LineageError`; the caller fails closed for
 the affected file.
+
+### Parent-line identity
+
+A removed line no longer exists in the committed file, so its identity cannot
+come from new-file coordinates. `MutationLineage::from_parent` seeds a lineage
+from the exact parent commit's tree and gives every baseline line a
+`ParentLineId { path, line_number }`: its parent-side path and 1-based line
+number. `from_baseline` (the added-line replay) gives no line a parent
+identity.
+
+- A carried line keeps its `ParentLineId` however far its position moves.
+- Every line a transition adds has no parent identity, even when its text equals
+  a parent line. Text equality never proves identity.
+- When a transition removes a line that has a parent identity, the lineage
+  records a removal of that identity, with the line's content and the
+  provenance of the **removing** transition (`MutationAi` → AI with its scope,
+  `MutationNonAi` → non-exclusive, `Unobserved` → `Unknown`). The provenance of
+  the line's original author is never consulted. Removing a line that was added
+  after the parent records nothing.
+- **Restoration.** When a later transition adds content equal to an
+  already-removed parent line of the same parent file (the current path, or the
+  parent path it holds by an observed rename), that earlier removal claim
+  becomes `Unknown` for good. A later removal of the restored line has no parent
+  identity, so it cannot resurrect the older claim. Removals made by the same
+  transition are not invalidated by its own additions.
+- **Renames.** The lineage maps each tracked path to the parent path whose
+  lines it holds. Only a rename the replayed diff itself reports moves that
+  mapping; a delete-plus-add pair does not establish it.
+- `reset_all` drops every parent identity and removal claim.
+
+`committed_removals(current_path, parent_path, lines)` resolves a canonical
+file's removed lines. It returns `Unknown` for every line unless the lineage
+establishes that `current_path` holds `parent_path`. Where the canonical diff
+and the replay disagree about which parent lines were removed, the two chose
+different alignments among equal content. In that case every committed removal
+sharing the disagreeing content stays `Unknown`.
 
 ## Bounded history consumer
 
@@ -119,17 +156,83 @@ alongside `diff_trees`).
 The consumer performs no mutation-cursor write and creates no worktree or scope
 identity.
 
+## Removed-line attribution
+
+Added and removed lines answer different questions:
+
+- **Added line:** which transition most recently introduced the surviving
+  content? This is the gap-tolerant replay above.
+- **Removed line:** which transition effectively removed this exact line of the
+  parent commit? The remover is the transition that removed it, not the actor
+  that originally wrote it. A human removing an AI-written line is not an AI
+  removal. An AI removing a human-written parent line can be.
+
+Removed lines use a second, stricter lineage. It shares the same event window
+and each event's reconstructed `diff_trees` patch with the added-line replay,
+but it never resets, so it cannot weaken added-line attribution. One commit can
+resolve its additions and still leave its removals unknown.
+
+A committed removed line receives mutation-derived attribution only when
+**all** of these hold:
+
+1. **Exact parent.** The commit has exactly one parent. Root and merge commits
+   have no `parent_tree`, so every removal stays unresolved.
+2. **Anchor.** Some loaded event (within the 128-event window and the revision
+   cut) has `before_tree == parent_tree`. The replay starts at the **last** such
+   event. When the worktree returns to the exact parent tree, identity
+   restarts there, because the tree is byte-identical to the parent. No anchor
+   means every removal stays unresolved; the window is never widened to find one.
+3. **Uninterrupted chain.** From the anchor to the last loaded event, each
+   `before_tree` equals the previous `after_tree`, and every transition
+   reconstructs and applies cleanly. The first gap or failure abandons the
+   whole removal replay. Removal claims are never carried across a reset.
+4. **Per-path reconciliation.** For every tracked path, the replayed lines must
+   equal the commit tree's file, and any unobserved tail from the last event's
+   `after_tree` to `commit_tree` must leave that path byte-identical. A path that
+   fails either check has its removal claims (and those of the parent path it
+   holds) made `Unknown`. A tail touching only other paths, such as untracked
+   or unstaged files, does not affect it.
+5. **Canonical identity.** The canonical removed line's old-side identity
+   (`old_path`, old line number, content) names a recorded removal: the
+   committed file holds that parent path by observed history, the content
+   matches, the alignment agrees for that content, and no later restoration
+   invalidated it.
+
+The verified result is AI (with the scope's session and model, resolved through
+the existing scope-provenance lookup) for a healthy `AiExclusive` remover, and
+`NonExclusive` for any other recorded remover. It is never human authorship.
+Every other committed removal is unresolved. `BoundedMutationAttribution.
+removal_replay_anchored` reports whether conditions 1–3 held.
+
+**Partial staging.** Removal attribution trusts a path only when the committed
+file equals the last observed worktree file. If the AI removed `B` and `C` from
+the worktree but only the removal of `B` was staged, the committed file differs
+from the observed tree, so `B` stays unresolved. This proves only what the
+observed tree transitions support. It is not an audit of who ran `git add` or
+assembled the index, and an unobserved change that nets to zero on a path cannot
+be detected.
+
+**Persistence.** No commit-boundary or per-line history is persisted across
+commits. The parent anchor must be found in the bounded mutation-event window,
+which is why a long session (more than 128 events since the parent tree) or
+history before a gap leaves removals unknown.
+
 ## Commit attribution cut
 
-`resolve_post_commit_mutation_attribution(repository_root, &db,
+`resolve_post_commit_mutation_attribution(repository_root, &db, commit_oid,
 committed_patch) -> MutationAttributionResult` is the read-only post-commit
 entrypoint. It returns the mutation-AI, resolved non-AI, and unresolved line
 sets. It
 resolves the invoking worktree's identity from Git topology
 ([`git_snapshot::resolve_git_dir` + `resolve_worktree_id`](mutation-trace-runtime-coordinator.md),
 which derive `WorktreeId` from `git rev-parse --absolute-git-dir` /
-`--git-common-dir` rather than any persisted identity file), reads
-`HEAD^{tree}` as `commit_tree`, and captures the commit attribution cut: under
+`--git-common-dir` rather than any persisted identity file). It resolves
+`commit_tree` and the first-parent `parent_tree` from the commit OID captured at
+hook time (`GitSnapshotService::committed_trees`: `rev-parse --verify
+<oid>^{tree}`, `rev-list --parents --max-count=1 <oid>`). It never reads a
+mutable `HEAD`, so a `HEAD` move after capture cannot change the anchoring.
+`parent_tree` is `None` for root and merge commits. It then captures the commit
+attribution cut: under
 the same worktree lock that serializes mutation-event transitions
 ([`worktree_lock`](mutation-trace-runtime-coordinator.md)), it reads
 `MutationTraceStore::latest_mutation_event_revision` for the worktree. An event
@@ -137,7 +240,7 @@ produced after the commit has a higher revision and cannot participate. The
 critical section is a single indexed read.
 
 An unresolvable git dir, an unresolvable worktree identity, an unavailable
-snapshot service, an unreadable `HEAD` tree, a lock timeout, or no mutation
+snapshot service, an unreadable commit tree, a lock timeout, or no mutation
 history at all each yield an empty result (every line unresolved), so
 post-commit falls back to trusted direct-only Agent Trace behavior. The entrypoint creates no identity and writes
 no mutation-cursor state.
@@ -189,6 +292,8 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   mutation events, but still rejects conflicting direct candidates.
 - **What happens when history is incomplete?** Gaps, the 128-event window, the
   revision ceiling, and the unobserved tail keep lines `Unknown`, as before.
+  Removed lines additionally need the exact parent anchor and an uninterrupted
+  chain (see [Removed-line attribution](#removed-line-attribution)).
   An unknown line then needs fresh, exact, single-session direct evidence;
   historical `(kind, content)` similarity alone never attributes it.
 - **How are already-committed changes not credited again?** Direct rows
@@ -216,11 +321,12 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   post-commit hook a missing path or failed Git read aborts the trace instead
   of persisting unverified ranges. See
   [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md#ranges-and-conversations).
-- **What remains unsupported?** Removed lines are never resolved by lineage
-  (only exact fresh direct evidence can cover them; otherwise they count as
-  `unknown`, even when the line's original author is known). Removed lines have
-  no post-commit position, so their decisions appear only in counters, never as
-  ranges. Direct-only edits whose line numbers drift through later uncaptured
+- **What remains unsupported?** Removed lines resolve through lineage only under
+  the [removed-line conditions](#removed-line-attribution). Otherwise, only
+  exact fresh direct evidence can cover them, and the precedence above is
+  unchanged. They count as `unknown` even when the line's original author is
+  known. Removed lines have no post-commit position, so their decisions appear
+  only in counters, never as ranges. Direct-only edits whose line numbers drift through later uncaptured
   edits resolve to `unknown` instead of `ai`. The freshness bound uses the committer time of the
   first parent, so an uncommitted edit made before the parent commit (partial
   staging) loses direct attribution. Mutation scopes without a recorded model
@@ -263,13 +369,31 @@ observable tree difference.
   `Unknown`; content mismatch is a `LineageError`; duplicate lines do not let
   provenance jump; a deleted-then-recreated file stays tracked; a renamed-away
   path stays tracked as absent; adding a file still tracked with content fails
-  closed.
+  closed. Parent identity: AI, non-exclusive, and unobserved removals; identity
+  stable under insertion above; distinct identities across one hunk and across
+  hunks; duplicate text keeps two identities and a disagreeing alignment stays
+  unknown; removing a post-parent line records nothing; restoration invalidates,
+  and restore-then-redelete never resurrects the AI claim; matching text in an
+  unrelated file is not a restoration; whole-file deletion; deleted-then-recreated
+  files; observed renames versus delete-plus-add; reset and per-path distrust.
+  A seeded randomized test (600 histories of insert/remove/replace/restore with
+  repeated content, two AI scopes, non-exclusive, unobserved transitions, and
+  gaps) checks removal identities, added-line provenance, and canonical
+  projection against an independent reference model and LCS diff.
 - `runtime/mutation_attribution/tests.rs` — real Git trees: an observed AI event
   beats an old session's historical text match; AI edits to a deleted and
   recreated file keep provenance (the `control-plane` `494e5693` incident
   shape); an unobserved tail, a history gap, an event outside the 128-event
   window, and an event beyond the revision ceiling each keep the line unknown
-  and keep the old session out of the trace.
+  and keep the old session out of the trace. Removals: proven AI (with scope
+  session/model, no ranges) and non-exclusive removals; a missing parent
+  anchor, a gap, a parent outside the window, an unobserved tail removal, and a
+  partially staged removal stay unresolved; a tail distrusts only the paths it
+  touches; restore-then-redelete keeps no stale AI claim, while an exact return
+  to the parent tree re-anchors; duplicates map to their own parent line; a
+  rename resolves under its old path; added lines resolve identically with or
+  without a parent anchor; `committed_trees` follows the captured OID after
+  `HEAD` moves and yields no parent for root and merge commits.
 - `hooks/commit_hooks/attribution_tests.rs` — dated Git history: stale
   already-committed sessions do not credit a later commit; lineage overrides a
   fresh exact match from another session; non-exclusive lineage blocks direct
@@ -279,4 +403,8 @@ observable tree difference.
   occurrence; the staged co-author check ignores stale and historical-only
   rows; real Turso persistence from `diff_traces` through
   `post_commit_patch_intersections`, `MutationTraceStore`, and
-  `agent_traces.trace_json`.
+  `agent_traces.trace_json`. A deletion-only commit, resolved through
+  `resolve_post_commit_mutation_attribution` after `HEAD` has moved, persists
+  `ai.removed = 3`, `non_exclusive.removed = 1`, `unknown.removed = 1`, and
+  `"files": []`. A mixed add/modify/delete commit keeps the same added-line
+  attribution and ranges as an unanchored replay.

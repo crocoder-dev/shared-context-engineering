@@ -20,14 +20,15 @@ use crate::services::agent_trace_db::{
 use crate::services::mutation_trace::attribution::MutationAttributionResult;
 use crate::services::mutation_trace::runtime::GitSnapshotService;
 use crate::services::mutation_trace::runtime::{
-    resolve_bounded_mutation_attribution, MutationEventPageSource,
+    resolve_bounded_mutation_attribution, resolve_post_commit_mutation_attribution,
+    MutationEventPageSource,
 };
 use crate::services::mutation_trace::store::{
     AttributionKind, MutationEventPageRow, MutationTraceStore, ScopeProvenance,
     MUTATION_ATTRIBUTION_PAGE_SIZE,
 };
 use crate::services::mutation_trace::types::{FailureKind, ScopeId, TreeId, WorktreeId};
-use crate::services::patch::{parse_patch, ParsedPatch};
+use crate::services::patch::{parse_patch, ParsedPatch, TouchedLineKind};
 
 use super::{
     capture_post_commit_patch_from_git, run_post_commit_agent_trace_flow_with,
@@ -151,6 +152,10 @@ impl HistoryRepo {
 
     fn commit_tree(&self) -> &TreeId {
         &self.trees[3]
+    }
+
+    fn parent_tree(&self) -> &TreeId {
+        &self.trees[2]
     }
 
     fn mutation_rows(&self, final_kind: AttributionKind) -> Vec<MutationEventPageRow> {
@@ -370,6 +375,7 @@ async fn mutation_attribution(
         &WorktreeId(WORKTREE.to_owned()),
         committed,
         repo.commit_tree(),
+        Some(repo.parent_tree()),
         ceiling,
     )
     .await
@@ -852,6 +858,7 @@ async fn persist_trace(
             &WorktreeId(WORKTREE.to_owned()),
             &flow.post_commit_data.parsed_patch,
             repo.commit_tree(),
+            Some(repo.parent_tree()),
             mutation_rows.iter().map(|row| row.revision).max(),
         )
         .await
@@ -1630,5 +1637,345 @@ async fn persisted_agent_trace_ranges_reference_exact_committed_blobs() {
                 removed: 1 + 2 + deleted_patch_lines
             },
         }
+    );
+}
+
+const DELETION_A_PATH: &str = "src/a.rs";
+const DELETION_B_PATH: &str = "src/b.rs";
+const DELETION_C_PATH: &str = "src/c.rs";
+const DELETION_A_PARENT: &str = "a1\na2\na3\na4\na5\na6\n";
+const DELETION_B_PARENT: &str = "b1\nb2\nb3\n";
+const DELETION_C_PARENT: &str = "c1\nc2\nc3\n";
+
+struct DeletionRepo {
+    dir: tempfile::TempDir,
+    parent_tree: TreeId,
+}
+
+impl DeletionRepo {
+    fn new() -> Self {
+        let mut repo = DeletionRepo {
+            dir: tempfile::tempdir().expect("temp dir"),
+            parent_tree: TreeId(String::new()),
+        };
+        let root = repo.root();
+        git(root, &["init", "-q", "-b", "main"], None);
+        git(
+            root,
+            &["config", "user.email", "deletions@example.invalid"],
+            None,
+        );
+        git(root, &["config", "user.name", "Deletion Test"], None);
+        git(root, &["config", "commit.gpgsign", "false"], None);
+        std::fs::create_dir_all(root.join("src")).expect("src dir");
+        repo.parent_tree = repo.stage(&[
+            (DELETION_A_PATH, DELETION_A_PARENT),
+            (DELETION_B_PATH, DELETION_B_PARENT),
+            (DELETION_C_PATH, DELETION_C_PARENT),
+        ]);
+        repo.commit(BASE_TIME_S);
+        repo
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
+    }
+
+    fn stage(&self, files: &[(&str, &str)]) -> TreeId {
+        for (path, content) in files {
+            std::fs::write(self.root().join(path), content).expect("write file");
+        }
+        git(self.root(), &["add", "-A"], None);
+        TreeId(git(self.root(), &["write-tree"], None))
+    }
+
+    fn commit(&self, time_s: i64) {
+        git(self.root(), &["commit", "-q", "-m", "change"], Some(time_s));
+    }
+}
+
+fn deletion_event(
+    revision: u64,
+    before: &TreeId,
+    after: &TreeId,
+    scope: Option<&str>,
+) -> MutationEventPageRow {
+    MutationEventPageRow {
+        revision,
+        before_tree: before.clone(),
+        after_tree: after.clone(),
+        failure_kind: FailureKind::Healthy,
+        attribution_kind: if scope.is_some() {
+            AttributionKind::AiExclusive
+        } else {
+            AttributionKind::IneligibleUnscoped
+        },
+        attribution_scope_id: scope.map(|scope| ScopeId(scope.to_owned())),
+    }
+}
+
+async fn insert_mixed_mutation_rows(db: &RepositoryAgentTraceDb, rows: &[MutationEventPageRow]) {
+    let (ai, non_exclusive): (Vec<_>, Vec<_>) = rows
+        .iter()
+        .cloned()
+        .partition(|row| row.attribution_scope_id.is_some());
+    insert_mutation_rows(db, &ai).await;
+    for row in non_exclusive {
+        let revision = row.revision.to_be_bytes();
+        db.execute(
+            "INSERT INTO mutation_trace_events (worktree_id, revision, before_tree, after_tree, tainted, failure_kind, attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id) VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
+            (
+                WORKTREE,
+                revision.as_slice(),
+                row.before_tree.0.as_str(),
+                row.after_tree.0.as_str(),
+            ),
+        )
+        .await
+        .expect("insert non-exclusive mutation event");
+    }
+}
+
+struct PersistedDeletionTrace {
+    value: Value,
+    trace: AgentTrace,
+    mutation: MutationAttributionResult,
+    committed: ParsedPatch,
+}
+
+/// Runs the real post-commit capture, the exact-OID mutation resolver over
+/// Turso-persisted events, and Agent Trace persistence. `HEAD` moves before
+/// the resolver runs, so it must use the captured commit, not `HEAD`.
+async fn persist_deletion_trace(
+    repo: &DeletionRepo,
+    rows: &[MutationEventPageRow],
+) -> PersistedDeletionTrace {
+    let (_db_dir, mut db) = open_db().await;
+    insert_mixed_mutation_rows(&db, rows).await;
+
+    let flow = run_post_commit_intersection_flow_with(
+        repo.root(),
+        capture_post_commit_patch_from_git,
+        || Ok(ms(COMMIT_A_TIME_S) + 500),
+        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+        async |insert| {
+            db.insert_post_commit_patch_intersection(insert)
+                .await
+                .map(|_| ())
+        },
+    )
+    .await
+    .expect("intersection flow");
+
+    repo.stage(&[(DELETION_A_PATH, "moved\n")]);
+    repo.commit(COMMIT_B_TIME_S);
+
+    let mutation = resolve_post_commit_mutation_attribution(
+        repo.root(),
+        &mut db,
+        &flow.post_commit_data.commit_oid,
+        &flow.post_commit_data.parsed_patch,
+    )
+    .await;
+
+    let trace = run_post_commit_agent_trace_flow_with(
+        &flow,
+        Some(AgentTraceVcsType::Git),
+        REMOTE_URL,
+        &mutation,
+        None,
+        |value| validate_agent_trace_value(value).map_err(|error| anyhow!(error.to_string())),
+        async |insert| db.insert_agent_trace(insert).await.map(|_| ()),
+    )
+    .await
+    .expect("agent trace flow");
+
+    let traces: Vec<String> = db
+        .query_map("SELECT trace_json FROM agent_traces", (), |row| {
+            Ok(row.get(0)?)
+        })
+        .await
+        .expect("read agent traces");
+    assert_eq!(traces.len(), 1);
+    let value: Value = serde_json::from_str(&traces[0]).expect("trace JSON");
+    validate_agent_trace_value(&value).expect("persisted trace validates");
+    let persisted: AgentTrace =
+        serde_json::from_value(value.clone()).expect("persisted trace deserializes");
+    assert_eq!(persisted, trace);
+
+    PersistedDeletionTrace {
+        value,
+        trace,
+        mutation,
+        committed: flow.post_commit_data.parsed_patch,
+    }
+}
+
+fn removed_lines_by_path(patch: &ParsedPatch) -> Vec<(String, u64, Option<String>)> {
+    patch
+        .files
+        .iter()
+        .flat_map(|file| {
+            file.hunks.iter().flat_map(move |hunk| {
+                hunk.lines
+                    .iter()
+                    .filter(|line| line.kind == TouchedLineKind::Removed)
+                    .map(move |line| {
+                        (
+                            file.old_path.clone(),
+                            line.line_number,
+                            line.session_id.clone(),
+                        )
+                    })
+            })
+        })
+        .collect()
+}
+
+fn committed_removed_count(patch: &ParsedPatch) -> u64 {
+    removed_lines_by_path(patch).len() as u64
+}
+
+#[tokio::test]
+async fn persisted_deletion_only_commit_counts_each_removal_in_its_proven_bucket() {
+    let repo = DeletionRepo::new();
+    let after_ai = repo.stage(&[(DELETION_A_PATH, "a1\na5\na6\n")]);
+    let after_non_exclusive = repo.stage(&[(DELETION_B_PATH, "b1\nb3\n")]);
+    repo.stage(&[(DELETION_C_PATH, "c1\nc3\n")]);
+    repo.commit(COMMIT_A_TIME_S);
+
+    let persisted = persist_deletion_trace(
+        &repo,
+        &[
+            deletion_event(1, &repo.parent_tree, &after_ai, Some(SCOPE_A)),
+            deletion_event(2, &after_ai, &after_non_exclusive, None),
+        ],
+    )
+    .await;
+
+    let ai_removals = removed_lines_by_path(&persisted.mutation.mutation_ai_patch);
+    assert_eq!(
+        ai_removals,
+        [2, 3, 4]
+            .map(|line| (DELETION_A_PATH.to_owned(), line, Some(SESSION_A.to_owned())))
+            .to_vec()
+    );
+    assert!(persisted
+        .mutation
+        .mutation_ai_patch
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter())
+        .all(|hunk| hunk.model_id.as_deref() == Some(MODEL_A)));
+    assert_eq!(
+        removed_lines_by_path(&persisted.mutation.resolved_non_ai_patch),
+        vec![(DELETION_B_PATH.to_owned(), 2, None)]
+    );
+    assert_eq!(
+        removed_lines_by_path(&persisted.mutation.unresolved_patch),
+        vec![(DELETION_C_PATH.to_owned(), 2, None)]
+    );
+
+    let line_changes = persisted.trace.metadata.sce.line_changes;
+    assert_eq!(
+        line_changes,
+        LineChangeAttribution {
+            ai: LineChangeCounts {
+                added: 0,
+                removed: 3
+            },
+            non_exclusive: LineChangeCounts {
+                added: 0,
+                removed: 1
+            },
+            unknown: LineChangeCounts {
+                added: 0,
+                removed: 1
+            },
+        }
+    );
+    assert_eq!(
+        line_changes.ai.removed + line_changes.non_exclusive.removed + line_changes.unknown.removed,
+        committed_removed_count(&persisted.committed)
+    );
+    let persisted_counts: LineChangeAttribution =
+        serde_json::from_value(persisted.value["metadata"]["sce"]["line_changes"].clone())
+            .expect("persisted line_changes deserialize");
+    assert_eq!(persisted_counts, line_changes);
+    assert_eq!(persisted.value["files"], serde_json::json!([]));
+    assert!(persisted.trace.tool.is_none());
+}
+
+#[tokio::test]
+async fn persisted_mixed_commit_keeps_added_line_attribution_and_adds_removals() {
+    let repo = DeletionRepo::new();
+    let after_ai = repo.stage(&[(DELETION_A_PATH, "a1\nA2\na4\na5\na6\na7\n")]);
+    repo.commit(COMMIT_A_TIME_S);
+    let rows = [deletion_event(
+        1,
+        &repo.parent_tree,
+        &after_ai,
+        Some(SCOPE_A),
+    )];
+
+    let persisted = persist_deletion_trace(&repo, &rows).await;
+
+    assert_eq!(
+        persisted.trace.metadata.sce.line_changes,
+        LineChangeAttribution {
+            ai: LineChangeCounts {
+                added: 2,
+                removed: 2
+            },
+            ..LineChangeAttribution::default()
+        }
+    );
+    let file = &persisted.trace.files[0];
+    assert_eq!(file.path, DELETION_A_PATH);
+    let ranges: Vec<(u64, u64)> = file.conversations[0]
+        .ranges
+        .iter()
+        .map(|range| (range.start_line, range.end_line))
+        .collect();
+    assert_eq!(ranges, vec![(2, 2), (6, 6)], "only added lines get ranges");
+    assert_eq!(
+        file.conversations[0]
+            .contributor
+            .as_ref()
+            .and_then(|contributor| contributor.model_id.as_deref()),
+        Some(MODEL_A)
+    );
+
+    let without_parent = resolve_bounded_mutation_attribution(
+        &VecPages {
+            rows: rows.to_vec(),
+        },
+        &GitSnapshotService::new(repo.root())
+            .await
+            .expect("snapshot"),
+        &WorktreeId(WORKTREE.to_owned()),
+        &persisted.committed,
+        &after_ai,
+        None,
+        Some(1),
+    )
+    .await
+    .result;
+    let added_only = |patch: &ParsedPatch| {
+        let mut patch = patch.clone();
+        for file in &mut patch.files {
+            for hunk in &mut file.hunks {
+                hunk.lines
+                    .retain(|line| line.kind == TouchedLineKind::Added);
+            }
+            file.hunks.retain(|hunk| !hunk.lines.is_empty());
+        }
+        patch.files.retain(|file| !file.hunks.is_empty());
+        patch
+    };
+    assert_eq!(
+        added_only(&persisted.mutation.mutation_ai_patch),
+        added_only(&without_parent.mutation_ai_patch),
+        "removal anchoring leaves added-line attribution unchanged"
     );
 }

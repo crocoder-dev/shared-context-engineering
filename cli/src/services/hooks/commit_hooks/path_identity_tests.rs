@@ -90,7 +90,10 @@ fn source_lines(path: &str) -> Vec<String> {
             .map(|line| (*line).to_owned())
             .collect();
     }
-    vec![format!("const PATH: &str = {path:?};"), String::from("pub fn f() {}")]
+    vec![
+        format!("const PATH: &str = {path:?};"),
+        String::from("pub fn f() {}"),
+    ]
 }
 
 fn source_text(path: &str) -> String {

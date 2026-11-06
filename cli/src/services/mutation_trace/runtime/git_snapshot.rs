@@ -19,6 +19,12 @@ const REF_NAMESPACE: &str = "refs/sce/mutation-cursor";
 const FOR_EACH_REF_PIN_FORMAT: &str =
     "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)";
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommittedTrees {
+    pub commit_tree: TreeId,
+    pub parent_tree: Option<TreeId>,
+}
+
 pub struct GitSnapshotService {
     git_dir: PathBuf,
     repository_root: PathBuf,
@@ -198,8 +204,36 @@ impl GitSnapshotService {
         .await
     }
 
-    pub async fn head_tree(&self) -> Result<TreeId> {
-        let tree = self.run_git(&["rev-parse", "HEAD^{tree}"], None).await?;
+    /// Resolves the tree of `commit_oid` and, for a single-parent commit, the
+    /// tree of its first parent, by explicit object ID and never through `HEAD`.
+    /// Root and merge commits have no parent tree to anchor removals to.
+    pub async fn committed_trees(&self, commit_oid: &str) -> Result<CommittedTrees> {
+        if commit_oid.is_empty() || !commit_oid.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("commit OID '{commit_oid}' is not a hexadecimal object ID");
+        }
+        let commit_tree = self.object_tree(commit_oid).await?;
+        let parents_line = self
+            .run_git(
+                &["rev-list", "--parents", "--max-count=1", commit_oid],
+                None,
+            )
+            .await?;
+        let parents: Vec<&str> = parents_line.split_whitespace().skip(1).collect();
+        let parent_tree = match parents.as_slice() {
+            [parent] => Some(self.object_tree(parent).await?),
+            _ => None,
+        };
+        Ok(CommittedTrees {
+            commit_tree,
+            parent_tree,
+        })
+    }
+
+    async fn object_tree(&self, object_id: &str) -> Result<TreeId> {
+        let spec = format!("{object_id}^{{tree}}");
+        let tree = self
+            .run_git(&["rev-parse", "--verify", "--quiet", &spec], None)
+            .await?;
         Ok(TreeId(tree.trim().to_string()))
     }
 

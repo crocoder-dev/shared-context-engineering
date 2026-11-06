@@ -15,9 +15,11 @@ use crate::services::mutation_trace::store::{
     MUTATION_ATTRIBUTION_PAGE_SIZE,
 };
 use crate::services::mutation_trace::types::{FailureKind, ScopeId, TreeId, WorktreeId};
-use crate::services::patch::{parse_patch, ParsedPatch, TouchedLineKind};
+use crate::services::patch::{parse_patch, ParsedPatch, PatchFileChange, TouchedLineKind};
 
-use super::git_snapshot::{resolve_git_dir, resolve_worktree_id, GitSnapshotService};
+use super::git_snapshot::{
+    resolve_git_dir, resolve_worktree_id, CommittedTrees, GitSnapshotService,
+};
 use super::worktree_lock::WorktreeLock;
 
 pub const MAX_MUTATION_ATTRIBUTION_EVENTS: usize = 128;
@@ -90,6 +92,10 @@ pub struct BoundedMutationAttribution {
     pub reconstructed_events: usize,
     pub gap_resets: usize,
     pub barrier: Option<MutationAttributionBarrier>,
+    /// Whether an uninterrupted replay from the exact parent tree reached the
+    /// last loaded event. Removed lines resolve only when it did, and only in
+    /// paths that also reconciled with the commit tree.
+    pub removal_replay_anchored: bool,
 }
 
 impl BoundedMutationAttribution {
@@ -102,6 +108,7 @@ impl BoundedMutationAttribution {
             reconstructed_events: 0,
             gap_resets: 0,
             barrier: None,
+            removal_replay_anchored: false,
         }
     }
 }
@@ -118,6 +125,11 @@ fn empty_attribution() -> MutationAttributionResult {
     }
 }
 
+/// Resolves committed touched lines from bounded mutation history.
+///
+/// Added lines use the existing gap-tolerant replay. Removed lines resolve only
+/// through a separate, stricter replay anchored at `parent_tree`; without a
+/// parent tree (root or merge commits) every removed line stays unresolved.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_bounded_mutation_attribution<P, R>(
     page_source: &P,
@@ -125,6 +137,7 @@ pub async fn resolve_bounded_mutation_attribution<P, R>(
     worktree: &WorktreeId,
     committed_patch: &ParsedPatch,
     commit_tree: &TreeId,
+    parent_tree: Option<&TreeId>,
     revision_ceiling: Option<u64>,
 ) -> BoundedMutationAttribution
 where
@@ -146,12 +159,26 @@ where
     };
 
     let events = load_event_window(page_source, worktree, revision_ceiling, &mut state).await;
-    let lineage = if events.is_empty() {
+    let lineages = if events.is_empty() {
         None
     } else {
-        Some(replay(&events, &target_paths, commit_tree, tree_source, &mut state).await)
+        let removal_anchor = parent_tree.map(|parent_tree| RemovalAnchor {
+            parent_tree,
+            paths: removal_parent_paths(committed_patch),
+        });
+        Some(
+            replay(
+                &events,
+                &target_paths,
+                removal_anchor,
+                commit_tree,
+                tree_source,
+                &mut state,
+            )
+            .await,
+        )
     };
-    finish(committed_patch, lineage.as_ref(), &state, page_source).await
+    finish(committed_patch, lineages.as_ref(), &state, page_source).await
 }
 
 struct ReplayState {
@@ -163,17 +190,30 @@ struct ReplayState {
     barrier: Option<MutationAttributionBarrier>,
 }
 
+struct ReplayedLineages {
+    added: MutationLineage,
+    removals: Option<MutationLineage>,
+}
+
 async fn finish<P>(
     target: &ParsedPatch,
-    lineage: Option<&MutationLineage>,
+    lineages: Option<&ReplayedLineages>,
     state: &ReplayState,
     page_source: &P,
 ) -> BoundedMutationAttribution
 where
     P: MutationEventPageSource + ?Sized,
 {
-    let result = match lineage {
-        Some(lineage) => project(target, lineage, page_source).await,
+    let result = match lineages {
+        Some(lineages) => {
+            project(
+                target,
+                &lineages.added,
+                lineages.removals.as_ref(),
+                page_source,
+            )
+            .await
+        }
         None => MutationAttributionResult {
             mutation_ai_patch: empty_patch(),
             resolved_non_ai_patch: empty_patch(),
@@ -189,6 +229,7 @@ where
         reconstructed_events: state.reconstructed_events,
         gap_resets: state.gap_resets,
         barrier: state.barrier,
+        removal_replay_anchored: lineages.is_some_and(|lineages| lineages.removals.is_some()),
     }
 }
 
@@ -199,6 +240,111 @@ fn target_logical_paths(target: &ParsedPatch) -> BTreeSet<String> {
         .filter(|file| file.hunks.iter().any(|hunk| !hunk.lines.is_empty()))
         .map(|file| logical_path(file).to_owned())
         .collect()
+}
+
+/// Every path whose parent lines a committed removal can name, plus the path
+/// that holds them in the commit.
+fn removal_parent_paths(target: &ParsedPatch) -> BTreeSet<String> {
+    target
+        .files
+        .iter()
+        .filter(|file| {
+            file.hunks.iter().any(|hunk| {
+                hunk.lines
+                    .iter()
+                    .any(|line| line.kind == TouchedLineKind::Removed)
+            })
+        })
+        .flat_map(|file| [file.old_path.clone(), file.new_path.clone()])
+        .filter(|path| !path.is_empty())
+        .collect()
+}
+
+struct RemovalAnchor<'a> {
+    parent_tree: &'a TreeId,
+    paths: BTreeSet<String>,
+}
+
+/// The removal replay: it starts at the last event leaving the exact parent
+/// tree and is abandoned, never reset, at the first gap or failed transition.
+struct RemovalReplay {
+    anchor: usize,
+    lineage: MutationLineage,
+}
+
+async fn start_removal_replay<R>(
+    events: &[MutationEventPageRow],
+    anchor: Option<RemovalAnchor<'_>>,
+    tree_source: &R,
+) -> Option<RemovalReplay>
+where
+    R: TreeReadSource,
+{
+    let anchor_spec = anchor?;
+    let anchor = events
+        .iter()
+        .rposition(|row| row.before_tree == *anchor_spec.parent_tree)?;
+    let mut baseline = BTreeMap::new();
+    for path in &anchor_spec.paths {
+        let content = tree_source
+            .file_at_tree(anchor_spec.parent_tree, path)
+            .await
+            .ok()?;
+        baseline.insert(path.clone(), content);
+    }
+    Some(RemovalReplay {
+        anchor,
+        lineage: MutationLineage::from_parent(&baseline),
+    })
+}
+
+fn advance_removal_replay(
+    replay: &mut Option<RemovalReplay>,
+    index: usize,
+    row: &MutationEventPageRow,
+    prev_after: &TreeId,
+    reconstructed: Option<&ParsedPatch>,
+    origin: &TransitionOrigin,
+) {
+    let Some(active) = replay.as_mut() else {
+        return;
+    };
+    if index < active.anchor {
+        return;
+    }
+    let contiguous = index == active.anchor || row.before_tree == *prev_after;
+    let applied = contiguous
+        && reconstructed.is_some_and(|patch| active.lineage.apply(patch, origin).is_ok());
+    if !applied {
+        *replay = None;
+    }
+}
+
+/// Reconciles the removal replay with the commit tree, path by path. A path
+/// keeps its removal claims only when it holds exactly its committed lines and
+/// any unobserved tail between the last event and the commit left it
+/// byte-identical; otherwise (for example a partially staged file) every
+/// removal claim the path bears on becomes unknown.
+async fn settle_removal_replay<R>(
+    replay: Option<RemovalReplay>,
+    last_after: &TreeId,
+    commit_tree: &TreeId,
+    tree_source: &R,
+) -> Option<MutationLineage>
+where
+    R: TreeReadSource,
+{
+    let mut lineage = replay?.lineage;
+    let paths: Vec<String> = lineage.tracked_paths().map(ToOwned::to_owned).collect();
+    for path in &paths {
+        let committed = tree_source.file_at_tree(commit_tree, path).await.ok()?;
+        let tail_touches_path = last_after != commit_tree
+            && tree_source.file_at_tree(last_after, path).await.ok()? != committed;
+        if tail_touches_path || !lineage.matches_content(path, committed.as_deref()) {
+            lineage.distrust_removals(path);
+        }
+    }
+    Some(lineage)
 }
 
 async fn load_event_window<P>(
@@ -248,19 +394,21 @@ where
 async fn replay<R>(
     events: &[MutationEventPageRow],
     target_paths: &BTreeSet<String>,
+    removal_anchor: Option<RemovalAnchor<'_>>,
     commit_tree: &TreeId,
     tree_source: &R,
     state: &mut ReplayState,
-) -> MutationLineage
+) -> ReplayedLineages
 where
     R: TreeReadSource,
 {
+    let mut removal_replay = start_removal_replay(events, removal_anchor, tree_source).await;
     let mut lineage = MutationLineage::from_baseline(
         &load_baseline(tree_source, &events[0].before_tree, target_paths).await,
     );
     let mut prev_after = events[0].before_tree.clone();
 
-    for row in events {
+    for (index, row) in events.iter().enumerate() {
         state.inspected_events += 1;
 
         if row.before_tree != prev_after {
@@ -278,6 +426,14 @@ where
         }
 
         let origin = transition_origin(row);
+        advance_removal_replay(
+            &mut removal_replay,
+            index,
+            row,
+            &prev_after,
+            reconstructed.as_ref(),
+            &origin,
+        );
         if apply_or_reset(
             &mut lineage,
             reconstructed.as_ref(),
@@ -294,6 +450,9 @@ where
 
         prev_after = row.after_tree.clone();
     }
+
+    let removals =
+        settle_removal_replay(removal_replay, &prev_after, commit_tree, tree_source).await;
 
     if prev_after != *commit_tree {
         let tail = tree_source
@@ -316,7 +475,10 @@ where
         }
     }
 
-    lineage
+    ReplayedLineages {
+        added: lineage,
+        removals,
+    }
 }
 
 async fn apply_or_reset<R>(
@@ -363,20 +525,59 @@ fn transition_origin(row: &MutationEventPageRow) -> TransitionOrigin {
     }
 }
 
+#[derive(Default)]
+struct ProjectedLines {
+    ai: BTreeMap<PatchLineLocation, ScopeId>,
+    non_ai: BTreeSet<PatchLineLocation>,
+    unresolved: BTreeSet<PatchLineLocation>,
+}
+
+impl ProjectedLines {
+    fn assign(&mut self, location: PatchLineLocation, provenance: LineProvenance) {
+        match provenance {
+            LineProvenance::MutationAi { scope_id } => {
+                self.ai.insert(location, scope_id);
+            }
+            LineProvenance::MutationNonAi => {
+                self.non_ai.insert(location);
+            }
+            LineProvenance::Unknown => {
+                self.unresolved.insert(location);
+            }
+        }
+    }
+}
+
+/// Removed lines are resolved by their canonical old-side identity: the
+/// file's old path and old line number, never new-file coordinates.
+fn removed_line_provenance(
+    file: &PatchFileChange,
+    removals: Option<&MutationLineage>,
+    removed: &[(u64, &str)],
+) -> Vec<LineProvenance> {
+    match removals {
+        Some(lineage) if !file.old_path.is_empty() => {
+            lineage.committed_removals(logical_path(file), &file.old_path, removed)
+        }
+        _ => vec![LineProvenance::Unknown; removed.len()],
+    }
+}
+
 async fn project<P>(
     target: &ParsedPatch,
     lineage: &MutationLineage,
+    removals: Option<&MutationLineage>,
     page_source: &P,
 ) -> MutationAttributionResult
 where
     P: MutationEventPageSource + ?Sized,
 {
-    let mut ai: BTreeMap<PatchLineLocation, ScopeId> = BTreeMap::new();
-    let mut non_ai = BTreeSet::new();
-    let mut unresolved = BTreeSet::new();
+    let mut projected = ProjectedLines::default();
 
     for (file_index, file) in target.files.iter().enumerate() {
         let path = logical_path(file);
+        let mut removed_locations = Vec::new();
+        let mut removed_lines = Vec::new();
         for (hunk_index, hunk) in file.hunks.iter().enumerate() {
             for (line_index, line) in hunk.lines.iter().enumerate() {
                 let location = PatchLineLocation {
@@ -384,24 +585,28 @@ where
                     hunk_index,
                     line_index,
                 };
-                if line.kind != TouchedLineKind::Added {
-                    unresolved.insert(location);
-                    continue;
-                }
-                match lineage.provenance_at(path, line.line_number, &line.content) {
-                    LineProvenance::MutationAi { scope_id } => {
-                        ai.insert(location, scope_id);
-                    }
-                    LineProvenance::MutationNonAi => {
-                        non_ai.insert(location);
-                    }
-                    LineProvenance::Unknown => {
-                        unresolved.insert(location);
+                match line.kind {
+                    TouchedLineKind::Added => projected.assign(
+                        location,
+                        lineage.provenance_at(path, line.line_number, &line.content),
+                    ),
+                    TouchedLineKind::Removed => {
+                        removed_locations.push(location);
+                        removed_lines.push((line.line_number, line.content.as_str()));
                     }
                 }
             }
         }
+        let provenances = removed_line_provenance(file, removals, &removed_lines);
+        for (location, provenance) in removed_locations.into_iter().zip(provenances) {
+            projected.assign(location, provenance);
+        }
     }
+    let ProjectedLines {
+        ai,
+        non_ai,
+        unresolved,
+    } = projected;
 
     let mut scope_provenance = BTreeMap::new();
     for scope_id in ai.values().collect::<BTreeSet<_>>() {
@@ -433,9 +638,15 @@ where
     }
 }
 
+/// Resolves mutation attribution for the commit captured as `commit_oid`.
+///
+/// Both the commit tree and its first-parent tree are resolved from that exact
+/// object ID, never from a mutable `HEAD`, so a later `HEAD` move cannot
+/// change which revisions removed lines are anchored to.
 pub(crate) async fn resolve_post_commit_mutation_attribution(
     repository_root: &Path,
     db: &mut RepositoryAgentTraceDb,
+    commit_oid: &str,
     committed_patch: &ParsedPatch,
 ) -> MutationAttributionResult {
     let Ok(git_dir) = resolve_git_dir(repository_root).await else {
@@ -447,7 +658,11 @@ pub(crate) async fn resolve_post_commit_mutation_attribution(
     let Ok(snapshot) = GitSnapshotService::new(repository_root).await else {
         return empty_attribution();
     };
-    let Ok(commit_tree) = snapshot.head_tree().await else {
+    let Ok(CommittedTrees {
+        commit_tree,
+        parent_tree,
+    }) = snapshot.committed_trees(commit_oid).await
+    else {
         return empty_attribution();
     };
     let store = MutationTraceStore::new(db);
@@ -462,6 +677,7 @@ pub(crate) async fn resolve_post_commit_mutation_attribution(
         &worktree,
         committed_patch,
         &commit_tree,
+        parent_tree.as_ref(),
         Some(revision_ceiling),
     )
     .await
