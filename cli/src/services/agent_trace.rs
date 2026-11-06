@@ -575,6 +575,7 @@ fn build_trace_file(
         CommittedFile::Missing => bail!(
             "Invalid Agent Trace file '{path}': the patch adds lines to it, but it is absent from revision '{revision}'."
         ),
+        #[cfg(test)]
         CommittedFile::Unverified => None,
     };
     validate_added_line_positions(path, &lines, committed.as_ref(), revision)?;
