@@ -12,7 +12,7 @@ use crate::services::agent_trace::{
     GitCommittedFiles, RepositoryRoot,
 };
 use crate::services::agent_trace_db::{
-    AgentTraceInsert, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
+    AgentTraceInsert, CommitTimeCutoff, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
     RecentDiffTracePatches,
 };
 use crate::services::config::{self, ResolvedHookRuntimeConfig};
@@ -246,6 +246,7 @@ pub(crate) async fn run_post_commit_agent_trace_flow<
             &mut db,
             &flow_result.post_commit_data.commit_oid,
             &flow_result.post_commit_data.parsed_patch,
+            flow_result.attribution_cutoff,
         )
         .await;
 
@@ -383,6 +384,27 @@ where
 
 pub(crate) const RECENT_DAYS_MILLIS: i64 = 7 * 24 * 60 * 60 * 1000;
 pub(crate) const COMMIT_TIME_RESOLUTION_MILLIS: i64 = 1000;
+pub(crate) const COMMIT_TIME_MAX_AGE_MILLIS: i64 = 5 * 60 * 1000;
+pub(crate) const GIT_COMMITTER_DATE_ENV: &str = "GIT_COMMITTER_DATE";
+
+pub(crate) fn trusted_commit_time_cutoff(
+    commit_time_ms: i64,
+    entry_ms: i64,
+    committer_date_overridden: bool,
+) -> Option<CommitTimeCutoff> {
+    if committer_date_overridden {
+        return None;
+    }
+    let cutoff = CommitTimeCutoff::from_commit_time_ms(commit_time_ms)?;
+    let age_ms = entry_ms.checked_sub(cutoff.start_ms())?;
+    (0..=COMMIT_TIME_MAX_AGE_MILLIS)
+        .contains(&age_ms)
+        .then_some(cutoff)
+}
+
+pub(crate) fn committer_date_override_present() -> bool {
+    std::env::var_os(GIT_COMMITTER_DATE_ENV).is_some()
+}
 
 pub(crate) fn direct_evidence_cutoff_ms(now_ms: i64, prior_commit_time_ms: Option<i64>) -> i64 {
     let recent_cutoff_ms = now_ms - RECENT_DAYS_MILLIS;
@@ -404,12 +426,11 @@ pub(crate) async fn run_post_commit_intersection_flow(
         repository_root,
         capture_post_commit_patch_from_git,
         current_unix_time_ms,
-        async |cutoff_ms, end_ms| {
-            {
-                db.recent_diff_trace_patches(cutoff_ms, end_ms)
-                    .await
-                    .context("Failed to query recent diff trace patches.")
-            }
+        committer_date_override_present(),
+        async |lower_ms, cutoff| {
+            db.recent_diff_trace_patches_before_commit(lower_ms, cutoff)
+                .await
+                .context("Failed to query recent diff trace patches.")
         },
         async |insert_input| {
             db.insert_post_commit_patch_intersection(insert_input)
@@ -561,21 +582,39 @@ pub(crate) async fn run_post_commit_intersection_flow_with<C, N, Q, P>(
     repository_root: &Path,
     capture_post_commit_patch: C,
     now_ms: N,
+    committer_date_overridden: bool,
     query_recent_patches: Q,
     persist_intersection: P,
 ) -> Result<PostCommitIntersectionFlowResult>
 where
     C: FnOnce(&Path) -> Result<PostCommitPatchData>,
     N: FnOnce() -> Result<i64>,
-    Q: std::ops::AsyncFnOnce(i64, i64) -> Result<RecentDiffTracePatches>,
+    Q: std::ops::AsyncFnOnce(i64, CommitTimeCutoff) -> Result<RecentDiffTracePatches>,
     P: for<'a> std::ops::AsyncFnOnce(PostCommitPatchIntersectionInsert<'a>) -> Result<()>,
 {
     let post_commit_data = capture_post_commit_patch(repository_root)?;
 
     let now_ms = now_ms()?;
     let cutoff_ms = direct_evidence_cutoff_ms(now_ms, post_commit_data.parent_commit_time_ms);
+    let attribution_cutoff = trusted_commit_time_cutoff(
+        post_commit_data.commit_time_ms,
+        now_ms,
+        committer_date_overridden,
+    );
 
-    let recent_patches = query_recent_patches(cutoff_ms, now_ms).await?;
+    let (recent_patches, window_end_ms) = match attribution_cutoff {
+        Some(cutoff) => (
+            query_recent_patches(cutoff_ms, cutoff).await?,
+            cutoff.start_ms(),
+        ),
+        None => (
+            RecentDiffTracePatches {
+                patches: Vec::new(),
+                skipped: Vec::new(),
+            },
+            cutoff_ms,
+        ),
+    };
 
     #[allow(clippy::cast_possible_wrap)]
     let loaded_count = recent_patches.loaded_count() as i64;
@@ -600,7 +639,7 @@ where
         commit_id: &post_commit_data.commit_oid,
         post_commit_time_ms: post_commit_data.commit_time_ms,
         recent_window_cutoff_ms: cutoff_ms,
-        recent_window_end_ms: now_ms,
+        recent_window_end_ms: window_end_ms,
         loaded_diff_trace_count: loaded_count,
         skipped_diff_trace_count: skipped_count,
         intersection_patch: &serialized_intersection,
@@ -613,6 +652,7 @@ where
         direct_traces: recent_patches.patches,
         intersection_patch,
         post_commit_data,
+        attribution_cutoff,
     })
 }
 
@@ -711,14 +751,19 @@ pub struct PostCommitIntersectionFlowResult {
     pub direct_traces: Vec<ParsedDiffTracePatch>,
     pub intersection_patch: ParsedPatch,
     pub post_commit_data: PostCommitPatchData,
+    pub attribution_cutoff: Option<CommitTimeCutoff>,
 }
 
 pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<PostCommitPatchData> {
     let commit_oid = capture_head_oid_from_git(repository_root)?;
-    let commit_time_ms = capture_head_timestamp_from_git(repository_root)?;
+    let commit_time_ms = capture_commit_timestamp_from_git(
+        repository_root,
+        &commit_oid,
+        "Failed to capture commit timestamp.",
+    )?;
     let parent_commit_time_ms = capture_commit_timestamp_from_git(
         repository_root,
-        "HEAD^",
+        &format!("{commit_oid}^"),
         "Failed to capture parent commit timestamp from git.",
     )
     .ok();
@@ -931,6 +976,7 @@ mod tests {
             intersection_patch: empty_patch(),
             post_commit_data: capture_post_commit_patch_from_git(root)
                 .expect("post-commit patch capture"),
+            attribution_cutoff: None,
         }
     }
 

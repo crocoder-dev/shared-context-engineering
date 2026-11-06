@@ -36,6 +36,41 @@ FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
 
+pub const SELECT_DIFF_TRACE_PATCHES_BEFORE_COMMIT_SQL: &str =
+    "SELECT id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type
+FROM diff_traces
+WHERE time_ms >= ?1
+  AND time_ms < ?2
+  AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?3, 'unixepoch')
+ORDER BY time_ms ASC, id ASC";
+
+const MAX_CUTOFF_UNIX_SECONDS: i64 = 253_402_300_799;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommitTimeCutoff {
+    unix_seconds: i64,
+}
+
+impl CommitTimeCutoff {
+    pub fn from_commit_time_ms(commit_time_ms: i64) -> Option<Self> {
+        if commit_time_ms.checked_rem(1_000)? != 0 {
+            return None;
+        }
+        let unix_seconds = commit_time_ms.checked_div(1_000)?;
+        (0..=MAX_CUTOFF_UNIX_SECONDS)
+            .contains(&unix_seconds)
+            .then_some(CommitTimeCutoff { unix_seconds })
+    }
+
+    pub fn unix_seconds(self) -> i64 {
+        self.unix_seconds
+    }
+
+    pub fn start_ms(self) -> i64 {
+        self.unix_seconds * 1_000
+    }
+}
+
 pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
     "INSERT INTO post_commit_patch_intersections (
     commit_id,
@@ -533,6 +568,25 @@ async fn recent_diff_trace_patches_with<M: DbSpec>(
         .query_map(
             SELECT_RECENT_DIFF_TRACE_PATCHES_SQL,
             (cutoff_time_ms, end_time_ms),
+            diff_trace_patch_row_from_turso,
+        )
+        .await?;
+
+    Ok(parse_recent_diff_trace_patch_rows(rows))
+}
+
+async fn diff_trace_patches_before_commit_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    lower_time_ms: i64,
+    cutoff: CommitTimeCutoff,
+) -> Result<RecentDiffTracePatches> {
+    if lower_time_ms >= cutoff.start_ms() {
+        return Ok(parse_recent_diff_trace_patch_rows(Vec::new()));
+    }
+    let rows = db
+        .query_map(
+            SELECT_DIFF_TRACE_PATCHES_BEFORE_COMMIT_SQL,
+            (lower_time_ms, cutoff.start_ms(), cutoff.unix_seconds()),
             diff_trace_patch_row_from_turso,
         )
         .await?;

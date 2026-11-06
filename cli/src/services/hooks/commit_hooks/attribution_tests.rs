@@ -13,7 +13,7 @@ use crate::services::agent_trace::{
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
-    AgentTraceInsert, DiffTraceInsert, DiffTracePathOrigin, ParsedDiffTracePatch,
+    AgentTraceInsert, CommitTimeCutoff, DiffTraceInsert, DiffTracePathOrigin, ParsedDiffTracePatch,
     PostCommitPatchIntersectionInsert, RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
     PAYLOAD_TYPE_STRUCTURED,
 };
@@ -62,6 +62,37 @@ const OPENCODE_TOOL: &str = "opencode";
 
 const fn ms(seconds: i64) -> i64 {
     seconds * 1_000
+}
+
+const PRE_COMMIT_CREATED_MS: i64 = ms(BASE_TIME_S) + 500;
+
+pub(super) fn created_at(time_ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(time_ms)
+        .expect("valid created_at")
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
+pub(super) async fn stamp_latest_diff_trace(db: &RepositoryAgentTraceDb, created_ms: i64) {
+    db.execute(
+        "UPDATE diff_traces SET created_at = ?1 WHERE id = (SELECT MAX(id) FROM diff_traces)",
+        (created_at(created_ms),),
+    )
+    .await
+    .expect("stamp diff trace created_at");
+}
+
+async fn stamp_mutation_event(db: &RepositoryAgentTraceDb, revision: u64, created_ms: i64) {
+    db.execute(
+        "UPDATE mutation_trace_events SET created_at = ?1 WHERE worktree_id = ?2 AND revision = ?3",
+        (
+            created_at(created_ms),
+            WORKTREE,
+            revision.to_be_bytes().as_slice(),
+        ),
+    )
+    .await
+    .expect("stamp mutation event created_at");
 }
 
 fn plan(done: [bool; 3]) -> String {
@@ -344,7 +375,10 @@ async fn intersection_flow(
         repo.root(),
         capture_post_commit_patch_from_git,
         || Ok(ms(COMMIT_C_TIME_S) + 500),
-        async |cutoff_ms, end_ms| Ok(rows_in_window(rows, cutoff_ms, end_ms)),
+        false,
+        async |lower_ms, cutoff: CommitTimeCutoff| {
+            Ok(rows_in_window(rows, lower_ms, cutoff.start_ms() - 1))
+        },
         async |insert: PostCommitPatchIntersectionInsert<'_>| -> Result<()> {
             *persisted.borrow_mut() = Some(PersistedIntersection {
                 loaded: insert.loaded_diff_trace_count,
@@ -780,7 +814,7 @@ async fn insert_mutation_rows(db: &RepositoryAgentTraceDb, rows: &[MutationEvent
         .expect("insert scope provenance");
         let revision = row.revision.to_be_bytes();
         db.execute(
-            "INSERT INTO mutation_trace_events (worktree_id, revision, before_tree, after_tree, tainted, failure_kind, attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id) VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ai_exclusive', ?5, 'close', ?5, ?6)",
+            "INSERT INTO mutation_trace_events (worktree_id, revision, before_tree, after_tree, tainted, failure_kind, attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at) VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ai_exclusive', ?5, 'close', ?5, ?6, ?7)",
             (
                 WORKTREE,
                 revision.as_slice(),
@@ -788,6 +822,7 @@ async fn insert_mutation_rows(db: &RepositoryAgentTraceDb, rows: &[MutationEvent
                 row.after_tree.0.as_str(),
                 scope_id.0.as_str(),
                 format!("event-{}", row.revision),
+                created_at(PRE_COMMIT_CREATED_MS),
             ),
         )
         .await
@@ -816,6 +851,7 @@ async fn insert_rows(db: &RepositoryAgentTraceDb, rows: &[DiffTraceRow]) {
         })
         .await
         .expect("insert diff trace");
+        stamp_latest_diff_trace(db, row.time_ms).await;
     }
 }
 
@@ -838,7 +874,11 @@ async fn persist_trace(
         repo.root(),
         capture_post_commit_patch_from_git,
         || Ok(ms(COMMIT_C_TIME_S) + 500),
-        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+        false,
+        async |lower_ms, cutoff| {
+            db.recent_diff_trace_patches_before_commit(lower_ms, cutoff)
+                .await
+        },
         async |insert| {
             db.insert_post_commit_patch_intersection(insert)
                 .await
@@ -1091,6 +1131,7 @@ async fn insert_structured_row(db: &RepositoryAgentTraceDb, payload: &str) {
     })
     .await
     .expect("insert structured diff trace");
+    stamp_latest_diff_trace(db, ms(COMMIT_C_TIME_S) - 500).await;
 }
 
 #[tokio::test]
@@ -1129,6 +1170,7 @@ async fn claude_structured_rows_resolve_paths_against_their_recorded_cwd() {
         })
         .await
         .expect("insert structured diff trace");
+        stamp_latest_diff_trace(&db, ms(COMMIT_C_TIME_S) - 500).await;
 
         let persisted = persist_trace(&repo, &mut db, &[]).await;
         let conversation = &persisted.value["files"][0]["conversations"][0];
@@ -1489,7 +1531,11 @@ async fn persist_range_trace(root: &Path, db: &RepositoryAgentTraceDb) -> (Agent
         root,
         capture_post_commit_patch_from_git,
         || Ok(ms(COMMIT_A_TIME_S) + 500),
-        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+        false,
+        async |lower_ms, cutoff| {
+            db.recent_diff_trace_patches_before_commit(lower_ms, cutoff)
+                .await
+        },
         async |insert| {
             db.insert_post_commit_patch_intersection(insert)
                 .await
@@ -1723,12 +1769,13 @@ async fn insert_mixed_mutation_rows(db: &RepositoryAgentTraceDb, rows: &[Mutatio
     for row in non_exclusive {
         let revision = row.revision.to_be_bytes();
         db.execute(
-            "INSERT INTO mutation_trace_events (worktree_id, revision, before_tree, after_tree, tainted, failure_kind, attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id) VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL)",
+            "INSERT INTO mutation_trace_events (worktree_id, revision, before_tree, after_tree, tainted, failure_kind, attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at) VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL, ?5)",
             (
                 WORKTREE,
                 revision.as_slice(),
                 row.before_tree.0.as_str(),
                 row.after_tree.0.as_str(),
+                created_at(PRE_COMMIT_CREATED_MS),
             ),
         )
         .await
@@ -1757,7 +1804,11 @@ async fn persist_deletion_trace(
         repo.root(),
         capture_post_commit_patch_from_git,
         || Ok(ms(COMMIT_A_TIME_S) + 500),
-        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+        false,
+        async |lower_ms, cutoff| {
+            db.recent_diff_trace_patches_before_commit(lower_ms, cutoff)
+                .await
+        },
         async |insert| {
             db.insert_post_commit_patch_intersection(insert)
                 .await
@@ -1775,6 +1826,7 @@ async fn persist_deletion_trace(
         &mut db,
         &flow.post_commit_data.commit_oid,
         &flow.post_commit_data.parsed_patch,
+        flow.attribution_cutoff,
     )
     .await;
 
@@ -1978,4 +2030,532 @@ async fn persisted_mixed_commit_keeps_added_line_attribution_and_adds_removals()
         added_only(&without_parent.mutation_ai_patch),
         "removal anchoring leaves added-line attribution unchanged"
     );
+}
+
+const SPEC_CUTOFF_UNIX_SECONDS: i64 = 1_731_067_204;
+
+#[tokio::test]
+async fn commit_bounded_direct_evidence_uses_insertion_time_and_excludes_the_commit_second() {
+    let (_db_dir, db) = open_db().await;
+    let cutoff =
+        CommitTimeCutoff::from_commit_time_ms(ms(SPEC_CUTOFF_UNIX_SECONDS)).expect("valid cutoff");
+    let start_ms = cutoff.start_ms();
+    let reported_ms = start_ms - 10_000;
+    let cases = [
+        (reported_ms, start_ms - 1),
+        (reported_ms, start_ms),
+        (reported_ms, start_ms + 1),
+        (reported_ms, start_ms + 999),
+        (reported_ms, start_ms + 1_000),
+        (start_ms, start_ms - 5_000),
+        (start_ms - 1, start_ms - 5_000),
+    ];
+    for (time_ms, created_ms) in cases {
+        db.insert_diff_trace(DiffTraceInsert {
+            time_ms,
+            session_id: SESSION_X,
+            patch: &boilerplate_patch(EXACT_C_POSITIONS.0, EXACT_C_POSITIONS.1),
+            model_id: Some(MODEL_X),
+            tool_name: CLAUDE_TOOL,
+            tool_version: None,
+            payload_type: PAYLOAD_TYPE_PATCH,
+        })
+        .await
+        .expect("insert diff trace");
+        stamp_latest_diff_trace(&db, created_ms).await;
+    }
+
+    let eligible = db
+        .recent_diff_trace_patches_before_commit(start_ms - 60_000, cutoff)
+        .await
+        .expect("bounded direct evidence");
+    let eligible_ids: Vec<i64> = eligible.patches.iter().map(|patch| patch.id).collect();
+    assert_eq!(eligible_ids, vec![1, 7]);
+
+    let empty_window = db
+        .recent_diff_trace_patches_before_commit(start_ms, cutoff)
+        .await
+        .expect("empty window");
+    assert_eq!(empty_window.loaded_count(), 0);
+
+    let unbounded = db
+        .recent_diff_trace_patches(start_ms - 60_000, start_ms + 60_000)
+        .await
+        .expect("staged preflight query is unchanged");
+    assert_eq!(unbounded.loaded_count(), cases.len());
+}
+
+#[test]
+fn commit_time_trust_policy_rejects_untrusted_commit_timestamps() {
+    use super::{trusted_commit_time_cutoff, COMMIT_TIME_MAX_AGE_MILLIS};
+
+    let commit_ms = ms(SPEC_CUTOFF_UNIX_SECONDS);
+    let expected = CommitTimeCutoff::from_commit_time_ms(commit_ms);
+    assert!(expected.is_some());
+    assert_eq!(
+        trusted_commit_time_cutoff(commit_ms, commit_ms, false),
+        expected
+    );
+    assert_eq!(
+        trusted_commit_time_cutoff(commit_ms, commit_ms + COMMIT_TIME_MAX_AGE_MILLIS, false),
+        expected
+    );
+
+    assert_eq!(trusted_commit_time_cutoff(commit_ms, commit_ms, true), None);
+    assert_eq!(
+        trusted_commit_time_cutoff(commit_ms, commit_ms - 1, false),
+        None
+    );
+    assert_eq!(
+        trusted_commit_time_cutoff(commit_ms, commit_ms + COMMIT_TIME_MAX_AGE_MILLIS + 1, false),
+        None
+    );
+    assert_eq!(
+        trusted_commit_time_cutoff(commit_ms + 1, commit_ms + 5, false),
+        None
+    );
+    assert_eq!(trusted_commit_time_cutoff(-1_000, 0, false), None);
+    assert_eq!(trusted_commit_time_cutoff(i64::MIN, i64::MAX, false), None);
+    assert_eq!(
+        trusted_commit_time_cutoff(ms(253_402_300_800), ms(253_402_300_800), false),
+        None
+    );
+}
+
+struct TimedDeletionOutcome {
+    flow: PostCommitIntersectionFlowResult,
+    mutation: MutationAttributionResult,
+    unbounded: MutationAttributionResult,
+    trace: AgentTrace,
+}
+
+async fn timed_deletion_trace(
+    repo: &DeletionRepo,
+    rows: &[(MutationEventPageRow, i64)],
+    entry_ms: i64,
+) -> TimedDeletionOutcome {
+    let (_db_dir, mut db) = open_db().await;
+    let events: Vec<MutationEventPageRow> = rows.iter().map(|(row, _)| row.clone()).collect();
+    insert_mixed_mutation_rows(&db, &events).await;
+    for (row, created_ms) in rows {
+        stamp_mutation_event(&db, row.revision, *created_ms).await;
+    }
+    let commit_tree = TreeId(git(repo.root(), &["rev-parse", "HEAD^{tree}"], None));
+
+    let flow = run_post_commit_intersection_flow_with(
+        repo.root(),
+        capture_post_commit_patch_from_git,
+        || Ok(entry_ms),
+        false,
+        async |lower_ms, cutoff| {
+            db.recent_diff_trace_patches_before_commit(lower_ms, cutoff)
+                .await
+        },
+        async |insert| {
+            db.insert_post_commit_patch_intersection(insert)
+                .await
+                .map(|_| ())
+        },
+    )
+    .await
+    .expect("intersection flow");
+
+    let mutation = resolve_post_commit_mutation_attribution(
+        repo.root(),
+        &mut db,
+        &flow.post_commit_data.commit_oid,
+        &flow.post_commit_data.parsed_patch,
+        flow.attribution_cutoff,
+    )
+    .await;
+    let unbounded = {
+        let store = MutationTraceStore::new(&mut db);
+        resolve_bounded_mutation_attribution(
+            &store,
+            &GitSnapshotService::new(repo.root())
+                .await
+                .expect("snapshot"),
+            &WorktreeId(WORKTREE.to_owned()),
+            &flow.post_commit_data.parsed_patch,
+            &commit_tree,
+            Some(&repo.parent_tree),
+            events.iter().map(|row| row.revision).max(),
+        )
+        .await
+        .result
+    };
+    let trace = run_post_commit_agent_trace_flow_with(
+        &flow,
+        Some(AgentTraceVcsType::Git),
+        REMOTE_URL,
+        &mutation,
+        None,
+        |value| validate_agent_trace_value(value).map_err(|error| anyhow!(error.to_string())),
+        async |insert| db.insert_agent_trace(insert).await.map(|_| ()),
+    )
+    .await
+    .expect("agent trace flow");
+
+    TimedDeletionOutcome {
+        flow,
+        mutation,
+        unbounded,
+        trace,
+    }
+}
+
+fn committed_added_count(patch: &ParsedPatch) -> u64 {
+    patch
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter())
+        .flat_map(|hunk| hunk.lines.iter())
+        .filter(|line| line.kind == TouchedLineKind::Added)
+        .count() as u64
+}
+
+fn assert_line_totals(trace: &AgentTrace, committed: &ParsedPatch) {
+    let counts = &trace.metadata.sce.line_changes;
+    assert_eq!(
+        counts.ai.added + counts.non_exclusive.added + counts.unknown.added,
+        committed_added_count(committed)
+    );
+    assert_eq!(
+        counts.ai.removed + counts.non_exclusive.removed + counts.unknown.removed,
+        committed_removed_count(committed)
+    );
+}
+
+fn unknown_removals(count: u64) -> LineChangeAttribution {
+    LineChangeAttribution {
+        unknown: LineChangeCounts {
+            added: 0,
+            removed: count,
+        },
+        ..LineChangeAttribution::default()
+    }
+}
+
+const A_WITHOUT_A2: &str = "a1\na3\na4\na5\na6\n";
+
+#[tokio::test]
+async fn an_ai_deletion_recorded_after_the_commit_second_never_claims_the_human_deletion() {
+    let repo = DeletionRepo::new();
+    let after_ai = repo.stage(&[(DELETION_A_PATH, A_WITHOUT_A2)]);
+    repo.commit(COMMIT_A_TIME_S);
+    let commit_ms = ms(COMMIT_A_TIME_S);
+
+    let outcome = timed_deletion_trace(
+        &repo,
+        &[
+            (
+                deletion_event(1, &repo.parent_tree, &repo.parent_tree, None),
+                commit_ms - 1_000,
+            ),
+            (
+                deletion_event(2, &repo.parent_tree, &after_ai, Some(SCOPE_A)),
+                commit_ms + 1_000,
+            ),
+        ],
+        commit_ms + 3_000,
+    )
+    .await;
+
+    assert_eq!(
+        removed_lines_by_path(&outcome.unbounded.mutation_ai_patch),
+        vec![(DELETION_A_PATH.to_owned(), 2, Some(SESSION_A.to_owned()))],
+        "without the cutoff the late event would claim the deletion"
+    );
+    assert!(outcome.mutation.mutation_ai_patch.files.is_empty());
+    assert_eq!(outcome.trace.metadata.sce.line_changes, unknown_removals(1));
+    assert_line_totals(&outcome.trace, &outcome.flow.post_commit_data.parsed_patch);
+    let json = serde_json::to_string(&outcome.trace).expect("trace JSON");
+    assert_contains_none(&json, &[SESSION_A, MODEL_A]);
+    assert!(outcome.trace.files.is_empty());
+}
+
+#[tokio::test]
+async fn an_ai_deletion_recorded_before_the_commit_second_keeps_its_session() {
+    let repo = DeletionRepo::new();
+    let after_ai = repo.stage(&[(DELETION_A_PATH, A_WITHOUT_A2)]);
+    repo.commit(COMMIT_A_TIME_S);
+    let commit_ms = ms(COMMIT_A_TIME_S);
+
+    let outcome = timed_deletion_trace(
+        &repo,
+        &[(
+            deletion_event(1, &repo.parent_tree, &after_ai, Some(SCOPE_A)),
+            commit_ms - 2_000,
+        )],
+        commit_ms + 500,
+    )
+    .await;
+
+    assert_eq!(
+        removed_lines_by_path(&outcome.mutation.mutation_ai_patch),
+        vec![(DELETION_A_PATH.to_owned(), 2, Some(SESSION_A.to_owned()))]
+    );
+    assert!(outcome
+        .mutation
+        .mutation_ai_patch
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter())
+        .all(|hunk| hunk.model_id.as_deref() == Some(MODEL_A)));
+    assert_eq!(
+        outcome.trace.metadata.sce.line_changes,
+        LineChangeAttribution {
+            ai: LineChangeCounts {
+                added: 0,
+                removed: 1
+            },
+            ..LineChangeAttribution::default()
+        }
+    );
+    assert_line_totals(&outcome.trace, &outcome.flow.post_commit_data.parsed_patch);
+    assert!(outcome.trace.files.is_empty());
+}
+
+#[tokio::test]
+async fn a_delayed_post_commit_hook_does_not_widen_the_eligible_event_window() {
+    let repo = DeletionRepo::new();
+    let after_ai = repo.stage(&[(DELETION_A_PATH, A_WITHOUT_A2)]);
+    repo.commit(COMMIT_A_TIME_S);
+    let restored = repo.stage(&[(DELETION_A_PATH, DELETION_A_PARENT)]);
+    let redeleted = repo.stage(&[(DELETION_A_PATH, A_WITHOUT_A2)]);
+    let commit_ms = ms(COMMIT_A_TIME_S);
+
+    let outcome = timed_deletion_trace(
+        &repo,
+        &[
+            (
+                deletion_event(1, &repo.parent_tree, &after_ai, Some(SCOPE_A)),
+                commit_ms - 1_000,
+            ),
+            (
+                deletion_event(2, &after_ai, &restored, None),
+                commit_ms + 1_000,
+            ),
+            (
+                deletion_event(3, &restored, &redeleted, Some(SCOPE_B)),
+                commit_ms + 1_500,
+            ),
+        ],
+        commit_ms + 5_000,
+    )
+    .await;
+
+    assert_eq!(
+        removed_lines_by_path(&outcome.unbounded.mutation_ai_patch),
+        vec![(DELETION_A_PATH.to_owned(), 2, Some(SESSION_B.to_owned()))],
+        "the late re-deletion would win without the cutoff"
+    );
+    assert_eq!(
+        removed_lines_by_path(&outcome.mutation.mutation_ai_patch),
+        vec![(DELETION_A_PATH.to_owned(), 2, Some(SESSION_A.to_owned()))]
+    );
+    assert_line_totals(&outcome.trace, &outcome.flow.post_commit_data.parsed_patch);
+    let json = serde_json::to_string(&outcome.trace).expect("trace JSON");
+    assert_contains_none(&json, &[SESSION_B, MODEL_B]);
+}
+
+#[tokio::test]
+async fn evidence_recorded_inside_the_commit_second_is_an_accepted_false_negative() {
+    let repo = DeletionRepo::new();
+    let after_ai = repo.stage(&[(DELETION_A_PATH, A_WITHOUT_A2)]);
+    repo.commit(COMMIT_A_TIME_S);
+    let commit_ms = ms(COMMIT_A_TIME_S);
+
+    let outcome = timed_deletion_trace(
+        &repo,
+        &[(
+            deletion_event(1, &repo.parent_tree, &after_ai, Some(SCOPE_A)),
+            commit_ms + 200,
+        )],
+        commit_ms + 900,
+    )
+    .await;
+
+    assert_eq!(
+        removed_lines_by_path(&outcome.unbounded.mutation_ai_patch),
+        vec![(DELETION_A_PATH.to_owned(), 2, Some(SESSION_A.to_owned()))]
+    );
+    assert!(outcome.mutation.mutation_ai_patch.files.is_empty());
+    assert_eq!(outcome.trace.metadata.sce.line_changes, unknown_removals(1));
+    assert_line_totals(&outcome.trace, &outcome.flow.post_commit_data.parsed_patch);
+}
+
+async fn direct_trace_created_at(created_ms: i64) -> PersistedTrace {
+    let repo = HistoryRepo::new();
+    let (_db_dir, mut db) = open_db().await;
+    insert_rows(&db, &[fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS)]).await;
+    stamp_latest_diff_trace(&db, created_ms).await;
+    persist_trace(&repo, &mut db, &[]).await
+}
+
+#[tokio::test]
+async fn direct_evidence_inserted_after_the_commit_cannot_claim_committed_lines() {
+    let eligible = direct_trace_created_at(ms(COMMIT_C_TIME_S) - 500).await;
+    assert_eq!(eligible.trace.metadata.sce.line_changes.ai.added, 3);
+
+    for created_ms in [
+        ms(COMMIT_C_TIME_S),
+        ms(COMMIT_C_TIME_S) + 400,
+        ms(COMMIT_C_TIME_S) + 2_000,
+    ] {
+        let late = direct_trace_created_at(created_ms).await;
+        assert_eq!(late.intersection_touched_lines, 0);
+        assert_eq!(
+            late.trace.metadata.sce.line_changes,
+            LineChangeAttribution {
+                unknown: LineChangeCounts {
+                    added: 3,
+                    removed: 0
+                },
+                ..LineChangeAttribution::default()
+            }
+        );
+        assert_line_totals(&late.trace, &late.committed);
+        assert_contains_none(&late.json, &[SESSION_C, MODEL_C]);
+    }
+}
+
+async fn untrusted_flow(
+    repo: &HistoryRepo,
+    entry_ms: i64,
+    committer_date_overridden: bool,
+) -> (
+    PostCommitIntersectionFlowResult,
+    PersistedIntersection,
+    bool,
+) {
+    let rows = [fresh_row(SESSION_C, MODEL_C, EXACT_C_POSITIONS)];
+    let queried = RefCell::new(false);
+    let persisted = RefCell::new(None);
+    let flow = run_post_commit_intersection_flow_with(
+        repo.root(),
+        capture_post_commit_patch_from_git,
+        || Ok(entry_ms),
+        committer_date_overridden,
+        async |lower_ms, cutoff: CommitTimeCutoff| {
+            *queried.borrow_mut() = true;
+            Ok(rows_in_window(&rows, lower_ms, cutoff.start_ms() - 1))
+        },
+        async |insert: PostCommitPatchIntersectionInsert<'_>| -> Result<()> {
+            assert_eq!(
+                insert.recent_window_cutoff_ms, insert.recent_window_end_ms,
+                "an untrusted commit time persists an empty window"
+            );
+            *persisted.borrow_mut() = Some(PersistedIntersection {
+                loaded: insert.loaded_diff_trace_count,
+                patch: serde_json::from_str(insert.intersection_patch).expect("intersection JSON"),
+            });
+            Ok(())
+        },
+    )
+    .await
+    .expect("intersection flow");
+    (
+        flow,
+        persisted.into_inner().expect("intersection persisted"),
+        queried.into_inner(),
+    )
+}
+
+#[tokio::test]
+async fn untrusted_commit_time_disables_both_evidence_sources_without_failing_the_trace() {
+    let repo = HistoryRepo::new();
+    let commit_ms = ms(COMMIT_C_TIME_S);
+    let mutation_rows = repo.mutation_rows(AttributionKind::AiExclusive);
+    for (entry_ms, overridden) in [
+        (commit_ms + 500, true),
+        (commit_ms - 1, false),
+        (commit_ms + super::COMMIT_TIME_MAX_AGE_MILLIS + 1, false),
+    ] {
+        let (flow, persisted, queried) = untrusted_flow(&repo, entry_ms, overridden).await;
+        assert!(!queried, "no direct evidence query runs");
+        assert_eq!(flow.attribution_cutoff, None);
+        assert!(flow.direct_traces.is_empty());
+        assert_eq!(persisted.loaded, 0);
+        assert!(persisted.patch.files.is_empty());
+
+        let (_db_dir, mut db) = open_db().await;
+        insert_mutation_rows(&db, &mutation_rows).await;
+        let mutation = resolve_post_commit_mutation_attribution(
+            repo.root(),
+            &mut db,
+            &flow.post_commit_data.commit_oid,
+            &flow.post_commit_data.parsed_patch,
+            flow.attribution_cutoff,
+        )
+        .await;
+        assert_eq!(mutation, no_mutation());
+
+        let trace = agent_trace(&flow, &mutation).await;
+        assert_eq!(
+            trace.metadata.sce.line_changes,
+            LineChangeAttribution {
+                unknown: LineChangeCounts {
+                    added: 3,
+                    removed: 0
+                },
+                ..LineChangeAttribution::default()
+            }
+        );
+        assert_line_totals(&trace, &flow.post_commit_data.parsed_patch);
+    }
+}
+
+#[tokio::test]
+async fn failed_commit_metadata_capture_never_queries_evidence() {
+    let repo = HistoryRepo::new();
+    let queried = RefCell::new(false);
+    let result = run_post_commit_intersection_flow_with(
+        repo.root(),
+        |_| Err(anyhow!("commit OID unavailable")),
+        || Ok(ms(COMMIT_C_TIME_S)),
+        false,
+        async |_lower_ms, _cutoff| {
+            *queried.borrow_mut() = true;
+            Ok(rows_in_window(&[], 0, 0))
+        },
+        async |_insert| Ok(()),
+    )
+    .await;
+    assert!(result.is_err());
+    assert!(!queried.into_inner());
+
+    let not_a_repo = tempfile::tempdir().expect("temp dir");
+    assert!(capture_post_commit_patch_from_git(not_a_repo.path()).is_err());
+}
+
+#[test]
+fn commit_timestamps_come_from_the_captured_oid_after_head_moves() {
+    let repo = DeletionRepo::new();
+    repo.stage(&[(DELETION_A_PATH, A_WITHOUT_A2)]);
+    repo.commit(COMMIT_A_TIME_S);
+    let captured = git(repo.root(), &["rev-parse", "HEAD"], None);
+    repo.stage(&[(DELETION_A_PATH, "moved\n")]);
+    repo.commit(COMMIT_B_TIME_S);
+
+    assert_eq!(
+        super::capture_commit_timestamp_from_git(repo.root(), &captured, "commit time")
+            .expect("captured commit time"),
+        ms(COMMIT_A_TIME_S)
+    );
+    assert_eq!(
+        super::capture_commit_timestamp_from_git(
+            repo.root(),
+            &format!("{captured}^"),
+            "parent commit time"
+        )
+        .expect("captured parent time"),
+        ms(BASE_TIME_S)
+    );
+    assert!(super::capture_commit_timestamp_from_git(
+        repo.root(),
+        &format!("{captured}^^"),
+        "missing parent"
+    )
+    .is_err());
 }

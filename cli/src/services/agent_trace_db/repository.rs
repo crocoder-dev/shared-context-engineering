@@ -9,10 +9,11 @@ use crate::{
 };
 
 use super::{
-    insert_agent_trace_with, insert_conversation_text_event_with, insert_diff_trace_with,
-    insert_messages_with, insert_parts_with, insert_post_commit_patch_intersection_with,
-    recent_diff_trace_patches_with, upsert_claude_model_state_with, AgentTraceInsert,
-    ClaudeModelStateObservation, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
+    diff_trace_patches_before_commit_with, insert_agent_trace_with,
+    insert_conversation_text_event_with, insert_diff_trace_with, insert_messages_with,
+    insert_parts_with, insert_post_commit_patch_intersection_with, recent_diff_trace_patches_with,
+    upsert_claude_model_state_with, AgentTraceInsert, ClaudeModelStateObservation,
+    CommitTimeCutoff, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
 
@@ -425,6 +426,14 @@ impl RepositoryAgentTraceDb {
         end_time_ms: i64,
     ) -> Result<RecentDiffTracePatches> {
         recent_diff_trace_patches_with(self, cutoff_time_ms, end_time_ms).await
+    }
+
+    pub async fn recent_diff_trace_patches_before_commit(
+        &self,
+        lower_time_ms: i64,
+        cutoff: CommitTimeCutoff,
+    ) -> Result<RecentDiffTracePatches> {
+        diff_trace_patches_before_commit_with(self, lower_time_ms, cutoff).await
     }
 
     /// Insert message rows with one multi-row statement, ignoring duplicate

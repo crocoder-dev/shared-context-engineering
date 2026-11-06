@@ -842,3 +842,156 @@ async fn root_and_merge_commits_have_no_parent_tree() {
     );
     assert!(snapshot.committed_trees("HEAD").await.is_err());
 }
+
+const CUTOFF_UNIX_SECONDS: i64 = 1_731_067_204;
+const CUTOFF_MS: i64 = CUTOFF_UNIX_SECONDS * 1_000;
+
+fn cutoff() -> CommitTimeCutoff {
+    CommitTimeCutoff::from_commit_time_ms(CUTOFF_MS).expect("valid cutoff")
+}
+
+fn created_at(time_ms: i64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(time_ms)
+        .expect("valid created_at")
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
+fn fake_tree(revision: u64) -> String {
+    format!("{revision:040x}")
+}
+
+async fn open_event_db() -> (tempfile::TempDir, RepositoryAgentTraceDb) {
+    let dir = tempfile::tempdir().expect("db dir");
+    let db = RepositoryAgentTraceDb::new_at(dir.path().join("agent-trace.db"))
+        .await
+        .expect("open agent trace db");
+    (dir, db)
+}
+
+async fn insert_timed_event(db: &RepositoryAgentTraceDb, revision: u64, created_ms: i64) {
+    db.execute(
+        "INSERT INTO mutation_trace_events (worktree_id, revision, before_tree, after_tree, tainted, failure_kind, attribution_kind, attribution_scope_id, boundary_kind, boundary_scope_id, boundary_event_id, created_at) VALUES (?1, ?2, ?3, ?4, 0, 'healthy', 'ineligible_unscoped', NULL, 'flush', NULL, NULL, ?5)",
+        (
+            WORKTREE,
+            revision.to_be_bytes().as_slice(),
+            fake_tree(revision - 1),
+            fake_tree(revision),
+            created_at(created_ms),
+        ),
+    )
+    .await
+    .expect("insert timed mutation event");
+}
+
+fn revisions(rows: &[MutationEventPageRow]) -> Vec<u64> {
+    rows.iter().map(|row| row.revision).collect()
+}
+
+#[tokio::test]
+async fn commit_bounded_event_pages_exclude_the_whole_commit_second() {
+    let (_dir, mut db) = open_event_db().await;
+    let created = [
+        CUTOFF_MS - 1,
+        CUTOFF_MS,
+        CUTOFF_MS + 1,
+        CUTOFF_MS + 999,
+        CUTOFF_MS + 1_000,
+    ];
+    for (index, created_ms) in created.into_iter().enumerate() {
+        insert_timed_event(&db, index as u64 + 1, created_ms).await;
+    }
+    let store = MutationTraceStore::new(&mut db);
+    let worktree = WorktreeId(WORKTREE.to_owned());
+
+    let bounded = store
+        .load_mutation_event_page_before_commit(&worktree, None, 32, cutoff())
+        .await
+        .expect("bounded page");
+    assert_eq!(revisions(&bounded), vec![1]);
+
+    let unbounded = store
+        .load_mutation_event_page(&worktree, None, 32)
+        .await
+        .expect("unbounded page");
+    assert_eq!(revisions(&unbounded), vec![5, 4, 3, 2, 1]);
+}
+
+#[tokio::test]
+async fn late_events_never_consume_the_bounded_event_budget() {
+    let (_dir, mut db) = open_event_db().await;
+    let eligible = 150_u64;
+    let late = 140_u64;
+    for revision in 1..=eligible {
+        insert_timed_event(&db, revision, CUTOFF_MS - 60_000 + revision.cast_signed()).await;
+    }
+    for revision in eligible + 1..=eligible + late {
+        insert_timed_event(&db, revision, CUTOFF_MS + revision.cast_signed()).await;
+    }
+    let store = MutationTraceStore::new(&mut db);
+    let worktree = WorktreeId(WORKTREE.to_owned());
+
+    let first = store
+        .load_mutation_event_page_before_commit(&worktree, None, 32, cutoff())
+        .await
+        .expect("first page");
+    assert_eq!(revisions(&first), (119..=150).rev().collect::<Vec<_>>());
+    let second = store
+        .load_mutation_event_page_before_commit(&worktree, Some(119), 32, cutoff())
+        .await
+        .expect("second page");
+    assert_eq!(revisions(&second), (87..=118).rev().collect::<Vec<_>>());
+
+    let source = CommitBoundedEvents {
+        store: &store,
+        cutoff: cutoff(),
+    };
+    let mut state = ReplayState {
+        loaded_pages: 0,
+        loaded_rows: 0,
+        inspected_events: 0,
+        reconstructed_events: 0,
+        gap_resets: 0,
+        barrier: None,
+    };
+    let window = load_event_window(&source, &worktree, Some(eligible + late), &mut state).await;
+    assert_eq!(revisions(&window), (23..=150).collect::<Vec<_>>());
+    assert_eq!(window.len(), MAX_MUTATION_ATTRIBUTION_EVENTS);
+    assert_eq!(state.loaded_pages, 4);
+    assert_eq!(state.loaded_rows, MAX_MUTATION_ATTRIBUTION_EVENTS);
+    assert_eq!(state.barrier, None);
+}
+
+#[tokio::test]
+async fn a_short_eligible_history_behind_many_late_events_is_loaded_completely() {
+    let (_dir, mut db) = open_event_db().await;
+    for revision in 1..=40_u64 {
+        insert_timed_event(&db, revision, CUTOFF_MS - 60_000 + revision.cast_signed()).await;
+    }
+    for revision in 41..=180_u64 {
+        insert_timed_event(&db, revision, CUTOFF_MS + revision.cast_signed()).await;
+    }
+    let store = MutationTraceStore::new(&mut db);
+    let source = CommitBoundedEvents {
+        store: &store,
+        cutoff: cutoff(),
+    };
+    let mut state = ReplayState {
+        loaded_pages: 0,
+        loaded_rows: 0,
+        inspected_events: 0,
+        reconstructed_events: 0,
+        gap_resets: 0,
+        barrier: None,
+    };
+    let window = load_event_window(
+        &source,
+        &WorktreeId(WORKTREE.to_owned()),
+        Some(180),
+        &mut state,
+    )
+    .await;
+    assert_eq!(revisions(&window), (1..=40).collect::<Vec<_>>());
+    assert_eq!(state.loaded_pages, 2);
+    assert_eq!(state.loaded_rows, 40);
+}

@@ -12,6 +12,7 @@ use crate::services::agent_trace_db::{DiffTraceInsert, PAYLOAD_TYPE_PATCH};
 use crate::services::mutation_trace::attribution::MutationAttributionResult;
 use crate::services::patch::{ParsedPatch, TouchedLineKind};
 
+use super::attribution_tests::stamp_latest_diff_trace;
 use super::{
     capture_post_commit_patch_from_git, run_post_commit_agent_trace_flow_with,
     run_post_commit_intersection_flow_with, PostCommitIntersectionFlowResult,
@@ -193,6 +194,7 @@ async fn insert_unicode_direct_evidence(db: &RepositoryAgentTraceDb) {
     })
     .await
     .expect("insert diff trace");
+    stamp_latest_diff_trace(db, ms(COMMIT_TIME_S) - 500).await;
 }
 
 async fn intersection_flow(
@@ -203,7 +205,11 @@ async fn intersection_flow(
         repo.root(),
         capture_post_commit_patch_from_git,
         || Ok(ms(COMMIT_TIME_S) + 500),
-        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+        false,
+        async |lower_ms, cutoff| {
+            db.recent_diff_trace_patches_before_commit(lower_ms, cutoff)
+                .await
+        },
         async |insert| {
             db.insert_post_commit_patch_intersection(insert)
                 .await

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{bail, Context, Result};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+use crate::services::agent_trace_db::CommitTimeCutoff;
 use crate::services::db::TransactionStatement;
 
 use super::types::{
@@ -247,6 +248,23 @@ const SELECT_MUTATION_EVENT_PAGE_AFTER_SQL: &str =
      WHERE worktree_id = ?1 AND revision < ?2
      ORDER BY revision DESC
      LIMIT ?3";
+const SELECT_MUTATION_EVENT_PAGE_BEFORE_COMMIT_SQL: &str =
+    "SELECT revision, before_tree, after_tree, tainted,
+            failure_kind, attribution_kind, attribution_scope_id
+     FROM mutation_trace_events
+     WHERE worktree_id = ?1
+       AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?2, 'unixepoch')
+     ORDER BY revision DESC
+     LIMIT ?3";
+const SELECT_MUTATION_EVENT_PAGE_AFTER_BEFORE_COMMIT_SQL: &str =
+    "SELECT revision, before_tree, after_tree, tainted,
+            failure_kind, attribution_kind, attribution_scope_id
+     FROM mutation_trace_events
+     WHERE worktree_id = ?1
+       AND revision < ?2
+       AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?3, 'unixepoch')
+     ORDER BY revision DESC
+     LIMIT ?4";
 const SELECT_LATEST_MUTATION_EVENT_REVISION_SQL: &str = "SELECT revision FROM mutation_trace_events
      WHERE worktree_id = ?1
      ORDER BY revision DESC
@@ -792,6 +810,44 @@ impl<'a> MutationTraceStore<'a> {
                     .query_map(
                         SELECT_MUTATION_EVENT_PAGE_SQL,
                         (worktree.0.as_str(), limit_as_i64(limit)),
+                        mutation_event_page_row_from_turso,
+                    )
+                    .await?
+            }
+        };
+
+        Ok(rows)
+    }
+
+    pub async fn load_mutation_event_page_before_commit(
+        &self,
+        worktree: &WorktreeId,
+        revision_cursor: Option<u64>,
+        requested_limit: usize,
+        cutoff: CommitTimeCutoff,
+    ) -> Result<Vec<MutationEventPageRow>> {
+        let limit = limit_as_i64(requested_limit.min(MUTATION_ATTRIBUTION_PAGE_SIZE));
+        let rows = match revision_cursor {
+            Some(cursor) => {
+                let cursor_blob = encode_revision(cursor);
+                self.db
+                    .query_map(
+                        SELECT_MUTATION_EVENT_PAGE_AFTER_BEFORE_COMMIT_SQL,
+                        (
+                            worktree.0.as_str(),
+                            cursor_blob.as_slice(),
+                            cutoff.unix_seconds(),
+                            limit,
+                        ),
+                        mutation_event_page_row_from_turso,
+                    )
+                    .await?
+            }
+            None => {
+                self.db
+                    .query_map(
+                        SELECT_MUTATION_EVENT_PAGE_BEFORE_COMMIT_SQL,
+                        (worktree.0.as_str(), cutoff.unix_seconds(), limit),
                         mutation_event_page_row_from_turso,
                     )
                     .await?
