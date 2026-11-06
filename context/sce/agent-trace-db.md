@@ -167,12 +167,12 @@ Post-commit intersection rows are written by the active `post-commit` hook flow 
 
 ## Staged-diff AI-overlap evidence gate
 
-`cli/src/services/agent_trace.rs` owns the pure patch-overlap helper `patches_have_overlap`, which is consumed by the commit-msg staged-diff AI-overlap evidence gate in `cli/src/services/hooks/mod.rs`:
+`cli/src/services/agent_trace.rs` owns the pure direct-evidence predicate `has_direct_evidence`, which is consumed by the commit-msg staged-diff AI-overlap evidence gate in `cli/src/services/hooks/commit_hooks.rs`:
 
-- `patches_have_overlap(staged_patch, recent_patch)` returns `true` when the staged diff and a recent AI/editor diff trace share at least one touched line, and `false` otherwise (including empty/untouched patches). This is the pure boolean predicate used by the commit-msg evidence gate.
+- `has_direct_evidence(candidate_rows, staged_patch)` returns `true` only when a candidate row exactly matches a staged touched line on file identity, `kind`, `line_number`, and `content`. Candidate rows are limited to those recorded after the current `HEAD` commit, so stale and historical-only similarity never add the trailer.
 - `StagedDiffAiOverlapResult` (`Overlap`/`NoOverlap`/`Error`) is the three-valued result from the injectable `staged_diff_has_ai_overlap_with` variant, enabling testable branch coverage and caller-side error logging.
 - `staged_diff_has_ai_overlap` is the live wrapper that opens Agent Trace DB through the no-migration hook path, delegates to `_with`, and logs `sce.hooks.commit_msg.ai_overlap_error` on `Error` results.
 - The commit-msg evidence gate invokes the preflight only when the attribution gate passes (`attribution_hooks_enabled && !sce_disabled`); both `NoOverlap` and `Error` map to `ai_contribution_present = false`, suppressing the trailer. There is no fail-open mode.
-- Fixture-backed unit coverage for `patches_have_overlap` lives in `cli/src/services/agent_trace/tests.rs`, covering overlap, no-overlap, empty/untouched patches, and Claude structured-patch-derived input.
+- Regression coverage lives in `cli/src/services/hooks/commit_hooks/attribution_tests.rs`.
 
 See also: [shared-turso-db.md](shared-turso-db.md), [local-db.md](local-db.md), [agent-trace-hooks-command-routing.md](agent-trace-hooks-command-routing.md), [agent-trace-commit-msg-coauthor-policy.md](agent-trace-commit-msg-coauthor-policy.md), [context-map.md](../context-map.md)

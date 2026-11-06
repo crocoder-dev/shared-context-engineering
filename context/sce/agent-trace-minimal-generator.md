@@ -4,34 +4,32 @@ Rust library seam at `cli/src/services/agent_trace.rs` that produces the minimal
 
 ## Contract
 
-Given a `constructed_patch` (AI candidate) and a `post_commit_patch` (canonical source of truth):
+Given per-row direct candidate patches, mutation lineage evidence, and a `post_commit_patch` (canonical source of truth):
 
-1. Compute `intersection_patch = intersect_patches(constructed_patch, post_commit_patch)` — the touched-line overlap (the direct evidence).
-2. Classify each `post_commit_patch` hunk from the union of the direct `intersection_patch` hunk and, when supplied, the mutation-derived AI hunk at the same `old_start` slot (see [Separated direct/mutation evidence](#separated-directmutation-evidence)):
-   - **`ai`** — every touched line in the `post_commit_patch` hunk is covered by direct evidence, mutation-derived AI evidence, or both.
-   - **`mixed`** — a non-empty proper subset of the hunk's touched lines is covered.
-   - **`unknown`** — no touched line in the hunk is covered.
-3. With no mutation evidence this is equivalent to the direct-only slot rule, since a direct-intersection hunk always holds an ordered sub-multiset of its `post_commit_patch` hunk's touched lines: `ai` when the `intersection_patch` hunk has identical touched lines (same count, kind, `line_number`, content, order), `mixed` when that hunk exists but is a proper subset, `unknown` when no `intersection_patch` hunk shares the `old_start`. `build_agent_trace_from_evidence(...)` with an empty `mutation_ai_patch` produces exactly this classification.
-4. Map `Conversation.contributor.model_id` from the matched direct and mutation hunks when contributor type is `ai` or `mixed`: an absent evidence source does not count as unknown, one present model passes through, and both present models must be known and equal. Omit `model_id` when both sources are present but either model is missing or they disagree. A hunk classified `ai`/`mixed` purely through mutation-derived coverage may therefore emit the mutation model.
-5. For each emitted conversation, derive optional `conversation.related` entries from non-empty `session_id` values on touched lines in both matched evidence hunks; emit related entries as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated by session ID with deterministic ordering, and omit `related` when no included lines provide `session_id`. Structured diff-trace reconstruction supplies the persisted canonical `cc_...` row session on direct lines, while mutation reconstruction supplies scope provenance on mutation-attributed lines.
+1. Resolve every `post_commit_patch` touched line independently with the precedence in [../cli/mutation-trace-agent-attribution.md](../cli/mutation-trace-agent-attribution.md#evidence-precedence): AI-exclusive mutation lineage wins; non-exclusive mutation lineage keeps the line non-AI; otherwise a fresh, exact `(file, kind, line_number, content)`, single-session direct candidate attributes it; otherwise the line is unattributed. Historical `(kind, content)` similarity never attributes a line.
+2. Classify each `post_commit_patch` hunk from its attributed lines:
+   - **`ai`** — every touched line in the hunk is attributed.
+   - **`mixed`** — a non-empty proper subset of the hunk's touched lines is attributed.
+   - **`unknown`** — no touched line in the hunk is attributed.
+3. Map `Conversation.contributor.model_id` for `ai` / `mixed` hunks only when every attributed line has the same known model. A mutation-attributed line uses its scope model, falling back to a same-session exact direct candidate's model.
+4. Derive optional `conversation.related` entries from the sessions of attributed lines only, emitted as `{ "type": "session", "url": "https://sce.crocoder.dev/sessions/<session_id>" }`, deduplicated and deterministically ordered. Overridden or conflicting direct candidates never appear.
+5. Emit the top-level `tool` object only when at least one final line attribution is supported by a direct candidate.
 6. Emit one `Conversation` per `post_commit_patch` hunk, each carrying the trace lookup `url`, one `TraceFile` per `post_commit_patch` file, and one range per hunk with a deterministic `content_hash` computed from that hunk's touched-line kind/content.
 
 ## Separated direct/mutation evidence
 
-`build_agent_trace_from_evidence(evidence, post_commit_patch, metadata)` is the only supported generator entrypoint. It handles direct-only evidence (empty `mutation_ai_patch`), mutation-only evidence, and combined evidence through one path, classifying from two independent AI-evidence sources:
+`build_agent_trace_from_evidence(evidence, post_commit_patch, metadata)` is the only supported generator entrypoint. `AgentTraceEvidence` keeps the sources separate:
 
-- `evidence.direct_patch` — the reconstructed direct patch, intersected against `post_commit_patch` internally exactly as before. It supplies direct model/session provenance and remains the sole source of the top-level `tool` object (still omitted when the direct intersection is empty).
-- `evidence.mutation_ai_patch` — a target-shaped set of committed touched lines with resolved scope provenance that causal mutation-lineage replay attributed to AI (an AI event's line that survived every later observed tree transition into the committed tree), produced by [../cli/mutation-trace-agent-attribution.md](../cli/mutation-trace-agent-attribution.md). It widens combined AI coverage for hunk classification and supplies mutation model/session metadata when available.
-
-Per hunk, a `post_commit_patch` touched line is covered when it pairs one-to-one on `(kind, line_number, content)` with a line in the direct intersection hunk or the mutation-AI hunk at the same `old_start`; the covered fraction drives `ai` / `mixed` / `unknown` as in the Contract above. `line_changes` buckets follow that combined classification.
-
+- `direct_patches` — one `ParsedPatch` per freshness-bounded `diff_traces` row, never combined, so conflicting sessions and duplicate occurrences stay visible. Matching lives in `agent_trace/evidence.rs`.
+- `mutation_ai_patch` — target-shaped committed lines that causal lineage attributed to an AI-exclusive scope, with resolved scope provenance.
+- `mutation_non_ai_patch` — target-shaped committed lines that lineage resolved to a non-exclusive transition; these block direct attribution.
 
 ## Domain types
 
 | Type                    | Purpose                                                                                                      |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `HunkContributor`       | Enum: `Ai`, `Mixed`, `Unknown`                                                                               |
-| `AgentTraceEvidence`    | Internal builder input pairing borrowed `direct_patch` (reconstructed direct patch) and `mutation_ai_patch` (target-shaped mutation-AI coverage with optional scope provenance) |
+| `AgentTraceEvidence`    | Builder input: borrowed per-row `direct_patches`, target-shaped `mutation_ai_patch` (with scope provenance), and `mutation_non_ai_patch` |
 | `Contributor`           | Nested per-conversation object carrying `type: HunkContributor` and optional `model_id` omitted when absent  |
 | `ConversationRelated`   | Schema-aligned related-link entry shape (`type` as free-form string + `url`) for optional `conversation.related` |
 | `LineRange`             | New-file line span with `start_line` + `end_line` + `content_hash`                                           |
@@ -45,12 +43,13 @@ Per hunk, a `post_commit_patch` touched line is covered when it pairs one-to-one
 | `LineChangeAttribution` | `metadata.sce.line_changes` shape: `{ ai, mixed, unknown }`, each a `LineChangeCounts`, `#[serde(default)]`  |
 | `AgentTrace`            | Top-level payload: `version`, `id`, `timestamp`, optional `vcs`, optional `tool`, `metadata`, `files`        |
 
-All types are `serde`-serializable with `snake_case` field naming. `Conversation.url` is always serialized as `https://sce.crocoder.dev/conversations/{agent_trace.id}` for the generated top-level trace ID. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when the combined direct/mutation evidence has one agreed concrete value. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and populated from matched direct and mutation touched-line `session_id` provenance as deduplicated session links.
+All types are `serde`-serializable with `snake_case` field naming. `Conversation.url` is always serialized as `https://sce.crocoder.dev/conversations/{agent_trace.id}` for the generated top-level trace ID. `Conversation.contributor` serializes as a nested object with a JSON field named `type`; `model_id` is present only when every attributed line in the hunk has one agreed concrete value. `Conversation.related` is optional and omitted when `None` (`skip_serializing_if = "Option::is_none"`) and populated from the sessions of attributed lines as deduplicated session links.
 
-The persisted Agent Trace path is covered with real Claude and Codex `Bash`
-mutations: mutation-only AI hunks retain their resolved model and canonical
-session link, while direct evidence remains a separate source. This preserves
-the boundary that mutation protocol attribution is not itself scope provenance.
+The persisted Agent Trace path is covered by
+`cli/src/services/hooks/commit_hooks/attribution_tests.rs`: lineage-attributed
+hunks retain their resolved model and canonical session link, stale or
+overridden direct candidates never reach the payload, and mutation protocol
+attribution is not itself scope provenance.
 
 ## Payload shape
 
@@ -119,7 +118,7 @@ Current output includes top-level metadata fields with this contract:
 
 ## Relationship to existing patch service
 
-Consumes `intersect_patches` and `ParsedPatch`/`PatchHunk`/`TouchedLine` types from `cli/src/services/patch.rs`. Does not introduce a separate patch model.
+Consumes `ParsedPatch`/`PatchHunk`/`TouchedLine` types and the path-identity helper `paths_refer_to_same_file` from `cli/src/services/patch.rs`. It does not introduce a separate patch model.
 
 ## Out of scope
 

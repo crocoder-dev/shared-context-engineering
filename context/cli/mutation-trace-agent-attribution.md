@@ -1,8 +1,9 @@
 # Mutation-trace Agent Trace attribution
 
-Mutation history is a conservative secondary source for committed touched lines
-that direct `diff_traces` evidence does not cover. Direct evidence is always
-resolved first and is never revoked or replaced by mutation evidence.
+Mutation history is the causal source of committed-line attribution. Every
+committed touched line is projected through mutation lineage; direct
+`diff_traces` evidence only attributes lines that lineage cannot resolve, and
+only when it meets the trust requirements below.
 
 Attribution is **causal**, not textual. The retained mutation history is treated
 as one ordered sequence of tree transitions and provenance is propagated forward
@@ -51,7 +52,11 @@ added line numbers):
 - replacement (`-old` / `+new`) — remove the old entry, create a new one from
   `origin`; textual similarity never transfers provenance;
 - duplicate identical lines stay at distinct positions; provenance never jumps
-  between occurrences.
+  between occurrences;
+- a deleted or renamed-away tracked path stays tracked as an absent (empty)
+  file, so a later transition that recreates it is applied rather than silently
+  skipped. An `Added` transition for a path still tracked with content is a
+  `LineageError`.
 
 Any structurally inconsistent transition (content mismatch, inconsistent hunk
 lengths, out-of-range hunk) returns `LineageError`; the caller fails closed for
@@ -67,10 +72,10 @@ and read-only Git tree access over two injectable traits —
 `TreeReadSource` (implemented for `GitSnapshotService`, adding `file_at_tree`
 alongside `diff_trees`).
 
-- **Direct evidence resolves first.** `attribution::exclude_direct_coverage`
-  removes directly covered committed lines by `(logical path, kind, line_number,
-  content)` before any mutation-history work. If no lines remain, the consumer
-  performs zero SQLite and zero Git work.
+- **Every committed line is projected.** Direct evidence no longer removes
+  lines before replay, so a weak or stale textual match can never hide a line
+  from causal lineage. A committed patch with no touched lines performs zero
+  SQLite and zero Git work.
 - **Load window.** The invoking worktree's events are paged newest first, bounded
   by both `MAX_MUTATION_ATTRIBUTION_EVENTS = 128` and the commit attribution cut
   (`revision <= ceiling`, applied as an exclusive `ceiling + 1` first cursor).
@@ -116,8 +121,10 @@ identity.
 
 ## Commit attribution cut
 
-`resolve_post_commit_mutation_ai_patch(repository_root, &db, direct_coverage,
-committed_patch) -> ParsedPatch` is the read-only post-commit entrypoint. It
+`resolve_post_commit_mutation_attribution(repository_root, &db,
+committed_patch) -> MutationAttributionResult` is the read-only post-commit
+entrypoint. It returns the mutation-AI, resolved non-AI, and unresolved line
+sets. It
 resolves the invoking worktree's identity from Git topology
 ([`git_snapshot::resolve_git_dir` + `resolve_worktree_id`](mutation-trace-runtime-coordinator.md),
 which derive `WorktreeId` from `git rev-parse --absolute-git-dir` /
@@ -131,30 +138,75 @@ critical section is a single indexed read.
 
 An unresolvable git dir, an unresolvable worktree identity, an unavailable
 snapshot service, an unreadable `HEAD` tree, a lock timeout, or no mutation
-history at all each yield an empty patch, so post-commit falls back to
-direct-only Agent Trace behavior. The entrypoint creates no identity and writes
+history at all each yield an empty result (every line unresolved), so
+post-commit falls back to trusted direct-only Agent Trace behavior. The entrypoint creates no identity and writes
 no mutation-cursor state.
+
+## Evidence precedence
+
+Each committed touched line is resolved independently in
+`build_agent_trace_from_evidence` (`cli/src/services/agent_trace.rs`), with
+direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
+
+| Mutation lineage | Direct evidence | Result |
+| --- | --- | --- |
+| `MutationAi` (session S) | unique, session S | S; model from scope, else from the direct row |
+| `MutationAi` (session S) | anything else | S; the direct candidate is discarded |
+| `MutationNonAi` | anything | not AI; direct evidence cannot override |
+| unresolved | unique trusted match | the direct session and model |
+| unresolved | conflicting sessions, historical-only, or none | unknown |
+
+- **When is direct evidence sufficient?** Only when lineage left the line
+  unresolved and a direct candidate is (1) *fresh* — recorded after the
+  parent commit's committer-time second (`direct_evidence_cutoff_ms`), still
+  inside the 7-day window; (2) an *exact* touched-line match on file identity,
+  `kind`, `line_number`, and `content`; and (3) *unambiguous* — every fresh
+  exact candidate for that line comes from one session. Each candidate row is
+  kept separate (never merged into one patch), so evidence is consumed by its exact
+  occurrence and a duplicate line elsewhere in the file is not covered.
+- **When does lineage override direct evidence?** Whenever lineage resolves
+  the line: `MutationAi` attributes to the owning scope's session, and
+  `MutationNonAi` (contended, unscoped, or unhealthy transitions) keeps it
+  non-AI.
+- **What happens when sources disagree?** The causal lineage result wins over
+  a textual match. Disagreeing direct candidates for one line fail closed to
+  unknown; SCE never picks the newest or first row. Overridden candidates do
+  not reach `conversation.related`, `contributor.model_id`, or the `tool`
+  object (emitted only when a direct candidate supports a final line
+  attribution).
+- **What happens when history is incomplete?** Gaps, the 128-event window, the
+  revision ceiling, and the unobserved tail keep lines `Unknown`, as before.
+  An unknown line then needs fresh, exact, single-session direct evidence;
+  historical `(kind, content)` similarity alone never attributes it.
+- **How are already-committed changes not credited again?** Direct rows
+  recorded before the parent commit are outside the query window, positional
+  exactness rejects drifted boilerplate, and lineage attributes only the
+  transition that most recently produced the committed line.
+- **What remains unsupported?** Removed lines are never resolved by lineage
+  (only exact fresh direct evidence can cover them). Direct-only edits whose
+  line numbers drift through later uncaptured edits now resolve to unknown or
+  `mixed` instead of `ai`. The freshness bound uses the committer time of the
+  first parent, so an uncommitted edit made before the parent commit (partial
+  staging) loses direct attribution. Mutation scopes without a recorded model
+  still produce hunks without `model_id`.
+
+The former `intersect_patches` / `combine_patches` helpers and their historical
+`(kind, content)` fallback were removed from `patch.rs`.
 
 ## Post-commit composition
 
-- **Direct evidence stays authoritative.** The post-commit flow computes the
-  existing direct `intersect_patches` intersection and passes it as
-  `direct_coverage`; only committed lines it does not cover reach mutation
-  history. `post_commit_patch_intersections` keeps its direct-only meaning and
-  mutation evidence never enters `diff_traces`.
+- **Evidence stays separated.** `post_commit_patch_intersections` stores only
+  the trusted direct-evidence projection (fresh, exact, single-session) and its
+  `recent_window_cutoff_ms` records the freshness-bounded cutoff. Mutation
+  evidence never enters `diff_traces`.
 - **No fabricated direct provenance.** The mutation-AI patch is target-shaped
   and carries only the resolved observational session/model metadata described
   above; it carries no tool or tool-version metadata. `ScopeId`, `ActorKind`,
-  and `AiExclusive(scope)` are never translated into direct provenance. The
-  current Agent Trace builder still derives hunk model/session and the
-  top-level `tool` object from direct evidence only; mutation-only coverage
-  widens `ai` / `mixed` classification while preserving the resolved metadata
-  for the combined attribution step. See
+  and `AiExclusive(scope)` are never translated into direct provenance. See
   [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md).
-- **Final persistence.** The single combined Agent Trace (direct + mutation AI
-  coverage) is validated against the embedded schema and stored in
-  `agent_traces.trace_json`; no schema, migration, or checkpoint is added. Hook
-  wiring detail lives in
+- **Final persistence.** The single resolved Agent Trace is validated against
+  the embedded schema and stored in `agent_traces.trace_json`; no schema or
+  migration is added. Hook wiring detail lives in
   [../sce/agent-trace-hooks-command-routing.md](../sce/agent-trace-hooks-command-routing.md).
 
 ## Known limitation
@@ -169,30 +221,26 @@ observable tree difference.
 
 ## Regressions
 
-- `lineage.rs` — added AI line carries provenance; removed line loses it
+- `lineage/tests.rs` — added AI line carries provenance; removed line loses it
   permanently; identical remove/re-add takes the new transition's provenance;
   context provenance survives line-number movement; `Unobserved` introduces
   `Unknown`; content mismatch is a `LineageError`; duplicate lines do not let
-  provenance jump; deleted file drops out.
-- `runtime/mutation_attribution/tests.rs` — surviving AI line attributed; AI
-  survives an unrelated later mutation; a stale AI mutation cannot resurrect
-  through an unobserved tail; a non-AI replacement owns the new line; a history
-  gap is not crossed; bounded-history baseline starts `Unknown`; an unobserved
-  tail adds `Unknown` but keeps surviving AI; an event past the commit cut has
-  no influence; event 128 contributes and 129 is never loaded; a page-query
-  failure is a conservative barrier; a reconstruction failure reloads and
-  continues; real `GitSnapshotService` + store seams. Exact-path identity: a
-  suffix-related mutation file (`packages/foo/src/lib.rs`) never pairs with a
-  committed `src/lib.rs` even with identical added text and line number; an
-  exact nested path still attributes; multiple similar nested mutation paths
-  stay independent of the target; a shared basename alone is not a match.
-- `hooks/mod.rs` (`mutation_attribution_e2e`) — real Git/DB: mutation-only `ai`
-  without provenance; direct+mutation completion; a newer non-exclusive event
-  keeps a line non-AI; adversarial linked-worktree isolation; the three
-  persistence layers stay separated (`diff_traces` and
-  `post_commit_patch_intersections` direct-only, `agent_traces.trace_json`
-  combined).
-- `hooks/mod.rs` (`mutation_provenance_e2e`) — real Claude and Codex `Bash`
-  adapter admission through generic mutation scope, commit, causal projection,
-  and persisted Agent Trace JSON; mutation protocol attribution remains
-  distinct from scope provenance.
+  provenance jump; a deleted-then-recreated file stays tracked; a renamed-away
+  path stays tracked as absent; adding a file still tracked with content fails
+  closed.
+- `runtime/mutation_attribution/tests.rs` — real Git trees: an observed AI event
+  beats an old session's historical text match; AI edits to a deleted and
+  recreated file keep provenance (the `control-plane` `494e5693` incident
+  shape); an unobserved tail, a history gap, an event outside the 128-event
+  window, and an event beyond the revision ceiling each keep the line unknown
+  and keep the old session out of the trace.
+- `hooks/commit_hooks/attribution_tests.rs` — dated Git history: stale
+  already-committed sessions do not credit a later commit; lineage overrides a
+  fresh exact match from another session; non-exclusive lineage blocks direct
+  evidence; historical content at other positions does not attribute; fresh
+  exact direct-only evidence still attributes with session, model, and tool;
+  conflicting direct sessions fail closed; one source line covers one duplicate
+  occurrence; the staged co-author check ignores stale and historical-only
+  rows; real Turso persistence from `diff_traces` through
+  `post_commit_patch_intersections`, `MutationTraceStore`, and
+  `agent_traces.trace_json`.

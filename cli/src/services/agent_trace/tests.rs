@@ -4,7 +4,7 @@ use super::{
 };
 use crate::services::{
     agent_trace::agent_trace_conversation_url,
-    patch::{combine_patches, parse_patch, ParsedPatch},
+    patch::{parse_patch, ParsedPatch},
 };
 use serde_json::Value;
 
@@ -55,16 +55,17 @@ const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
 ];
 
 fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
-    let constructed_patch = combine_patches(&parse_fixtures(scenario.incremental));
+    let direct_patches = parse_fixtures(scenario.incremental);
     let post_commit_patch =
         parse_patch(scenario.post_commit, None).expect("fixture patch should parse");
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
     validate_agent_trace_value(&golden).expect("golden json should validate against schema");
-    let empty_mutation_ai_patch = ParsedPatch { files: Vec::new() };
+    let empty_mutation_patch = ParsedPatch { files: Vec::new() };
     let actual = build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patch: &constructed_patch,
-            mutation_ai_patch: &empty_mutation_ai_patch,
+            direct_patches: &direct_patches,
+            mutation_ai_patch: &empty_mutation_patch,
+            mutation_non_ai_patch: &empty_mutation_patch,
         },
         &post_commit_patch,
         AgentTraceMetadataInput {
@@ -202,6 +203,20 @@ fn file_rename_reconstruction_matches_golden_agent_trace() {
     });
 }
 
+#[test]
+fn line_and_file_deletion_reconstruction_matches_golden_agent_trace() {
+    assert_builds_expected_agent_trace(AgentTraceScenario {
+        incremental: &[
+            include_str!("fixtures/line_and_file_deletion_reconstruction/incremental_01.patch"),
+            include_str!("fixtures/line_and_file_deletion_reconstruction/incremental_02.patch"),
+        ],
+        post_commit: include_str!(
+            "fixtures/line_and_file_deletion_reconstruction/post_commit.patch"
+        ),
+        golden: include_str!("fixtures/line_and_file_deletion_reconstruction/golden.json"),
+    });
+}
+
 #[derive(Clone, Copy)]
 struct EvidenceScenario {
     direct: &'static str,
@@ -233,8 +248,9 @@ fn assert_builds_expected_agent_trace_from_evidence(scenario: EvidenceScenario) 
 
     let actual = build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patch: &direct_patch,
+            direct_patches: std::slice::from_ref(&direct_patch),
             mutation_ai_patch: &mutation_ai_patch,
+            mutation_non_ai_patch: &ParsedPatch { files: Vec::new() },
         },
         &post_commit_patch,
         AgentTraceMetadataInput {

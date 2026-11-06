@@ -43,33 +43,11 @@ Both functions wrap `serde_json::from_str`/`serde_json::from_slice` and map serd
 
 ## Set operations
 
-### Intersection
-
-`intersect_patches(a: &ParsedPatch, b: &ParsedPatch) -> ParsedPatch` returns a `ParsedPatch` containing only the touched lines from `b` that are also represented in `a` for the same logical file.
-
-- **File matching**: files are matched by post-change path identity — exact `new_path` equality, or absolute-vs-relative path variants whose normalized path segments share the same relative suffix
-- **Touched-line matching**: matching prefers exact identity (`kind`, `line_number`, and `content`); when no exact match exists, it falls back to historical reconstruction matching by `kind` and `content` only so canonical post-commit patches can still intersect with earlier incremental diffs whose line numbers drifted
-- **Result structure**: only files with at least one overlapping touched line appear in the result; hunks with no overlapping lines are excluded; hunk range metadata (`old_start`, `old_count`, `new_start`, `new_count`) is preserved from the second patch (`b`) so the result keeps the target patch shape, while matched-line `session_id` and hunk `model_id` provenance are inherited from the first patch (`a`) when available (and remain `None` when matched constructed provenance is absent)
-- **Determinism**: the same inputs always produce the same output
-- **Equivalent-hunk behavior**: semantically identical hunks still intersect when they differ only in surrounding context windows, hunk header ranges, or absolute-vs-relative `Index:` path spelling, as long as their touched-line identities match exactly
-- **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches and then intersects with the current commit patch (see `agent-trace-hooks-command-routing.md`).
-
-### Combination
-
-`combine_patches(patches: &[ParsedPatch]) -> ParsedPatch` merges multiple `ParsedPatch` values into one deterministic result with later-input-wins semantics for duplicate/conflicting touched-line entries.
-
-- **File matching**: files are grouped by `new_path`; file metadata (`old_path`, `kind`) is taken from the last patch that contributed to each file
-- **Touched-line identity and deduplication**: touched lines are deduplicated by identity (`kind`, `line_number`, `content`); when multiple patches describe the same file and logical touched-line slot, the later input's entry is retained
-- **Hunk reconstruction and provenance**: surviving lines are grouped by their hunk metadata from the last contributing patch; each reconstructed hunk preserves that winning hunk's `model_id` provenance; hunks are ordered by `old_start`; lines within each hunk are ordered by `line_number` with `Removed` before `Added` at the same position, then by `content` for full determinism
-- **File ordering**: files appear in the result in the order they are first encountered across the input patches
-- **Determinism**: the same inputs in the same order always produce the same output
-- **Consumed by**: the post-commit hook runtime combines recent DB diff-trace patches before intersecting (see `agent-trace-hooks-command-routing.md`).
-
 ### Direct matching vs. causal mutation lineage
 
-`intersect_patches` and `combine_patches` are the **direct-evidence** matchers and are unchanged: their historical `(kind, content)` fallback is deliberately permissive so canonical post-commit lines still reconcile with earlier incremental `diff_traces`, even where repeated content stays physically ambiguous.
+The former `intersect_patches` / `combine_patches` set operations were removed: their historical `(kind, content)` fallback was too permissive for attribution and they had no remaining runtime caller. Attribution-grade direct matching lives in `cli/src/services/agent_trace/evidence.rs`, keeps each `diff_traces` row separate, requires an exact `(file, kind, line_number, content)` match, and fails closed when candidates for one line come from different sessions. It reuses `paths_refer_to_same_file` for absolute-vs-relative file identity.
 
-Mutation-history attribution does **not** reuse them and does **not** match historical patches against the committed patch at all. `cli/src/services/mutation_trace/lineage.rs` applies each reconstructed transition's hunks structurally to a per-line provenance vector and propagates provenance forward; `attribution.rs` only supplies `exclude_direct_coverage` (drop directly covered lines) and `patch_for_locations` (rebuild a target-shaped patch from selected line locations). File identity for mutation lineage is **exact logical repository path** equality only — the lineage keys tracked files by that path (`new_path` when non-empty, otherwise `old_path`), so a reconstructed transition touching a path that is not byte-equal to a committed target path contributes no provenance. There is no normalized-suffix or basename fallback in the mutation matcher; suffix equivalence stays confined to the direct-evidence matchers above. A committed line is AI only if the line an AI event introduced survives every later transition into the committed tree. See [mutation-trace-agent-attribution.md](mutation-trace-agent-attribution.md).
+Mutation-history attribution does **not** match historical patches against the committed patch at all. `cli/src/services/mutation_trace/lineage.rs` applies each reconstructed transition's hunks structurally to a per-line provenance vector and propagates provenance forward; `attribution.rs` only supplies `patch_for_locations` / `patch_for_locations_with_provenance` (rebuild a target-shaped patch from selected line locations). File identity for mutation lineage is **exact logical repository path** equality only — the lineage keys tracked files by that path (`new_path` when non-empty, otherwise `old_path`), so a reconstructed transition touching a path that is not byte-equal to a committed target path contributes no provenance. There is no normalized-suffix or basename fallback in the mutation matcher; suffix equivalence stays confined to the direct-evidence matchers above. A committed line is AI only if the line an AI event introduced survives every later transition into the committed tree. See [mutation-trace-agent-attribution.md](mutation-trace-agent-attribution.md).
 
 ### Codex apply_patch boundary
 
@@ -81,14 +59,13 @@ bounded deterministic synthetic line identities from `tool_use_id`; those
 identities are evidence keys, not physical source line numbers. Delete File,
 pure rename, and Bash filesystem mutations produce no line-level evidence.
 
-The existing `combine_patches` and `intersect_patches` operations remain
-unchanged. Their historical `kind` + `content` fallback reconciles synthetic
-Codex positions with real post-commit positions, while repeated identical
-content can remain physically ambiguous because Codex supplies no true line
-ranges and SCE takes no filesystem snapshot. The Codex handler persists through
-the existing `diff_traces` row shape and the post-commit runtime consumes it
-through the same combination/intersection path; no Codex-specific Agent Trace
-builder, pending state, or schema migration is introduced.
+Attribution-grade direct matching requires exact line numbers, and synthetic
+Codex positions (offsets of at least 2^31 per event) never equal real
+post-commit positions. Codex `apply_patch` rows therefore cannot attribute or
+falsely attribute a committed line; Codex edits are attributed through Codex
+mutation scopes and causal lineage. The Codex handler still persists through
+the existing `diff_traces` row shape; no Codex-specific Agent Trace builder,
+pending state, or schema migration is introduced.
 
 ### Runtime wiring status
 
@@ -96,18 +73,15 @@ builder, pending state, or schema migration is introduced.
 |-----------|-----------|-------|
 | `parse_patch` | Hook runtime, Agent Trace DB recent-row parsing, tests | Consumed by `post-commit` capture flow and `recent_diff_trace_patches` to parse stored raw `diff_traces.patch` text |
 | `load_patch_from_json` | Storage-agnostic JSON reconstruction callers | Reconstructs serialized `ParsedPatch` JSON when callers already have JSON payloads; not used for raw `diff_traces.patch` text in `recent_diff_trace_patches` |
-| `intersect_patches` | Post-commit hook runtime | Combines recent patches then intersects with current commit patch |
-| `combine_patches` | Post-commit hook runtime | Combines chronological recent patches before intersection |
 
-For `payload_type="structured"` database rows, the repository adapter enriches the derived `ParsedPatch` before these set operations: every hunk receives the persisted row `model_id`, and every touched line receives the persisted tool-prefixed canonical row `session_id`. The raw unprefixed session carried inside the stored Claude payload is not reconstructed as touched-line provenance.
+For `payload_type="structured"` database rows, the repository adapter enriches the derived `ParsedPatch` before direct-evidence matching: every hunk receives the persisted row `model_id`, and every touched line receives the persisted tool-prefixed canonical row `session_id`. The raw unprefixed session carried inside the stored Claude payload is not reconstructed as touched-line provenance.
 
 Public types consumed by the parser or load helpers have `#[allow(dead_code)]` removed; other module internals that are not yet consumed outside the crate retain `#[allow(dead_code)]`.
 
 ## Reconstruction fixture suites
 
-Patch reconstruction tests use deterministic fixture suites under `cli/src/services/patch/fixtures/`.
+Reconstruction scenarios (`average_age`, `hello_world`, `mixed_change`, `poem_edit`, `poem_write`, `text_file_lifecycle`, `file_rename`, `line_and_file_deletion`) live under `cli/src/services/agent_trace/fixtures/` and are asserted end-to-end through `build_agent_trace_from_evidence` golden Agent Trace payloads in `cli/src/services/agent_trace/tests.rs`.
 
-- Existing suites remain intact (`average_age_reconstruction`, `hello_world_reconstruction`).
 - `diff_creation/` is the checked-in Claude diff-render golden fixture suite used by Rust derivation coverage, located at `cli/src/services/structured_patch/fixtures/`. Each active golden scenario consumes:
   - `claude-post-tool-use.json` containing a sanitized synthetic Claude `PostToolUse` payload shaped for `derive_claude_structured_patch(...)`
   - `expected.patch` containing the expected unified diff output

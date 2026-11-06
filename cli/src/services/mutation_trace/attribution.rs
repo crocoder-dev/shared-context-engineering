@@ -1,8 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::services::patch::{
-    ParsedPatch, PatchFileChange, PatchHunk, TouchedLine, TouchedLineKind,
-};
+use crate::services::patch::{ParsedPatch, PatchFileChange, PatchHunk};
 
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,72 +22,6 @@ pub struct PatchLineLocation {
 pub struct PatchLineProvenance {
     pub session_id: Option<String>,
     pub model_id: Option<String>,
-}
-
-#[must_use]
-pub fn exclude_direct_coverage(
-    target_patch: &ParsedPatch,
-    direct_coverage: &ParsedPatch,
-) -> ParsedPatch {
-    let direct_lines = direct_line_keys(direct_coverage);
-    let selected: BTreeSet<PatchLineLocation> = all_locations(target_patch)
-        .into_iter()
-        .filter(|location| {
-            let line = line_at(target_patch, *location);
-            !direct_lines.contains(&(
-                logical_path(&target_patch.files[location.file_index]).to_owned(),
-                line.kind,
-                line.line_number,
-                line.content.clone(),
-            ))
-        })
-        .collect();
-    patch_for_locations(target_patch, &selected)
-}
-
-fn direct_line_keys(direct_patch: &ParsedPatch) -> HashSet<(String, TouchedLineKind, u64, String)> {
-    direct_patch
-        .files
-        .iter()
-        .flat_map(|file| {
-            let path = logical_path(file).to_owned();
-            file.hunks.iter().flat_map(move |hunk| {
-                let path = path.clone();
-                hunk.lines.iter().map(move |line| {
-                    (
-                        path.clone(),
-                        line.kind,
-                        line.line_number,
-                        line.content.clone(),
-                    )
-                })
-            })
-        })
-        .collect()
-}
-
-fn all_locations(patch: &ParsedPatch) -> BTreeSet<PatchLineLocation> {
-    patch
-        .files
-        .iter()
-        .enumerate()
-        .flat_map(|(file_index, file)| {
-            file.hunks
-                .iter()
-                .enumerate()
-                .flat_map(move |(hunk_index, hunk)| {
-                    (0..hunk.lines.len()).map(move |line_index| PatchLineLocation {
-                        file_index,
-                        hunk_index,
-                        line_index,
-                    })
-                })
-        })
-        .collect()
-}
-
-fn line_at(patch: &ParsedPatch, location: PatchLineLocation) -> &TouchedLine {
-    &patch.files[location.file_index].hunks[location.hunk_index].lines[location.line_index]
 }
 
 pub(crate) fn logical_path(file: &PatchFileChange) -> &str {
@@ -208,83 +140,4 @@ fn agreed_model(
         }
     }
     model.map(ToOwned::to_owned)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::services::patch::FileChangeKind;
-
-    fn line(kind: TouchedLineKind, number: u64, content: &str) -> TouchedLine {
-        TouchedLine {
-            kind,
-            line_number: number,
-            content: content.to_owned(),
-            session_id: None,
-        }
-    }
-
-    fn patch(path: &str, lines: Vec<TouchedLine>) -> ParsedPatch {
-        ParsedPatch {
-            files: vec![PatchFileChange {
-                old_path: path.to_owned(),
-                new_path: path.to_owned(),
-                kind: FileChangeKind::Modified,
-                hunks: vec![PatchHunk {
-                    old_start: 1,
-                    old_count: 1,
-                    new_start: 1,
-                    new_count: 1,
-                    model_id: None,
-                    lines,
-                }],
-            }],
-        }
-    }
-
-    fn contents(result: &ParsedPatch) -> Vec<(u64, String)> {
-        result
-            .files
-            .iter()
-            .flat_map(|file| file.hunks.iter())
-            .flat_map(|hunk| hunk.lines.iter())
-            .map(|line| (line.line_number, line.content.clone()))
-            .collect()
-    }
-
-    #[test]
-    fn exclude_direct_coverage_removes_exactly_the_directly_covered_lines() {
-        let direct = patch(
-            "src/lib.rs",
-            vec![line(TouchedLineKind::Added, 1, "direct")],
-        );
-        let target = patch(
-            "src/lib.rs",
-            vec![
-                line(TouchedLineKind::Added, 1, "direct"),
-                line(TouchedLineKind::Added, 2, "mutation"),
-            ],
-        );
-
-        let remaining = exclude_direct_coverage(&target, &direct);
-        assert_eq!(contents(&remaining), vec![(2, "mutation".to_owned())]);
-    }
-
-    #[test]
-    fn exclude_direct_coverage_keeps_everything_when_direct_is_empty() {
-        let target = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "x")]);
-        let remaining = exclude_direct_coverage(&target, &ParsedPatch { files: vec![] });
-        assert_eq!(contents(&remaining), vec![(1, "x".to_owned())]);
-    }
-
-    #[test]
-    fn exclude_direct_coverage_matches_on_content_not_only_position() {
-        let direct = patch("src/lib.rs", vec![line(TouchedLineKind::Added, 1, "kept")]);
-        let target = patch(
-            "src/lib.rs",
-            vec![line(TouchedLineKind::Added, 1, "different")],
-        );
-        let remaining = exclude_direct_coverage(&target, &direct);
-        assert_eq!(contents(&remaining), vec![(1, "different".to_owned())]);
-    }
 }
