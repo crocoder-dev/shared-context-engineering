@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::repository_path::{RepositoryPath, RepositoryRoot};
 use super::AgentTraceTool;
-use crate::services::agent_trace_db::ParsedDiffTracePatch;
+use crate::services::agent_trace_db::{DiffTracePathOrigin, ParsedDiffTracePatch};
 use crate::services::mutation_trace::attribution::{
     logical_path, patch_for_locations_with_provenance, PatchLineLocation, PatchLineProvenance,
 };
@@ -11,7 +11,7 @@ use crate::services::patch::{ParsedPatch, PatchFileChange, TouchedLineKind};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DirectEvidenceSource<'a> {
     pub patch: &'a ParsedPatch,
-    pub base_dir: Option<&'a str>,
+    pub path_origin: &'a DiffTracePathOrigin,
     pub tool_name: Option<&'a str>,
     pub tool_version: Option<&'a str>,
 }
@@ -21,7 +21,7 @@ impl<'a> DirectEvidenceSource<'a> {
     pub fn repository_relative(patch: &'a ParsedPatch) -> Self {
         DirectEvidenceSource {
             patch,
-            base_dir: None,
+            path_origin: &DiffTracePathOrigin::RepositoryRelative,
             tool_name: None,
             tool_version: None,
         }
@@ -32,7 +32,7 @@ impl<'a> From<&'a ParsedDiffTracePatch> for DirectEvidenceSource<'a> {
     fn from(row: &'a ParsedDiffTracePatch) -> Self {
         DirectEvidenceSource {
             patch: &row.patch,
-            base_dir: row.path_base_dir.as_deref(),
+            path_origin: &row.path_origin,
             tool_name: row.tool_name.as_deref(),
             tool_version: row.tool_version.as_deref(),
         }
@@ -64,7 +64,7 @@ pub(crate) fn direct_line_evidence(
         .flat_map(|(source_index, source)| {
             source.patch.files.iter().filter_map(move |file| {
                 repository_root
-                    .repository_path(logical_path(file), source.base_dir)
+                    .repository_path(logical_path(file), source.path_origin)
                     .map(|path| (source_index, file, path))
             })
         })
@@ -72,8 +72,10 @@ pub(crate) fn direct_line_evidence(
 
     let mut evidence = BTreeMap::new();
     for (file_index, target_file) in target.files.iter().enumerate() {
-        let Some(target_path) = repository_root.repository_path(logical_path(target_file), None)
-        else {
+        let Some(target_path) = repository_root.repository_path(
+            logical_path(target_file),
+            &DiffTracePathOrigin::RepositoryRelative,
+        ) else {
             continue;
         };
         let mut by_line: HashMap<ExactLineKey<'_>, Vec<(usize, PatchLineProvenance)>> =

@@ -1,5 +1,7 @@
 use std::path::{Component, Path};
 
+use crate::services::agent_trace_db::DiffTracePathOrigin;
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct RepositoryPath(String);
 
@@ -36,10 +38,13 @@ impl RepositoryRoot {
         repository_root
     }
 
+    /// Resolves `path` to its repository identity. Absolute paths stand on
+    /// their own; a relative path is interpreted only in the coordinate system
+    /// `origin` establishes, and is rejected when there is none.
     pub(crate) fn repository_path(
         &self,
         path: &str,
-        base_dir: Option<&str>,
+        origin: &DiffTracePathOrigin,
     ) -> Option<RepositoryPath> {
         if path.is_empty() {
             return None;
@@ -48,11 +53,14 @@ impl RepositoryRoot {
         if path.is_absolute() {
             return self.strip_root(&absolute_components(path)?);
         }
-        match base_dir.map(Path::new).filter(|base| base.is_absolute()) {
-            Some(base) => self.strip_root(&absolute_components(&base.join(path))?),
-            None => {
+        match origin {
+            DiffTracePathOrigin::RepositoryRelative => {
                 relative_components(path).map(|components| RepositoryPath(components.join("/")))
             }
+            DiffTracePathOrigin::WorkingDirectory(cwd) => {
+                self.strip_root(&absolute_components(&Path::new(cwd).join(path))?)
+            }
+            DiffTracePathOrigin::AbsoluteOnly => None,
         }
     }
 
@@ -102,82 +110,110 @@ mod tests {
     use std::path::Path;
 
     use super::RepositoryRoot;
+    use crate::services::agent_trace_db::DiffTracePathOrigin;
 
     const ROOT: &str = "/workspace/project";
 
-    fn identity(path: &str, base_dir: Option<&str>) -> Option<String> {
+    fn resolve(path: &str, origin: &DiffTracePathOrigin) -> Option<String> {
         RepositoryRoot::new(Path::new(ROOT))
-            .repository_path(path, base_dir)
+            .repository_path(path, origin)
             .map(|path| path.as_str().to_owned())
+    }
+
+    fn identity(path: &str) -> Option<String> {
+        resolve(path, &DiffTracePathOrigin::RepositoryRelative)
+    }
+
+    fn in_cwd(path: &str, cwd: &str) -> Option<String> {
+        resolve(path, &DiffTracePathOrigin::WorkingDirectory(cwd.to_owned()))
+    }
+
+    fn absolute_only(path: &str) -> Option<String> {
+        resolve(path, &DiffTracePathOrigin::AbsoluteOnly)
     }
 
     #[test]
     fn relative_paths_normalize_to_exact_repository_identity() {
-        assert_eq!(identity("src/lib.rs", None).as_deref(), Some("src/lib.rs"));
+        assert_eq!(identity("src/lib.rs").as_deref(), Some("src/lib.rs"));
         assert_eq!(
-            identity("./src/../src/lib.rs", None).as_deref(),
+            identity("./src/../src/lib.rs").as_deref(),
             Some("src/lib.rs")
         );
-        assert_ne!(
-            identity("src/lib.rs", None),
-            identity("packages/foo/src/lib.rs", None)
-        );
+        assert_ne!(identity("src/lib.rs"), identity("packages/foo/src/lib.rs"));
     }
 
     #[test]
     fn absolute_paths_inside_the_repository_become_repository_relative() {
+        for resolve_absolute in [identity, absolute_only] {
+            assert_eq!(
+                resolve_absolute("/workspace/project/src/lib.rs").as_deref(),
+                Some("src/lib.rs")
+            );
+            assert_eq!(
+                resolve_absolute("/workspace/project/./src/../src/lib.rs").as_deref(),
+                Some("src/lib.rs")
+            );
+        }
         assert_eq!(
-            identity("/workspace/project/src/lib.rs", None).as_deref(),
-            Some("src/lib.rs")
-        );
-        assert_eq!(
-            identity("/workspace/project/./src/../src/lib.rs", None).as_deref(),
+            in_cwd("/workspace/project/src/lib.rs", "/elsewhere").as_deref(),
             Some("src/lib.rs")
         );
     }
 
     #[test]
     fn absolute_paths_outside_the_repository_are_rejected() {
-        assert_eq!(
-            identity("/workspace/another-project/src/lib.rs", None),
-            None
-        );
-        assert_eq!(identity("/workspace/project-two/src/lib.rs", None), None);
-        assert_eq!(identity("/workspace/project", None), None);
-        assert_eq!(identity("/src/lib.rs", None), None);
+        for resolve_absolute in [identity, absolute_only] {
+            assert_eq!(
+                resolve_absolute("/workspace/another-project/src/lib.rs"),
+                None
+            );
+            assert_eq!(resolve_absolute("/workspace/project-two/src/lib.rs"), None);
+            assert_eq!(resolve_absolute("/workspace/project"), None);
+            assert_eq!(resolve_absolute("/src/lib.rs"), None);
+        }
+        assert_eq!(in_cwd("/workspace/another-project/src/lib.rs", ROOT), None);
     }
 
     #[test]
     fn traversal_cannot_escape_the_repository() {
-        assert_eq!(identity("../project/src/lib.rs", None), None);
-        assert_eq!(identity("src/../../lib.rs", None), None);
+        assert_eq!(identity("../project/src/lib.rs"), None);
+        assert_eq!(identity("src/../../lib.rs"), None);
         assert_eq!(
-            identity("/workspace/project/../another-project/src/lib.rs", None),
+            identity("/workspace/project/../another-project/src/lib.rs"),
             None
         );
-        assert_eq!(identity("../src/lib.rs", Some("/workspace/project")), None);
-        assert_eq!(identity("", None), None);
+        assert_eq!(in_cwd("../src/lib.rs", ROOT), None);
+        assert_eq!(
+            in_cwd("../../other/src/lib.rs", "/workspace/project/cli"),
+            None
+        );
+        assert_eq!(
+            in_cwd("../../../../../src/lib.rs", "/workspace/project/cli"),
+            None
+        );
+        assert_eq!(identity(""), None);
     }
 
     #[test]
-    fn relative_paths_resolve_against_an_absolute_base_directory() {
+    fn relative_paths_resolve_against_an_absolute_working_directory() {
         assert_eq!(
-            identity("src/lib.rs", Some("/workspace/project/cli")).as_deref(),
+            in_cwd("src/lib.rs", "/workspace/project/cli").as_deref(),
             Some("cli/src/lib.rs")
         );
+        assert_eq!(in_cwd("src/lib.rs", ROOT).as_deref(), Some("src/lib.rs"));
         assert_eq!(
-            identity("src/lib.rs", Some("/workspace/project")).as_deref(),
-            Some("src/lib.rs")
-        );
-        assert_eq!(
-            identity("../cli/src/lib.rs", Some("/workspace/project/config")).as_deref(),
+            in_cwd("../cli/src/lib.rs", "/workspace/project/config").as_deref(),
             Some("cli/src/lib.rs")
         );
-        assert_eq!(identity("src/lib.rs", Some("/workspace/another")), None);
-        assert_eq!(
-            identity("src/lib.rs", Some("relative/base")).as_deref(),
-            Some("src/lib.rs")
-        );
+        assert_eq!(in_cwd("src/lib.rs", "/workspace/another"), None);
+    }
+
+    #[test]
+    fn relative_paths_without_an_established_coordinate_system_are_rejected() {
+        assert_eq!(absolute_only("src/lib.rs"), None);
+        assert_eq!(absolute_only("./src/lib.rs"), None);
+        assert_eq!(in_cwd("src/lib.rs", "relative/base"), None);
+        assert_eq!(in_cwd("src/lib.rs", ""), None);
     }
 
     #[cfg(unix)]
@@ -192,9 +228,12 @@ mod tests {
         let canonical = real.path().canonicalize().expect("canonical root");
         for spelling in [link.join("src/lib.rs"), canonical.join("src/lib.rs")] {
             assert_eq!(
-                root.repository_path(spelling.to_str().expect("utf-8 path"), None)
-                    .map(|path| path.as_str().to_owned())
-                    .as_deref(),
+                root.repository_path(
+                    spelling.to_str().expect("utf-8 path"),
+                    &DiffTracePathOrigin::AbsoluteOnly
+                )
+                .map(|path| path.as_str().to_owned())
+                .as_deref(),
                 Some("src/lib.rs")
             );
         }

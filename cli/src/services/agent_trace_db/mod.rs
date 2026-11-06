@@ -179,7 +179,23 @@ pub struct ParsedDiffTracePatch {
     pub tool_name: Option<String>,
     pub tool_version: Option<String>,
     pub payload_type: String,
-    pub path_base_dir: Option<String>,
+    pub path_origin: DiffTracePathOrigin,
+}
+
+/// Coordinate system in which a diff-trace row's file paths are expressed.
+///
+/// Absolute paths resolve on their own under every origin; the origin only
+/// decides how a relative path is interpreted. An unknown origin fails closed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiffTracePathOrigin {
+    /// Git patch paths: relative paths are repository-relative.
+    RepositoryRelative,
+    /// Claude structured paths with a recorded absolute `cwd`: relative paths
+    /// are relative to that working directory.
+    WorkingDirectory(String),
+    /// Claude structured paths without a usable absolute `cwd`: relative paths
+    /// have no established coordinate system and cannot be resolved.
+    AbsoluteOnly,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -551,7 +567,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
         let is_structured = row.payload_type == PAYLOAD_TYPE_STRUCTURED;
         let parse_result = match row.payload_type.as_str() {
             PAYLOAD_TYPE_PATCH => parse_patch(&row.patch, Some(row.session_id.as_str()))
-                .map(|patch| (patch, None))
+                .map(|patch| (patch, DiffTracePathOrigin::RepositoryRelative))
                 .map_err(|error| skipped_diff_trace_patch_reason(&error)),
             PAYLOAD_TYPE_STRUCTURED => match serde_json::from_str::<Value>(&row.patch) {
                 Ok(payload) => match derive_claude_structured_patch(
@@ -561,7 +577,11 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     row.tool_version.as_deref(),
                 ) {
                     ClaudeStructuredPatchDerivationResult::Derived(derived) => {
-                        Ok((derived.patch, structured_payload_cwd(&payload)))
+                        let path_origin = derived.working_directory.map_or(
+                            DiffTracePathOrigin::AbsoluteOnly,
+                            DiffTracePathOrigin::WorkingDirectory,
+                        );
+                        Ok((derived.patch, path_origin))
                     }
                     ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
                         Err(reason.to_string())
@@ -573,7 +593,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
         };
 
         match parse_result {
-            Ok((mut patch, path_base_dir)) => {
+            Ok((mut patch, path_origin)) => {
                 for file in &mut patch.files {
                     for hunk in &mut file.hunks {
                         hunk.model_id.clone_from(&row.model_id);
@@ -593,7 +613,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     tool_name: row.tool_name,
                     tool_version: row.tool_version,
                     payload_type: row.payload_type,
-                    path_base_dir,
+                    path_origin,
                 });
             }
             Err(reason) => skipped.push(SkippedDiffTracePatch {
@@ -606,15 +626,6 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
     }
 
     RecentDiffTracePatches { patches, skipped }
-}
-
-fn structured_payload_cwd(payload: &Value) -> Option<String> {
-    payload
-        .get("cwd")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|cwd| std::path::Path::new(cwd).is_absolute())
-        .map(ToOwned::to_owned)
 }
 
 fn skipped_diff_trace_patch_reason(error: &ParseError) -> String {

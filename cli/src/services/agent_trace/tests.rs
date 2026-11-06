@@ -8,6 +8,7 @@ use super::{
 };
 use crate::services::{
     agent_trace::agent_trace_conversation_url,
+    agent_trace_db::DiffTracePathOrigin,
     patch::{parse_patch, ParsedPatch},
 };
 use serde_json::Value;
@@ -411,6 +412,7 @@ struct ToolSource {
     patch: ParsedPatch,
     tool_name: Option<&'static str>,
     tool_version: Option<&'static str>,
+    path_origin: DiffTracePathOrigin,
 }
 
 fn tool_source(
@@ -424,7 +426,23 @@ fn tool_source(
         patch: attributed_patch(path, lines, session, model),
         tool_name: tool.map(|(name, _)| name),
         tool_version: tool.and_then(|(_, version)| version),
+        path_origin: DiffTracePathOrigin::RepositoryRelative,
     }
+}
+
+fn claude_source(
+    path: &str,
+    lines: &[(u64, &str)],
+    path_origin: DiffTracePathOrigin,
+) -> ToolSource {
+    ToolSource {
+        path_origin,
+        ..tool_source(path, lines, SESSION_A, MODEL_A, Some(("claude", None)))
+    }
+}
+
+fn working_directory(cwd: &str) -> DiffTracePathOrigin {
+    DiffTracePathOrigin::WorkingDirectory(cwd.to_owned())
 }
 
 fn direct_sources(sources: &[ToolSource]) -> Vec<DirectEvidenceSource<'_>> {
@@ -433,6 +451,7 @@ fn direct_sources(sources: &[ToolSource]) -> Vec<DirectEvidenceSource<'_>> {
         .map(|source| DirectEvidenceSource {
             tool_name: source.tool_name,
             tool_version: source.tool_version,
+            path_origin: &source.path_origin,
             ..DirectEvidenceSource::repository_relative(&source.patch)
         })
         .collect()
@@ -865,4 +884,128 @@ fn a_session_conflicted_source_cannot_supply_the_tool() {
         vec![super::HunkContributor::Unknown, super::HunkContributor::Ai]
     );
     assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn claude_relative_paths_without_an_absolute_cwd_cannot_attribute_or_supply_the_tool() {
+    for path_origin in [
+        DiffTracePathOrigin::AbsoluteOnly,
+        working_directory("relative/base"),
+        working_directory(""),
+    ] {
+        let sources = [
+            claude_source(SOURCE_PATH, &[LINE_X], path_origin.clone()),
+            tool_source(
+                SOURCE_PATH,
+                &[LINE_Y],
+                SESSION_B,
+                MODEL_B,
+                Some(("opencode", Some("0.9"))),
+            ),
+        ];
+
+        assert_eq!(
+            accepted_line_count(&sources, &committed_patch()),
+            1,
+            "{path_origin:?}"
+        );
+        assert!(!super::has_direct_evidence(
+            &direct_sources(&sources[..1]),
+            &committed_patch(),
+            &test_root()
+        ));
+        let trace = build_with_sources(&sources, &no_mutation());
+        assert_eq!(
+            contributor_kinds(&trace),
+            vec![super::HunkContributor::Unknown, super::HunkContributor::Ai],
+            "{path_origin:?}"
+        );
+        assert_eq!(tool_of(&trace), Some((Some("opencode"), Some("0.9"))));
+    }
+}
+
+#[test]
+fn claude_absolute_paths_attribute_without_a_cwd_only_inside_the_repository() {
+    let sources = [
+        claude_source(
+            &format!("{TEST_REPOSITORY_ROOT}/{SOURCE_PATH}"),
+            &[LINE_X],
+            DiffTracePathOrigin::AbsoluteOnly,
+        ),
+        claude_source(
+            &format!("/workspace/another-project/{SOURCE_PATH}"),
+            &[LINE_Y],
+            DiffTracePathOrigin::AbsoluteOnly,
+        ),
+    ];
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Unknown]
+    );
+    assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
+}
+
+#[test]
+fn claude_relative_paths_resolve_against_their_absolute_cwd() {
+    let subdirectory = format!("{TEST_REPOSITORY_ROOT}/cli");
+    for (path, cwd, expected) in [
+        (SOURCE_PATH, TEST_REPOSITORY_ROOT, true),
+        ("../src/lib.rs", subdirectory.as_str(), true),
+        (SOURCE_PATH, subdirectory.as_str(), false),
+        ("../../project/src/lib.rs", subdirectory.as_str(), true),
+        (
+            "../../another-project/src/lib.rs",
+            subdirectory.as_str(),
+            false,
+        ),
+        ("../../../../src/lib.rs", subdirectory.as_str(), false),
+    ] {
+        let sources = [claude_source(path, &[LINE_X], working_directory(cwd))];
+        assert_eq!(
+            super::has_direct_evidence(&direct_sources(&sources), &committed_patch(), &test_root()),
+            expected,
+            "{cwd} {path}"
+        );
+    }
+
+    let nested = parse_patch(&added_lines_patch("cli/src/lib.rs", &[LINE_X]), None)
+        .expect("nested committed patch parses");
+    let sources = [claude_source(
+        SOURCE_PATH,
+        &[LINE_X],
+        working_directory(&subdirectory),
+    )];
+    assert!(super::has_direct_evidence(
+        &direct_sources(&sources),
+        &nested,
+        &test_root()
+    ));
+}
+
+#[test]
+fn mutation_lineage_still_attributes_when_claude_direct_evidence_lacks_a_cwd() {
+    let sources = [claude_source(
+        SOURCE_PATH,
+        &[LINE_X, LINE_Y],
+        DiffTracePathOrigin::AbsoluteOnly,
+    )];
+    let mutation_ai = attributed_patch(SOURCE_PATH, &[LINE_X], SESSION_C, MODEL_C);
+
+    let trace = build_with_sources(&sources, &mutation_ai);
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Unknown]
+    );
+    assert_eq!(
+        trace.files[0].conversations[0]
+            .contributor
+            .model_id
+            .as_deref(),
+        Some(MODEL_C)
+    );
+    assert_eq!(tool_of(&trace), None);
+    let json = serde_json::to_string(&trace).expect("trace serializes");
+    assert!(!json.contains(SESSION_A) && !json.contains(MODEL_A));
 }
