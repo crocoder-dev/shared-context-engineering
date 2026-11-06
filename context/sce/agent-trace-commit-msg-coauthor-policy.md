@@ -33,7 +33,7 @@
 
 ## Staged AI-overlap evidence gate
 
-- `cli/src/services/agent_trace.rs` owns the pure direct-evidence predicate `has_direct_evidence`, which reports whether at least one staged touched line has accepted direct evidence: repository file identity anchored at the repository root, an exact `(kind, line_number, content)` match, and a single claiming session. Historical `(kind, content)`-only similarity, suffix-only path similarity, and lines claimed by conflicting sessions are not evidence.
+- `cli/src/services/agent_trace.rs` owns the pure direct-evidence predicate `has_direct_evidence`, which reports whether at least one staged touched line has accepted direct evidence: repository file identity anchored at the repository root, an exact `(kind, line_number, content)` match, and a single claiming session. Historical `(kind, content)`-only similarity, suffix-only path similarity, Claude structured relative paths without a recorded absolute `cwd`, and lines claimed by conflicting sessions are not evidence.
 - `cli/src/services/hooks/mod.rs` owns the staged-diff AI-overlap evidence gate, which is now wired into `run_commit_msg_subcommand_in_repo`:
   - `StagedDiffAiOverlapResult` enum (`Overlap`/`NoOverlap`/`Error`) is the three-valued result from the injectable `_with` variant, enabling testable branch coverage and caller-side error logging.
   - `staged_diff_has_ai_overlap_with` is the injectable variant that accepts staged-patch, `HEAD` commit time, clock, and recent-trace dependencies and returns `StagedDiffAiOverlapResult`; `hooks/commit_hooks/attribution_tests.rs` covers stale, historical-only, fresh exact, conflicting-session, and repository-file-identity rows.

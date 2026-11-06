@@ -13,8 +13,9 @@ use crate::services::agent_trace::{
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
-    AgentTraceInsert, DiffTraceInsert, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
-    RecentDiffTracePatches, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
+    AgentTraceInsert, DiffTraceInsert, DiffTracePathOrigin, ParsedDiffTracePatch,
+    PostCommitPatchIntersectionInsert, RecentDiffTracePatches, PAYLOAD_TYPE_PATCH,
+    PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::mutation_trace::attribution::MutationAttributionResult;
 use crate::services::mutation_trace::runtime::GitSnapshotService;
@@ -102,6 +103,12 @@ struct HistoryRepo {
 
 impl HistoryRepo {
     fn new() -> Self {
+        Self::with_plan_paths(&[PLAN_PATH])
+    }
+
+    /// Every path receives the same plan content in every commit, so the
+    /// committed touched lines are identical at identical positions.
+    fn with_plan_paths(paths: &[&str]) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
         git(root, &["init", "-q", "-b", "main"], None);
@@ -112,7 +119,10 @@ impl HistoryRepo {
         );
         git(root, &["config", "user.name", "Attribution Test"], None);
         git(root, &["config", "commit.gpgsign", "false"], None);
-        std::fs::create_dir_all(root.join("context/plans")).expect("plan dir");
+        for path in paths {
+            std::fs::create_dir_all(root.join(path).parent().expect("plan parent"))
+                .expect("plan dir");
+        }
 
         let mut trees = Vec::new();
         for (done, time_s) in [
@@ -121,7 +131,9 @@ impl HistoryRepo {
             ([true, true, false], COMMIT_B_TIME_S),
             ([true, true, true], COMMIT_C_TIME_S),
         ] {
-            std::fs::write(root.join(PLAN_PATH), plan(done)).expect("write plan");
+            for path in paths {
+                std::fs::write(root.join(path), plan(done)).expect("write plan");
+            }
             git(root, &["add", "-A"], None);
             git(root, &["commit", "-q", "-m", "plan"], Some(time_s));
             trees.push(TreeId(git(root, &["rev-parse", "HEAD^{tree}"], None)));
@@ -297,7 +309,7 @@ fn parsed_row(id: i64, row: &DiffTraceRow) -> ParsedDiffTracePatch {
         tool_name: Some(row.tool_name.to_owned()),
         tool_version: None,
         payload_type: String::from(PAYLOAD_TYPE_PATCH),
-        path_base_dir: None,
+        path_origin: DiffTracePathOrigin::RepositoryRelative,
     }
 }
 
@@ -954,18 +966,38 @@ async fn post_commit_direct_evidence_requires_repository_file_identity() {
 }
 
 fn claude_write_payload(cwd: &str, file_path: &str) -> String {
-    serde_json::json!({
+    claude_write_payload_with_cwd(Some(Value::from(cwd)), file_path)
+}
+
+fn claude_write_payload_with_cwd(cwd: Option<Value>, file_path: &str) -> String {
+    let mut payload = serde_json::json!({
         "hook_event_name": "PostToolUse",
         "session_id": SESSION_C,
-        "cwd": cwd,
         "tool_name": "Write",
         "tool_input": {
             "file_path": file_path,
             "content": plan([true, true, true]),
         },
         "tool_response": { "originalFile": null },
+    });
+    if let Some(cwd) = cwd {
+        payload["cwd"] = cwd;
+    }
+    payload.to_string()
+}
+
+async fn insert_structured_row(db: &RepositoryAgentTraceDb, payload: &str) {
+    db.insert_diff_trace(DiffTraceInsert {
+        time_ms: ms(COMMIT_C_TIME_S) - 500,
+        session_id: SESSION_C,
+        patch: payload,
+        model_id: Some(MODEL_C),
+        tool_name: CLAUDE_TOOL,
+        tool_version: Some("2.0.0"),
+        payload_type: PAYLOAD_TYPE_STRUCTURED,
     })
-    .to_string()
+    .await
+    .expect("insert structured diff trace");
 }
 
 #[tokio::test]
@@ -1023,4 +1055,196 @@ async fn claude_structured_rows_resolve_paths_against_their_recorded_cwd() {
             assert!(persisted.value.get("tool").is_none());
         }
     }
+}
+
+/// Claude actually edited this file from `cwd = <root>/cli`; the repository
+/// root holds a twin at [`PLAN_PATH`] with identical committed lines.
+const TWIN_PLAN_PATH: &str = "cli/context/plans/plan.md";
+
+struct StructuredOutcome {
+    contributors: BTreeMap<String, String>,
+    tool: Option<Value>,
+    intersection_lines: usize,
+    staged: StagedDiffAiOverlapResult,
+}
+
+async fn structured_outcome(repo: &HistoryRepo, payload: &str) -> StructuredOutcome {
+    let (_db_dir, mut db) = open_db().await;
+    insert_structured_row(&db, payload).await;
+
+    let parsed = db
+        .recent_diff_trace_patches(ms(COMMIT_C_TIME_S) - 1_000, ms(COMMIT_C_TIME_S))
+        .await
+        .expect("read structured rows");
+    assert_eq!(parsed.loaded_count(), 1, "structured row is retained");
+    assert_eq!(parsed.skipped_count(), 0);
+
+    let staged = parse_patch(
+        &boilerplate_patch(EXACT_C_POSITIONS.0, EXACT_C_POSITIONS.1),
+        None,
+    )
+    .expect("staged patch parses");
+    let staged = staged_diff_has_ai_overlap_with(
+        repo.root(),
+        |_| Ok(staged),
+        |_| Ok(Some(ms(COMMIT_B_TIME_S))),
+        || Ok(ms(COMMIT_C_TIME_S)),
+        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+    )
+    .await;
+
+    let persisted = persist_trace(repo, &mut db, &[]).await;
+    let intersections: Vec<String> = db
+        .query_map(
+            "SELECT intersection_patch FROM post_commit_patch_intersections",
+            (),
+            |row| Ok(row.get(0)?),
+        )
+        .await
+        .expect("read intersections");
+    assert_eq!(intersections.len(), 1);
+    let intersection: ParsedPatch =
+        serde_json::from_str(&intersections[0]).expect("intersection JSON");
+
+    StructuredOutcome {
+        contributors: persisted.value["files"]
+            .as_array()
+            .expect("trace files")
+            .iter()
+            .map(|file| {
+                (
+                    file["path"].as_str().expect("file path").to_owned(),
+                    file["conversations"][0]["contributor"]["type"]
+                        .as_str()
+                        .expect("contributor type")
+                        .to_owned(),
+                )
+            })
+            .collect(),
+        tool: persisted.value.get("tool").cloned(),
+        intersection_lines: touched_line_count(&intersection),
+        staged,
+    }
+}
+
+fn contributors(root: &str, twin: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (PLAN_PATH.to_owned(), root.to_owned()),
+        (TWIN_PLAN_PATH.to_owned(), twin.to_owned()),
+    ])
+}
+
+#[tokio::test]
+async fn claude_relative_paths_without_an_absolute_cwd_never_attribute_the_repository_root_twin() {
+    let repo = HistoryRepo::with_plan_paths(&[PLAN_PATH, TWIN_PLAN_PATH]);
+    let cases = [
+        ("missing", None),
+        ("relative", Some(Value::from("cli"))),
+        ("empty", Some(Value::from(""))),
+        ("blank", Some(Value::from("   "))),
+        ("non-string", Some(Value::from(42))),
+        ("null", Some(Value::Null)),
+    ];
+    for (label, cwd) in cases {
+        let outcome =
+            structured_outcome(&repo, &claude_write_payload_with_cwd(cwd, PLAN_PATH)).await;
+        assert_eq!(
+            outcome.contributors,
+            contributors("unknown", "unknown"),
+            "{label} cwd"
+        );
+        assert_eq!(outcome.tool, None, "{label} cwd");
+        assert_eq!(outcome.intersection_lines, 0, "{label} cwd");
+        assert_eq!(
+            outcome.staged,
+            StagedDiffAiOverlapResult::NoOverlap,
+            "{label} cwd"
+        );
+    }
+}
+
+#[tokio::test]
+async fn claude_structured_paths_attribute_only_the_file_their_coordinate_system_names() {
+    let repo = HistoryRepo::with_plan_paths(&[PLAN_PATH, TWIN_PLAN_PATH]);
+    let root = repo.root().display().to_string();
+    let cli = format!("{root}/cli");
+    let outside = tempfile::tempdir().expect("outside dir");
+    let cases = [
+        (Some(cli.as_str()), PLAN_PATH.to_owned(), "twin"),
+        (Some(cli.as_str()), format!("../cli/./{PLAN_PATH}"), "twin"),
+        (Some(cli.as_str()), format!("../{PLAN_PATH}"), "root"),
+        (
+            Some(cli.as_str()),
+            format!(
+                "../../{}/{PLAN_PATH}",
+                repo.root().file_name().unwrap().to_str().unwrap()
+            ),
+            "root",
+        ),
+        (Some(cli.as_str()), format!("../../../{PLAN_PATH}"), "none"),
+        (None, format!("{root}/{TWIN_PLAN_PATH}"), "twin"),
+        (None, format!("{root}/{PLAN_PATH}"), "root"),
+        (
+            None,
+            format!("{}/{PLAN_PATH}", outside.path().display()),
+            "none",
+        ),
+        (
+            Some(cli.as_str()),
+            format!("{}/{PLAN_PATH}", outside.path().display()),
+            "none",
+        ),
+    ];
+    for (cwd, file_path, expected) in cases {
+        let outcome = structured_outcome(
+            &repo,
+            &claude_write_payload_with_cwd(cwd.map(Value::from), &file_path),
+        )
+        .await;
+        let (root_kind, twin_kind) = match expected {
+            "root" => ("ai", "unknown"),
+            "twin" => ("unknown", "ai"),
+            _ => ("unknown", "unknown"),
+        };
+        let label = format!("{cwd:?} {file_path}");
+        assert_eq!(
+            outcome.contributors,
+            contributors(root_kind, twin_kind),
+            "{label}"
+        );
+        assert_eq!(outcome.tool.is_some(), expected != "none", "{label}");
+        assert_eq!(
+            outcome.intersection_lines,
+            if expected == "none" {
+                0
+            } else {
+                BOILERPLATE.len()
+            },
+            "{label}"
+        );
+        let staged = if expected == "root" {
+            StagedDiffAiOverlapResult::Overlap
+        } else {
+            StagedDiffAiOverlapResult::NoOverlap
+        };
+        assert_eq!(outcome.staged, staged, "{label}");
+    }
+}
+
+#[tokio::test]
+async fn mutation_lineage_still_attributes_when_claude_direct_evidence_lacks_a_cwd() {
+    let repo = HistoryRepo::new();
+    let (_db_dir, mut db) = open_db().await;
+    insert_structured_row(&db, &claude_write_payload_with_cwd(None, PLAN_PATH)).await;
+    let persisted = persist_trace(
+        &repo,
+        &mut db,
+        &repo.mutation_rows(AttributionKind::AiExclusive),
+    )
+    .await;
+
+    let conversation = &persisted.value["files"][0]["conversations"][0];
+    assert_eq!(conversation["contributor"]["type"], "ai");
+    assert_eq!(conversation["contributor"]["model_id"], MODEL_C);
+    assert!(persisted.value.get("tool").is_none());
 }

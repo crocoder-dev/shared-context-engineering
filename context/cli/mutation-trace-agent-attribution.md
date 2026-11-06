@@ -162,8 +162,9 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   inside the 7-day window; (2) an *exact* touched-line match on repository
   file identity, `kind`, `line_number`, and `content` — file identity is the
   normalized repository-relative path (absolute paths only inside the
-  repository root, Claude structured paths resolved against their recorded
-  `cwd`, no suffix equivalence, `..` escapes rejected; see
+  repository root, Claude structured relative paths resolved only against
+  their recorded absolute `cwd` and rejected without one, no suffix
+  equivalence, `..` escapes rejected; see
   `agent_trace/repository_path.rs`); and (3) *unambiguous* — every fresh
   exact candidate for that line comes from one session. Each candidate row is
   kept separate (never merged into one patch), so evidence is consumed by its exact
