@@ -670,7 +670,7 @@ fn one_direct_source_line_covers_only_its_own_duplicate_occurrence() {
             commit_revision: "0000000000000000000000000000000000000001",
             vcs_type: None,
         },
-        &crate::services::agent_trace::NoCommittedFiles,
+        &crate::services::agent_trace::UnverifiedCommittedFiles,
     )
     .expect("trace builds");
 

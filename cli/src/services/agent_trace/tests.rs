@@ -5,13 +5,14 @@ use std::path::Path;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use serde_json::Value;
 
+use super::committed_content::CommittedFileRead;
 use super::{
     build_agent_trace_from_evidence, line_change_attribution, resolve_line, resolve_patch_lines,
     validate_agent_trace_value, AcceptedDirectLine, AgentTraceEvidence, AgentTraceMetadataInput,
     AgentTraceVcsType, CommittedFile, CommittedFileReader, ContributorType, DirectEvidenceSource,
     DirectLineEvidence, LineAttribution, LineChangeAttribution, LineChangeCounts,
-    MutationEvidenceIndex, MutationLineEvidence, NoCommittedFiles, RepositoryRoot, ResolvedLine,
-    AGENT_TRACE_VERSION,
+    MutationEvidenceIndex, MutationLineEvidence, RepositoryRoot, ResolvedLine,
+    UnverifiedCommittedFiles, AGENT_TRACE_VERSION,
 };
 use crate::services::{
     agent_trace::{agent_trace_conversation_url, agent_trace_session_url},
@@ -153,12 +154,10 @@ impl PatchNewSideFiles {
 }
 
 impl CommittedFileReader for PatchNewSideFiles {
-    fn read_committed_file(&self, path: &str) -> CommittedFile {
-        self.0
-            .get(path)
-            .map_or(CommittedFile::Unavailable, |bytes| {
-                CommittedFile::Blob(bytes.clone())
-            })
+    fn read_committed_file(&self, path: &str) -> CommittedFileRead {
+        Ok(self.0.get(path).map_or(CommittedFile::Missing, |bytes| {
+            CommittedFile::Blob(bytes.clone())
+        }))
     }
 }
 
@@ -624,7 +623,7 @@ fn build_trace(
         sources,
         mutation_ai_patch,
         mutation_non_ai_patch,
-        &NoCommittedFiles,
+        &UnverifiedCommittedFiles,
     )
 }
 
@@ -2291,7 +2290,7 @@ fn crlf_and_missing_final_newline_are_hashed_byte_exactly() {
 }
 
 #[test]
-fn unavailable_committed_content_keeps_positions_without_a_hash() {
+fn an_explicitly_unverified_reader_keeps_positions_without_a_hash() {
     let committed = parse_patch(EXAMPLE_PATCH, None).expect("example parses");
     let trace = build_trace(&committed, &[], &no_mutation(), &no_mutation());
     let range = &trace.files[0].conversations[0].ranges[0];
@@ -2299,10 +2298,10 @@ fn unavailable_committed_content_keeps_positions_without_a_hash() {
     assert_eq!(range.content_hash, None);
 }
 
-struct FixedCommittedFile(CommittedFile);
+struct FixedCommittedFile(CommittedFileRead);
 
 impl CommittedFileReader for FixedCommittedFile {
-    fn read_committed_file(&self, _path: &str) -> CommittedFile {
+    fn read_committed_file(&self, _path: &str) -> CommittedFileRead {
         self.0.clone()
     }
 }
@@ -2315,7 +2314,7 @@ fn non_line_addressable_paths_emit_no_ranges() {
         &[],
         &no_mutation(),
         &no_mutation(),
-        &FixedCommittedFile(CommittedFile::NotLineAddressable),
+        &FixedCommittedFile(Ok(CommittedFile::NotLineAddressable)),
     );
     assert!(trace.files.is_empty());
     assert_eq!(buckets(&trace), ((0, 0), (0, 0), (3, 1)));
@@ -2567,12 +2566,10 @@ fn expected_ranges(file: &RandomFile) -> Vec<(u64, u64, ExpectedKey)> {
 struct RandomFiles(BTreeMap<String, Vec<u8>>);
 
 impl CommittedFileReader for RandomFiles {
-    fn read_committed_file(&self, path: &str) -> CommittedFile {
-        self.0
-            .get(path)
-            .map_or(CommittedFile::Unavailable, |bytes| {
-                CommittedFile::Blob(bytes.clone())
-            })
+    fn read_committed_file(&self, path: &str) -> CommittedFileRead {
+        Ok(self.0.get(path).map_or(CommittedFile::Missing, |bytes| {
+            CommittedFile::Blob(bytes.clone())
+        }))
     }
 }
 

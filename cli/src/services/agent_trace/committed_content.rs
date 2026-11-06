@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::io::Cursor;
 use std::path::Path;
 use std::process::Command;
@@ -7,28 +8,111 @@ use murmur3::murmur3_32;
 
 const CONTENT_HASH_PREFIX: &str = "murmur3:";
 const CONTENT_HASH_SEED: u32 = 0;
-const GIT_BLOB_OBJECT_TYPE: &str = "blob";
+const GIT_PROGRAM: &str = "git";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommittedFile {
     Blob(Vec<u8>),
     NotLineAddressable,
-    Unavailable,
+    Missing,
+    Unverified,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommittedFileReadError {
+    TreeLookupFailed {
+        path: String,
+        revision: String,
+        detail: String,
+    },
+    MalformedTreeEntry {
+        path: String,
+        revision: String,
+        detail: String,
+    },
+    BlobReadFailed {
+        path: String,
+        revision: String,
+        object_id: String,
+        detail: String,
+    },
+}
+
+impl fmt::Display for CommittedFileReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TreeLookupFailed {
+                path,
+                revision,
+                detail,
+            } => write!(
+                f,
+                "Failed to look up '{path}' in revision '{revision}' with 'git ls-tree': {detail}"
+            ),
+            Self::MalformedTreeEntry {
+                path,
+                revision,
+                detail,
+            } => write!(
+                f,
+                "Unexpected 'git ls-tree' entry for '{path}' in revision '{revision}': {detail}"
+            ),
+            Self::BlobReadFailed {
+                path,
+                revision,
+                object_id,
+                detail,
+            } => write!(
+                f,
+                "Failed to read blob '{object_id}' for '{path}' in revision '{revision}' with 'git cat-file': {detail}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CommittedFileReadError {}
+
+pub type CommittedFileRead = Result<CommittedFile, CommittedFileReadError>;
+
 pub trait CommittedFileReader {
-    fn read_committed_file(&self, path: &str) -> CommittedFile;
+    fn read_committed_file(&self, path: &str) -> CommittedFileRead;
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct NoCommittedFiles;
+pub struct UnverifiedCommittedFiles;
 
 #[cfg(test)]
-impl CommittedFileReader for NoCommittedFiles {
-    fn read_committed_file(&self, _path: &str) -> CommittedFile {
-        CommittedFile::Unavailable
+impl CommittedFileReader for UnverifiedCommittedFiles {
+    fn read_committed_file(&self, _path: &str) -> CommittedFileRead {
+        Ok(CommittedFile::Unverified)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GitEntryKind {
+    RegularFile,
+    Symlink,
+    Gitlink,
+    Directory,
+}
+
+impl GitEntryKind {
+    pub(crate) fn classify(mode: &str, object_type: &str) -> Option<Self> {
+        match (mode, object_type) {
+            ("100644" | "100755", "blob") => Some(Self::RegularFile),
+            ("120000", "blob") => Some(Self::Symlink),
+            ("160000", "commit") => Some(Self::Gitlink),
+            ("040000", "tree") => Some(Self::Directory),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct GitTreeEntry {
+    pub(crate) kind: GitEntryKind,
+    pub(crate) object_id: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,53 +129,105 @@ impl<'a> GitCommittedFiles<'a> {
         }
     }
 
-    fn git_stdout(&self, args: &[&str]) -> Option<Vec<u8>> {
-        let output = Command::new("git")
+    fn git_stdout(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        let output = Command::new(GIT_PROGRAM)
             .arg("--literal-pathspecs")
             .args(args)
             .current_dir(self.repository_root)
             .output()
-            .ok()?;
-        output.status.success().then_some(output.stdout)
+            .map_err(|error| format!("could not run git: {error}"))?;
+        if output.status.success() {
+            return Ok(output.stdout);
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        Err(if stderr.is_empty() {
+            format!("git exited with {}", output.status)
+        } else {
+            stderr
+        })
     }
 }
 
 impl CommittedFileReader for GitCommittedFiles<'_> {
-    fn read_committed_file(&self, path: &str) -> CommittedFile {
-        let Some(listing) =
-            self.git_stdout(&["ls-tree", "-z", "--full-tree", self.revision, "--", path])
-        else {
-            return CommittedFile::Unavailable;
+    fn read_committed_file(&self, path: &str) -> CommittedFileRead {
+        let listing = self
+            .git_stdout(&["ls-tree", "-z", "--full-tree", self.revision, "--", path])
+            .map_err(|detail| CommittedFileReadError::TreeLookupFailed {
+                path: path.to_owned(),
+                revision: self.revision.to_owned(),
+                detail,
+            })?;
+        let entry = parse_ls_tree_entry(&listing, path).map_err(|detail| {
+            CommittedFileReadError::MalformedTreeEntry {
+                path: path.to_owned(),
+                revision: self.revision.to_owned(),
+                detail,
+            }
+        })?;
+        let Some(entry) = entry else {
+            return Ok(CommittedFile::Missing);
         };
-        let Some((object_type, object_id)) = parse_ls_tree_entry(&listing, path) else {
-            return CommittedFile::Unavailable;
-        };
-        if object_type != GIT_BLOB_OBJECT_TYPE {
-            return CommittedFile::NotLineAddressable;
+        if entry.kind != GitEntryKind::RegularFile {
+            return Ok(CommittedFile::NotLineAddressable);
         }
-        self.git_stdout(&["cat-file", "blob", object_id])
-            .map_or(CommittedFile::Unavailable, CommittedFile::Blob)
+        self.git_stdout(&["cat-file", "blob", &entry.object_id])
+            .map(CommittedFile::Blob)
+            .map_err(|detail| CommittedFileReadError::BlobReadFailed {
+                path: path.to_owned(),
+                revision: self.revision.to_owned(),
+                object_id: entry.object_id,
+                detail,
+            })
     }
 }
 
-fn parse_ls_tree_entry<'o>(listing: &'o [u8], path: &str) -> Option<(&'o str, &'o str)> {
-    listing
+pub(crate) fn parse_ls_tree_entry(
+    listing: &[u8],
+    path: &str,
+) -> Result<Option<GitTreeEntry>, String> {
+    let mut found = None;
+    for record in listing
         .split(|byte| *byte == 0)
-        .filter_map(|entry| std::str::from_utf8(entry).ok())
-        .find_map(|entry| {
-            let (header, entry_path) = entry.split_once('\t')?;
-            if entry_path != path {
-                return None;
-            }
-            let mut fields = header.split(' ');
-            let _mode = fields.next()?;
-            Some((fields.next()?, fields.next()?))
-        })
+        .filter(|record| !record.is_empty())
+    {
+        let tab = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or_else(|| {
+                format!(
+                    "record without a path: {:?}",
+                    String::from_utf8_lossy(record)
+                )
+            })?;
+        let (header, entry_path) = (&record[..tab], &record[tab + 1..]);
+        let header = std::str::from_utf8(header)
+            .map_err(|_| format!("non-UTF-8 header: {:?}", String::from_utf8_lossy(header)))?;
+        let fields: Vec<&str> = header.split(' ').collect();
+        let [mode, object_type, object_id] = fields.as_slice() else {
+            return Err(format!("expected '<mode> <type> <object>', got {header:?}"));
+        };
+        if object_id.is_empty() || !object_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("invalid object id {object_id:?}"));
+        }
+        let kind = GitEntryKind::classify(mode, object_type)
+            .ok_or_else(|| format!("unsupported mode '{mode}' for object type '{object_type}'"))?;
+        if entry_path != path.as_bytes() {
+            continue;
+        }
+        if found.is_some() {
+            return Err(String::from("more than one entry matches the path"));
+        }
+        found = Some(GitTreeEntry {
+            kind,
+            object_id: (*object_id).to_owned(),
+        });
+    }
+    Ok(found)
 }
 
 pub(super) struct CommittedFileCache<'r> {
     reader: &'r dyn CommittedFileReader,
-    files: HashMap<String, CommittedFile>,
+    files: HashMap<String, CommittedFileRead>,
 }
 
 impl<'r> CommittedFileCache<'r> {
@@ -102,10 +238,12 @@ impl<'r> CommittedFileCache<'r> {
         }
     }
 
-    pub(super) fn get(&mut self, path: &str) -> &CommittedFile {
+    pub(super) fn get(&mut self, path: &str) -> Result<&CommittedFile, CommittedFileReadError> {
         self.files
             .entry(path.to_owned())
             .or_insert_with(|| self.reader.read_committed_file(path))
+            .as_ref()
+            .map_err(Clone::clone)
     }
 }
 
@@ -159,3 +297,6 @@ pub(crate) fn content_hash(bytes: &[u8]) -> String {
         .expect("murmur3 hashing from an in-memory cursor should not fail");
     format!("{CONTENT_HASH_PREFIX}{hash:08x}")
 }
+
+#[cfg(test)]
+mod tests;
