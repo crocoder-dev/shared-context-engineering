@@ -1,6 +1,10 @@
+use std::fmt::Write as _;
+use std::path::Path;
+
 use super::{
     build_agent_trace_from_evidence, validate_agent_trace_value, AgentTraceEvidence,
-    AgentTraceMetadataInput, AgentTraceVcsType, AGENT_TRACE_VERSION,
+    AgentTraceMetadataInput, AgentTraceVcsType, DirectEvidenceSource, RepositoryRoot,
+    AGENT_TRACE_VERSION,
 };
 use crate::services::{
     agent_trace::agent_trace_conversation_url,
@@ -10,6 +14,7 @@ use serde_json::Value;
 
 const TEST_COMMIT_TIMESTAMP: &str = "2026-04-23T10:20:30Z";
 const TEST_COMMIT_REVISION: &str = "a0b1c2d3e4f5a6b7c8d9e0f11223344556677889";
+const TEST_REPOSITORY_ROOT: &str = "/workspace/project";
 
 #[derive(Clone, Copy)]
 struct AgentTraceScenario {
@@ -61,9 +66,14 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
     validate_agent_trace_value(&golden).expect("golden json should validate against schema");
     let empty_mutation_patch = ParsedPatch { files: Vec::new() };
+    let direct_sources: Vec<_> = direct_patches
+        .iter()
+        .map(DirectEvidenceSource::repository_relative)
+        .collect();
     let actual = build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patches: &direct_patches,
+            repository_root: &RepositoryRoot::new(Path::new(TEST_REPOSITORY_ROOT)),
+            direct_sources: &direct_sources,
             mutation_ai_patch: &empty_mutation_patch,
             mutation_non_ai_patch: &empty_mutation_patch,
         },
@@ -72,8 +82,6 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
-            tool_name: None,
-            tool_version: None,
         },
     )
     .expect("agent trace should build");
@@ -246,9 +254,15 @@ fn assert_builds_expected_agent_trace_from_evidence(scenario: EvidenceScenario) 
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
     validate_agent_trace_value(&golden).expect("golden json should validate against schema");
 
+    let direct_source = DirectEvidenceSource {
+        tool_name: Some(EVIDENCE_TOOL_NAME),
+        tool_version: Some(EVIDENCE_TOOL_VERSION),
+        ..DirectEvidenceSource::repository_relative(&direct_patch)
+    };
     let actual = build_agent_trace_from_evidence(
         AgentTraceEvidence {
-            direct_patches: std::slice::from_ref(&direct_patch),
+            repository_root: &RepositoryRoot::new(Path::new(TEST_REPOSITORY_ROOT)),
+            direct_sources: std::slice::from_ref(&direct_source),
             mutation_ai_patch: &mutation_ai_patch,
             mutation_non_ai_patch: &ParsedPatch { files: Vec::new() },
         },
@@ -257,8 +271,6 @@ fn assert_builds_expected_agent_trace_from_evidence(scenario: EvidenceScenario) 
             commit_timestamp: TEST_COMMIT_TIMESTAMP,
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
-            tool_name: Some(EVIDENCE_TOOL_NAME),
-            tool_version: Some(EVIDENCE_TOOL_VERSION),
         },
     )
     .expect("agent trace should build");
@@ -352,4 +364,505 @@ fn mutation_only_no_provenance_evidence_matches_golden_agent_trace() {
         post_commit: include_str!("fixtures/mutation_only_no_provenance/post_commit.patch"),
         golden: include_str!("fixtures/mutation_only_no_provenance/golden.json"),
     });
+}
+
+const SOURCE_PATH: &str = "src/lib.rs";
+const LINE_X: (u64, &str) = (2, "let alpha = 1;");
+const LINE_Y: (u64, &str) = (20, "let omega = 2;");
+const SESSION_A: &str = "cc_session-a";
+const SESSION_B: &str = "oc_session-b";
+const SESSION_C: &str = "cc_session-c";
+const MODEL_A: &str = "model-a";
+const MODEL_B: &str = "model-b";
+const MODEL_C: &str = "model-c";
+
+fn added_lines_patch(path: &str, lines: &[(u64, &str)]) -> String {
+    let mut text = format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n");
+    for (line_number, content) in lines {
+        write!(
+            text,
+            "@@ -{},0 +{line_number},1 @@\n+{content}\n",
+            line_number - 1
+        )
+        .expect("write hunk");
+    }
+    text
+}
+
+fn attributed_patch(path: &str, lines: &[(u64, &str)], session: &str, model: &str) -> ParsedPatch {
+    let mut attributed = parse_patch(&added_lines_patch(path, lines), Some(session))
+        .expect("attributed patch should parse");
+    for hunk in attributed
+        .files
+        .iter_mut()
+        .flat_map(|file| file.hunks.iter_mut())
+    {
+        hunk.model_id = Some(model.to_owned());
+    }
+    attributed
+}
+
+fn committed_patch() -> ParsedPatch {
+    parse_patch(&added_lines_patch(SOURCE_PATH, &[LINE_X, LINE_Y]), None)
+        .expect("committed patch should parse")
+}
+
+struct ToolSource {
+    patch: ParsedPatch,
+    tool_name: Option<&'static str>,
+    tool_version: Option<&'static str>,
+}
+
+fn tool_source(
+    path: &str,
+    lines: &[(u64, &str)],
+    session: &str,
+    model: &str,
+    tool: Option<(&'static str, Option<&'static str>)>,
+) -> ToolSource {
+    ToolSource {
+        patch: attributed_patch(path, lines, session, model),
+        tool_name: tool.map(|(name, _)| name),
+        tool_version: tool.and_then(|(_, version)| version),
+    }
+}
+
+fn direct_sources(sources: &[ToolSource]) -> Vec<DirectEvidenceSource<'_>> {
+    sources
+        .iter()
+        .map(|source| DirectEvidenceSource {
+            tool_name: source.tool_name,
+            tool_version: source.tool_version,
+            ..DirectEvidenceSource::repository_relative(&source.patch)
+        })
+        .collect()
+}
+
+fn test_root() -> RepositoryRoot {
+    RepositoryRoot::new(Path::new(TEST_REPOSITORY_ROOT))
+}
+
+fn build_with_sources(
+    sources: &[ToolSource],
+    mutation_ai_patch: &ParsedPatch,
+) -> super::AgentTrace {
+    let direct_sources = direct_sources(sources);
+    let trace = build_agent_trace_from_evidence(
+        AgentTraceEvidence {
+            repository_root: &test_root(),
+            direct_sources: &direct_sources,
+            mutation_ai_patch,
+            mutation_non_ai_patch: &ParsedPatch { files: Vec::new() },
+        },
+        &committed_patch(),
+        AgentTraceMetadataInput {
+            commit_timestamp: TEST_COMMIT_TIMESTAMP,
+            commit_revision: TEST_COMMIT_REVISION,
+            vcs_type: Some(AgentTraceVcsType::Git),
+        },
+    )
+    .expect("agent trace should build");
+    let json = serde_json::to_value(&trace).expect("agent trace should serialize");
+    validate_agent_trace_value(&json).expect("agent trace should validate against schema");
+    trace
+}
+
+fn no_mutation() -> ParsedPatch {
+    ParsedPatch { files: Vec::new() }
+}
+
+fn tool_of(trace: &super::AgentTrace) -> Option<(Option<&str>, Option<&str>)> {
+    trace
+        .tool
+        .as_ref()
+        .map(|tool| (tool.name.as_deref(), tool.version.as_deref()))
+}
+
+fn contributor_kinds(trace: &super::AgentTrace) -> Vec<super::HunkContributor> {
+    trace
+        .files
+        .iter()
+        .flat_map(|file| file.conversations.iter())
+        .map(|conversation| conversation.contributor.kind)
+        .collect()
+}
+
+fn accepted_line_count(sources: &[ToolSource], target: &ParsedPatch) -> usize {
+    super::direct_evidence_patch(&direct_sources(sources), target, &test_root())
+        .files
+        .iter()
+        .flat_map(|file| file.hunks.iter())
+        .map(|hunk| hunk.lines.len())
+        .sum()
+}
+
+#[test]
+fn two_sessions_claiming_one_line_yield_no_accepted_direct_evidence() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_B,
+            MODEL_B,
+            Some(("opencode", None)),
+        ),
+    ];
+
+    assert!(!super::has_direct_evidence(
+        &direct_sources(&sources),
+        &committed_patch(),
+        &test_root()
+    ));
+    assert_eq!(accepted_line_count(&sources, &committed_patch()), 0);
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![
+            super::HunkContributor::Unknown,
+            super::HunkContributor::Unknown
+        ]
+    );
+    assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn several_rows_from_one_session_are_accepted_as_that_session() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+    ];
+
+    assert!(super::has_direct_evidence(
+        &direct_sources(&sources),
+        &committed_patch(),
+        &test_root()
+    ));
+    let trace = build_with_sources(&sources, &no_mutation());
+    let conversation = &trace.files[0].conversations[0];
+    assert_eq!(conversation.contributor.kind, super::HunkContributor::Ai);
+    assert_eq!(conversation.contributor.model_id.as_deref(), Some(MODEL_A));
+    assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
+}
+
+#[test]
+fn a_conflicted_line_does_not_hide_or_join_a_valid_line() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_B,
+            MODEL_B,
+            Some(("opencode", None)),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_Y],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+    ];
+
+    assert_eq!(accepted_line_count(&sources, &committed_patch()), 1);
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Unknown, super::HunkContributor::Ai]
+    );
+    assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
+}
+
+#[test]
+fn identical_lines_in_a_different_file_with_the_same_suffix_do_not_attribute() {
+    let sources = [tool_source(
+        "packages/foo/src/lib.rs",
+        &[LINE_X, LINE_Y],
+        SESSION_B,
+        MODEL_B,
+        Some(("opencode", None)),
+    )];
+
+    assert!(!super::has_direct_evidence(
+        &direct_sources(&sources),
+        &committed_patch(),
+        &test_root()
+    ));
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![
+            super::HunkContributor::Unknown,
+            super::HunkContributor::Unknown
+        ]
+    );
+    assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn absolute_evidence_paths_attribute_only_inside_the_repository_root() {
+    let inside = format!("{TEST_REPOSITORY_ROOT}/{SOURCE_PATH}");
+    let outside = format!("/workspace/another-project/{SOURCE_PATH}");
+    let sources = [
+        tool_source(
+            &inside,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(
+            &outside,
+            &[LINE_Y],
+            SESSION_B,
+            MODEL_B,
+            Some(("opencode", None)),
+        ),
+    ];
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Unknown]
+    );
+    assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
+}
+
+#[test]
+fn deleted_files_match_direct_evidence_by_their_old_path() {
+    let deletion = |path: &str| {
+        format!(
+            "diff --git a/{path} b/{path}\ndeleted file mode 100644\n--- a/{path}\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-gone\n"
+        )
+    };
+    let committed = parse_patch(&deletion("src/old.rs"), None).expect("deletion parses");
+    let matching = parse_patch(&deletion("src/old.rs"), Some(SESSION_A)).expect("deletion parses");
+    let other =
+        parse_patch(&deletion("vendor/src/old.rs"), Some(SESSION_A)).expect("deletion parses");
+
+    for (candidate, expected) in [(&matching, true), (&other, false)] {
+        assert_eq!(
+            super::has_direct_evidence(
+                &[DirectEvidenceSource::repository_relative(candidate)],
+                &committed,
+                &test_root()
+            ),
+            expected
+        );
+    }
+}
+
+#[test]
+fn tool_comes_from_an_older_accepted_source_when_the_newest_is_rejected_by_lineage() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", Some("1.0"))),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_Y],
+            SESSION_B,
+            MODEL_B,
+            Some(("opencode", Some("0.9"))),
+        ),
+    ];
+    let mut mutation_ai = attributed_patch(SOURCE_PATH, &[LINE_X], SESSION_A, MODEL_A);
+    mutation_ai
+        .files
+        .extend(attributed_patch(SOURCE_PATH, &[LINE_Y], SESSION_C, MODEL_C).files);
+
+    let trace = build_with_sources(&sources, &mutation_ai);
+    assert_eq!(tool_of(&trace), Some((Some("claude"), Some("1.0"))));
+    let json = serde_json::to_string(&trace).expect("trace serializes");
+    assert!(!json.contains("opencode") && !json.contains(SESSION_B) && !json.contains(MODEL_B));
+}
+
+#[test]
+fn accepted_sources_from_one_tool_keep_that_tool() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", Some("1.0"))),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_Y],
+            SESSION_C,
+            MODEL_C,
+            Some(("claude", Some("1.0"))),
+        ),
+    ];
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+    );
+    assert_eq!(tool_of(&trace), Some((Some("claude"), Some("1.0"))));
+}
+
+#[test]
+fn accepted_sources_from_different_tools_omit_the_tool() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_Y],
+            SESSION_B,
+            MODEL_B,
+            Some(("opencode", None)),
+        ),
+    ];
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+    );
+    assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn conflicting_tool_versions_keep_the_name_and_omit_the_version() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", Some("1.0"))),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_Y],
+            SESSION_C,
+            MODEL_C,
+            Some(("claude", Some("2.0"))),
+        ),
+    ];
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
+}
+
+#[test]
+fn an_accepted_source_without_tool_metadata_is_not_filled_from_other_rows() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(SOURCE_PATH, &[LINE_Y], SESSION_C, MODEL_C, None),
+    ];
+
+    let trace = build_with_sources(&sources, &no_mutation());
+    assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn direct_matches_fully_overridden_by_lineage_emit_no_tool() {
+    let sources = [tool_source(
+        SOURCE_PATH,
+        &[LINE_X, LINE_Y],
+        SESSION_B,
+        MODEL_B,
+        Some(("opencode", None)),
+    )];
+    let mutation_ai = attributed_patch(SOURCE_PATH, &[LINE_X, LINE_Y], SESSION_C, MODEL_C);
+
+    let trace = build_with_sources(&sources, &mutation_ai);
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+    );
+    assert_eq!(
+        trace.files[0].conversations[0]
+            .contributor
+            .model_id
+            .as_deref(),
+        Some(MODEL_C)
+    );
+    assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn mutation_only_attribution_emits_no_tool() {
+    let mutation_ai = attributed_patch(SOURCE_PATH, &[LINE_X, LINE_Y], SESSION_C, MODEL_C);
+
+    let trace = build_with_sources(&[], &mutation_ai);
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+    );
+    assert_eq!(tool_of(&trace), None);
+}
+
+#[test]
+fn a_session_conflicted_source_cannot_supply_the_tool() {
+    let sources = [
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_A,
+            MODEL_A,
+            Some(("claude", None)),
+        ),
+        tool_source(
+            SOURCE_PATH,
+            &[LINE_X],
+            SESSION_B,
+            MODEL_B,
+            Some(("opencode", None)),
+        ),
+    ];
+    let mutation_ai = attributed_patch(SOURCE_PATH, &[LINE_Y], SESSION_C, MODEL_C);
+
+    let trace = build_with_sources(&sources, &mutation_ai);
+    assert_eq!(
+        contributor_kinds(&trace),
+        vec![super::HunkContributor::Unknown, super::HunkContributor::Ai]
+    );
+    assert_eq!(tool_of(&trace), None);
 }
