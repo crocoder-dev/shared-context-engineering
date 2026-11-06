@@ -808,6 +808,10 @@ pub(crate) fn post_commit_patch_error(detail: &str, context: &str) -> String {
 mod attribution_tests;
 
 #[cfg(test)]
+#[path = "commit_hooks/path_identity_tests.rs"]
+mod path_identity_tests;
+
+#[cfg(test)]
 mod tests {
     use std::cell::RefCell;
     use std::path::Path;

@@ -209,7 +209,12 @@ direct candidate matching in `cli/src/services/agent_trace/evidence.rs`:
   conversation per accepted session (or per model for session-less AI, or per
   unresolved decision kind). A Git hunk never decides a contributor, and SCE
   does not emit `mixed` for partial AI coverage. Hashes cover the exact
-  committed bytes of each range. See
+  committed bytes of each range. Paths are the decoded Git identity (C-quoted
+  names are decoded byte-exactly and must be UTF-8). Only regular and
+  executable blobs at the recorded revision are line-addressable; symlinks,
+  gitlinks, and directories emit no ranges but keep their counters. In the
+  post-commit hook a missing path or failed Git read aborts the trace instead
+  of persisting unverified ranges. See
   [../sce/agent-trace-minimal-generator.md](../sce/agent-trace-minimal-generator.md#ranges-and-conversations).
 - **What remains unsupported?** Removed lines are never resolved by lineage
   (only exact fresh direct evidence can cover them; otherwise they count as

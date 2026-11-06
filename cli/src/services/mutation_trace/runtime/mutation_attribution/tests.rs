@@ -3,7 +3,7 @@ use std::process::Command;
 use super::*;
 use crate::services::agent_trace::{
     build_agent_trace_from_evidence, AgentTrace, AgentTraceEvidence, AgentTraceMetadataInput,
-    ContributorType, DirectEvidenceSource, NoCommittedFiles, RepositoryRoot,
+    ContributorType, DirectEvidenceSource, RepositoryRoot, UnverifiedCommittedFiles,
 };
 
 const PLAN_PATH: &str = "plan.md";
@@ -177,7 +177,7 @@ fn build_trace(
             commit_revision: "0000000000000000000000000000000000000001",
             vcs_type: None,
         },
-        &NoCommittedFiles,
+        &UnverifiedCommittedFiles,
     )
     .expect("agent trace builds")
 }

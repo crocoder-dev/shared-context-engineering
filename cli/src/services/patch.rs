@@ -16,6 +16,14 @@
 
 use serde::{Deserialize, Serialize};
 
+mod git_path;
+
+use git_path::{decode_marker_path, decode_path, split_diff_header, GitPathError};
+
+const GIT_SOURCE_PREFIX: &str = "a/";
+const GIT_DESTINATION_PREFIX: &str = "b/";
+const DEV_NULL: &str = "/dev/null";
+
 /// Top-level parsed patch containing one or more file changes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParsedPatch {
@@ -164,10 +172,13 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
         if let Some(rest) = line.strip_prefix("diff --git ") {
             // Finalize any in-progress file before starting a new one.
             if let Some(fb) = current_file.take() {
-                files.push(fb.build());
+                files.push(fb.build()?);
             }
-            let paths = parse_git_diff_header(rest);
-            current_file = Some(FileBuilder::new(paths.old_path, paths.new_path));
+            let paths = parse_git_diff_header(rest).map_err(|error| path_error(line, &error))?;
+            current_file = Some(match paths {
+                Some(paths) => FileBuilder::new(paths.old_path, paths.new_path),
+                None => FileBuilder::unresolved(line),
+            });
             continue;
         }
 
@@ -175,7 +186,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
         if let Some(rest) = line.strip_prefix("Index: ") {
             // Finalize any in-progress file before starting a new one.
             if let Some(fb) = current_file.take() {
-                files.push(fb.build());
+                files.push(fb.build()?);
             }
             // The Index: line gives us the file path, but we'll also see ---/+++
             // lines that may refine it. For now, store a placeholder.
@@ -196,7 +207,10 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
                     "encountered '---' line without a preceding file header: {line:?}"
                 ),
             })?;
-            fb.set_old_path(parse_diff_path(rest));
+            fb.set_old_path(
+                parse_diff_path(rest, GIT_SOURCE_PREFIX)
+                    .map_err(|error| path_error(line, &error))?,
+            );
             continue;
         }
 
@@ -206,7 +220,10 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
                     "encountered '+++' line without a preceding file header: {line:?}"
                 ),
             })?;
-            fb.set_new_path(parse_diff_path(rest));
+            fb.set_new_path(
+                parse_diff_path(rest, GIT_DESTINATION_PREFIX)
+                    .map_err(|error| path_error(line, &error))?,
+            );
             continue;
         }
 
@@ -231,6 +248,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
                 } else if line.starts_with("rename from ") || line.starts_with("rename to ") {
                     fb.mark_renamed();
                 }
+                apply_metadata_path(fb, line)?;
             }
             continue;
         }
@@ -248,7 +266,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
 
     // Finalize the last file
     if let Some(fb) = current_file.take() {
-        files.push(fb.build());
+        files.push(fb.build()?);
     }
 
     Ok(ParsedPatch { files })
@@ -257,8 +275,9 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
 /// Builder for `PatchFileChange` that tracks path and kind information
 /// progressively as header lines are parsed.
 struct FileBuilder {
-    old_path: String,
-    new_path: String,
+    header: Option<String>,
+    old_path: Option<String>,
+    new_path: Option<String>,
     kind: Option<FileChangeKind>,
     hunks: Vec<PatchHunk>,
 }
@@ -266,19 +285,30 @@ struct FileBuilder {
 impl FileBuilder {
     fn new(old_path: String, new_path: String) -> Self {
         Self {
-            old_path,
-            new_path,
+            header: None,
+            old_path: Some(old_path),
+            new_path: Some(new_path),
+            kind: None,
+            hunks: Vec::new(),
+        }
+    }
+
+    fn unresolved(header: &str) -> Self {
+        Self {
+            header: Some(header.to_owned()),
+            old_path: None,
+            new_path: None,
             kind: None,
             hunks: Vec::new(),
         }
     }
 
     fn set_old_path(&mut self, path: String) {
-        self.old_path = path;
+        self.old_path = Some(path);
     }
 
     fn set_new_path(&mut self, path: String) {
-        self.new_path = path;
+        self.new_path = Some(path);
     }
 
     fn mark_added(&mut self) {
@@ -297,20 +327,27 @@ impl FileBuilder {
         self.hunks.push(hunk);
     }
 
-    fn build(self) -> PatchFileChange {
+    fn build(self) -> Result<PatchFileChange, ParseError> {
+        let (Some(old_path), Some(new_path)) = (self.old_path, self.new_path) else {
+            return Err(ParseError {
+                message: format!(
+                    "cannot determine both paths of ambiguous header {:?}",
+                    self.header.unwrap_or_default()
+                ),
+            });
+        };
         let inferred_kind = self.kind.unwrap_or_else(|| {
             infer_file_kind_from_hunks(&self.hunks)
-                .unwrap_or_else(|| determine_file_kind(&self.old_path, &self.new_path))
+                .unwrap_or_else(|| determine_file_kind(&old_path, &new_path))
         });
-        let (old_path, new_path) =
-            normalize_paths_for_kind(self.old_path, self.new_path, inferred_kind);
+        let (old_path, new_path) = normalize_paths_for_kind(old_path, new_path, inferred_kind);
 
-        PatchFileChange {
+        Ok(PatchFileChange {
             old_path,
             new_path,
             kind: inferred_kind,
             hunks: self.hunks,
-        }
+        })
     }
 }
 
@@ -364,32 +401,11 @@ fn determine_file_kind(old_path: &str, new_path: &str) -> FileChangeKind {
     }
 }
 
-/// Parse a `diff --git a/old b/new` header line (after stripping the prefix).
-fn parse_git_diff_header(rest: &str) -> DiffPaths {
-    // Format: "a/old_path b/new_path"
-    // The paths can contain spaces, so we need to split on " b/" carefully.
-    // Git format: diff --git a/path b/path
-    if let Some(idx) = rest.find(" b/") {
-        let old = rest[..idx]
-            .strip_prefix("a/")
-            .unwrap_or(&rest[..idx])
-            .to_string();
-        let new = rest[idx + 3..]
-            .strip_prefix("b/")
-            .unwrap_or(&rest[idx + 3..])
-            .to_string();
-        DiffPaths {
-            old_path: old,
-            new_path: new,
-        }
-    } else {
-        // Fallback: treat the whole thing as both paths
-        let path = rest.trim().to_string();
-        DiffPaths {
-            old_path: path.clone(),
-            new_path: path,
-        }
-    }
+fn parse_git_diff_header(rest: &str) -> Result<Option<DiffPaths>, GitPathError> {
+    Ok(split_diff_header(rest)?.map(|(old, new)| DiffPaths {
+        old_path: strip_git_prefix(old, GIT_SOURCE_PREFIX),
+        new_path: strip_git_prefix(new, GIT_DESTINATION_PREFIX),
+    }))
 }
 
 struct DiffPaths {
@@ -397,22 +413,40 @@ struct DiffPaths {
     new_path: String,
 }
 
-/// Parse a `---` or `+++` path line, stripping prefixes and trailing whitespace.
-fn parse_diff_path(rest: &str) -> String {
-    let trimmed = rest.trim_end();
-    // Strip common prefixes: a/ for git-style, /dev/null for new/deleted files
-    if trimmed == "/dev/null" {
-        return String::new();
+fn parse_diff_path(rest: &str, prefix: &str) -> Result<String, GitPathError> {
+    if !rest.starts_with('"') && rest.split('\t').next() == Some(DEV_NULL) {
+        return Ok(String::new());
     }
-    if let Some(stripped) = trimmed.strip_prefix("a/") {
-        return stripped.to_string();
+    decode_marker_path(rest).map(|path| strip_git_prefix(path, prefix))
+}
+
+fn strip_git_prefix(path: String, prefix: &str) -> String {
+    match path.strip_prefix(prefix) {
+        Some(stripped) => stripped.to_owned(),
+        None => path,
     }
-    if let Some(stripped) = trimmed.strip_prefix("b/") {
-        return stripped.to_string();
+}
+
+fn apply_metadata_path(fb: &mut FileBuilder, line: &str) -> Result<(), ParseError> {
+    let decode = |rest: &str| decode_path(rest).map_err(|error| path_error(line, &error));
+    if let Some(rest) = line
+        .strip_prefix("rename from ")
+        .or_else(|| line.strip_prefix("copy from "))
+    {
+        fb.set_old_path(decode(rest)?);
+    } else if let Some(rest) = line
+        .strip_prefix("rename to ")
+        .or_else(|| line.strip_prefix("copy to "))
+    {
+        fb.set_new_path(decode(rest)?);
     }
-    // Strip absolute path prefix if present (Index:-style diffs sometimes
-    // use absolute paths like /home/user/repo/file)
-    trimmed.to_string()
+    Ok(())
+}
+
+fn path_error(line: &str, error: &GitPathError) -> ParseError {
+    ParseError {
+        message: format!("invalid path in {line:?}: {error}"),
+    }
 }
 
 /// Parse a hunk header (the part after `@@ `) and then consume hunk body lines
@@ -539,3 +573,6 @@ fn parse_range_part(s: &str, prefix: char) -> Result<(u64, u64), ParseError> {
     };
     Ok((start, count))
 }
+
+#[cfg(test)]
+mod tests;

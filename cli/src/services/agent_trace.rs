@@ -22,7 +22,7 @@ mod ranges;
 mod repository_path;
 
 #[cfg(test)]
-pub use committed_content::NoCommittedFiles;
+pub use committed_content::UnverifiedCommittedFiles;
 use committed_content::{content_hash, CommittedFileCache, CommittedLines};
 pub use committed_content::{CommittedFile, CommittedFileReader, GitCommittedFiles};
 pub use evidence::DirectEvidenceSource;
@@ -566,10 +566,16 @@ fn build_trace_file(
     }
 
     let path = logical_path(file);
-    let committed = match committed_files.get(path) {
+    let committed = match committed_files
+        .get(path)
+        .with_context(|| format!("Failed to verify Agent Trace ranges for '{path}'."))?
+    {
         CommittedFile::Blob(bytes) => Some(CommittedLines::new(bytes)),
         CommittedFile::NotLineAddressable => return Ok(None),
-        CommittedFile::Unavailable => None,
+        CommittedFile::Missing => bail!(
+            "Invalid Agent Trace file '{path}': the patch adds lines to it, but it is absent from revision '{revision}'."
+        ),
+        CommittedFile::Unverified => None,
     };
     validate_added_line_positions(path, &lines, committed.as_ref(), revision)?;
 
