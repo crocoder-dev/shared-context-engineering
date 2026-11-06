@@ -8,8 +8,8 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 
 use crate::services::agent_trace::{
-    agent_trace_session_url, validate_agent_trace_value, AgentTrace, DirectEvidenceSource,
-    HunkContributor, LineChangeAttribution, LineChangeCounts, RepositoryRoot,
+    agent_trace_session_url, validate_agent_trace_value, AgentTrace, AgentTraceVcsType,
+    ContributorType, DirectEvidenceSource, LineChangeAttribution, LineChangeCounts, RepositoryRoot,
 };
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
@@ -443,8 +443,23 @@ async fn stale_sessions_from_already_committed_history_do_not_credit_a_later_com
     let trace = agent_trace(&flow, &mutation).await;
     let conversation = &trace.files[0].conversations[0];
 
-    assert_eq!(conversation.contributor.kind, HunkContributor::Ai);
-    assert_eq!(conversation.contributor.model_id.as_deref(), Some(MODEL_C));
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Ai
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id
+            .as_deref(),
+        Some(MODEL_C)
+    );
     assert_eq!(
         related_sessions(&trace),
         vec![agent_trace_session_url(SESSION_C)]
@@ -476,8 +491,23 @@ async fn causal_mutation_lineage_overrides_a_fresh_exact_direct_match_from_anoth
 
     let trace = agent_trace(&flow, &mutation).await;
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, HunkContributor::Ai);
-    assert_eq!(conversation.contributor.model_id.as_deref(), Some(MODEL_C));
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Ai
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id
+            .as_deref(),
+        Some(MODEL_C)
+    );
     assert_eq!(
         related_sessions(&trace),
         vec![agent_trace_session_url(SESSION_C)]
@@ -508,8 +538,12 @@ async fn non_exclusive_mutation_lineage_is_not_overridden_by_a_direct_match() {
 
     let trace = agent_trace(&flow, &mutation).await;
     assert_eq!(
-        trace.files[0].conversations[0].contributor.kind,
-        HunkContributor::Unknown
+        trace.files[0].conversations[0]
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Unknown
     );
     assert!(related_sessions(&trace).is_empty());
     let line_changes = trace.metadata.sce.line_changes;
@@ -535,8 +569,12 @@ async fn a_historical_content_match_at_other_positions_does_not_attribute_withou
 
     let trace = agent_trace(&flow, &no_mutation()).await;
     assert_eq!(
-        trace.files[0].conversations[0].contributor.kind,
-        HunkContributor::Unknown
+        trace.files[0].conversations[0]
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Unknown
     );
     assert_contains_none(
         &serde_json::to_string(&trace).expect("trace serializes"),
@@ -553,8 +591,23 @@ async fn fresh_exact_direct_evidence_still_attributes_without_mutation_history()
 
     let trace = agent_trace(&flow, &no_mutation()).await;
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, HunkContributor::Ai);
-    assert_eq!(conversation.contributor.model_id.as_deref(), Some(MODEL_C));
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Ai
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id
+            .as_deref(),
+        Some(MODEL_C)
+    );
     assert_eq!(
         related_sessions(&trace),
         vec![agent_trace_session_url(SESSION_C)]
@@ -581,8 +634,12 @@ async fn conflicting_fresh_direct_sessions_fail_closed_without_lineage() {
     assert_eq!(touched_line_count(&persisted.patch), 0);
     let trace = agent_trace(&flow, &no_mutation()).await;
     assert_eq!(
-        trace.files[0].conversations[0].contributor.kind,
-        HunkContributor::Unknown
+        trace.files[0].conversations[0]
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Unknown
     );
     assert!(related_sessions(&trace).is_empty());
 }
@@ -613,15 +670,22 @@ fn one_direct_source_line_covers_only_its_own_duplicate_occurrence() {
             commit_revision: "0000000000000000000000000000000000000001",
             vcs_type: None,
         },
+        &crate::services::agent_trace::NoCommittedFiles,
     )
     .expect("trace builds");
 
     let kinds: Vec<_> = trace.files[0]
         .conversations
         .iter()
-        .map(|conversation| conversation.contributor.kind)
+        .map(|conversation| {
+            conversation
+                .contributor
+                .as_ref()
+                .expect("conversation contributor")
+                .kind
+        })
         .collect();
-    assert_eq!(kinds, vec![HunkContributor::Ai, HunkContributor::Unknown]);
+    assert_eq!(kinds, vec![ContributorType::Ai, ContributorType::Unknown]);
     assert_eq!(trace.metadata.sce.line_changes.ai.added, 1);
     assert_eq!(trace.metadata.sce.line_changes.unknown.added, 1);
 }
@@ -965,12 +1029,17 @@ async fn post_commit_direct_evidence_requires_repository_file_identity() {
         let trace = agent_trace(&flow, &no_mutation()).await;
 
         let (kind, tool, lines) = if expected {
-            (HunkContributor::Ai, Some(CLAUDE_TOOL), BOILERPLATE.len())
+            (ContributorType::Ai, Some(CLAUDE_TOOL), BOILERPLATE.len())
         } else {
-            (HunkContributor::Unknown, None, 0)
+            (ContributorType::Unknown, None, 0)
         };
         assert_eq!(
-            trace.files[0].conversations[0].contributor.kind, kind,
+            trace.files[0].conversations[0]
+                .contributor
+                .as_ref()
+                .expect("conversation contributor")
+                .kind,
+            kind,
             "{path}"
         );
         assert_eq!(
@@ -1330,6 +1399,236 @@ async fn persisted_agent_trace_counts_unresolved_lines_as_unknown() {
         LineChangeAttribution {
             unknown: added(BOILERPLATE.len()),
             ..LineChangeAttribution::default()
+        }
+    );
+}
+
+const RANGE_APP_PATH: &str = "src/app.ts";
+const RANGE_NOTES_PATH: &str = "notes.md";
+const RANGE_BASE_APP: &str = "keep 1\r\nold line\r\nkeep 2\r\n";
+const RANGE_COMMITTED_APP: &str =
+    "keep 1\r\nai one ✓\r\nai two\r\nunresolved\r\nkeep 2\r\ntail without newline";
+const RANGE_COMMITTED_NOTES: &str = "x\n\n  y\n";
+const RANGE_DELETED_PATCH: &str =
+    "diff --git a/notes.md b/notes.md\n--- a/notes.md\n+++ b/notes.md\n@@ -0,0 +1 @@\n+fabricated\n";
+
+fn committed_blob(root: &Path, commit: &str, path: &str) -> Vec<u8> {
+    let output = Command::new("git")
+        .args(["cat-file", "blob", &format!("{commit}:{path}")])
+        .current_dir(root)
+        .output()
+        .expect("git cat-file runs");
+    assert!(output.status.success());
+    output.stdout
+}
+
+fn independent_line_slice(bytes: &[u8], start_line: u64, end_line: u64) -> Option<Vec<u8>> {
+    let lines: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
+    let start = usize::try_from(start_line).ok()?.checked_sub(1)?;
+    let end = usize::try_from(end_line).ok()?;
+    (start < end && end <= lines.len()).then(|| lines[start..end].concat())
+}
+
+fn murmur3_tag(bytes: &[u8]) -> String {
+    let hash = murmur3::murmur3_32(&mut std::io::Cursor::new(bytes), 0).expect("murmur3");
+    format!("murmur3:{hash:08x}")
+}
+
+fn commit_range_fixture(root: &Path) -> String {
+    git(root, &["init", "-q", "-b", "main"], None);
+    git(
+        root,
+        &["config", "user.email", "ranges@example.invalid"],
+        None,
+    );
+    git(root, &["config", "user.name", "Ranges Test"], None);
+    git(root, &["config", "commit.gpgsign", "false"], None);
+    git(root, &["config", "core.autocrlf", "false"], None);
+    std::fs::create_dir_all(root.join("src")).expect("src dir");
+    std::fs::write(root.join(RANGE_APP_PATH), RANGE_BASE_APP).expect("write app");
+    std::fs::write(root.join("gone.txt"), "a\nb\n").expect("write gone");
+    std::fs::write(root.join("changes.patch"), RANGE_DELETED_PATCH).expect("write patch");
+    git(root, &["add", "-A"], None);
+    git(root, &["commit", "-q", "-m", "base"], Some(BASE_TIME_S));
+
+    std::fs::write(root.join(RANGE_APP_PATH), RANGE_COMMITTED_APP).expect("write app");
+    std::fs::write(root.join(RANGE_NOTES_PATH), RANGE_COMMITTED_NOTES).expect("write notes");
+    std::fs::remove_file(root.join("gone.txt")).expect("remove gone");
+    std::fs::remove_file(root.join("changes.patch")).expect("remove patch");
+    git(root, &["add", "-A"], None);
+    git(
+        root,
+        &["commit", "-q", "-m", "ranges"],
+        Some(COMMIT_A_TIME_S),
+    );
+    git(root, &["rev-parse", "HEAD"], None)
+}
+
+async fn persist_range_trace(root: &Path, db: &RepositoryAgentTraceDb) -> (AgentTrace, String) {
+    insert_rows(
+        db,
+        &[DiffTraceRow {
+            time_ms: ms(COMMIT_A_TIME_S) - 500,
+            session_id: SESSION_C,
+            model_id: MODEL_C,
+            tool_name: CLAUDE_TOOL,
+            patch: format!(
+                "diff --git a/{RANGE_APP_PATH} b/{RANGE_APP_PATH}\n--- a/{RANGE_APP_PATH}\n+++ b/{RANGE_APP_PATH}\n@@ -1,0 +2,2 @@\n+ai one ✓\n+ai two\n"
+            ),
+        }],
+    )
+    .await;
+    let flow = run_post_commit_intersection_flow_with(
+        root,
+        capture_post_commit_patch_from_git,
+        || Ok(ms(COMMIT_A_TIME_S) + 500),
+        async |cutoff_ms, end_ms| db.recent_diff_trace_patches(cutoff_ms, end_ms).await,
+        async |insert| {
+            db.insert_post_commit_patch_intersection(insert)
+                .await
+                .map(|_| ())
+        },
+    )
+    .await
+    .expect("intersection flow");
+    let trace = run_post_commit_agent_trace_flow_with(
+        &flow,
+        Some(AgentTraceVcsType::Git),
+        REMOTE_URL,
+        &no_mutation(),
+        None,
+        |value| validate_agent_trace_value(value).map_err(|error| anyhow!(error.to_string())),
+        async |insert| db.insert_agent_trace(insert).await.map(|_| ()),
+    )
+    .await
+    .expect("agent trace flow");
+
+    let persisted: Vec<String> = db
+        .query_map("SELECT trace_json FROM agent_traces", (), |row| {
+            Ok(row.get(0)?)
+        })
+        .await
+        .expect("read agent traces");
+    assert_eq!(persisted.len(), 1);
+    (trace, persisted[0].clone())
+}
+
+type ObservedRange = (
+    String,
+    u64,
+    u64,
+    String,
+    ContributorType,
+    Option<String>,
+    Vec<String>,
+);
+
+fn observed_ranges(root: &Path, commit: &str, trace: &AgentTrace) -> Vec<ObservedRange> {
+    let mut observed = Vec::new();
+    for file in &trace.files {
+        let blob = committed_blob(root, commit, &file.path);
+        for conversation in &file.conversations {
+            for range in &conversation.ranges {
+                let bytes = independent_line_slice(&blob, range.start_line, range.end_line)
+                    .expect("range exists at the recorded revision");
+                assert_eq!(range.content_hash, Some(murmur3_tag(&bytes)));
+                let contributor = range
+                    .contributor
+                    .as_ref()
+                    .or(conversation.contributor.as_ref())
+                    .expect("effective contributor");
+                observed.push((
+                    file.path.clone(),
+                    range.start_line,
+                    range.end_line,
+                    String::from_utf8(bytes).expect("utf-8 range"),
+                    contributor.kind,
+                    contributor.model_id.clone(),
+                    conversation
+                        .related
+                        .iter()
+                        .flatten()
+                        .map(|related| related.url.clone())
+                        .collect(),
+                ));
+            }
+        }
+    }
+    observed
+}
+
+fn unknown_range(path: &str, start: u64, end: u64, text: &str) -> ObservedRange {
+    (
+        path.to_owned(),
+        start,
+        end,
+        text.to_owned(),
+        ContributorType::Unknown,
+        None,
+        Vec::new(),
+    )
+}
+
+#[tokio::test]
+async fn persisted_agent_trace_ranges_reference_exact_committed_blobs() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    let commit = commit_range_fixture(root);
+    let (_db_dir, db) = open_db().await;
+    let (trace, persisted) = persist_range_trace(root, &db).await;
+
+    let persisted_value: Value = serde_json::from_str(&persisted).expect("trace JSON");
+    validate_agent_trace_value(&persisted_value).expect("persisted trace validates");
+    let persisted_trace: AgentTrace =
+        serde_json::from_value(persisted_value).expect("persisted trace deserializes");
+    assert_eq!(persisted_trace, trace);
+    assert_eq!(
+        persisted_trace
+            .vcs
+            .as_ref()
+            .map(|vcs| vcs.revision.as_str()),
+        Some(commit.as_str())
+    );
+
+    assert_eq!(
+        observed_ranges(root, &commit, &persisted_trace),
+        vec![
+            unknown_range(RANGE_NOTES_PATH, 1, 3, RANGE_COMMITTED_NOTES),
+            (
+                RANGE_APP_PATH.to_owned(),
+                2,
+                3,
+                "ai one ✓\r\nai two\r\n".to_owned(),
+                ContributorType::Ai,
+                Some(MODEL_C.to_owned()),
+                vec![agent_trace_session_url(SESSION_C)]
+            ),
+            unknown_range(RANGE_APP_PATH, 4, 4, "unresolved\r\n"),
+            unknown_range(RANGE_APP_PATH, 6, 6, "tail without newline"),
+        ]
+    );
+    assert_eq!(
+        persisted_trace.files[1].conversations.len(),
+        2,
+        "unresolved app ranges share one conversation"
+    );
+    assert_eq!(
+        persisted_trace.tool.and_then(|tool| tool.name).as_deref(),
+        Some(CLAUDE_TOOL)
+    );
+    let deleted_patch_lines = RANGE_DELETED_PATCH.lines().count() as u64;
+    assert_eq!(
+        persisted_trace.metadata.sce.line_changes,
+        LineChangeAttribution {
+            ai: LineChangeCounts {
+                added: 2,
+                removed: 0
+            },
+            non_exclusive: LineChangeCounts::default(),
+            unknown: LineChangeCounts {
+                added: 5,
+                removed: 1 + 2 + deleted_patch_lines
+            },
         }
     );
 }

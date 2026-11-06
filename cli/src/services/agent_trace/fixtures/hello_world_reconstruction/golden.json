@@ -11,9 +11,18 @@
     "sce": {
       "version": "0.2.0",
       "line_changes": {
-        "ai": { "added": 5, "removed": 0 },
-        "non_exclusive": { "added": 0, "removed": 0 },
-        "unknown": { "added": 0, "removed": 0 }
+        "ai": {
+          "added": 5,
+          "removed": 0
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 0,
+          "removed": 0
+        }
       }
     }
   },
@@ -30,7 +39,7 @@
             {
               "start_line": 1,
               "end_line": 5,
-              "content_hash": "murmur3:f0b7603b"
+              "content_hash": "murmur3:7082961b"
             }
           ]
         }

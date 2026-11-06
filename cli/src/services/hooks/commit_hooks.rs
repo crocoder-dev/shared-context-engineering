@@ -9,7 +9,7 @@ use crate::services::agent_trace::{
     agent_trace_persisted_url, build_agent_trace_from_evidence, direct_evidence_patch,
     has_direct_evidence, patch_has_touched_lines, validate_agent_trace_value, AgentTrace,
     AgentTraceEvidence, AgentTraceMetadataInput, AgentTraceVcsType, DirectEvidenceSource,
-    RepositoryRoot,
+    GitCommittedFiles, RepositoryRoot,
 };
 use crate::services::agent_trace_db::{
     AgentTraceInsert, ParsedDiffTracePatch, PostCommitPatchIntersectionInsert,
@@ -346,6 +346,10 @@ where
             commit_revision: &flow_result.post_commit_data.commit_oid,
             vcs_type,
         },
+        &GitCommittedFiles::new(
+            &flow_result.repository_root,
+            &flow_result.post_commit_data.commit_oid,
+        ),
     )
     .context("Failed to build Agent Trace payload from post-commit intersection flow result.")?;
 
@@ -717,7 +721,7 @@ pub fn capture_post_commit_patch_from_git(repository_root: &Path) -> Result<Post
         "Failed to capture parent commit timestamp from git.",
     )
     .ok();
-    let patch_text = capture_head_patch_from_git(repository_root)?;
+    let patch_text = capture_commit_patch_from_git(repository_root, &commit_oid)?;
     let parsed_patch = parse_patch_from_text(&patch_text, None).map_err(|e| {
         anyhow!(post_commit_patch_error(
             "failed to parse post-commit patch",
@@ -776,10 +780,21 @@ pub(crate) fn capture_commit_timestamp_from_git(
     Ok(timestamp_ms)
 }
 
-pub(crate) fn capture_head_patch_from_git(repository_root: &Path) -> Result<String> {
+pub(crate) fn capture_commit_patch_from_git(
+    repository_root: &Path,
+    commit_oid: &str,
+) -> Result<String> {
     run_git_command_capture_stdout(
         repository_root,
-        &["show", "--format=", "--patch", "--no-ext-diff", "HEAD"],
+        &[
+            "show",
+            "--format=",
+            "--patch",
+            "--no-ext-diff",
+            "--no-textconv",
+            commit_oid,
+            "--",
+        ],
         "Failed to capture HEAD patch from git.",
     )
 }

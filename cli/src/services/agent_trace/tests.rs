@@ -8,12 +8,13 @@ use serde_json::Value;
 use super::{
     build_agent_trace_from_evidence, line_change_attribution, resolve_line, resolve_patch_lines,
     validate_agent_trace_value, AcceptedDirectLine, AgentTraceEvidence, AgentTraceMetadataInput,
-    AgentTraceVcsType, DirectEvidenceSource, DirectLineEvidence, HunkContributor, LineAttribution,
-    LineChangeAttribution, LineChangeCounts, MutationEvidenceIndex, MutationLineEvidence,
-    RepositoryRoot, ResolvedLine, AGENT_TRACE_VERSION,
+    AgentTraceVcsType, CommittedFile, CommittedFileReader, ContributorType, DirectEvidenceSource,
+    DirectLineEvidence, LineAttribution, LineChangeAttribution, LineChangeCounts,
+    MutationEvidenceIndex, MutationLineEvidence, NoCommittedFiles, RepositoryRoot, ResolvedLine,
+    AGENT_TRACE_VERSION,
 };
 use crate::services::{
-    agent_trace::agent_trace_conversation_url,
+    agent_trace::{agent_trace_conversation_url, agent_trace_session_url},
     agent_trace_db::DiffTracePathOrigin,
     mutation_trace::attribution::{PatchLineLocation, PatchLineProvenance},
     patch::{parse_patch, ParsedPatch, TouchedLineKind},
@@ -28,6 +29,137 @@ struct AgentTraceScenario {
     incremental: &'static [&'static str],
     post_commit: &'static str,
     golden: &'static str,
+}
+
+#[derive(Clone, Debug, Default)]
+struct PatchNewSideFiles(BTreeMap<String, Vec<u8>>);
+
+impl PatchNewSideFiles {
+    fn from_patch(text: &str) -> Self {
+        let mut files: BTreeMap<String, BTreeMap<u64, Vec<u8>>> = BTreeMap::new();
+        let mut path: Option<String> = None;
+        let (mut new_line, mut old_left, mut new_left) = (0_u64, 0_u64, 0_u64);
+        let mut last_new_line: Option<u64> = None;
+        for raw in text.split_inclusive('\n') {
+            let terminated;
+            let raw = if raw.ends_with('\n') {
+                raw
+            } else {
+                terminated = format!("{raw}\n");
+                terminated.as_str()
+            };
+            if old_left > 0 || new_left > 0 {
+                let (marker, body) = if raw == "\n" {
+                    (' ', "\n")
+                } else {
+                    (raw.chars().next().expect("hunk body line"), &raw[1..])
+                };
+                let file = files.entry(path.clone().unwrap_or_default()).or_default();
+                match marker {
+                    '+' => {
+                        file.insert(new_line, body.as_bytes().to_vec());
+                        last_new_line = Some(new_line);
+                        new_line += 1;
+                        new_left -= 1;
+                    }
+                    '-' => {
+                        last_new_line = None;
+                        old_left -= 1;
+                    }
+                    ' ' => {
+                        file.insert(new_line, body.as_bytes().to_vec());
+                        last_new_line = Some(new_line);
+                        new_line += 1;
+                        old_left -= 1;
+                        new_left -= 1;
+                    }
+                    '\\' => {
+                        Self::strip_final_newline(&mut files, path.as_deref(), last_new_line);
+                    }
+                    other => panic!("unexpected hunk body marker {other:?}"),
+                }
+                continue;
+            }
+            if raw.starts_with("\\ ") {
+                Self::strip_final_newline(&mut files, path.as_deref(), last_new_line);
+                continue;
+            }
+            last_new_line = None;
+            let line = raw.trim_end_matches('\n');
+            if let Some(rest) = line.strip_prefix("diff --git ") {
+                path = rest.split_once(" b/").map(|(_, new)| new.to_owned());
+            } else if let Some(rest) = line.strip_prefix("+++ ") {
+                path = rest.strip_prefix("b/").map(ToOwned::to_owned);
+            } else if let Some(rest) = line.strip_prefix("@@ -") {
+                let (old, rest) = rest.split_once(" +").expect("hunk new range");
+                let new = rest.split_once(" @@").expect("hunk header end").0;
+                let count = |range: &str| {
+                    range
+                        .split_once(',')
+                        .map_or(Ok(1), |(_, count)| count.parse())
+                        .expect("hunk count")
+                };
+                old_left = count(old);
+                new_left = count(new);
+                new_line = new
+                    .split(',')
+                    .next()
+                    .and_then(|start| start.parse().ok())
+                    .expect("hunk new start");
+            }
+        }
+
+        Self(
+            files
+                .into_iter()
+                .filter(|(path, _)| !path.is_empty())
+                .map(|(path, lines)| {
+                    let last = lines.keys().copied().max().unwrap_or(0);
+                    let bytes = (1..=last)
+                        .flat_map(|line_number| {
+                            lines.get(&line_number).cloned().unwrap_or_else(|| {
+                                format!("<line {line_number} outside the patch>\n").into_bytes()
+                            })
+                        })
+                        .collect();
+                    (path, bytes)
+                })
+                .collect(),
+        )
+    }
+
+    fn strip_final_newline(
+        files: &mut BTreeMap<String, BTreeMap<u64, Vec<u8>>>,
+        path: Option<&str>,
+        line_number: Option<u64>,
+    ) {
+        if let (Some(path), Some(line_number)) = (path, line_number) {
+            if let Some(line) = files
+                .get_mut(path)
+                .and_then(|lines| lines.get_mut(&line_number))
+            {
+                assert_eq!(
+                    line.pop(),
+                    Some(b'\n'),
+                    "missing newline marker after {line_number}"
+                );
+            }
+        }
+    }
+
+    fn bytes(&self, path: &str) -> &[u8] {
+        self.0.get(path).expect("committed file")
+    }
+}
+
+impl CommittedFileReader for PatchNewSideFiles {
+    fn read_committed_file(&self, path: &str) -> CommittedFile {
+        self.0
+            .get(path)
+            .map_or(CommittedFile::Unavailable, |bytes| {
+                CommittedFile::Blob(bytes.clone())
+            })
+    }
 }
 
 fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
@@ -90,6 +222,7 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
         },
+        &PatchNewSideFiles::from_patch(scenario.post_commit),
     )
     .expect("agent trace should build");
     assert_eq!(actual.version, AGENT_TRACE_VERSION);
@@ -279,6 +412,7 @@ fn assert_builds_expected_agent_trace_from_evidence(scenario: EvidenceScenario) 
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
         },
+        &PatchNewSideFiles::from_patch(scenario.post_commit),
     )
     .expect("agent trace should build");
 
@@ -485,6 +619,22 @@ fn build_trace(
     mutation_ai_patch: &ParsedPatch,
     mutation_non_ai_patch: &ParsedPatch,
 ) -> super::AgentTrace {
+    build_trace_with_content(
+        committed,
+        sources,
+        mutation_ai_patch,
+        mutation_non_ai_patch,
+        &NoCommittedFiles,
+    )
+}
+
+fn build_trace_with_content(
+    committed: &ParsedPatch,
+    sources: &[ToolSource],
+    mutation_ai_patch: &ParsedPatch,
+    mutation_non_ai_patch: &ParsedPatch,
+    committed_files: &dyn CommittedFileReader,
+) -> super::AgentTrace {
     let direct_sources = direct_sources(sources);
     let trace = build_agent_trace_from_evidence(
         AgentTraceEvidence {
@@ -499,6 +649,7 @@ fn build_trace(
             commit_revision: TEST_COMMIT_REVISION,
             vcs_type: Some(AgentTraceVcsType::Git),
         },
+        committed_files,
     )
     .expect("agent trace should build");
     let json = serde_json::to_value(&trace).expect("agent trace should serialize");
@@ -517,13 +668,66 @@ fn tool_of(trace: &super::AgentTrace) -> Option<(Option<&str>, Option<&str>)> {
         .map(|tool| (tool.name.as_deref(), tool.version.as_deref()))
 }
 
-fn contributor_kinds(trace: &super::AgentTrace) -> Vec<super::HunkContributor> {
+fn range_kinds(trace: &super::AgentTrace) -> Vec<ContributorType> {
     trace
         .files
         .iter()
-        .flat_map(|file| file.conversations.iter())
-        .map(|conversation| conversation.contributor.kind)
+        .flat_map(|file| {
+            let mut ranges: Vec<_> = file
+                .conversations
+                .iter()
+                .flat_map(|conversation| {
+                    conversation.ranges.iter().map(move |range| {
+                        let contributor = range
+                            .contributor
+                            .as_ref()
+                            .or(conversation.contributor.as_ref())
+                            .expect("every range has an effective contributor");
+                        (range.start_line, contributor.kind)
+                    })
+                })
+                .collect();
+            ranges.sort_by_key(|(start_line, _)| *start_line);
+            ranges.into_iter().map(|(_, kind)| kind)
+        })
         .collect()
+}
+
+fn range_positions(trace: &super::AgentTrace) -> Vec<(u64, u64, ContributorType)> {
+    let mut positions = Vec::new();
+    for file in &trace.files {
+        let mut ranges: Vec<_> = file
+            .conversations
+            .iter()
+            .flat_map(|conversation| {
+                conversation.ranges.iter().map(move |range| {
+                    let contributor = range
+                        .contributor
+                        .as_ref()
+                        .or(conversation.contributor.as_ref())
+                        .expect("every range has an effective contributor");
+                    (range.start_line, range.end_line, contributor.kind)
+                })
+            })
+            .collect();
+        ranges.sort_by_key(|(start_line, _, _)| *start_line);
+        positions.extend(ranges);
+    }
+    positions
+}
+
+fn related_urls(conversation: &super::Conversation) -> Vec<String> {
+    conversation
+        .related
+        .iter()
+        .flatten()
+        .map(|related| related.url.clone())
+        .collect()
+}
+
+fn expected_hash(bytes: &[u8]) -> String {
+    let hash = murmur3::murmur3_32(&mut std::io::Cursor::new(bytes), 0).expect("murmur3");
+    format!("murmur3:{hash:08x}")
 }
 
 fn accepted_line_count(sources: &[ToolSource], target: &ParsedPatch) -> usize {
@@ -563,11 +767,8 @@ fn two_sessions_claiming_one_line_yield_no_accepted_direct_evidence() {
 
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![
-            super::HunkContributor::Unknown,
-            super::HunkContributor::Unknown
-        ]
+        range_kinds(&trace),
+        vec![ContributorType::Unknown, ContributorType::Unknown]
     );
     assert_eq!(tool_of(&trace), None);
 }
@@ -598,8 +799,23 @@ fn several_rows_from_one_session_are_accepted_as_that_session() {
     ));
     let trace = build_with_sources(&sources, &no_mutation());
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, super::HunkContributor::Ai);
-    assert_eq!(conversation.contributor.model_id.as_deref(), Some(MODEL_A));
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Ai
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id
+            .as_deref(),
+        Some(MODEL_A)
+    );
     assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
 }
 
@@ -632,8 +848,8 @@ fn a_conflicted_line_does_not_hide_or_join_a_valid_line() {
     assert_eq!(accepted_line_count(&sources, &committed_patch()), 1);
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Unknown, super::HunkContributor::Ai]
+        range_kinds(&trace),
+        vec![ContributorType::Unknown, ContributorType::Ai]
     );
     assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
 }
@@ -655,11 +871,8 @@ fn identical_lines_in_a_different_file_with_the_same_suffix_do_not_attribute() {
     ));
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![
-            super::HunkContributor::Unknown,
-            super::HunkContributor::Unknown
-        ]
+        range_kinds(&trace),
+        vec![ContributorType::Unknown, ContributorType::Unknown]
     );
     assert_eq!(tool_of(&trace), None);
 }
@@ -687,8 +900,8 @@ fn absolute_evidence_paths_attribute_only_inside_the_repository_root() {
 
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Unknown]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Unknown]
     );
     assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
 }
@@ -767,8 +980,8 @@ fn accepted_sources_from_one_tool_keep_that_tool() {
 
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Ai]
     );
     assert_eq!(tool_of(&trace), Some((Some("claude"), Some("1.0"))));
 }
@@ -794,8 +1007,8 @@ fn accepted_sources_from_different_tools_omit_the_tool() {
 
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Ai]
     );
     assert_eq!(tool_of(&trace), None);
 }
@@ -853,12 +1066,14 @@ fn direct_matches_fully_overridden_by_lineage_emit_no_tool() {
 
     let trace = build_with_sources(&sources, &mutation_ai);
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Ai]
     );
     assert_eq!(
         trace.files[0].conversations[0]
             .contributor
+            .as_ref()
+            .expect("conversation contributor")
             .model_id
             .as_deref(),
         Some(MODEL_C)
@@ -872,8 +1087,8 @@ fn mutation_only_attribution_emits_no_tool() {
 
     let trace = build_with_sources(&[], &mutation_ai);
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Ai]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Ai]
     );
     assert_eq!(tool_of(&trace), None);
 }
@@ -900,8 +1115,8 @@ fn a_session_conflicted_source_cannot_supply_the_tool() {
 
     let trace = build_with_sources(&sources, &mutation_ai);
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Unknown, super::HunkContributor::Ai]
+        range_kinds(&trace),
+        vec![ContributorType::Unknown, ContributorType::Ai]
     );
     assert_eq!(tool_of(&trace), None);
 }
@@ -936,8 +1151,8 @@ fn claude_relative_paths_without_an_absolute_cwd_cannot_attribute_or_supply_the_
         ));
         let trace = build_with_sources(&sources, &no_mutation());
         assert_eq!(
-            contributor_kinds(&trace),
-            vec![super::HunkContributor::Unknown, super::HunkContributor::Ai],
+            range_kinds(&trace),
+            vec![ContributorType::Unknown, ContributorType::Ai],
             "{path_origin:?}"
         );
         assert_eq!(tool_of(&trace), Some((Some("opencode"), Some("0.9"))));
@@ -961,8 +1176,8 @@ fn claude_absolute_paths_attribute_without_a_cwd_only_inside_the_repository() {
 
     let trace = build_with_sources(&sources, &no_mutation());
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Unknown]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Unknown]
     );
     assert_eq!(tool_of(&trace), Some((Some("claude"), None)));
 }
@@ -1015,12 +1230,14 @@ fn mutation_lineage_still_attributes_when_claude_direct_evidence_lacks_a_cwd() {
 
     let trace = build_with_sources(&sources, &mutation_ai);
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![super::HunkContributor::Ai, super::HunkContributor::Unknown]
+        range_kinds(&trace),
+        vec![ContributorType::Ai, ContributorType::Unknown]
     );
     assert_eq!(
         trace.files[0].conversations[0]
             .contributor
+            .as_ref()
+            .expect("conversation contributor")
             .model_id
             .as_deref(),
         Some(MODEL_C)
@@ -1138,23 +1355,54 @@ fn mixed_committed() -> ParsedPatch {
 #[test]
 fn mixed_hunk_counts_each_touched_line_by_its_own_decision() {
     let committed = mixed_committed();
-    let trace = build_trace(
+    let trace = build_trace_with_content(
         &committed,
         &[line_source(MIXED_PATH, MIXED_DIRECT, SESSION_A, MODEL_A)],
         &mutation_ai_lines(MIXED_PATH, MIXED_LINEAGE, SESSION_A, Some(MODEL_A)),
         &mutation_non_ai_lines(MIXED_PATH, MIXED_CONTENDED),
+        &PatchNewSideFiles::from_patch(MIXED_HUNK),
     );
 
     assert_eq!(buckets(&trace), ((2, 1), (1, 0), (1, 1)));
     assert_counters_cover(&trace, &committed);
-    assert_eq!(contributor_kinds(&trace), vec![HunkContributor::Mixed]);
+    let url = agent_trace_conversation_url(&trace.id);
     assert_eq!(
-        trace.files[0].conversations[0]
-            .contributor
-            .model_id
-            .as_deref(),
-        Some(MODEL_A)
+        serde_json::to_value(&trace.files).expect("files serialize"),
+        serde_json::json!([{
+            "path": MIXED_PATH,
+            "conversations": [
+                {
+                    "url": url,
+                    "contributor": { "type": "ai", "model_id": MODEL_A },
+                    "ranges": [{
+                        "start_line": 2,
+                        "end_line": 3,
+                        "content_hash": expected_hash(b"new direct\nnew lineage\n"),
+                    }],
+                    "related": [{ "type": "session", "url": agent_trace_session_url(SESSION_A) }],
+                },
+                {
+                    "url": url,
+                    "contributor": { "type": "unknown" },
+                    "ranges": [{
+                        "start_line": 4,
+                        "end_line": 4,
+                        "content_hash": expected_hash(b"new contended\n"),
+                    }],
+                },
+                {
+                    "url": url,
+                    "contributor": { "type": "unknown" },
+                    "ranges": [{
+                        "start_line": 5,
+                        "end_line": 5,
+                        "content_hash": expected_hash(b"new manual\n"),
+                    }],
+                },
+            ],
+        }])
     );
+    assert!(!range_kinds(&trace).contains(&ContributorType::Mixed));
     assert_eq!(tool_of(&trace), Some((Some("claude"), Some("1.0"))));
 }
 
@@ -1205,7 +1453,7 @@ fn entirely_ai_hunk_counts_every_line_as_ai() {
 
     assert_eq!(buckets(&trace), ((4, 2), (0, 0), (0, 0)));
     assert_counters_cover(&trace, &committed);
-    assert_eq!(contributor_kinds(&trace), vec![HunkContributor::Ai]);
+    assert_eq!(range_kinds(&trace), vec![ContributorType::Ai]);
 }
 
 #[test]
@@ -1215,7 +1463,7 @@ fn entirely_unknown_hunk_counts_every_line_as_unknown() {
 
     assert_eq!(buckets(&trace), ((0, 0), (0, 0), (4, 2)));
     assert_counters_cover(&trace, &committed);
-    assert_eq!(contributor_kinds(&trace), vec![HunkContributor::Unknown]);
+    assert_eq!(range_kinds(&trace), vec![ContributorType::Unknown]);
 }
 
 #[test]
@@ -1232,11 +1480,18 @@ fn non_exclusive_mutation_overrides_direct_ai_evidence_in_counters_and_provenanc
     assert_eq!(buckets(&trace), ((0, 0), (1, 0), (1, 0)));
     assert_counters_cover(&trace, &committed);
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![HunkContributor::Unknown, HunkContributor::Unknown]
+        range_kinds(&trace),
+        vec![ContributorType::Unknown, ContributorType::Unknown]
     );
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.model_id, None);
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id,
+        None
+    );
     assert_eq!(conversation.related, None);
     assert_eq!(tool_of(&trace), None);
     let json = serde_json::to_string(&trace).expect("trace serializes");
@@ -1273,8 +1528,22 @@ fn mutation_only_attribution_without_a_model_counts_as_ai() {
 
     assert_eq!(buckets(&trace), ((1, 0), (0, 0), (1, 0)));
     let conversation = &trace.files[0].conversations[0];
-    assert_eq!(conversation.contributor.kind, HunkContributor::Ai);
-    assert_eq!(conversation.contributor.model_id, None);
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .kind,
+        ContributorType::Ai
+    );
+    assert_eq!(
+        conversation
+            .contributor
+            .as_ref()
+            .expect("conversation contributor")
+            .model_id,
+        None
+    );
 }
 
 #[test]
@@ -1293,7 +1562,7 @@ fn a_removed_line_without_direct_evidence_counts_as_unknown_regardless_of_its_au
     );
 
     assert_eq!(buckets(&trace), ((0, 0), (0, 0), (0, 1)));
-    assert_eq!(contributor_kinds(&trace), vec![HunkContributor::Unknown]);
+    assert!(trace.files.is_empty());
     assert_eq!(tool_of(&trace), None);
 }
 
@@ -1319,8 +1588,26 @@ fn duplicate_identical_lines_are_each_counted_once_and_only_supported_ones_are_a
     assert_eq!(buckets(&trace), ((2, 0), (0, 0), (2, 0)));
     assert_counters_cover(&trace, &committed);
     assert_eq!(
-        contributor_kinds(&trace),
-        vec![HunkContributor::Mixed, HunkContributor::Ai]
+        range_positions(&trace),
+        vec![
+            (2, 2, ContributorType::Unknown),
+            (3, 3, ContributorType::Ai),
+            (4, 4, ContributorType::Unknown),
+            (12, 12, ContributorType::Ai)
+        ]
+    );
+    let sessions: Vec<_> = trace.files[0]
+        .conversations
+        .iter()
+        .map(related_urls)
+        .collect();
+    assert_eq!(
+        sessions,
+        vec![
+            vec![],
+            vec![agent_trace_session_url(SESSION_A)],
+            vec![agent_trace_session_url(SESSION_C)]
+        ]
     );
 }
 
@@ -1349,12 +1636,26 @@ fn counters_sum_every_touched_line_across_multiple_hunks_and_files() {
     assert_eq!(buckets(&trace), ((2, 1), (1, 0), (1, 2)));
     assert_counters_cover(&trace, &committed);
     assert_eq!(
-        contributor_kinds(&trace),
+        range_kinds(&trace),
         vec![
-            HunkContributor::Mixed,
-            HunkContributor::Ai,
-            HunkContributor::Mixed
+            ContributorType::Ai,
+            ContributorType::Unknown,
+            ContributorType::Ai,
+            ContributorType::Unknown
         ]
+    );
+    let session_a = &trace.files[0].conversations[0];
+    assert_eq!(
+        session_a
+            .ranges
+            .iter()
+            .map(|range| (range.start_line, range.end_line))
+            .collect::<Vec<_>>(),
+        vec![(1, 1), (12, 12)]
+    );
+    assert_eq!(
+        related_urls(session_a),
+        vec![agent_trace_session_url(SESSION_A)]
     );
 }
 
@@ -1381,9 +1682,8 @@ fn a_deleted_patch_file_counts_only_its_literal_deleted_lines() {
         &no_mutation(),
     );
 
-    assert_eq!(trace.files.len(), 1);
-    assert_eq!(trace.files[0].path, SOURCE_PATH);
-    assert_eq!(contributor_kinds(&trace), vec![HunkContributor::Ai]);
+    assert!(trace.files.is_empty());
+    assert_eq!(tool_of(&trace), None);
     assert_eq!(
         buckets(&trace),
         ((0, 0), (0, 0), (0, embedded_lines as u64))
@@ -1621,6 +1921,787 @@ fn randomized_counters_are_exact_and_independent_of_grouping_and_order() {
                 }
             }
             assert_eq!(counts, adjusted, "seed {seed} demoted line {index}");
+        }
+    }
+}
+
+const EXAMPLE_PATH: &str = "src/example.ts";
+const EXAMPLE_PATCH: &str = "diff --git a/src/example.ts b/src/example.ts\n--- a/src/example.ts\n+++ b/src/example.ts\n@@ -10,2 +10,4 @@\n-old\n+let a = 1;\n+let b = 2;\n+let c = 3;\n unchanged\n";
+
+#[test]
+fn a_hunk_with_ai_and_unresolved_additions_emits_homogeneous_conversations_without_context() {
+    let committed = parse_patch(EXAMPLE_PATCH, None).expect("example parses");
+    let trace = build_trace_with_content(
+        &committed,
+        &[line_source(
+            EXAMPLE_PATH,
+            &[(ADDED, 10, "let a = 1;"), (ADDED, 11, "let b = 2;")],
+            SESSION_A,
+            MODEL_A,
+        )],
+        &no_mutation(),
+        &no_mutation(),
+        &PatchNewSideFiles::from_patch(EXAMPLE_PATCH),
+    );
+
+    let url = agent_trace_conversation_url(&trace.id);
+    assert_eq!(
+        serde_json::to_value(&trace.files).expect("files serialize"),
+        serde_json::json!([{
+            "path": EXAMPLE_PATH,
+            "conversations": [
+                {
+                    "url": url,
+                    "contributor": { "type": "ai", "model_id": MODEL_A },
+                    "ranges": [{
+                        "start_line": 10,
+                        "end_line": 11,
+                        "content_hash": expected_hash(b"let a = 1;\nlet b = 2;\n"),
+                    }],
+                    "related": [{ "type": "session", "url": agent_trace_session_url(SESSION_A) }],
+                },
+                {
+                    "url": url,
+                    "contributor": { "type": "unknown" },
+                    "ranges": [{
+                        "start_line": 12,
+                        "end_line": 12,
+                        "content_hash": expected_hash(b"let c = 3;\n"),
+                    }],
+                },
+            ],
+        }])
+    );
+    assert_eq!(buckets(&trace), ((2, 0), (0, 0), (1, 1)));
+}
+
+fn unresolved_trace(patch: &str) -> super::AgentTrace {
+    build_trace_with_content(
+        &parse_patch(patch, None).expect("patch parses"),
+        &[],
+        &no_mutation(),
+        &no_mutation(),
+        &PatchNewSideFiles::from_patch(patch),
+    )
+}
+
+#[test]
+fn additions_separated_by_context_produce_separate_ranges_in_one_conversation() {
+    let trace = unresolved_trace(
+        "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -4,2 +4,5 @@\n+one\n keep\n+two\n+three\n keep too\n",
+    );
+    assert_eq!(trace.files[0].conversations.len(), 1);
+    assert_eq!(
+        range_positions(&trace),
+        vec![
+            (4, 4, ContributorType::Unknown),
+            (6, 7, ContributorType::Unknown)
+        ]
+    );
+}
+
+#[test]
+fn new_file_ranges_start_at_line_one() {
+    let trace = unresolved_trace(
+        "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,2 @@\n+first\n+second\n",
+    );
+    assert_eq!(trace.files[0].path, "new.txt");
+    assert_eq!(
+        range_positions(&trace),
+        vec![(1, 2, ContributorType::Unknown)]
+    );
+}
+
+#[test]
+fn deleted_files_and_pure_renames_emit_no_ranges_but_keep_counters() {
+    let patch = "diff --git a/gone.txt b/gone.txt\ndeleted file mode 100644\n--- a/gone.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-a\n-b\ndiff --git a/old.rs b/new.rs\nsimilarity index 100%\nrename from old.rs\nrename to new.rs\n";
+    let trace = unresolved_trace(patch);
+    assert!(trace.files.is_empty());
+    assert_eq!(buckets(&trace), ((0, 0), (0, 0), (0, 2)));
+}
+
+#[test]
+fn renamed_files_with_additions_use_the_new_path_and_positions() {
+    let trace = unresolved_trace(
+        "diff --git a/old.rs b/new.rs\nsimilarity index 80%\nrename from old.rs\nrename to new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -2,1 +2,2 @@\n keep\n+added\n",
+    );
+    assert_eq!(trace.files.len(), 1);
+    assert_eq!(trace.files[0].path, "new.rs");
+    assert_eq!(
+        range_positions(&trace),
+        vec![(3, 3, ContributorType::Unknown)]
+    );
+}
+
+#[test]
+fn adjacent_lines_from_different_sessions_become_separate_conversations() {
+    let patch =
+        "diff --git a/s.rs b/s.rs\n--- a/s.rs\n+++ b/s.rs\n@@ -0,0 +1,2 @@\n+from a\n+from b\n";
+    let trace = build_trace_with_content(
+        &parse_patch(patch, None).expect("patch parses"),
+        &[
+            line_source("s.rs", &[(ADDED, 1, "from a")], SESSION_A, MODEL_A),
+            line_source("s.rs", &[(ADDED, 2, "from b")], SESSION_B, MODEL_A),
+        ],
+        &no_mutation(),
+        &no_mutation(),
+        &PatchNewSideFiles::from_patch(patch),
+    );
+    let conversations = &trace.files[0].conversations;
+    assert_eq!(conversations.len(), 2);
+    assert_eq!(
+        related_urls(&conversations[0]),
+        vec![agent_trace_session_url(SESSION_A)]
+    );
+    assert_eq!(
+        related_urls(&conversations[1]),
+        vec![agent_trace_session_url(SESSION_B)]
+    );
+    assert_eq!(
+        (
+            conversations[0].ranges[0].start_line,
+            conversations[1].ranges[0].start_line
+        ),
+        (1, 2)
+    );
+}
+
+#[test]
+fn sessionless_lines_with_different_models_never_share_a_model() {
+    let patch =
+        "diff --git a/m.rs b/m.rs\n--- a/m.rs\n+++ b/m.rs\n@@ -0,0 +1,2 @@\n+model a\n+model b\n";
+    let mut mutation_ai = mutation_ai_lines("m.rs", &[(ADDED, 1, "model a")], "", Some(MODEL_A));
+    mutation_ai
+        .files
+        .extend(mutation_ai_lines("m.rs", &[(ADDED, 2, "model b")], "", Some(MODEL_B)).files);
+    let trace = build_trace_with_content(
+        &parse_patch(patch, None).expect("patch parses"),
+        &[],
+        &mutation_ai,
+        &no_mutation(),
+        &PatchNewSideFiles::from_patch(patch),
+    );
+    let models: Vec<_> = trace.files[0]
+        .conversations
+        .iter()
+        .map(|conversation| {
+            assert_eq!(conversation.related, None);
+            conversation
+                .contributor
+                .as_ref()
+                .and_then(|contributor| contributor.model_id.clone())
+        })
+        .collect();
+    assert_eq!(
+        models,
+        vec![Some(MODEL_A.to_owned()), Some(MODEL_B.to_owned())]
+    );
+}
+
+#[test]
+fn one_session_with_several_models_keeps_one_conversation_with_range_overrides() {
+    let patch = "diff --git a/h.rs b/h.rs\n--- a/h.rs\n+++ b/h.rs\n@@ -0,0 +1,3 @@\n+first\n+second\n+third\n";
+    let mut mutation_ai = mutation_ai_lines(
+        "h.rs",
+        &[(ADDED, 1, "first"), (ADDED, 3, "third")],
+        SESSION_A,
+        Some(MODEL_A),
+    );
+    mutation_ai
+        .files
+        .extend(mutation_ai_lines("h.rs", &[(ADDED, 2, "second")], SESSION_A, Some(MODEL_B)).files);
+    let trace = build_trace_with_content(
+        &parse_patch(patch, None).expect("patch parses"),
+        &[],
+        &mutation_ai,
+        &no_mutation(),
+        &PatchNewSideFiles::from_patch(patch),
+    );
+
+    let url = agent_trace_conversation_url(&trace.id);
+    let range = |line: u64, bytes: &[u8], model: &str| {
+        serde_json::json!({
+            "start_line": line,
+            "end_line": line,
+            "content_hash": expected_hash(bytes),
+            "contributor": { "type": "ai", "model_id": model },
+        })
+    };
+    assert_eq!(
+        serde_json::to_value(&trace.files[0].conversations).expect("serialize"),
+        serde_json::json!([{
+            "url": url,
+            "contributor": { "type": "ai" },
+            "ranges": [
+                range(1, b"first\n", MODEL_A),
+                range(2, b"second\n", MODEL_B),
+                range(3, b"third\n", MODEL_A),
+            ],
+            "related": [{ "type": "session", "url": agent_trace_session_url(SESSION_A) }],
+        }])
+    );
+}
+
+#[test]
+fn unknown_and_non_exclusive_lines_never_share_a_range() {
+    use super::ranges::{coalesce_ranges, AttributedLine, RangeAttribution};
+
+    let line = |line_number, attribution| AttributedLine {
+        line_number,
+        attribution,
+    };
+    let ranges = coalesce_ranges(&[
+        line(1, RangeAttribution::Unknown),
+        line(2, RangeAttribution::Unknown),
+        line(3, RangeAttribution::NonExclusive),
+        line(4, RangeAttribution::NonExclusive),
+        line(6, RangeAttribution::NonExclusive),
+    ]);
+    let spans: Vec<_> = ranges
+        .iter()
+        .map(|range| (range.start_line, range.end_line, range.attribution.clone()))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![
+            (1, 2, RangeAttribution::Unknown),
+            (3, 4, RangeAttribution::NonExclusive),
+            (6, 6, RangeAttribution::NonExclusive),
+        ]
+    );
+}
+
+#[test]
+fn legacy_records_with_mixed_contributors_and_hunk_hashes_still_deserialize() {
+    let legacy = serde_json::json!({
+        "version": "0.1.0",
+        "id": "01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+        "timestamp": "2026-04-23T10:20:30Z",
+        "files": [{
+            "path": "src/lib.rs",
+            "conversations": [{
+                "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+                "contributor": { "type": "mixed", "model_id": MODEL_A },
+                "ranges": [{ "start_line": 1, "end_line": 4, "content_hash": "murmur3:0badf00d" }],
+            }, {
+                "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+                "ranges": [{ "start_line": 7, "end_line": 7, "contributor": { "type": "human" } }],
+            }],
+        }],
+    });
+    validate_agent_trace_value(&legacy).expect("legacy record validates");
+    let trace: super::AgentTrace = serde_json::from_value(legacy).expect("legacy deserializes");
+    let conversations = &trace.files[0].conversations;
+    assert_eq!(
+        conversations[0].contributor.as_ref().map(|c| c.kind),
+        Some(ContributorType::Mixed)
+    );
+    assert_eq!(
+        conversations[0].ranges[0].content_hash.as_deref(),
+        Some("murmur3:0badf00d")
+    );
+    assert_eq!(conversations[1].contributor, None);
+    assert_eq!(
+        conversations[1].ranges[0]
+            .contributor
+            .as_ref()
+            .map(|c| c.kind),
+        Some(ContributorType::Human)
+    );
+    assert_eq!(conversations[1].ranges[0].content_hash, None);
+}
+
+#[test]
+fn content_hash_matches_known_murmur3_vectors() {
+    use super::committed_content::content_hash;
+
+    assert_eq!(content_hash(b""), "murmur3:00000000");
+    assert_eq!(content_hash(b"hello"), "murmur3:248bfa47");
+    assert_eq!(
+        content_hash(b"The quick brown fox jumps over the lazy dog"),
+        "murmur3:2e4ff723"
+    );
+}
+
+#[test]
+fn committed_lines_keep_exact_terminators_and_unicode() {
+    use super::committed_content::CommittedLines;
+
+    let bytes = "lf\r\ncrlf\r\n\n   \nünïcødé ✓\nno final newline".as_bytes();
+    let lines = CommittedLines::new(bytes);
+    assert_eq!(lines.line_count(), 6);
+    assert_eq!(lines.span(1, 1), Some(&b"lf\r\n"[..]));
+    assert_eq!(lines.span(2, 3), Some(&b"crlf\r\n\n"[..]));
+    assert_eq!(lines.span(4, 4), Some(&b"   \n"[..]));
+    assert_eq!(lines.span(5, 5), Some("ünïcødé ✓\n".as_bytes()));
+    assert_eq!(lines.span(6, 6), Some(&b"no final newline"[..]));
+    assert_eq!(lines.span(1, 6), Some(bytes));
+    assert_eq!(lines.span(0, 1), None);
+    assert_eq!(lines.span(3, 2), None);
+    assert_eq!(lines.span(6, 7), None);
+    assert!(lines.line_matches(2, "crlf"));
+    assert!(lines.line_matches(3, ""));
+    assert!(lines.line_matches(6, "no final newline"));
+    assert!(!lines.line_matches(4, ""));
+    assert_eq!(CommittedLines::new(b"").line_count(), 0);
+    assert_eq!(CommittedLines::new(b"\n").line_count(), 1);
+}
+
+#[test]
+fn identical_committed_bytes_hash_identically_across_paths_positions_and_hunks() {
+    let patch = "diff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n@@ -0,0 +1,2 @@\n+same\n+bytes\ndiff --git a/two.rs b/two.rs\n--- a/two.rs\n+++ b/two.rs\n@@ -10,0 +11,1 @@\n+same\n@@ -20,0 +22,1 @@\n+bytes\n@@ -30,0 +33,2 @@\n+same\n+bytes\n";
+    let trace = unresolved_trace(patch);
+    let hashes: Vec<Vec<(u64, Option<String>)>> = trace
+        .files
+        .iter()
+        .map(|file| {
+            file.conversations[0]
+                .ranges
+                .iter()
+                .map(|range| (range.start_line, range.content_hash.clone()))
+                .collect()
+        })
+        .collect();
+    let pair = Some(expected_hash(b"same\nbytes\n"));
+    assert_eq!(
+        hashes,
+        vec![
+            vec![(1, pair.clone())],
+            vec![
+                (11, Some(expected_hash(b"same\n"))),
+                (22, Some(expected_hash(b"bytes\n"))),
+                (33, pair),
+            ],
+        ]
+    );
+}
+
+#[test]
+fn crlf_and_missing_final_newline_are_hashed_byte_exactly() {
+    let patch = "diff --git a/w.txt b/w.txt\nnew file mode 100644\n--- /dev/null\n+++ b/w.txt\n@@ -0,0 +1,3 @@\n+crlf\r\n+  \r\n+tail ✓\n\\ No newline at end of file\n";
+    let trace = unresolved_trace(patch);
+    assert_eq!(
+        trace.files[0].conversations[0].ranges[0].content_hash,
+        Some(expected_hash("crlf\r\n  \r\ntail ✓".as_bytes()))
+    );
+    assert_ne!(
+        trace.files[0].conversations[0].ranges[0].content_hash,
+        Some(expected_hash("crlf\n  \ntail ✓\n".as_bytes()))
+    );
+}
+
+#[test]
+fn unavailable_committed_content_keeps_positions_without_a_hash() {
+    let committed = parse_patch(EXAMPLE_PATCH, None).expect("example parses");
+    let trace = build_trace(&committed, &[], &no_mutation(), &no_mutation());
+    let range = &trace.files[0].conversations[0].ranges[0];
+    assert_eq!((range.start_line, range.end_line), (10, 12));
+    assert_eq!(range.content_hash, None);
+}
+
+struct FixedCommittedFile(CommittedFile);
+
+impl CommittedFileReader for FixedCommittedFile {
+    fn read_committed_file(&self, _path: &str) -> CommittedFile {
+        self.0.clone()
+    }
+}
+
+#[test]
+fn non_line_addressable_paths_emit_no_ranges() {
+    let committed = parse_patch(EXAMPLE_PATCH, None).expect("example parses");
+    let trace = build_trace_with_content(
+        &committed,
+        &[],
+        &no_mutation(),
+        &no_mutation(),
+        &FixedCommittedFile(CommittedFile::NotLineAddressable),
+    );
+    assert!(trace.files.is_empty());
+    assert_eq!(buckets(&trace), ((0, 0), (0, 0), (3, 1)));
+}
+
+#[test]
+fn positions_that_disagree_with_committed_content_are_rejected() {
+    let committed = parse_patch(EXAMPLE_PATCH, None).expect("example parses");
+    let mut short = PatchNewSideFiles::from_patch(EXAMPLE_PATCH);
+    short
+        .0
+        .insert(EXAMPLE_PATH.to_owned(), b"only one line\n".to_vec());
+    let mut different = PatchNewSideFiles::from_patch(EXAMPLE_PATCH);
+    let mut bytes = different.bytes(EXAMPLE_PATH).to_vec();
+    let edited = bytes.len() - "unchanged\n".len() - 2;
+    bytes[edited] = b'9';
+    different.0.insert(EXAMPLE_PATH.to_owned(), bytes);
+
+    for reader in [short, different] {
+        let error = build_agent_trace_from_evidence(
+            AgentTraceEvidence {
+                repository_root: &test_root(),
+                direct_sources: &[],
+                mutation_ai_patch: &no_mutation(),
+                mutation_non_ai_patch: &no_mutation(),
+            },
+            &committed,
+            AgentTraceMetadataInput {
+                commit_timestamp: TEST_COMMIT_TIMESTAMP,
+                commit_revision: TEST_COMMIT_REVISION,
+                vcs_type: Some(AgentTraceVcsType::Git),
+            },
+            &reader,
+        )
+        .expect_err("inconsistent positions must not be accepted");
+        assert!(
+            error
+                .to_string()
+                .starts_with("Invalid Agent Trace range position for 'src/example.ts'"),
+            "{error}"
+        );
+    }
+}
+
+const RANDOM_LINE_CONTENTS: &[&str] = &["", "   ", "dup", "x = 1;", "ünïcødé ✓", "\tfn f() {}"];
+
+#[derive(Clone, Debug)]
+struct RandomFile {
+    path: String,
+    new_lines: Vec<(Vec<u8>, Option<LineAttribution>)>,
+    patch: crate::services::patch::PatchFileChange,
+    decisions: Vec<LineAttribution>,
+}
+
+fn random_attribution(rng: &mut StdRng) -> LineAttribution {
+    let ai = |session: Option<&str>, model: Option<&str>| {
+        LineAttribution::Ai(ResolvedLine {
+            provenance: provenance(session, model),
+            direct_sources: BTreeSet::new(),
+        })
+    };
+    match rng.gen_range(0..7) {
+        0 => ai(Some(SESSION_A), Some(MODEL_A)),
+        1 => ai(Some(SESSION_A), Some(MODEL_B)),
+        2 => ai(Some(SESSION_B), Some(MODEL_A)),
+        3 => ai(None, Some(MODEL_A)),
+        4 => ai(None, None),
+        5 => LineAttribution::NonExclusive,
+        _ => LineAttribution::Unknown,
+    }
+}
+
+fn random_line(rng: &mut StdRng) -> Vec<u8> {
+    let content = RANDOM_LINE_CONTENTS[rng.gen_range(0..RANDOM_LINE_CONTENTS.len())];
+    let terminator = if rng.gen_bool(0.25) { "\r\n" } else { "\n" };
+    format!("{content}{terminator}").into_bytes()
+}
+
+fn touched_line(
+    kind: TouchedLineKind,
+    line_number: u64,
+    bytes: &[u8],
+) -> crate::services::patch::TouchedLine {
+    let text = std::str::from_utf8(bytes).expect("utf-8 line");
+    let text = text.strip_suffix('\n').unwrap_or(text);
+    crate::services::patch::TouchedLine {
+        kind,
+        line_number,
+        content: text.strip_suffix('\r').unwrap_or(text).to_owned(),
+        session_id: None,
+    }
+}
+
+fn random_file(rng: &mut StdRng, index: usize) -> RandomFile {
+    use crate::services::patch::{FileChangeKind, PatchFileChange};
+
+    let mut new_lines = Vec::new();
+    let mut touched = Vec::new();
+    let mut old_line = 1_u64;
+    for _ in 0..rng.gen_range(1..=8) {
+        if rng.gen_bool(0.4) {
+            for _ in 0..rng.gen_range(1..=3) {
+                new_lines.push((random_line(rng), None));
+                old_line += 1;
+            }
+        } else {
+            for _ in 0..rng.gen_range(0..=2) {
+                let decision = random_attribution(rng);
+                touched.push((
+                    touched_line(TouchedLineKind::Removed, old_line, &random_line(rng)),
+                    decision.clone(),
+                ));
+                old_line += 1;
+            }
+            for _ in 0..rng.gen_range(0..=4) {
+                let bytes = random_line(rng);
+                let decision = random_attribution(rng);
+                let line_number = new_lines.len() as u64 + 1;
+                touched.push((
+                    touched_line(TouchedLineKind::Added, line_number, &bytes),
+                    decision.clone(),
+                ));
+                new_lines.push((bytes, Some(decision)));
+            }
+        }
+    }
+    let last_has_content = new_lines
+        .last()
+        .is_some_and(|(bytes, _)| !matches!(bytes.as_slice(), b"\n" | b"\r\n"));
+    if last_has_content && rng.gen_bool(0.3) {
+        if let Some((last, _)) = new_lines.last_mut() {
+            while matches!(last.last(), Some(b'\n' | b'\r')) {
+                last.pop();
+            }
+            if let Some((line, _)) = touched.iter_mut().rev().find(|(line, _)| {
+                line.kind == TouchedLineKind::Added && line.line_number == new_lines.len() as u64
+            }) {
+                *line = touched_line(
+                    TouchedLineKind::Added,
+                    line.line_number,
+                    &new_lines.last().expect("last line").0,
+                );
+            }
+        }
+    }
+
+    let hunk = crate::services::patch::PatchHunk {
+        old_start: 1,
+        old_count: old_line - 1,
+        new_start: 1,
+        new_count: new_lines.len() as u64,
+        model_id: None,
+        lines: Vec::new(),
+    };
+    let file_path = format!("src/random_{index}.rs");
+    let mut patch = PatchFileChange {
+        old_path: file_path.clone(),
+        new_path: file_path.clone(),
+        kind: FileChangeKind::Modified,
+        hunks: vec![hunk],
+    };
+    patch.hunks[0].lines = touched.iter().map(|(line, _)| line.clone()).collect();
+    RandomFile {
+        path: file_path,
+        new_lines,
+        patch,
+        decisions: touched.into_iter().map(|(_, decision)| decision).collect(),
+    }
+}
+
+impl RandomFile {
+    fn bytes(&self) -> Vec<u8> {
+        self.new_lines
+            .iter()
+            .flat_map(|(bytes, _)| bytes.clone())
+            .collect()
+    }
+}
+
+fn partition(
+    files: &[RandomFile],
+    max_hunk_len: usize,
+) -> (ParsedPatch, BTreeMap<PatchLineLocation, LineAttribution>) {
+    let mut decisions = BTreeMap::new();
+    let patch_files = files
+        .iter()
+        .enumerate()
+        .map(|(file_index, file)| {
+            let whole = &file.patch.hunks[0];
+            let hunks = whole
+                .lines
+                .chunks(max_hunk_len.max(1))
+                .zip(file.decisions.chunks(max_hunk_len.max(1)))
+                .enumerate()
+                .map(|(hunk_index, (lines, hunk_decisions))| {
+                    for (line_index, decision) in hunk_decisions.iter().enumerate() {
+                        decisions.insert(
+                            PatchLineLocation {
+                                file_index,
+                                hunk_index,
+                                line_index,
+                            },
+                            decision.clone(),
+                        );
+                    }
+                    crate::services::patch::PatchHunk {
+                        lines: lines.to_vec(),
+                        ..whole.clone()
+                    }
+                })
+                .collect();
+            crate::services::patch::PatchFileChange {
+                hunks,
+                ..file.patch.clone()
+            }
+        })
+        .collect();
+    (ParsedPatch { files: patch_files }, decisions)
+}
+
+type ExpectedKey = (Option<String>, Option<String>, &'static str);
+
+fn expected_key(decision: &LineAttribution) -> ExpectedKey {
+    match decision {
+        LineAttribution::Ai(line) => (
+            line.provenance.session_id.clone(),
+            line.provenance.model_id.clone(),
+            "ai",
+        ),
+        LineAttribution::NonExclusive => (None, None, "non_exclusive"),
+        LineAttribution::Unknown => (None, None, "unknown"),
+    }
+}
+
+fn expected_ranges(file: &RandomFile) -> Vec<(u64, u64, ExpectedKey)> {
+    let mut ranges: Vec<(u64, u64, ExpectedKey)> = Vec::new();
+    for (index, (_, decision)) in file.new_lines.iter().enumerate() {
+        let line_number = index as u64 + 1;
+        let Some(decision) = decision else { continue };
+        let key = expected_key(decision);
+        match ranges.last_mut() {
+            Some((_, end, last)) if *end + 1 == line_number && *last == key => *end = line_number,
+            _ => ranges.push((line_number, line_number, key)),
+        }
+    }
+    ranges
+}
+
+struct RandomFiles(BTreeMap<String, Vec<u8>>);
+
+impl CommittedFileReader for RandomFiles {
+    fn read_committed_file(&self, path: &str) -> CommittedFile {
+        self.0
+            .get(path)
+            .map_or(CommittedFile::Unavailable, |bytes| {
+                CommittedFile::Blob(bytes.clone())
+            })
+    }
+}
+
+fn assert_random_trace_file(seed: u64, trace_file: &super::TraceFile, file: &RandomFile) {
+    assert_eq!(trace_file.path, file.path);
+    let mut actual = Vec::new();
+    for conversation in &trace_file.conversations {
+        let mut conversation_keys = BTreeSet::new();
+        for range in &conversation.ranges {
+            assert!(1 <= range.start_line && range.start_line <= range.end_line);
+            let start = usize::try_from(range.start_line).expect("start fits") - 1;
+            let end = usize::try_from(range.end_line).expect("end fits");
+            assert!(end <= file.new_lines.len());
+            let lines = &file.new_lines[start..end];
+            let first = lines[0].1.as_ref().map(expected_key);
+            assert!(
+                lines.iter().all(|(_, decision)| {
+                    decision.is_some() && decision.as_ref().map(expected_key) == first
+                }),
+                "seed {seed}: range crosses context or an attribution boundary"
+            );
+            let key = first.expect("added line");
+            let bytes: Vec<u8> = lines.iter().flat_map(|(bytes, _)| bytes.clone()).collect();
+            assert_eq!(
+                range.content_hash,
+                Some(expected_hash(&bytes)),
+                "seed {seed}"
+            );
+
+            let contributor = range
+                .contributor
+                .as_ref()
+                .or(conversation.contributor.as_ref())
+                .expect("effective contributor");
+            let expected_kind = if key.2 == "ai" {
+                ContributorType::Ai
+            } else {
+                ContributorType::Unknown
+            };
+            assert_eq!(contributor.kind, expected_kind, "seed {seed}");
+            let expected_model = if key.2 == "ai" { key.1.clone() } else { None };
+            assert_eq!(contributor.model_id, expected_model, "seed {seed}");
+            conversation_keys.insert(match key.2 {
+                "ai" if key.0.is_some() => (key.0.clone(), None, "session"),
+                "ai" => (None, key.1.clone(), "sessionless"),
+                other => (None, None, other),
+            });
+            actual.push((range.start_line, range.end_line, key));
+        }
+        assert_eq!(
+            conversation_keys.len(),
+            1,
+            "seed {seed}: conversation provenance"
+        );
+        let (session, _, _) = conversation_keys.into_iter().next().expect("key");
+        assert_eq!(
+            related_urls(conversation),
+            session
+                .map(|session| vec![agent_trace_session_url(&session)])
+                .unwrap_or_default(),
+            "seed {seed}: related sessions"
+        );
+    }
+    actual.sort_by_key(|(start, _, _)| *start);
+    assert_eq!(actual, expected_ranges(file), "seed {seed}");
+}
+
+#[test]
+fn randomized_ranges_reference_exact_committed_content_with_defensible_provenance() {
+    for seed in 0..RANDOMIZED_SEEDS {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let files: Vec<RandomFile> = (0..rng.gen_range(1..=3))
+            .map(|index| random_file(&mut rng, index))
+            .collect();
+        let blobs = RandomFiles(
+            files
+                .iter()
+                .map(|file| (file.path.clone(), file.bytes()))
+                .collect(),
+        );
+        let url = agent_trace_conversation_url("00000000-0000-7000-8000-000000000000");
+
+        let (patch, decisions) = partition(&files, usize::MAX);
+        let trace_files =
+            super::build_trace_files(&patch, &decisions, &url, &blobs, TEST_COMMIT_REVISION)
+                .expect("random trace files build");
+
+        for max_hunk_len in [1, 2, 5] {
+            let (repartitioned, repartitioned_decisions) = partition(&files, max_hunk_len);
+            assert_eq!(
+                line_change_attribution(&repartitioned, &repartitioned_decisions),
+                line_change_attribution(&patch, &decisions),
+                "seed {seed} counters hunk partition {max_hunk_len}"
+            );
+            assert_eq!(
+                super::build_trace_files(
+                    &repartitioned,
+                    &repartitioned_decisions,
+                    &url,
+                    &blobs,
+                    TEST_COMMIT_REVISION
+                )
+                .expect("repartitioned trace files build"),
+                trace_files,
+                "seed {seed} hunk partition {max_hunk_len}"
+            );
+        }
+
+        let record = serde_json::json!({
+            "version": AGENT_TRACE_VERSION,
+            "id": "00000000-0000-7000-8000-000000000000",
+            "timestamp": TEST_COMMIT_TIMESTAMP,
+            "files": trace_files,
+        });
+        validate_agent_trace_value(&record).expect("random trace validates");
+        let json = record.to_string();
+        assert!(!json.contains("\"human\"") && !json.contains("\"mixed\""));
+
+        let expected_files: Vec<&RandomFile> = files
+            .iter()
+            .filter(|file| {
+                file.new_lines
+                    .iter()
+                    .any(|(_, decision)| decision.is_some())
+            })
+            .collect();
+        assert_eq!(trace_files.len(), expected_files.len(), "seed {seed}");
+        for (trace_file, file) in trace_files.iter().zip(expected_files) {
+            assert_random_trace_file(seed, trace_file, file);
         }
     }
 }
