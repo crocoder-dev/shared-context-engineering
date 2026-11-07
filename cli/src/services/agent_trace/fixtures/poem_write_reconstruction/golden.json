@@ -11,9 +11,18 @@
     "sce": {
       "version": "0.2.0",
       "line_changes": {
-        "ai": { "added": 0, "removed": 0 },
-        "mixed": { "added": 24, "removed": 0 },
-        "unknown": { "added": 0, "removed": 0 }
+        "ai": {
+          "added": 23,
+          "removed": 0
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 1,
+          "removed": 0
+        }
       }
     }
   },
@@ -24,13 +33,31 @@
         {
           "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
-            "type": "mixed"
+            "type": "ai"
           },
           "ranges": [
             {
               "start_line": 1,
+              "end_line": 14,
+              "content_hash": "murmur3:bc9ea670"
+            },
+            {
+              "start_line": 16,
               "end_line": 24,
-              "content_hash": "murmur3:118e756f"
+              "content_hash": "murmur3:b8e2384e"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 15,
+              "end_line": 15,
+              "content_hash": "murmur3:cf9c230e"
             }
           ]
         }

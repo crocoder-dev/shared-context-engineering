@@ -14,9 +14,15 @@
 //! unified-diff formats and produces deterministic `ParsedPatch` structs from
 //! raw patch text.
 
-use std::path::{Component, Path};
-
 use serde::{Deserialize, Serialize};
+
+mod git_path;
+
+use git_path::{decode_marker_path, decode_path, split_diff_header, GitPathError};
+
+const GIT_SOURCE_PREFIX: &str = "a/";
+const GIT_DESTINATION_PREFIX: &str = "b/";
+const DEV_NULL: &str = "/dev/null";
 
 /// Top-level parsed patch containing one or more file changes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -145,343 +151,6 @@ pub fn load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError> 
     })
 }
 
-/// Compute the touched-line intersection of two patches.
-///
-/// Returns a `ParsedPatch` containing only the touched lines from
-/// `post_commit_patch` that are also represented in `constructed_patch` for the
-/// same logical file. Files are matched by their post-change path identity:
-/// exact `new_path` equality, or an absolute path whose normalized path segments
-/// end with the same relative path segments.
-///
-/// Matching prefers exact touched-line identity (`kind`, `line_number`, and
-/// `content`). When no exact match exists, it falls back to historical
-/// reconstruction matching by `kind` and `content` only, which lets callers
-/// compare a canonical post-commit patch against earlier incremental diffs even
-/// when line numbers drift across intermediate edits.
-///
-/// Files with no overlapping touched lines are excluded from the result.
-/// Within matched files, hunks are reconstructed from the overlapping lines in
-/// `post_commit_patch`, preserving `post_commit_patch` hunk range metadata
-/// (`old_start`, `old_count`, `new_start`, `new_count`) so the result can be
-/// compared directly to the canonical target patch. Hunk `model_id` provenance
-/// is inherited from the matched `constructed_patch` hunk when available. The
-/// output is deterministic: the same inputs always produce the same result.
-///
-/// # Examples
-///
-/// ```
-/// use sce::services::patch::{intersect_patches, parse_patch};
-///
-/// let constructed_patch = parse_patch("...", None)?;
-/// let post_commit_patch = parse_patch("...", None)?;
-/// let overlap = intersect_patches(&constructed_patch, &post_commit_patch);
-/// ```
-pub fn intersect_patches(
-    constructed_patch: &ParsedPatch,
-    post_commit_patch: &ParsedPatch,
-) -> ParsedPatch {
-    let mut result_files: Vec<PatchFileChange> = Vec::new();
-
-    for post_commit_file in &post_commit_patch.files {
-        // Only consider files that also appear in `constructed_patch` by equivalent post-change path.
-        let Some(constructed_file) = constructed_patch.files.iter().find(|constructed_file| {
-            paths_refer_to_same_file(&constructed_file.new_path, &post_commit_file.new_path)
-        }) else {
-            continue;
-        };
-
-        let available_lines: Vec<AvailableTouchedLine<'_>> = constructed_file
-            .hunks
-            .iter()
-            .flat_map(|hunk| {
-                hunk.lines.iter().map(move |line| AvailableTouchedLine {
-                    line,
-                    model_id: hunk.model_id.as_deref(),
-                })
-            })
-            .collect();
-        let mut used_lines = vec![false; available_lines.len()];
-
-        // Filter hunks in `post_commit_file` to only include lines that are also
-        // represented in `constructed_file`, preferring exact line-number matches
-        // and falling back to same-kind/same-content historical matches when line
-        // numbers have drifted.
-        let mut result_hunks: Vec<PatchHunk> = Vec::new();
-        for post_commit_hunk in &post_commit_file.hunks {
-            let mut matched_model_id: Option<String> = None;
-            let overlapping_lines: Vec<TouchedLine> = post_commit_hunk
-                .lines
-                .iter()
-                .filter_map(|line| {
-                    if let Some(index) = find_available_line_match(
-                        &available_lines,
-                        &used_lines,
-                        line,
-                        touched_lines_match_exact,
-                    ) {
-                        if matched_model_id.is_none() {
-                            matched_model_id = available_lines[index].model_id.map(str::to_string);
-                        }
-                        used_lines[index] = true;
-                        let mut overlapping_line = line.clone();
-                        overlapping_line
-                            .session_id
-                            .clone_from(&available_lines[index].line.session_id);
-                        return Some(overlapping_line);
-                    }
-
-                    if let Some(index) = find_available_line_match(
-                        &available_lines,
-                        &used_lines,
-                        line,
-                        touched_lines_match_historical,
-                    ) {
-                        if matched_model_id.is_none() {
-                            matched_model_id = available_lines[index].model_id.map(str::to_string);
-                        }
-                        used_lines[index] = true;
-                        let mut overlapping_line = line.clone();
-                        overlapping_line
-                            .session_id
-                            .clone_from(&available_lines[index].line.session_id);
-                        return Some(overlapping_line);
-                    }
-
-                    None
-                })
-                .collect();
-
-            if overlapping_lines.is_empty() {
-                continue;
-            }
-
-            result_hunks.push(PatchHunk {
-                old_start: post_commit_hunk.old_start,
-                old_count: post_commit_hunk.old_count,
-                new_start: post_commit_hunk.new_start,
-                new_count: post_commit_hunk.new_count,
-                model_id: matched_model_id,
-                lines: overlapping_lines,
-            });
-        }
-
-        if result_hunks.is_empty()
-            && !(post_commit_file.hunks.is_empty() && constructed_file.hunks.is_empty())
-        {
-            continue;
-        }
-
-        result_files.push(PatchFileChange {
-            old_path: post_commit_file.old_path.clone(),
-            new_path: post_commit_file.new_path.clone(),
-            kind: post_commit_file.kind,
-            hunks: result_hunks,
-        });
-    }
-
-    ParsedPatch {
-        files: result_files,
-    }
-}
-
-struct AvailableTouchedLine<'a> {
-    line: &'a TouchedLine,
-    model_id: Option<&'a str>,
-}
-
-fn find_available_line_match(
-    available_lines: &[AvailableTouchedLine<'_>],
-    used_lines: &[bool],
-    target: &TouchedLine,
-    matcher: fn(&TouchedLine, &TouchedLine) -> bool,
-) -> Option<usize> {
-    available_lines
-        .iter()
-        .enumerate()
-        .find_map(|(index, candidate)| {
-            (!used_lines[index] && matcher(candidate.line, target)).then_some(index)
-        })
-}
-
-fn touched_lines_match_exact(candidate: &TouchedLine, target: &TouchedLine) -> bool {
-    candidate.kind == target.kind
-        && candidate.line_number == target.line_number
-        && candidate.content == target.content
-}
-
-fn touched_lines_match_historical(candidate: &TouchedLine, target: &TouchedLine) -> bool {
-    candidate.kind == target.kind && candidate.content == target.content
-}
-
-fn paths_refer_to_same_file(path_a: &str, path_b: &str) -> bool {
-    if path_a == path_b {
-        return true;
-    }
-
-    let a_components = normalized_path_components(path_a);
-    let b_components = normalized_path_components(path_b);
-
-    if a_components.is_empty() || b_components.is_empty() {
-        return false;
-    }
-
-    path_has_relative_suffix(&a_components, &b_components)
-        || path_has_relative_suffix(&b_components, &a_components)
-}
-
-fn normalized_path_components(path: &str) -> Vec<&str> {
-    Path::new(path)
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => part.to_str(),
-            _ => None,
-        })
-        .collect()
-}
-
-fn path_has_relative_suffix<'a>(full_path: &[&'a str], suffix_candidate: &[&'a str]) -> bool {
-    full_path.len() > suffix_candidate.len()
-        && full_path.ends_with(suffix_candidate)
-        && !suffix_candidate.is_empty()
-}
-
-/// Combine multiple patches into one deterministic result.
-///
-/// Merges all file changes from the input patches, grouped by `new_path`.
-/// When multiple patches touch the same file, touched-line entries are
-/// deduplicated by identity (`kind`, `line_number`, `content`), with later
-/// patches winning over earlier ones for the same identity.
-///
-/// File metadata (`old_path`, `kind`) is also taken from the last patch
-/// that contributed to each file. Hunk metadata is preserved from the
-/// last patch that contributed each surviving touched line.
-///
-/// Files appear in the result in the order they are first encountered
-/// across the input patches. Within each file, hunks are ordered by
-/// `old_start` and lines within each hunk are ordered by `line_number`
-/// with `Removed` lines before `Added` lines at the same position.
-///
-/// The result is deterministic: the same inputs in the same order always
-/// produce the same output.
-///
-/// # Examples
-///
-/// ```
-/// use sce::services::patch::combine_patches;
-///
-/// let combined = combine_patches(&[patch_a, patch_b]);
-/// ```
-pub fn combine_patches(patches: &[ParsedPatch]) -> ParsedPatch {
-    use std::collections::HashMap;
-
-    /// Touched-line identity key: (`kind`, `line_number`, `content`).
-    type LineKey = (TouchedLineKind, u64, String);
-    /// Hunk metadata key: (`old_start`, `old_count`, `new_start`, `new_count`).
-    type HunkMeta = (u64, u64, u64, u64);
-    /// Hunk provenance key: hunk metadata + source `model_id`.
-    type HunkGroupKey = (HunkMeta, Option<String>);
-
-    #[allow(clippy::type_complexity)]
-    struct FileAcc {
-        old_path: String,
-        kind: FileChangeKind,
-        lines: HashMap<LineKey, (TouchedLine, HunkGroupKey)>,
-    }
-
-    let mut file_order: Vec<String> = Vec::new();
-    let mut files: HashMap<String, FileAcc> = HashMap::new();
-
-    for patch in patches {
-        for file in &patch.files {
-            let acc = files.entry(file.new_path.clone()).or_insert_with(|| {
-                file_order.push(file.new_path.clone());
-                FileAcc {
-                    old_path: file.old_path.clone(),
-                    kind: file.kind,
-                    lines: HashMap::new(),
-                }
-            });
-            // Later patch wins for file metadata.
-            acc.old_path.clone_from(&file.old_path);
-            acc.kind = file.kind;
-
-            for hunk in &file.hunks {
-                let hunk_meta: HunkMeta = (
-                    hunk.old_start,
-                    hunk.old_count,
-                    hunk.new_start,
-                    hunk.new_count,
-                );
-                let hunk_group_key: HunkGroupKey = (hunk_meta, hunk.model_id.clone());
-                for line in &hunk.lines {
-                    let line_key = (line.kind, line.line_number, line.content.clone());
-                    acc.lines
-                        .insert(line_key, (line.clone(), hunk_group_key.clone()));
-                }
-            }
-        }
-    }
-
-    let mut result_files = Vec::new();
-
-    for path in file_order {
-        let acc = files.remove(&path).unwrap();
-
-        // Group surviving lines by their hunk metadata.
-        let mut hunk_groups: HashMap<HunkGroupKey, Vec<TouchedLine>> = HashMap::new();
-        for (_line_key, (line, hunk_group_key)) in acc.lines {
-            hunk_groups.entry(hunk_group_key).or_default().push(line);
-        }
-
-        // Sort hunk groups by old_start for deterministic output.
-        let mut sorted_hunks: Vec<_> = hunk_groups.into_iter().collect();
-        sorted_hunks.sort_by_key(|((meta, model_id), _)| {
-            (meta.0, meta.1, meta.2, meta.3, model_id.clone())
-        });
-
-        let mut hunks = Vec::new();
-        for ((meta, model_id), mut lines) in sorted_hunks {
-            // Sort lines within each hunk: by line_number, then Removed before
-            // Added, then by content for full determinism.
-            lines.sort_by(|a, b| {
-                a.line_number
-                    .cmp(&b.line_number)
-                    .then_with(|| {
-                        let a_order = match a.kind {
-                            TouchedLineKind::Removed => 0,
-                            TouchedLineKind::Added => 1,
-                        };
-                        let b_order = match b.kind {
-                            TouchedLineKind::Removed => 0,
-                            TouchedLineKind::Added => 1,
-                        };
-                        a_order.cmp(&b_order)
-                    })
-                    .then_with(|| a.content.cmp(&b.content))
-            });
-            hunks.push(PatchHunk {
-                old_start: meta.0,
-                old_count: meta.1,
-                new_start: meta.2,
-                new_count: meta.3,
-                model_id,
-                lines,
-            });
-        }
-
-        result_files.push(PatchFileChange {
-            old_path: acc.old_path,
-            new_path: path,
-            kind: acc.kind,
-            hunks,
-        });
-    }
-
-    ParsedPatch {
-        files: result_files,
-    }
-}
-
 /// Parse raw unified-diff text into a `ParsedPatch`.
 ///
 /// Supports both `Index:` (SVN-style) and `diff --git` (git-style) patch
@@ -503,10 +172,13 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
         if let Some(rest) = line.strip_prefix("diff --git ") {
             // Finalize any in-progress file before starting a new one.
             if let Some(fb) = current_file.take() {
-                files.push(fb.build());
+                files.push(fb.build()?);
             }
-            let paths = parse_git_diff_header(rest);
-            current_file = Some(FileBuilder::new(paths.old_path, paths.new_path));
+            let paths = parse_git_diff_header(rest).map_err(|error| path_error(line, &error))?;
+            current_file = Some(match paths {
+                Some(paths) => FileBuilder::new(paths.old_path, paths.new_path),
+                None => FileBuilder::unresolved(line),
+            });
             continue;
         }
 
@@ -514,7 +186,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
         if let Some(rest) = line.strip_prefix("Index: ") {
             // Finalize any in-progress file before starting a new one.
             if let Some(fb) = current_file.take() {
-                files.push(fb.build());
+                files.push(fb.build()?);
             }
             // The Index: line gives us the file path, but we'll also see ---/+++
             // lines that may refine it. For now, store a placeholder.
@@ -535,7 +207,10 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
                     "encountered '---' line without a preceding file header: {line:?}"
                 ),
             })?;
-            fb.set_old_path(parse_diff_path(rest));
+            fb.set_old_path(
+                parse_diff_path(rest, GIT_SOURCE_PREFIX)
+                    .map_err(|error| path_error(line, &error))?,
+            );
             continue;
         }
 
@@ -545,7 +220,10 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
                     "encountered '+++' line without a preceding file header: {line:?}"
                 ),
             })?;
-            fb.set_new_path(parse_diff_path(rest));
+            fb.set_new_path(
+                parse_diff_path(rest, GIT_DESTINATION_PREFIX)
+                    .map_err(|error| path_error(line, &error))?,
+            );
             continue;
         }
 
@@ -570,6 +248,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
                 } else if line.starts_with("rename from ") || line.starts_with("rename to ") {
                     fb.mark_renamed();
                 }
+                apply_metadata_path(fb, line)?;
             }
             continue;
         }
@@ -587,7 +266,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
 
     // Finalize the last file
     if let Some(fb) = current_file.take() {
-        files.push(fb.build());
+        files.push(fb.build()?);
     }
 
     Ok(ParsedPatch { files })
@@ -596,8 +275,9 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
 /// Builder for `PatchFileChange` that tracks path and kind information
 /// progressively as header lines are parsed.
 struct FileBuilder {
-    old_path: String,
-    new_path: String,
+    header: Option<String>,
+    old_path: Option<String>,
+    new_path: Option<String>,
     kind: Option<FileChangeKind>,
     hunks: Vec<PatchHunk>,
 }
@@ -605,19 +285,30 @@ struct FileBuilder {
 impl FileBuilder {
     fn new(old_path: String, new_path: String) -> Self {
         Self {
-            old_path,
-            new_path,
+            header: None,
+            old_path: Some(old_path),
+            new_path: Some(new_path),
+            kind: None,
+            hunks: Vec::new(),
+        }
+    }
+
+    fn unresolved(header: &str) -> Self {
+        Self {
+            header: Some(header.to_owned()),
+            old_path: None,
+            new_path: None,
             kind: None,
             hunks: Vec::new(),
         }
     }
 
     fn set_old_path(&mut self, path: String) {
-        self.old_path = path;
+        self.old_path = Some(path);
     }
 
     fn set_new_path(&mut self, path: String) {
-        self.new_path = path;
+        self.new_path = Some(path);
     }
 
     fn mark_added(&mut self) {
@@ -636,20 +327,27 @@ impl FileBuilder {
         self.hunks.push(hunk);
     }
 
-    fn build(self) -> PatchFileChange {
+    fn build(self) -> Result<PatchFileChange, ParseError> {
+        let (Some(old_path), Some(new_path)) = (self.old_path, self.new_path) else {
+            return Err(ParseError {
+                message: format!(
+                    "cannot determine both paths of ambiguous header {:?}",
+                    self.header.unwrap_or_default()
+                ),
+            });
+        };
         let inferred_kind = self.kind.unwrap_or_else(|| {
             infer_file_kind_from_hunks(&self.hunks)
-                .unwrap_or_else(|| determine_file_kind(&self.old_path, &self.new_path))
+                .unwrap_or_else(|| determine_file_kind(&old_path, &new_path))
         });
-        let (old_path, new_path) =
-            normalize_paths_for_kind(self.old_path, self.new_path, inferred_kind);
+        let (old_path, new_path) = normalize_paths_for_kind(old_path, new_path, inferred_kind);
 
-        PatchFileChange {
+        Ok(PatchFileChange {
             old_path,
             new_path,
             kind: inferred_kind,
             hunks: self.hunks,
-        }
+        })
     }
 }
 
@@ -703,32 +401,11 @@ fn determine_file_kind(old_path: &str, new_path: &str) -> FileChangeKind {
     }
 }
 
-/// Parse a `diff --git a/old b/new` header line (after stripping the prefix).
-fn parse_git_diff_header(rest: &str) -> DiffPaths {
-    // Format: "a/old_path b/new_path"
-    // The paths can contain spaces, so we need to split on " b/" carefully.
-    // Git format: diff --git a/path b/path
-    if let Some(idx) = rest.find(" b/") {
-        let old = rest[..idx]
-            .strip_prefix("a/")
-            .unwrap_or(&rest[..idx])
-            .to_string();
-        let new = rest[idx + 3..]
-            .strip_prefix("b/")
-            .unwrap_or(&rest[idx + 3..])
-            .to_string();
-        DiffPaths {
-            old_path: old,
-            new_path: new,
-        }
-    } else {
-        // Fallback: treat the whole thing as both paths
-        let path = rest.trim().to_string();
-        DiffPaths {
-            old_path: path.clone(),
-            new_path: path,
-        }
-    }
+fn parse_git_diff_header(rest: &str) -> Result<Option<DiffPaths>, GitPathError> {
+    Ok(split_diff_header(rest)?.map(|(old, new)| DiffPaths {
+        old_path: strip_git_prefix(old, GIT_SOURCE_PREFIX),
+        new_path: strip_git_prefix(new, GIT_DESTINATION_PREFIX),
+    }))
 }
 
 struct DiffPaths {
@@ -736,22 +413,40 @@ struct DiffPaths {
     new_path: String,
 }
 
-/// Parse a `---` or `+++` path line, stripping prefixes and trailing whitespace.
-fn parse_diff_path(rest: &str) -> String {
-    let trimmed = rest.trim_end();
-    // Strip common prefixes: a/ for git-style, /dev/null for new/deleted files
-    if trimmed == "/dev/null" {
-        return String::new();
+fn parse_diff_path(rest: &str, prefix: &str) -> Result<String, GitPathError> {
+    if !rest.starts_with('"') && rest.split('\t').next() == Some(DEV_NULL) {
+        return Ok(String::new());
     }
-    if let Some(stripped) = trimmed.strip_prefix("a/") {
-        return stripped.to_string();
+    decode_marker_path(rest).map(|path| strip_git_prefix(path, prefix))
+}
+
+fn strip_git_prefix(path: String, prefix: &str) -> String {
+    match path.strip_prefix(prefix) {
+        Some(stripped) => stripped.to_owned(),
+        None => path,
     }
-    if let Some(stripped) = trimmed.strip_prefix("b/") {
-        return stripped.to_string();
+}
+
+fn apply_metadata_path(fb: &mut FileBuilder, line: &str) -> Result<(), ParseError> {
+    let decode = |rest: &str| decode_path(rest).map_err(|error| path_error(line, &error));
+    if let Some(rest) = line
+        .strip_prefix("rename from ")
+        .or_else(|| line.strip_prefix("copy from "))
+    {
+        fb.set_old_path(decode(rest)?);
+    } else if let Some(rest) = line
+        .strip_prefix("rename to ")
+        .or_else(|| line.strip_prefix("copy to "))
+    {
+        fb.set_new_path(decode(rest)?);
     }
-    // Strip absolute path prefix if present (Index:-style diffs sometimes
-    // use absolute paths like /home/user/repo/file)
-    trimmed.to_string()
+    Ok(())
+}
+
+fn path_error(line: &str, error: &GitPathError) -> ParseError {
+    ParseError {
+        message: format!("invalid path in {line:?}: {error}"),
+    }
 }
 
 /// Parse a hunk header (the part after `@@ `) and then consume hunk body lines
@@ -880,5 +575,4 @@ fn parse_range_part(s: &str, prefix: char) -> Result<(u64, u64), ParseError> {
 }
 
 #[cfg(test)]
-#[path = "patch/tests.rs"]
 mod tests;

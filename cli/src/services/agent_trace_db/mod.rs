@@ -36,6 +36,41 @@ FROM diff_traces
 WHERE time_ms >= ?1 AND time_ms <= ?2
 ORDER BY time_ms ASC, id ASC";
 
+pub const SELECT_DIFF_TRACE_PATCHES_BEFORE_COMMIT_SQL: &str =
+    "SELECT id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type
+FROM diff_traces
+WHERE time_ms >= ?1
+  AND time_ms < ?2
+  AND created_at < strftime('%Y-%m-%dT%H:%M:%fZ', ?3, 'unixepoch')
+ORDER BY time_ms ASC, id ASC";
+
+const MAX_CUTOFF_UNIX_SECONDS: i64 = 253_402_300_799;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommitTimeCutoff {
+    unix_seconds: i64,
+}
+
+impl CommitTimeCutoff {
+    pub fn from_commit_time_ms(commit_time_ms: i64) -> Option<Self> {
+        if commit_time_ms.checked_rem(1_000)? != 0 {
+            return None;
+        }
+        let unix_seconds = commit_time_ms.checked_div(1_000)?;
+        (0..=MAX_CUTOFF_UNIX_SECONDS)
+            .contains(&unix_seconds)
+            .then_some(CommitTimeCutoff { unix_seconds })
+    }
+
+    pub fn unix_seconds(self) -> i64 {
+        self.unix_seconds
+    }
+
+    pub fn start_ms(self) -> i64 {
+        self.unix_seconds * 1_000
+    }
+}
+
 pub const INSERT_POST_COMMIT_PATCH_INTERSECTION_SQL: &str =
     "INSERT INTO post_commit_patch_intersections (
     commit_id,
@@ -170,7 +205,6 @@ pub struct DiffTracePatchRow {
     pub payload_type: String,
 }
 
-/// Parsed recent diff trace patch ready for comparison flows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedDiffTracePatch {
     pub id: i64,
@@ -180,9 +214,25 @@ pub struct ParsedDiffTracePatch {
     pub tool_name: Option<String>,
     pub tool_version: Option<String>,
     pub payload_type: String,
+    pub path_origin: DiffTracePathOrigin,
 }
 
-/// Deterministic skipped-row report for invalid recent diff trace patches.
+/// Coordinate system in which a diff-trace row's file paths are expressed.
+///
+/// Absolute paths resolve on their own under every origin; the origin only
+/// decides how a relative path is interpreted. An unknown origin fails closed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiffTracePathOrigin {
+    /// Git patch paths: relative paths are repository-relative.
+    RepositoryRelative,
+    /// Claude structured paths with a recorded absolute `cwd`: relative paths
+    /// are relative to that working directory.
+    WorkingDirectory(String),
+    /// Claude structured paths without a usable absolute `cwd`: relative paths
+    /// have no established coordinate system and cannot be resolved.
+    AbsoluteOnly,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SkippedDiffTracePatch {
     pub id: i64,
@@ -191,7 +241,6 @@ pub struct SkippedDiffTracePatch {
     pub reason: String,
 }
 
-/// Parsed recent diff trace query result with accounting for valid and skipped rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecentDiffTracePatches {
     pub patches: Vec<ParsedDiffTracePatch>,
@@ -526,6 +575,25 @@ async fn recent_diff_trace_patches_with<M: DbSpec>(
     Ok(parse_recent_diff_trace_patch_rows(rows))
 }
 
+async fn diff_trace_patches_before_commit_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    lower_time_ms: i64,
+    cutoff: CommitTimeCutoff,
+) -> Result<RecentDiffTracePatches> {
+    if lower_time_ms >= cutoff.start_ms() {
+        return Ok(parse_recent_diff_trace_patch_rows(Vec::new()));
+    }
+    let rows = db
+        .query_map(
+            SELECT_DIFF_TRACE_PATCHES_BEFORE_COMMIT_SQL,
+            (lower_time_ms, cutoff.start_ms(), cutoff.unix_seconds()),
+            diff_trace_patch_row_from_turso,
+        )
+        .await?;
+
+    Ok(parse_recent_diff_trace_patch_rows(rows))
+}
+
 fn diff_trace_patch_row_from_turso(row: &turso::Row) -> Result<DiffTracePatchRow> {
     Ok(DiffTracePatchRow {
         id: row.get(0).context("failed to read diff_traces.id")?,
@@ -553,6 +621,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
         let is_structured = row.payload_type == PAYLOAD_TYPE_STRUCTURED;
         let parse_result = match row.payload_type.as_str() {
             PAYLOAD_TYPE_PATCH => parse_patch(&row.patch, Some(row.session_id.as_str()))
+                .map(|patch| (patch, DiffTracePathOrigin::RepositoryRelative))
                 .map_err(|error| skipped_diff_trace_patch_reason(&error)),
             PAYLOAD_TYPE_STRUCTURED => match serde_json::from_str::<Value>(&row.patch) {
                 Ok(payload) => match derive_claude_structured_patch(
@@ -561,7 +630,13 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     u64::try_from(row.time_ms).expect("diff trace time_ms should be non-negative"),
                     row.tool_version.as_deref(),
                 ) {
-                    ClaudeStructuredPatchDerivationResult::Derived(derived) => Ok(derived.patch),
+                    ClaudeStructuredPatchDerivationResult::Derived(derived) => {
+                        let path_origin = derived.working_directory.map_or(
+                            DiffTracePathOrigin::AbsoluteOnly,
+                            DiffTracePathOrigin::WorkingDirectory,
+                        );
+                        Ok((derived.patch, path_origin))
+                    }
                     ClaudeStructuredPatchDerivationResult::Skipped(reason) => {
                         Err(reason.to_string())
                     }
@@ -572,7 +647,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
         };
 
         match parse_result {
-            Ok(mut patch) => {
+            Ok((mut patch, path_origin)) => {
                 for file in &mut patch.files {
                     for hunk in &mut file.hunks {
                         hunk.model_id.clone_from(&row.model_id);
@@ -592,6 +667,7 @@ fn parse_recent_diff_trace_patch_rows(rows: Vec<DiffTracePatchRow>) -> RecentDif
                     tool_name: row.tool_name,
                     tool_version: row.tool_version,
                     payload_type: row.payload_type,
+                    path_origin,
                 });
             }
             Err(reason) => skipped.push(SkippedDiffTracePatch {

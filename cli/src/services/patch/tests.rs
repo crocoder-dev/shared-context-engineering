@@ -1,152 +1,167 @@
-use super::{combine_patches, intersect_patches, parse_patch, ParsedPatch};
+use std::fmt::Write as _;
 
-#[derive(Clone, Copy)]
-struct PatchScenario {
-    incremental: &'static [&'static str],
-    post_commit: &'static str,
-    golden: &'static str,
+use super::{parse_patch, FileChangeKind, PatchFileChange};
+
+fn quote(path: &str) -> String {
+    let mut quoted = String::from("\"");
+    for byte in path.bytes() {
+        match byte {
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            b'\t' => quoted.push_str("\\t"),
+            b'\n' => quoted.push_str("\\n"),
+            0x20..=0x7e => quoted.push(char::from(byte)),
+            _ => write!(quoted, "\\{byte:03o}").expect("write to string"),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
-fn parse_fixtures(fixtures: &[&str]) -> Vec<ParsedPatch> {
-    fixtures
-        .iter()
-        .map(|fixture| parse_patch(fixture, None).expect("fixture patch should parse"))
-        .collect()
+fn needs_quoting(path: &str) -> bool {
+    path.bytes()
+        .any(|byte| matches!(byte, b'"' | b'\\') || !(0x20..=0x7e).contains(&byte))
 }
 
-const TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS: &[&str] = &[
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_01.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_02.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_03.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_04.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_05.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_06.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_07.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_08.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_09.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_10.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_11.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_12.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_13.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_14.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_15.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_16.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_17.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_18.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_19.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_20.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_21.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_22.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_23.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_24.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_25.patch"),
-    include_str!("fixtures/text_file_lifecycle_reconstruction/incremental_26.patch"),
+fn git_name(prefix: &str, path: &str) -> String {
+    let name = format!("{prefix}{path}");
+    if needs_quoting(&name) {
+        quote(&name)
+    } else {
+        name
+    }
+}
+
+fn marker_name(prefix: &str, path: &str) -> String {
+    let name = git_name(prefix, path);
+    if name.contains(' ') {
+        format!("{name}\t")
+    } else {
+        name
+    }
+}
+
+fn modified_patch(path: &str) -> String {
+    format!(
+        "diff --git {} {}\nindex 1111111..2222222 100644\n--- {}\n+++ {}\n@@ -1 +1 @@\n-old\n+new\n",
+        git_name("a/", path),
+        git_name("b/", path),
+        marker_name("a/", path),
+        marker_name("b/", path),
+    )
+}
+
+fn single_file(text: &str) -> PatchFileChange {
+    let mut patch = parse_patch(text, None).expect("patch parses");
+    assert_eq!(patch.files.len(), 1, "{text}");
+    patch.files.remove(0)
+}
+
+const PATHS: [&str; 10] = [
+    "src/café.rs",
+    "src/file name.rs",
+    "src/file\tname.rs",
+    "src/file\nname.rs",
+    "src/file\"name.rs",
+    "src/file\\name.rs",
+    "src/x b/y.rs",
+    "src/trailing ",
+    "a/b/nested.rs",
+    "src/🦀.rs",
 ];
 
-fn assert_reconstructs_post_commit(scenario: PatchScenario) {
-    let combined = combine_patches(&parse_fixtures(scenario.incremental));
-    let post_commit = parse_patch(scenario.post_commit, None).expect("fixture patch should parse");
-    let golden: ParsedPatch =
-        serde_json::from_str(scenario.golden).expect("golden json should load");
-
-    assert_eq!(intersect_patches(&combined, &post_commit), golden);
+#[test]
+fn git_paths_decode_to_their_exact_identity() {
+    for path in PATHS {
+        let file = single_file(&modified_patch(path));
+        assert_eq!(file.old_path, path, "{path:?}");
+        assert_eq!(file.new_path, path, "{path:?}");
+        assert_eq!(file.kind, FileChangeKind::Modified, "{path:?}");
+        assert_eq!(file.hunks[0].lines.len(), 2);
+    }
 }
 
 #[test]
-fn average_age_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[
-            include_str!("fixtures/average_age_reconstruction/incremental_01.patch"),
-            include_str!("fixtures/average_age_reconstruction/incremental_02.patch"),
-            include_str!("fixtures/average_age_reconstruction/incremental_03.patch"),
-            include_str!("fixtures/average_age_reconstruction/incremental_04.patch"),
-            include_str!("fixtures/average_age_reconstruction/incremental_05.patch"),
-            include_str!("fixtures/average_age_reconstruction/incremental_06.patch"),
-            include_str!("fixtures/average_age_reconstruction/incremental_07.patch"),
-        ],
-        post_commit: include_str!("fixtures/average_age_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/average_age_reconstruction/golden.json"),
-    });
+fn header_paths_stand_alone_when_no_markers_follow() {
+    for path in PATHS {
+        let text = format!(
+            "diff --git {} {}\nold mode 100644\nnew mode 100755\n",
+            git_name("a/", path),
+            git_name("b/", path),
+        );
+        let file = single_file(&text);
+        assert_eq!(
+            (file.old_path.as_str(), file.new_path.as_str()),
+            (path, path)
+        );
+    }
 }
 
 #[test]
-fn hello_world_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[include_str!(
-            "fixtures/hello_world_reconstruction/incremental_01.patch"
-        )],
-        post_commit: include_str!("fixtures/hello_world_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/hello_world_reconstruction/golden.json"),
-    });
+fn created_and_deleted_quoted_files_keep_dev_null_semantics() {
+    let path = "src/café.rs";
+    let created = format!(
+        "diff --git {a} {b}\nnew file mode 100644\n--- /dev/null\n+++ {b}\n@@ -0,0 +1 @@\n+x\n",
+        a = git_name("a/", path),
+        b = git_name("b/", path),
+    );
+    let file = single_file(&created);
+    assert_eq!(file.kind, FileChangeKind::Added);
+    assert_eq!((file.old_path.as_str(), file.new_path.as_str()), ("", path));
+
+    let deleted = format!(
+        "diff --git {a} {b}\ndeleted file mode 100644\n--- {a}\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n",
+        a = git_name("a/", path),
+        b = git_name("b/", path),
+    );
+    let file = single_file(&deleted);
+    assert_eq!(file.kind, FileChangeKind::Deleted);
+    assert_eq!((file.old_path.as_str(), file.new_path.as_str()), (path, ""));
 }
 
 #[test]
-fn text_file_lifecycle_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: TEXT_FILE_LIFECYCLE_RECONSTRUCTION_INCREMENTALS,
-        post_commit: include_str!("fixtures/text_file_lifecycle_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/text_file_lifecycle_reconstruction/golden.json"),
-    });
+fn renames_take_their_paths_from_quoted_metadata() {
+    let text = format!(
+        "diff --git a/src/x b/y.rs b/src/x b/z.rs\nsimilarity index 100%\nrename from {}\nrename to {}\n",
+        "src/x b/y.rs",
+        quote("src/x b/z\u{e9}.rs"),
+    );
+    let file = single_file(&text);
+    assert_eq!(file.kind, FileChangeKind::Renamed);
+    assert_eq!(file.old_path, "src/x b/y.rs");
+    assert_eq!(file.new_path, "src/x b/zé.rs");
 }
 
 #[test]
-fn poem_write_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[include_str!(
-            "fixtures/poem_write_reconstruction/incremental_01.patch"
-        )],
-        post_commit: include_str!("fixtures/poem_write_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/poem_write_reconstruction/golden.json"),
-    });
+fn ambiguous_headers_without_resolving_lines_are_rejected() {
+    let error = parse_patch(
+        "diff --git a/x b/y b/z\nold mode 100644\nnew mode 100755\n",
+        None,
+    )
+    .expect_err("ambiguous header must not be guessed");
+    assert!(error.message.contains("ambiguous header"), "{error}");
 }
 
 #[test]
-fn poem_edit_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[
-            include_str!("fixtures/poem_edit_reconstruction/incremental_01.patch"),
-            include_str!("fixtures/poem_edit_reconstruction/incremental_02.patch"),
-        ],
-        post_commit: include_str!("fixtures/poem_edit_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/poem_edit_reconstruction/golden.json"),
-    });
+fn malformed_quoted_paths_fail_explicitly() {
+    for text in [
+        "diff --git \"a/caf\\q.rs\" \"b/caf\\q.rs\"\n",
+        "diff --git a/x b/x\n--- \"a/caf\\351.rs\"\n+++ b/x\n",
+        "diff --git a/x b/x\n--- a/x\n+++ \"b/unterminated\n",
+        "diff --git a/x b/x\nrename to \"b\\000\"\n",
+    ] {
+        let error = parse_patch(text, None).expect_err("malformed path must fail");
+        assert!(error.message.starts_with("invalid path in"), "{error}");
+    }
 }
 
 #[test]
-fn mixed_change_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[
-            include_str!("fixtures/mixed_change_reconstruction/incremental_01.patch"),
-            include_str!("fixtures/mixed_change_reconstruction/incremental_02.patch"),
-            include_str!("fixtures/mixed_change_reconstruction/incremental_03.patch"),
-            include_str!("fixtures/mixed_change_reconstruction/incremental_04.patch"),
-        ],
-        post_commit: include_str!("fixtures/mixed_change_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/mixed_change_reconstruction/golden.json"),
-    });
-}
-
-#[test]
-fn line_and_file_deletion_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[
-            include_str!("fixtures/line_and_file_deletion_reconstruction/incremental_01.patch"),
-            include_str!("fixtures/line_and_file_deletion_reconstruction/incremental_02.patch"),
-        ],
-        post_commit: include_str!(
-            "fixtures/line_and_file_deletion_reconstruction/post_commit.patch"
-        ),
-        golden: include_str!("fixtures/line_and_file_deletion_reconstruction/golden.json"),
-    });
-}
-
-#[test]
-fn file_rename_reconstruction_matches_post_commit() {
-    assert_reconstructs_post_commit(PatchScenario {
-        incremental: &[include_str!(
-            "fixtures/file_rename_reconstruction/incremental_01.patch"
-        )],
-        post_commit: include_str!("fixtures/file_rename_reconstruction/post_commit.patch"),
-        golden: include_str!("fixtures/file_rename_reconstruction/golden.json"),
-    });
+fn index_style_patches_still_parse() {
+    let text = "Index: src/lib.rs\n===================================================================\n--- src/lib.rs\t(revision 1)\n+++ src/lib.rs\t(working copy)\n@@ -1 +1 @@\n-old\n+new\n";
+    let file = single_file(text);
+    assert_eq!(
+        (file.old_path.as_str(), file.new_path.as_str()),
+        ("src/lib.rs", "src/lib.rs")
+    );
+    assert_eq!(file.kind, FileChangeKind::Modified);
 }

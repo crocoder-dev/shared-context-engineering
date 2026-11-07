@@ -3,7 +3,7 @@
 ## Current status
 
 - This document is retained as historical reference only.
-- The current CLI runtime does not expose `cli/src/services/agent_trace.rs` or build Agent Trace payloads during local hook execution.
+- The design below is superseded. The current `post-commit` hook builds, validates, and persists Agent Trace payloads through `cli/src/services/agent_trace.rs`; see `agent-trace-hooks-command-routing.md` and `agent-trace-minimal-generator.md`.
 
 ## Historical scope
 

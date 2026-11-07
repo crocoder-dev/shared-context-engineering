@@ -11,9 +11,18 @@
     "sce": {
       "version": "0.1.0",
       "line_changes": {
-        "ai": { "added": 2, "removed": 0 },
-        "mixed": { "added": 0, "removed": 0 },
-        "unknown": { "added": 2, "removed": 0 }
+        "ai": {
+          "added": 2,
+          "removed": 0
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 2,
+          "removed": 0
+        }
       }
     }
   },
@@ -22,28 +31,28 @@
       "path": "src/widget.ts",
       "conversations": [
         {
-          "url": "https://sce.crocoder.dev/conversations/PLACEHOLDER",
+          "url": "https://sce.crocoder.dev/conversations/019db9da-fdb0-7cb6-9185-75e28b23b264",
           "contributor": {
             "type": "ai"
           },
           "ranges": [
             {
-              "start_line": 2,
+              "start_line": 3,
               "end_line": 4,
-              "content_hash": "murmur3:ee57a4f8"
+              "content_hash": "murmur3:bde358d6"
             }
           ]
         },
         {
-          "url": "https://sce.crocoder.dev/conversations/PLACEHOLDER",
+          "url": "https://sce.crocoder.dev/conversations/019db9da-fdb0-7cb6-9185-75e28b23b264",
           "contributor": {
             "type": "unknown"
           },
           "ranges": [
             {
-              "start_line": 10,
+              "start_line": 11,
               "end_line": 12,
-              "content_hash": "murmur3:9d2517c0"
+              "content_hash": "murmur3:d121bdf6"
             }
           ]
         }

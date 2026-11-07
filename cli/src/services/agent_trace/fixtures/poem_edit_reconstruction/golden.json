@@ -11,9 +11,18 @@
     "sce": {
       "version": "0.2.0",
       "line_changes": {
-        "ai": { "added": 1, "removed": 1 },
-        "mixed": { "added": 3, "removed": 3 },
-        "unknown": { "added": 1, "removed": 1 }
+        "ai": {
+          "added": 2,
+          "removed": 2
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 3,
+          "removed": 3
+        }
       }
     }
   },
@@ -24,26 +33,23 @@
         {
           "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
           "contributor": {
-            "type": "mixed"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 8,
-              "content_hash": "murmur3:25e05a40"
-            }
-          ]
-        },
-        {
-          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
-          "contributor": {
             "type": "unknown"
           },
           "ranges": [
             {
-              "start_line": 10,
-              "end_line": 16,
-              "content_hash": "murmur3:bc5d346b"
+              "start_line": 1,
+              "end_line": 1,
+              "content_hash": "murmur3:1bcdcbc7"
+            },
+            {
+              "start_line": 5,
+              "end_line": 5,
+              "content_hash": "murmur3:dcb067c6"
+            },
+            {
+              "start_line": 13,
+              "end_line": 13,
+              "content_hash": "murmur3:5b8141a4"
             }
           ]
         },
@@ -54,9 +60,14 @@
           },
           "ranges": [
             {
-              "start_line": 21,
+              "start_line": 4,
+              "end_line": 4,
+              "content_hash": "murmur3:a46bb5f2"
+            },
+            {
+              "start_line": 24,
               "end_line": 24,
-              "content_hash": "murmur3:c8621bcb"
+              "content_hash": "murmur3:80227513"
             }
           ]
         }

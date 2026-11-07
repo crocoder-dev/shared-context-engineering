@@ -11,9 +11,18 @@
     "sce": {
       "version": "0.2.0",
       "line_changes": {
-        "ai": { "added": 91, "removed": 9 },
-        "mixed": { "added": 0, "removed": 0 },
-        "unknown": { "added": 0, "removed": 0 }
+        "ai": {
+          "added": 40,
+          "removed": 0
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 51,
+          "removed": 9
+        }
       }
     }
   },
@@ -29,8 +38,76 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 53,
-              "content_hash": "murmur3:c243a227"
+              "end_line": 3,
+              "content_hash": "murmur3:6e181631"
+            },
+            {
+              "start_line": 5,
+              "end_line": 21,
+              "content_hash": "murmur3:b82453cf"
+            },
+            {
+              "start_line": 23,
+              "end_line": 23,
+              "content_hash": "murmur3:088f1fbb"
+            },
+            {
+              "start_line": 25,
+              "end_line": 26,
+              "content_hash": "murmur3:7e5c2b9d"
+            },
+            {
+              "start_line": 29,
+              "end_line": 29,
+              "content_hash": "murmur3:2f1fb1ad"
+            },
+            {
+              "start_line": 39,
+              "end_line": 39,
+              "content_hash": "murmur3:924ee0ab"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 22,
+              "end_line": 22,
+              "content_hash": "murmur3:924ee0ab"
+            },
+            {
+              "start_line": 24,
+              "end_line": 24,
+              "content_hash": "murmur3:924ee0ab"
+            },
+            {
+              "start_line": 27,
+              "end_line": 28,
+              "content_hash": "murmur3:27ed9155"
+            },
+            {
+              "start_line": 30,
+              "end_line": 38,
+              "content_hash": "murmur3:b63e60bb"
+            },
+            {
+              "start_line": 40,
+              "end_line": 46,
+              "content_hash": "murmur3:ddce4161"
+            },
+            {
+              "start_line": 48,
+              "end_line": 49,
+              "content_hash": "murmur3:c43ecdd1"
+            },
+            {
+              "start_line": 52,
+              "end_line": 52,
+              "content_hash": "murmur3:5b7d7d05"
             }
           ]
         }
@@ -47,8 +124,21 @@
           "ranges": [
             {
               "start_line": 1,
+              "end_line": 6,
+              "content_hash": "murmur3:6bd38686"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
               "end_line": 17,
-              "content_hash": "murmur3:a33199de"
+              "content_hash": "murmur3:22a31e54"
             }
           ]
         }
@@ -65,8 +155,41 @@
           "ranges": [
             {
               "start_line": 1,
+              "end_line": 7,
+              "content_hash": "murmur3:392d8e80"
+            },
+            {
+              "start_line": 14,
+              "end_line": 14,
+              "content_hash": "murmur3:91ae0083"
+            },
+            {
+              "start_line": 21,
+              "end_line": 21,
+              "content_hash": "murmur3:b0592d49"
+            }
+          ]
+        },
+        {
+          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
+          "contributor": {
+            "type": "unknown"
+          },
+          "ranges": [
+            {
+              "start_line": 8,
+              "end_line": 13,
+              "content_hash": "murmur3:93bc82c4"
+            },
+            {
+              "start_line": 15,
+              "end_line": 20,
+              "content_hash": "murmur3:57c576a2"
+            },
+            {
+              "start_line": 22,
               "end_line": 26,
-              "content_hash": "murmur3:d5e2e562"
+              "content_hash": "murmur3:443e9882"
             }
           ]
         }

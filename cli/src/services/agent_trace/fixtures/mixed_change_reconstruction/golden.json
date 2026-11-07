@@ -11,49 +11,22 @@
     "sce": {
       "version": "0.2.0",
       "line_changes": {
-        "ai": { "added": 5, "removed": 2 },
-        "mixed": { "added": 0, "removed": 0 },
-        "unknown": { "added": 1, "removed": 15 }
+        "ai": {
+          "added": 5,
+          "removed": 2
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 1,
+          "removed": 15
+        }
       }
     }
   },
   "files": [
-    {
-      "path": ".version",
-      "conversations": [
-        {
-          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
-          "contributor": {
-            "type": "ai"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 1,
-              "content_hash": "murmur3:bae67384"
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "path": "poem.md",
-      "conversations": [
-        {
-          "url": "https://sce.crocoder.dev/conversations/01962f15-2d3d-7c85-9f6b-0a8b4f6b2fd1",
-          "contributor": {
-            "type": "unknown"
-          },
-          "ranges": [
-            {
-              "start_line": 1,
-              "end_line": 8,
-              "content_hash": "murmur3:66792e88"
-            }
-          ]
-        }
-      ]
-    },
     {
       "path": "poem_life.md",
       "conversations": [
@@ -66,7 +39,7 @@
             {
               "start_line": 1,
               "end_line": 4,
-              "content_hash": "murmur3:9a75f476"
+              "content_hash": "murmur3:e10a5b68"
             }
           ]
         }
@@ -83,8 +56,8 @@
           "ranges": [
             {
               "start_line": 1,
-              "end_line": 4,
-              "content_hash": "murmur3:13e28dae"
+              "end_line": 1,
+              "content_hash": "murmur3:76184b87"
             }
           ]
         }
@@ -100,9 +73,9 @@
           },
           "ranges": [
             {
-              "start_line": 1,
+              "start_line": 4,
               "end_line": 4,
-              "content_hash": "murmur3:eeb8e8f1"
+              "content_hash": "murmur3:3d891c9c"
             }
           ]
         }

@@ -15,9 +15,18 @@
     "sce": {
       "version": "0.1.0",
       "line_changes": {
-        "ai": { "added": 4, "removed": 0 },
-        "mixed": { "added": 0, "removed": 0 },
-        "unknown": { "added": 0, "removed": 0 }
+        "ai": {
+          "added": 4,
+          "removed": 0
+        },
+        "non_exclusive": {
+          "added": 0,
+          "removed": 0
+        },
+        "unknown": {
+          "added": 0,
+          "removed": 0
+        }
       }
     }
   },
@@ -26,16 +35,16 @@
       "path": "src/widget.ts",
       "conversations": [
         {
-          "url": "https://sce.crocoder.dev/conversations/PLACEHOLDER",
+          "url": "https://sce.crocoder.dev/conversations/019db9da-fdb0-7a09-bcd3-9565bfba8bf5",
           "contributor": {
-            "type": "ai",
-            "model_id": "claude-sonnet-5"
+            "model_id": "claude-sonnet-5",
+            "type": "ai"
           },
           "ranges": [
             {
-              "start_line": 2,
+              "start_line": 3,
               "end_line": 6,
-              "content_hash": "murmur3:191372d8"
+              "content_hash": "murmur3:779f392e"
             }
           ],
           "related": [

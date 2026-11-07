@@ -22,6 +22,9 @@ pub struct ClaudeStructuredPatch {
     pub time: u64,
     pub tool_name: String,
     pub tool_version: Option<String>,
+    /// The payload's absolute `cwd`, the base of any relative patch path.
+    /// `None` when `cwd` is missing, empty, or not absolute.
+    pub working_directory: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -129,6 +132,7 @@ pub fn derive_claude_structured_patch(
         time,
         tool_name: CLAUDE_TOOL_NAME.to_string(),
         tool_version: extract_claude_tool_version(tool_version, payload_object),
+        working_directory: absolute_cwd(payload_object),
     })
 }
 
@@ -154,7 +158,7 @@ fn build_write_create_patch(payload: &Map<String, Value>) -> PatchBuildResult {
         string_field(tool_input, &["file_path", "filePath"])
             .or_else(|| string_field(tool_response, &["file_path", "filePath"]))
             .as_deref(),
-        string_field(payload, &["cwd"]).as_deref(),
+        absolute_cwd(payload).as_deref(),
     );
     let Some(file_path) = file_path else {
         return skipped_build(ClaudeStructuredPatchSkipReason::MissingFilePath);
@@ -194,7 +198,7 @@ fn build_edit_structured_patch(payload: &Map<String, Value>) -> PatchBuildResult
 
     let file_path = normalize_patch_path(
         string_field(tool_input, &["file_path", "filePath"]).as_deref(),
-        string_field(payload, &["cwd"]).as_deref(),
+        absolute_cwd(payload).as_deref(),
     );
     let Some(file_path) = file_path else {
         return skipped_build(ClaudeStructuredPatchSkipReason::MissingFilePath);
@@ -433,6 +437,12 @@ fn normalize_optional_version(value: Option<&Value>) -> VersionField {
         }
         Some(Value::Null | _) => VersionField::Present(None),
     }
+}
+
+/// The payload `cwd` only when it is absolute: a relative `cwd` cannot anchor
+/// a relative patch path.
+fn absolute_cwd(payload: &Map<String, Value>) -> Option<String> {
+    string_field(payload, &["cwd"]).filter(|cwd| Path::new(cwd).is_absolute())
 }
 
 fn normalize_patch_path(file_path: Option<&str>, cwd: Option<&str>) -> Option<String> {
