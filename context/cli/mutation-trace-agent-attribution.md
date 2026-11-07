@@ -239,8 +239,7 @@ mutable `HEAD`, so a `HEAD` move after capture cannot change the anchoring.
 attribution cut: under
 the same worktree lock that serializes mutation-event transitions
 ([`worktree_lock`](mutation-trace-runtime-coordinator.md)), it reads
-`MutationTraceStore::latest_mutation_event_revision` for the worktree. An event
-produced after the commit has a higher revision and cannot participate. The
+`MutationTraceStore::latest_mutation_event_revision` for the worktree. The
 critical section is a single indexed read.
 
 An unresolvable git dir, an unresolvable worktree identity, an unavailable
@@ -249,11 +248,15 @@ history at all each yield an empty result (every line unresolved), so
 post-commit falls back to trusted direct-only Agent Trace behavior. The entrypoint creates no identity and writes
 no mutation-cursor state.
 
-The revision ceiling is only a stable-snapshot bound. It is read inside
-post-commit processing, after Git has already created the commit, so events
-recorded between commit creation and the hook (for example an agent deleting a
-line again after the working tree was restored) still sit below it. Temporal
-eligibility comes from the commit-time cutoff below.
+The revision ceiling provides a stable upper bound for mutation-history replay.
+It is captured during post-commit processing and does not independently
+establish whether an event preceded commit creation: events recorded between
+commit creation and the hook (for example an agent deleting a line again after
+the working tree was restored) still sit below it. Temporal eligibility is
+enforced separately through the trusted [commit-time
+cutoff](#commit-time-cutoff), using each event's database insertion timestamp.
+The captured commit and first-parent trees fix structural identity, and
+mutation lineage decides causal ownership within that eligible history.
 
 ## Commit-time cutoff
 

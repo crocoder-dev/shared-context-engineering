@@ -104,14 +104,28 @@ cursor is supplied. Each request caps `requested_limit` at
 processed events, boundary fields, or timestamps. The caller owns any broader
 history horizon and advances the cursor from the last returned revision.
 [Attribution](mutation-trace-agent-attribution.md) reverses each page to replay
-oldest-to-newest, and starts the cursor at `commit_cut + 1` (exclusive) so only
-`revision <= commit_cut` events are eligible.
+oldest-to-newest, and starts the cursor at `ceiling + 1` (exclusive) so only
+`revision <= ceiling` events are eligible.
+
+`MutationTraceStore::load_mutation_event_page_before_commit(worktree,
+revision_cursor, requested_limit, cutoff)` is the post-commit attribution
+variant. It returns the same row shape with the same 32-row page cap,
+descending revision order, and exclusive `revision < cursor` semantics, and
+additionally requires `created_at < strftime('%Y-%m-%dT%H:%M:%fZ', <cutoff
+seconds>, 'unixepoch')`: database insertion strictly before the start of the
+trusted commit second. The predicate sits in the `WHERE` clause, so it filters
+before `ORDER BY revision DESC LIMIT` and late events never displace eligible
+ones from a page. `load_mutation_event_page` stays timestamp-independent for
+its other consumers. See [commit-time
+cutoff](mutation-trace-agent-attribution.md#commit-time-cutoff).
 
 `MutationTraceStore::latest_mutation_event_revision(worktree) -> Result<Option<u64>>`
 is a one-row cold read of the highest `mutation_trace_events.revision` for the
 worktree (or `None` when it has none). Post-commit attribution reads it under
-the worktree lock as its commit attribution cut: an event with a higher
-revision was produced after the commit and must not participate.
+the worktree lock as its revision ceiling: the highest revision visible when
+post-commit takes its snapshot, not necessarily the highest revision that
+existed at commit creation. Temporal eligibility is enforced by the
+commit-time filter above.
 
 `MutationTraceStore::load_scope(scope_id) -> Result<Option<ScopeState>>` is the
 public single-scope read seam: one `mutation_trace_scopes` row by primary key,
