@@ -14,39 +14,20 @@ use crate::services::repository_identity::resolve::{
 const REPOSITORY_DB_INITIALIZATION_ATTEMPTS: usize = 20;
 const REPOSITORY_DB_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(100);
 
-/// Inputs needed to resolve the active repository-scoped Agent Trace storage.
-///
-/// The identity inputs mirror the `agent_trace.repository_id` and
-/// `agent_trace.repository_remote` configuration keys; callers pass the
-/// already-resolved configuration values.
 #[derive(Clone, Copy, Debug)]
 pub struct AgentTraceStorageContext<'a> {
-    /// Root of the Git working tree the current command runs in.
     pub repository_root: &'a Path,
-    /// Explicit `agent_trace.repository_id` configuration value, if set.
     pub explicit_repository_id: Option<&'a str>,
-    /// Configured `agent_trace.repository_remote` name (default `origin`).
     pub repository_remote: &'a str,
 }
 
-/// The resolved active Agent Trace storage for one repository checkout.
 pub struct ResolvedAgentTraceStorage {
-    /// Repository identity (canonical identity plus repository ID) and the
-    /// source it was resolved from.
     pub repository_identity: ResolvedRepositoryIdentity,
-    /// Repository-scoped database path
-    /// `<state-root>/sce/repos/<repository-id>/agent-trace.db`.
     pub db_path: PathBuf,
-    /// Open repository-scoped Agent Trace database.
     pub db: RepositoryAgentTraceDb,
-    /// Physical database identity (`repository_id`/`source_instance_id`)
-    /// produced by the same verification/initialization call that opened
-    /// `db`.
     pub metadata: RepositoryMetadata,
 }
 
-/// Resolves the repository-scoped Agent Trace storage for a checkout using
-/// the canonical state root from the default-path catalog.
 pub async fn resolve_agent_trace_storage(
     context: &AgentTraceStorageContext<'_>,
 ) -> Result<ResolvedAgentTraceStorage> {
@@ -55,14 +36,6 @@ pub async fn resolve_agent_trace_storage(
     open_storage(repository_identity, db_path).await
 }
 
-/// Resolves repository-scoped Agent Trace storage for high-frequency hook
-/// runtime callers using the canonical state root.
-///
-/// Never runs migrations, including migration `002`: the database must
-/// already have been brought up to date by `sce setup`. A missing or
-/// baseline-only (pre-`002`) database fails with the same `sce setup`
-/// guidance `ensure_schema_ready_for_hooks` already reports, rather than
-/// silently migrating it from a hook path.
 pub async fn resolve_agent_trace_storage_for_hook_runtime(
     context: &AgentTraceStorageContext<'_>,
 ) -> Result<ResolvedAgentTraceStorage> {
@@ -71,8 +44,6 @@ pub async fn resolve_agent_trace_storage_for_hook_runtime(
     open_storage_for_hook_runtime(repository_identity, db_path).await
 }
 
-/// Hook-runtime resolution core against an explicit state root, so tests can
-/// exercise the full path without touching the real user state directory.
 pub async fn resolve_agent_trace_storage_for_hook_runtime_at_state_root(
     context: &AgentTraceStorageContext<'_>,
     state_root: &Path,

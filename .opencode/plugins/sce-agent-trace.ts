@@ -89,7 +89,6 @@ function extractDiffTracePayload(
 	event: EventMessageUpdated,
 ): DiffTracePayload | undefined {
 	const eventInfo = event.properties.info;
-	// Only capture user messages (filter out assistant, system, etc.)
 	if (eventInfo.role !== "user") {
 		return undefined;
 	}
@@ -334,9 +333,6 @@ async function runDiffTraceHook(
 	await new Promise<void>((resolve) => {
 		const child = spawn("sce", ["hooks", "diff-trace"], {
 			cwd: repoRoot,
-			// Fail-open: stderr is ignored so that sce intake errors
-			// (connection refused, timeout, etc.) do not leak into the
-			// OpenCode TUI. Resolve unconditionally on any outcome.
 			stdio: ["pipe", "ignore", "ignore"],
 		});
 
@@ -359,9 +355,6 @@ async function runConversationTraceHook(
 	await new Promise<void>((resolve) => {
 		const child = spawn("sce", ["hooks", "conversation-trace"], {
 			cwd: repoRoot,
-			// Fail-open: stderr is ignored so that sce intake errors
-			// (connection refused, timeout, etc.) do not leak into the
-			// OpenCode TUI. Resolve unconditionally on any outcome.
 			stdio: ["pipe", "ignore", "ignore"],
 		});
 

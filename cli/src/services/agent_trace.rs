@@ -250,24 +250,19 @@ pub enum ContributorType {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Conversation {
-    /// Absolute lookup URL for the generated top-level agent trace.
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub contributor: Option<Contributor>,
     pub ranges: Vec<LineRange>,
-    /// Optional related resources for this conversation entry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub related: Option<Vec<ConversationRelated>>,
 }
 
-/// A related resource for a conversation entry.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ConversationRelated {
-    /// Free-form related resource type.
     #[serde(rename = "type")]
     pub kind: String,
-    /// Related resource URL.
     pub url: String,
 }
 
@@ -276,7 +271,6 @@ pub struct ConversationRelated {
 pub struct Contributor {
     #[serde(rename = "type")]
     pub kind: ContributorType,
-    /// Model provenance for this contributor; omitted when unknown.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
 }
@@ -292,7 +286,6 @@ pub struct LineRange {
     pub contributor: Option<Contributor>,
 }
 
-/// A file-level entry in the minimal agent-trace payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct TraceFile {
@@ -300,26 +293,19 @@ pub struct TraceFile {
     pub conversations: Vec<Conversation>,
 }
 
-/// Top-level minimal agent-trace payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentTrace {
-    /// Agent-trace payload version.
     #[serde(default = "default_agent_trace_version")]
     pub version: String,
-    /// Trace record identifier (`UUIDv7` generated from commit-time metadata).
     #[serde(default)]
     pub id: String,
-    /// RFC 3339 timestamp string sourced from caller-provided commit metadata.
     #[serde(default)]
     pub timestamp: String,
-    /// Version control metadata sourced from caller-provided commit metadata.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vcs: Option<AgentTraceVcs>,
-    /// Optional tool metadata sourced from caller-provided metadata input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<AgentTraceTool>,
-    /// Implementation-specific metadata for SCE-generated traces.
     #[serde(default = "default_agent_trace_metadata")]
     pub metadata: AgentTraceMetadata,
     pub files: Vec<TraceFile>,

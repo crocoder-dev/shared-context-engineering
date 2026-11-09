@@ -112,8 +112,6 @@ fn scopes() -> BTreeMap<ScopeId, ScopeState> {
     ])
 }
 
-/// Prepares and immediately commits `attempt` against `boundary`, the shape
-/// every state-sequence test below chains repeatedly.
 fn prepare_and_commit(
     state: &ProtocolState,
     attempt: &AttemptId,
@@ -831,8 +829,6 @@ fn commit_emits_exactly_one_mutation_event_with_correct_attribution_boundary_and
         scope_with_status(ScopeStatus::Active, worktree("wt0")),
     );
 
-    // Advance never changes the scope set, so the pre- and post-transition
-    // live scopes are identical: attribution is unambiguously AiExclusive.
     let prepared = prepare(
         &state,
         attempt_id("attempt0"),
@@ -1929,10 +1925,6 @@ fn recover_is_a_no_op_for_blocked_preconditions() {
     }
 }
 
-// T07: cross-action state-sequence tests. Each of the eight scenarios below
-// is required by the plan; none is a single-action test already covered by
-// T01-T06.
-
 #[test]
 fn attribution_transitions_from_contended_to_exclusive_across_a_close_boundary() {
     let mut state = ProtocolState::default();
@@ -1948,7 +1940,6 @@ fn attribution_transitions_from_contended_to_exclusive_across_a_close_boundary()
         scope_with_status(ScopeStatus::Active, worktree("wt0")),
     );
 
-    // Both scopes are live: an Advance observing a real change is AiContended.
     let step_a = prepare_and_commit(
         &state,
         &attempt_id("attempt_a"),
@@ -1971,9 +1962,6 @@ fn attribution_transitions_from_contended_to_exclusive_across_a_close_boundary()
         BTreeSet::from([scope("scope0"), scope("scope1")])
     );
 
-    // Close also observes a change; because commitAttempt computes live
-    // scopes *before* nextScope closes scope0, this still emits AiContended,
-    // not AiExclusive.
     let step_b = prepare_and_commit(
         &step_a.state,
         &attempt_id("attempt_b"),
@@ -2000,8 +1988,6 @@ fn attribution_transitions_from_contended_to_exclusive_across_a_close_boundary()
         BTreeSet::from([scope("scope0"), scope("scope1")])
     );
 
-    // Now only scope1 is live: the next observed change is where AiExclusive
-    // first appears.
     let step_c = prepare_and_commit(
         &step_b.state,
         &attempt_id("attempt_c"),
@@ -2137,9 +2123,6 @@ fn replay_of_a_committed_event_key_is_rejected_without_mutating_state() {
     );
     assert!(first.evaluation.accepted);
 
-    // The CAS baseline is fresh (matches the post-commit worktree state);
-    // only the replayed EventKey (scope0/event0, same as `start_boundary`)
-    // should cause rejection.
     let before = first.state.clone();
     let replay = prepare_and_commit(
         &first.state,
@@ -2175,7 +2158,6 @@ fn stale_attempt_prepared_before_an_intervening_flush_commit_is_rejected_without
         scope_with_status(ScopeStatus::NeverSeen, worktree("wt0")),
     );
 
-    // Prepare the eventual stale attempt first, baselined at revision 0.
     let prepared_stale = prepare(
         &state,
         attempt_id("attempt_stale"),
@@ -2183,8 +2165,6 @@ fn stale_attempt_prepared_before_an_intervening_flush_commit_is_rejected_without
         tree("tree_target"),
     );
 
-    // An unrelated Flush commits and advances the worktree before the
-    // prepared attempt above is ever committed.
     let intervened = prepare_and_commit(
         &prepared_stale,
         &attempt_id("attempt_flush"),
@@ -2229,7 +2209,6 @@ fn competing_prepared_attempts_the_second_to_commit_is_rejected_by_cas() {
         .worktrees
         .insert(worktree("wt0"), healthy_worktree(tree("tree0"), 0));
 
-    // Both A and B are prepared against the same revision-0 baseline.
     let prepared_a = prepare(
         &state,
         attempt_id("attempt_a"),
@@ -2312,10 +2291,6 @@ fn taint_invalidates_a_prepared_attempt_via_stale_revision() {
     );
 }
 
-// T07: invariant-style tests, named to mirror the Quint invariants this
-// module refines. Each reaches its precondition through real transitions
-// rather than a manually constructed state, per the task's own requirement.
-
 #[test]
 fn scope_started_at_most_once_and_stays_terminal_after_a_real_close() {
     let mut state = ProtocolState::default();
@@ -2338,9 +2313,6 @@ fn scope_started_at_most_once_and_stays_terminal_after_a_real_close() {
         ScopeStatus::Active
     );
 
-    // ScopeStartedAtMostOnce: a second Start (fresh EventKey) on an
-    // already-Active scope is accepted-but-non-observing and does not
-    // re-run activation.
     let restarted = prepare_and_commit(
         &started.state,
         &attempt_id("attempt_restart"),
@@ -2381,8 +2353,6 @@ fn scope_started_at_most_once_and_stays_terminal_after_a_real_close() {
         ScopeStatus::Closed
     );
 
-    // TerminalScopesStayTerminal: a Start against the now-Closed scope
-    // cannot reactivate it.
     let reopen_attempt = prepare_and_commit(
         &closed.state,
         &attempt_id("attempt_reopen"),
@@ -2528,18 +2498,12 @@ fn rejected_attempts_do_not_commit_evidence_across_a_mixed_accept_reject_sequenc
         AttemptStatus::Rejected
     );
 
-    // RejectedAttemptsDoNotCommitEvidence: the rejected Advance must not have
-    // added any mutation evidence beyond what the accepted Start produced.
     assert_eq!(
         rejected.state.mutation_events,
         accepted.state.mutation_events
     );
     assert_eq!(rejected.state.mutation_events.len(), 1);
 }
-
-// T07 post-review correction: `needsRebaseline` must suppress mutation
-// evidence even when `commit` genuinely observes a real tree change
-// (`MutationEventsCrossOnlyTrustworthyProtocolStates`).
 
 #[test]
 fn needs_rebaseline_suppresses_mutation_event_even_when_commit_observes_a_real_tree_change() {
@@ -2590,16 +2554,6 @@ fn needs_rebaseline_suppresses_mutation_event_even_when_commit_observes_a_real_t
     );
 }
 
-// T07 post-review correction: Quint's `revision: int` is unbounded; this
-// refinement's `revision: u64` is not, so every revision-advancing action
-// must refuse to wrap past `u64::MAX` rather than commit partial or wrapped
-// state.
-
-// A commit that would advance revision is rejected at `u64::MAX`: headroom
-// is required for advancement, not for acceptance in general. Paired with
-// `no_change_flush_commits_at_u64_max_without_advancing_revision` below,
-// which proves the other half — a commit that would NOT advance revision
-// (a no-change `Flush`) is accepted at `u64::MAX`.
 #[test]
 fn commit_that_would_advance_is_rejected_at_u64_max() {
     let mut state = ProtocolState::default();
@@ -2648,12 +2602,6 @@ fn commit_that_would_advance_is_rejected_at_u64_max() {
     );
 }
 
-// T07 post-review correction: the first checked-u64 guard required revision
-// headroom for every accepted commit, even a no-change `Flush` that would
-// not advance revision. Quint's `commitAttempt` accepts and commits that
-// case without advancing revision, so a fresh no-change `Flush` at
-// `revision: u64::MAX` must commit successfully rather than being rejected
-// for headroom it does not need.
 #[test]
 fn no_change_flush_commits_at_u64_max_without_advancing_revision() {
     let mut state = ProtocolState::default();

@@ -1,9 +1,3 @@
-//! Runtime config discovery, merge, and precedence resolution.
-//!
-//! This submodule owns config-file discovery, file-layer merging,
-//! env/flag/default precedence, auth-key resolution, observability resolution,
-//! and default-discovered invalid-file degradation.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -1009,9 +1003,6 @@ pub(crate) fn get_database_retry_config() -> Option<&'static DatabaseRetryConfig
     DATABASE_RETRY_CONFIG.get()
 }
 
-/// Resolve the full runtime config from the environment and initialize the
-/// database retry `OnceLock`. Silently ignores errors — if the config cannot
-/// be resolved, DB adapters fall back to hardcoded defaults.
 pub(crate) fn init_database_retry_config_from_environment(cwd: &Path) {
     if let Ok(runtime) = resolve_runtime_config(
         &ConfigRequest {

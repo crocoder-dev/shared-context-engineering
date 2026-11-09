@@ -6,9 +6,6 @@ import "pi-content.pkl" as pi
 import "codex-content.pkl" as codex
 import "codex-metadata.pkl" as codexMetadata
 
-/// Build the expected inventory from each target's independently checked
-/// document inventory plus the retained non-workflow assets. This deliberately
-/// does not iterate `generate.pkl`'s output assembly.
 hidden expectedArtifactPaths = new Mapping {
   for (_, document in opencode.agents) {
     ["config/.opencode/agent/\(document.title).md"] = true
@@ -125,10 +122,6 @@ local assertCodexHelperFailClosedMode = (artifacts: Mapping) ->
     ) "Codex hook helper: fail-closed PreToolUse mode plus the retained fail-open exec path"
     else throw("Codex hook helper must carry a fail-closed PreToolUse mode alongside the retained fail-open exec path")
 
-/// Current upstream Codex skill loading provides no Claude/OpenCode-style
-/// `$ARGUMENTS` substitution, so a literal, unsubstituted token in generated
-/// Codex skill Markdown would be model-visible noise rather than the invoked
-/// input.
 local assertCodexSkillsExcludeArguments = (artifacts: Mapping) ->
   if (
     artifacts.every((path, text) ->
@@ -138,11 +131,6 @@ local assertCodexSkillsExcludeArguments = (artifacts: Mapping) ->
   ) "Codex skills: no literal $ARGUMENTS in generated Markdown"
   else throw("generated Codex skill Markdown must not contain the literal token $ARGUMENTS")
 
-/// Codex's `agents/openai.yaml` disables implicit invocation for the six
-/// catalog workflows, so their SKILL.md `## Input` sections must each name a
-/// concrete, own-slug `$sce-{slug}` invocation example alongside the
-/// `invocation input` prose — the only way to reach these skills is `/skills`
-/// discovery or explicit `$sce-<slug>` invocation.
 local assertCodexSkillInvocationExamples = (artifacts: Mapping) ->
   if (
     expectedCodexMetadataArtifactPaths.every((_, slug) ->
@@ -152,20 +140,12 @@ local assertCodexSkillInvocationExamples = (artifacts: Mapping) ->
   ) "Codex skill invocation examples: each Input section names its own $sce-{slug}"
   else throw("generated Codex SKILL.md must name a concrete $sce-{slug} invocation example in its Input section")
 
-/// The six catalog workflows' generated `agents/openai.yaml` paths, keyed by
-/// the catalog command slug so each can be checked against its own
-/// catalog-derived `CodexSkillMetadata`.
 local expectedCodexMetadataArtifactPaths = new Mapping {
   for (slug, workflow in catalog.workflows) {
     ["config/.agents/skills/\(workflow.skillSlug)/agents/openai.yaml"] = slug
   }
 }
 
-/// Every generated Codex `agents/openai.yaml` derives its `interface` values
-/// from the shared workflow catalog and disables implicit invocation, since
-/// each catalog workflow is a stateful SCE lifecycle transition that must not
-/// auto-trigger from conversational relevance alone; `sce-decision` has no
-/// user-facing entrypoint on any target and keeps no such file.
 local assertCodexSkillMetadataContract = (artifacts: Mapping) ->
   if (
     expectedCodexMetadataArtifactPaths.every((path, slug) ->
@@ -373,7 +353,6 @@ local compactWorkflowSlugs = new Listing {
 hidden isCompactWorkflowPath = (path: String) ->
   compactWorkflowSlugs.any((slug) -> path.endsWith("/skills/sce-\(slug)/SKILL.md"))
 
-// This oracle intentionally does not read the production rendering helper.
 local expectedExecutionContract = (allowsDecision: Boolean) ->
   """
   ## Execution contract
@@ -461,10 +440,6 @@ local forbiddenUnscopedWorkflowTokens = new Listing {
   "not inter-skill handoffs"
 }
 
-/// The five behaviors `/brownfield` cannot lose without becoming a different
-/// workflow: the terminal bootstrap gate, the explicit documentation sweep, the
-/// blocking confidence threshold, always-disclosed contradictions, and
-/// additive-by-default writing with `rebuild` as the sole rewrite path.
 local requiredBrownfieldSkillTokens = new Listing {
   "### 1. Confirm the context root"
   "**Missing context bootstrap gate**"
@@ -522,14 +497,6 @@ local forbiddenWorkflowReferenceTokens = new Listing {
   "references/validation-result.md"
 }
 
-/// Six cross-target workflow packages, with package-local phase references and
-/// supporting documents on the four phase-based workflows, plus the decision
-/// package and retained non-workflow assets, across OpenCode, Claude, Pi, and
-/// Codex, plus Codex's `.codex/hooks.json`, its install-guidance hook script,
-/// and its six per-workflow `agents/openai.yaml` files (one per catalog
-/// workflow, excluding `sce-decision`). Stating the total as a literal makes
-/// an unintended inventory change fail here instead of silently becoming the
-/// new expectation.
 local expectedArtifactPathCount = 145
 
 local assertExactArtifactPaths = (actual: Mapping) ->
@@ -741,11 +708,6 @@ local assertBrownfieldContent = (documents: Mapping) ->
   ) "generated brownfield package content: covers gate, evidence, confidence, contradictions, writes"
   else throw("generated sce-brownfield SKILL.md is missing a required bootstrap, documentation, confidence, contradiction, or write-mode rule")
 
-/// Extract each fenced code block from `text`, fence markers included, so
-/// callers can test a generated `SKILL.md` for a verbatim copy of a
-/// `references/output.md` layout. Splitting on the triple-backtick fence
-/// yields alternating outside/inside segments starting outside, so the
-/// odd-indexed segments are exactly the fenced bodies.
 hidden fencedBlocksIn = (text: String) ->
   text.split("```").filterIndexed((index, _) -> index.isOdd).map((block) -> "```\(block)```")
 
@@ -769,10 +731,6 @@ local assertOutputNotDuplicated = (documents: Mapping) ->
   ) "generated workflow SKILL.md documents: no output.md layout duplicated"
   else throw("generated SKILL.md reproduces a references/output.md fenced layout verbatim")
 
-/// The manifest is the only carrier of optional-workflow identity outside Pkl,
-/// so assert its content against the catalog rather than accepting whatever the
-/// renderer emitted: every optional workflow appears with its catalog title and
-/// slugs, and no core workflow appears at all.
 local assertOptionalWorkflowManifest = (artifacts: Mapping) ->
   let (text = artifacts["config/optional-workflows.json"])
     if (
@@ -921,10 +879,6 @@ hidden assertNextTaskReportOwnership = (documents: Mapping) ->
   ) "sce-next-task report ownership: sync report is not duplicated in output.md"
   else throw("sce-next-task output.md must not duplicate the context-sync report contract")
 
-/// Codex names the invocation input in prose instead of a literal `$ARGUMENTS`
-/// (its harness does not substitute it), so exactly these two output-layout
-/// references — the only ones quoting the received input back to the user —
-/// legitimately diverge from Pi/Claude/OpenCode's text there.
 local codexArgumentDependentReferencePaths = new Listing {
   "sce-handover/references/output.md"
   "sce-brownfield/references/output.md"

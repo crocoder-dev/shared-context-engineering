@@ -1,16 +1,3 @@
--- Durable persistence for the verified mutation-cursor protocol
--- (`cli/src/services/mutation_trace/`).
---
--- This migration is additive: it introduces five new tables and leaves every
--- table from 001/002 untouched. `revision` is stored as an 8-byte
--- big-endian BLOB on every column that carries one (never a SQLite INTEGER),
--- enforced by `CHECK (typeof(revision) = 'blob' AND length(revision) = 8)`,
--- so a TEXT value of matching length is still rejected. Enum-shaped columns
--- use TEXT with an explicit CHECK allow-list, matching the `role`/
--- `payload_type` convention already used in 001. `AttemptState` (transient)
--- and `external_taint` (not DB-authoritative) are deliberately not
--- represented by any table here.
-
 CREATE TABLE IF NOT EXISTS mutation_trace_worktrees (
     worktree_id TEXT PRIMARY KEY,
     cursor_tree TEXT NOT NULL,
@@ -38,13 +25,6 @@ ON mutation_trace_scopes (worktree_id);
 CREATE INDEX IF NOT EXISTS idx_mutation_trace_scopes_worktree_status
 ON mutation_trace_scopes (worktree_id, status);
 
--- `worktree_id` is deliberately not duplicated here: a processed event's
--- identity is exactly `(scope_id, event_id)` (the domain `EventKey`), and
--- `scope_id`'s worktree is already a permanent fact owned by
--- `mutation_trace_scopes` (`ScopeId -> WorktreeId`, never reassigned). A
--- second `worktree_id` column would create two sources of truth for the same
--- fact and could disagree with `mutation_trace_scopes` for the same
--- `scope_id`; the schema does not represent that inconsistency.
 CREATE TABLE IF NOT EXISTS mutation_trace_processed_events (
     scope_id TEXT NOT NULL,
     event_id TEXT NOT NULL,

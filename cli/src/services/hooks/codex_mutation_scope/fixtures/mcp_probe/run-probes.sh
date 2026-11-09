@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# T01 MCP lifecycle probe driver. NOT SCE runtime code.
-#
-# Drives `codex exec` (codex-cli 0.153.4) against a tiny local stdio MCP server
-# (server.py) wired into a scratch git repo, capturing every raw Codex hook
-# payload plus git-observable mutation evidence. See NOTES.md "MCP probe manifest".
-#
-# Usage:
-#   MCP_PROBE_WORK=/abs/scratch/dir PY=/abs/python3 bash run-probes.sh [A B C ...]
-#
-# Requirements: codex on PATH, a working $CODEX_HOME/auth.json, network for the
-# model. Nothing is written outside $MCP_PROBE_WORK and a private CODEX_HOME copy.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

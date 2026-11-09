@@ -122,8 +122,6 @@ pub fn render_help_for_path(path: &[&str]) -> Option<String> {
     let mut command = Cli::command();
 
     for segment in path {
-        // Clone required: find_subcommand_mut returns a mutable reference that cannot
-        // be kept alive across loop iterations, so we must clone to get an owned value
         command = command.find_subcommand_mut(segment)?.clone();
     }
 
@@ -192,11 +190,9 @@ pub enum Commands {
         #[arg(long, requires = "hooks")]
         repo: Option<PathBuf>,
 
-        /// Create the baseline durable-context tree without installing integrations
         #[arg(long)]
         bootstrap_context: bool,
 
-        /// Install an optional workflow by slug; repeat for several (default: none)
         #[arg(long = "workflow", value_name = "SLUG")]
         workflow: Vec<String>,
 

@@ -1,15 +1,3 @@
-//! Runtime repository identity resolution.
-//!
-//! Applies the repository identity precedence: an explicit configured
-//! identity (`agent_trace.repository_id`) wins, otherwise the URL of the
-//! configured Git remote (`agent_trace.repository_remote`, default `origin`)
-//! is canonicalized, otherwise resolution fails with actionable
-//! `.sce/config.json` guidance. Local paths are never used implicitly.
-//!
-//! Errors intentionally never echo remote URLs so credential-bearing
-//! remotes cannot leak through diagnostics; remote names are operator-chosen
-//! configuration values and are safe to display.
-
 use std::path::Path;
 use std::process::Command;
 
@@ -20,37 +8,28 @@ use super::{
     RepositoryIdentityError,
 };
 
-/// Where a resolved repository identity came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryIdentitySource {
-    /// Explicit `agent_trace.repository_id` configuration value.
     ExplicitConfig,
-    /// URL of the named Git remote.
     RemoteUrl { remote_name: String },
 }
 
-/// A repository identity plus the source it was resolved from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRepositoryIdentity {
     pub identity: RepositoryIdentity,
     pub source: RepositoryIdentitySource,
 }
 
-/// Resolution failure. Variants never carry remote URLs or explicit
-/// identity values, only the configured remote name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RepositoryIdentityResolutionError {
-    /// `agent_trace.repository_id` is configured but unusable.
     InvalidExplicitIdentity(RepositoryIdentityError),
-    /// The configured remote exists but its URL cannot serve as a
-    /// repository identity (for example a local path remote).
     InvalidRemoteUrl {
         remote_name: String,
         error: RepositoryIdentityError,
     },
-    /// No explicit identity is configured and the configured remote has
-    /// no URL.
-    MissingIdentity { remote_name: String },
+    MissingIdentity {
+        remote_name: String,
+    },
 }
 
 impl std::fmt::Display for RepositoryIdentityResolutionError {
@@ -74,8 +53,6 @@ impl std::fmt::Display for RepositoryIdentityResolutionError {
 
 impl std::error::Error for RepositoryIdentityResolutionError {}
 
-/// Resolves the repository identity for a Git repository checkout, applying
-/// the explicit-config-then-remote precedence.
 pub fn resolve_repository_identity(
     repository_root: &Path,
     explicit_identity: Option<&str>,
@@ -86,8 +63,6 @@ pub fn resolve_repository_identity(
     })
 }
 
-/// Precedence core with an injectable remote URL lookup, so callers and
-/// tests can resolve without spawning `git`.
 pub fn resolve_repository_identity_with_lookup(
     explicit_identity: Option<&str>,
     remote_name: &str,
@@ -122,17 +97,12 @@ pub fn resolve_repository_identity_with_lookup(
     })
 }
 
-/// Reads the URL of a named Git remote from repository configuration.
-/// Returns `None` when git is unavailable, the directory is not a
-/// repository, or the remote has no URL.
 pub fn lookup_remote_url(repository_root: &Path, remote_name: &str) -> Option<String> {
     lookup_remote_url_strict(repository_root, remote_name)
         .ok()
         .flatten()
 }
 
-/// Reads a named Git remote URL while distinguishing a missing URL from a
-/// failure to execute or interpret the lookup.
 pub fn lookup_remote_url_strict(
     repository_root: &Path,
     remote_name: &str,

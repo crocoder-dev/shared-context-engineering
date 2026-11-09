@@ -3,18 +3,12 @@ import "workflow-content.pkl" as model
 local validation = model.semanticReference.apply("`sce-validation`", "the **Validation phase**")
 local validationUpper = model.semanticReference.apply("`sce-validation`", "The **Validation phase**")
 local validationName = model.semanticReference.apply("sce-validation", "Validation phase")
-/// Cited from inside `references/validation.md` itself, where the Validation
-/// Result contract is now appended below the phase steps.
 local validationResultSelfRef = model.semanticReference.apply(
   "the **Validation report** section below in this file",
   "the **Validation report** section below in this file"
 )
-/// Cited from `references/validation-report.md`, a sibling file, so it must
-/// name `references/validation.md` explicitly rather than say "below".
 local validationResultFileRef = model.semanticReference.apply("`references/validation.md`", "`references/validation.md`")
 local validationReport = model.semanticReference.apply("`references/validation-report.md`", "the **Plan-file validation report** section embedded in this file")
-/// The paragraph that separates the plan-file report from the returned result.
-/// Both spellings wrap at the same width as the surrounding body text.
 local reportVersusResult = model.semanticReference.apply(
   """
   The plan-file `## Validation Report` section is written separately using
@@ -27,9 +21,6 @@ local reportVersusResult = model.semanticReference.apply(
   carries the validation phase's result into the workflow's own branches.
   """
 )
-/// The validation handoff sentence. A package owns
-/// `references/output.md`, so naming that contract resolves there. A composite
-/// workflow uses the same emitted document, so the reference remains unchanged.
 local validationResultHandoff = model.semanticReference.apply(
   """
   The phase must return a Markdown report matching its validation report contract.
@@ -51,9 +42,6 @@ local yaml = model.semanticReference.apply("YAML", "internal state")
 local validationHeadings = new model.PhaseHeadings { step = 1 }
 local validationReportHeadings = new model.PhaseHeadings { step = 0 }
 
-/// User-visible layouts. Package mode states each layout at its branch, because a
-/// command file has no sibling `references/output.md`. Composite mode cites the
-/// `output.md` section that owns the layout.
 local completionLayout = model.semanticReference.apply(
   """
   ```
@@ -72,10 +60,6 @@ local completionLayout = model.semanticReference.apply(
   Render the **Completion** layout from `references/output.md`.
   """
 )
-
-/// Canonical `/validate` workflow command and its self-contained skill
-/// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
-/// renderers consume this model in later workflow-rendering tasks.
 
 local validationPackage = new model.SkillPackage {
   slug = "sce-validation"
@@ -584,14 +568,8 @@ local renderValidationResult = (mode: model.WorkflowRenderMode) -> """
 
 local VALIDATION_RESULT = renderValidationResult.apply("package")
 
-/// `references/validation.md` carries both the phase steps and the result
-/// contract, so the phase's own citation of the result contract must point
-/// within this same file rather than at a separate `references/output.md`.
 local VALIDATION_REFERENCE = renderValidationSkillBody.apply("package") + "\n\n" + VALIDATION_RESULT
 
-/// Composite-only user-visible layouts. The validation report contract lives
-/// in the validation reference, while this file carries the completion layout
-/// cited by the composite `SKILL.md`.
 local VALIDATE_OUTPUT_LAYOUTS = """
     # Validate output layouts
 

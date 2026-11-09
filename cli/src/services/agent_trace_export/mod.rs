@@ -1,22 +1,12 @@
-//! Read-only incremental export readers for the Agent Trace capture streams.
-//!
-//! This module establishes the local read/export boundary: cursor in, owned
-//! wire-compatible rows out. It performs no database mutation, holds no local
-//! sync cursor, and makes no network calls.
-
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use crate::services::agent_trace_db::{repository::RepositoryAgentTraceDb, MessageRole};
 
-/// Maximum number of rows a single export reader call may return.
 pub const AGENT_TRACE_EXPORT_BATCH_SIZE: usize = 100;
 
-/// Largest integer value that round-trips exactly through an IEEE-754 double
-/// (`Number.MAX_SAFE_INTEGER`).
 pub const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
-/// Rejects a negative cursor.
 pub fn validate_cursor(cursor: i64) -> Result<()> {
     if cursor < 0 {
         bail!("agent trace export cursor must be >= 0, got {cursor}");
@@ -25,7 +15,6 @@ pub fn validate_cursor(cursor: i64) -> Result<()> {
     Ok(())
 }
 
-/// Rejects a zero limit or a limit above [`AGENT_TRACE_EXPORT_BATCH_SIZE`].
 pub fn validate_limit(limit: usize) -> Result<()> {
     if limit == 0 {
         bail!("agent trace export limit must be greater than 0");
@@ -40,9 +29,6 @@ pub fn validate_limit(limit: usize) -> Result<()> {
     Ok(())
 }
 
-/// Rejects a value outside `0..=JS_MAX_SAFE_INTEGER`, the range an exportable
-/// numeric field must stay within to survive JSON round-trip without
-/// truncation or casting.
 pub fn validate_js_safe_integer(value: i64) -> Result<()> {
     if !(0..=JS_MAX_SAFE_INTEGER).contains(&value) {
         bail!("agent trace export value {value} is outside the JS-safe-integer range 0..={JS_MAX_SAFE_INTEGER}");
@@ -254,9 +240,6 @@ fn message_role_from_column(value: &str) -> Result<MessageRole> {
     }
 }
 
-/// Converts a validated `limit` (already bounded by [`validate_limit`] to
-/// `1..=AGENT_TRACE_EXPORT_BATCH_SIZE`) into the `i64` the SQL `LIMIT`
-/// parameter requires.
 fn limit_as_i64(limit: usize) -> i64 {
     i64::try_from(limit).expect("validated limit should fit in i64")
 }

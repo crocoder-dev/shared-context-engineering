@@ -4,10 +4,6 @@ local atomicCommit = model.semanticReference.apply("`sce-atomic-commit`", "the *
 local atomicCommitUpper = model.semanticReference.apply("`sce-atomic-commit`", "The **Atomic commit phase**")
 local atomicCommitName = model.semanticReference.apply("sce-atomic-commit", "Atomic commit phase")
 local atomicCommitHeadings = new model.PhaseHeadings { step = 2; compositeShift = 2 }
-/// The bypass path invokes the same phase inlined at the regular path's
-/// proposing step. Composite mode points back to it instead of restating it;
-/// package mode has no such forward concern, since the phase is its own
-/// document there.
 local bypassPhaseReferenceQualifier = model.semanticReference.apply(
   "",
   " (described at the Regular path's step 2 above)"
@@ -29,10 +25,6 @@ local commitContractHandoff = model.semanticReference.apply(
   "Branch on `status`:"
 )
 
-/// User-visible layouts. Package mode states each layout at its branch, because a
-/// command file has no sibling `references/output.md`. Composite mode cites the
-/// `output.md` section that owns the layout, and keeps only the field mapping,
-/// branch conditions, and prohibitions that travelled with it.
 local noStagedChangesLayout = model.semanticReference.apply(
   """
   When nothing is staged, stop with exactly:
@@ -91,10 +83,6 @@ local proposalBranch = model.semanticReference.apply(
   when more than one commit is proposed.
   """
 )
-
-/// Canonical `/commit` workflow command and its self-contained skill package.
-/// Text mirrors the project-root `.pi/` behavioral baseline; target renderers
-/// consume this model in later workflow-rendering tasks.
 
 local atomicCommitPackage = new model.SkillPackage {
   slug = "sce-atomic-commit"

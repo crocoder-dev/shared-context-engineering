@@ -95,21 +95,10 @@ pub enum CoordinateError {
         revision: u64,
     },
     LockAcquisition(anyhow::Error),
-    /// Inspecting or persisting the worktree-local external-taint marker failed.
-    /// Both operations run **before** any checkout-identity, DB, snapshot, or
-    /// protocol work, so no mutation boundary has committed and there is no
-    /// [`CoordinateOutcome`] to surface — the boundary is aborted fail-closed
-    /// with the fence left in whatever state it was in.
     ExternalTaintMarker {
         operation: ExternalTaintOperation,
         source: anyhow::Error,
     },
-    /// The mutation boundary committed successfully to the Agent Trace DB and
-    /// produced a [`CoordinateOutcome`], but clearing the write-ahead
-    /// external-taint marker afterwards failed. The boundary did **not** fail:
-    /// `committed` carries the durable outcome (including any [`MutationEvent`])
-    /// so the caller never loses it. The marker remains logically armed, so the
-    /// next invocation conservatively recovers.
     MarkerClearAfterCommit {
         source: anyhow::Error,
         #[allow(
@@ -118,10 +107,6 @@ pub enum CoordinateError {
         )]
         committed: Box<CoordinateOutcome>,
     },
-    /// The caller-supplied Agent Trace DB provider returned `Err` after the
-    /// external-taint marker was already armed. The marker is intentionally
-    /// left in place so a later invocation treats the lost interval
-    /// conservatively.
     AgentTraceDbUnavailable(anyhow::Error),
     Other(anyhow::Error),
 }
@@ -505,17 +490,6 @@ where
     })
 }
 
-/// Applies the admission-bounded provenance rule for a `Start` carrying
-/// provenance, using the durable [`types::ScopeState`] that `register_scope`
-/// just returned.
-///
-/// An existing provenance row is always re-registered, so the store's immutable
-/// session identity and first-observed model semantics stay authoritative on
-/// every replay. A row may only be *created* while the durable scope is still
-/// `NeverSeen` — a retry whose earlier attempt never committed the protocol
-/// `Start`. Once the scope has crossed protocol admission, absent provenance
-/// stays absent permanently: provenance describes its scope as observed at
-/// admission, so it is never attached retroactively.
 async fn register_start_provenance(
     store: &MutationTraceStore<'_>,
     boundary: &RuntimeBoundary,

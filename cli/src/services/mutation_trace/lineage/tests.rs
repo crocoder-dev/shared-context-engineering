@@ -637,14 +637,6 @@ fn distrusting_a_path_makes_its_removals_unknown() {
     );
 }
 
-/// Deterministic randomized checks of parent-line identity and removal
-/// provenance against an independent reference model.
-///
-/// The reference applies each generated operation directly to lines whose
-/// parent identity is known by construction; the lineage only ever sees the
-/// unified diff of that operation. The canonical committed diff is derived by
-/// an independent LCS, so it can align duplicate content differently from the
-/// replayed history.
 mod randomized_tests {
     use std::collections::BTreeMap;
     use std::fmt::Write as _;
@@ -694,7 +686,6 @@ mod randomized_tests {
         }
     }
 
-    /// The reference's own mapping from transition to effective provenance.
     fn expected_provenance(origin: &TransitionOrigin) -> LineProvenance {
         match origin {
             TransitionOrigin::MutationAi(scope_id) => LineProvenance::MutationAi {
@@ -733,8 +724,6 @@ mod randomized_tests {
             }
         }
 
-        /// Restoring content that an earlier transition removed makes that
-        /// removal unprovable; removals of the current transition are untouched.
         fn restore_check(&mut self, content: &str) {
             for (removed, provenance) in self.removals.values_mut() {
                 if removed == content {
@@ -788,8 +777,6 @@ mod randomized_tests {
         format!("diff --git a/{PATH} b/{PATH}\n--- a/{PATH}\n+++ b/{PATH}\n{hunk}")
     }
 
-    /// A whole-file hunk, as Git emits it, that removes `old[position]` when
-    /// `removed` and then inserts `added` at `position`.
     fn whole_file_hunk(
         old: &[String],
         position: usize,
@@ -827,7 +814,6 @@ mod randomized_tests {
         )
     }
 
-    /// Old-side line numbers an LCS diff from `old` to `new` removes.
     fn lcs_removed(old: &[&str], new: &[&str]) -> Vec<u64> {
         let mut table = vec![vec![0_usize; new.len() + 1]; old.len() + 1];
         for i in (0..old.len()).rev() {
@@ -855,8 +841,6 @@ mod randomized_tests {
         removed
     }
 
-    /// After a gap, no parent line can resolve as removed, whichever lines the
-    /// canonical diff names.
     fn committed_removal_results_are_unknown(lineage: &MutationLineage, parent: &[String]) -> bool {
         let every_parent_line: Vec<(u64, &str)> = parent
             .iter()

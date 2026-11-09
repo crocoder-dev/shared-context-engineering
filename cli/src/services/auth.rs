@@ -137,8 +137,6 @@ impl From<TokenStorageError> for AuthError {
     }
 }
 
-/// HTTP-only device auth completion: polls for the device token and returns
-/// the raw `TokenResponse` without calling `save_tokens`.
 pub(crate) async fn complete_device_auth_flow_returning_token(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -153,9 +151,6 @@ pub(crate) async fn complete_device_auth_flow_returning_token(
     Ok(token)
 }
 
-/// HTTP-only token validation: checks an existing stored token for expiry and
-/// refreshes if needed. Does NOT call any `token_storage` functions.
-/// Returns the raw `TokenResponse` (re-using the stored token if not expired).
 pub(crate) async fn ensure_valid_token_returning_token(
     client: &reqwest::Client,
     api_base_url: &str,
@@ -182,9 +177,6 @@ pub(crate) async fn ensure_valid_token_returning_token(
         .map_err(map_refresh_failure_for_public_cli)
 }
 
-/// HTTP-only token renewal: accepts a refresh token directly and calls the
-/// private `refresh_access_token`. Does NOT call any `token_storage` functions.
-/// Returns the raw `TokenResponse`.
 pub(crate) async fn renew_stored_token_from_refresh_token(
     client: &reqwest::Client,
     api_base_url: &str,

@@ -1,18 +1,5 @@
 import "workflow-content.pkl" as model
 
-/// Canonical `/brownfield` workflow command and its self-contained
-/// `sce-brownfield` skill package. Text mirrors the project-root `.pi/`
-/// behavioral baseline; target renderers consume this model in later
-/// workflow-rendering tasks.
-///
-/// Like `sce-handover`, `sce-brownfield` invokes no sibling phase, so its
-/// `phases` listing is empty and composite rendering emits no phase appendix.
-/// Unlike `sce-handover` it does wait mid-run, at the blocking clarification
-/// gate, which the composite preamble's own control-flow paragraph already
-/// covers. The one preamble statement that paragraph does not carry is the
-/// cold-start and gap-fill scope, so that paragraph is the composite spelling of
-/// the package preamble rather than being dropped.
-
 local COMMAND = """
     ---
     description: "Reconstruct durable context from an existing repository's own evidence"
@@ -380,9 +367,6 @@ local structuredCommand = new model.StructuredWorkflowDocument {
 
 local SKILL = structuredCommand.render.apply("package", "").text
 
-/// Custom string delimiters: the fact-ledger table row escapes its column
-/// separators as `\|`, which a default Pkl string would reject as an unknown
-/// escape sequence.
 local OUTPUT_MD = (argumentsReference: String) -> #"""
     # Brownfield output layouts
 

@@ -1,10 +1,3 @@
-//! Shared config types, enums, constants, and source metadata.
-//!
-//! This submodule owns the stable config primitives that are consumed across
-//! multiple services. The parent `mod.rs` re-exports everything here through
-//! `pub use types::*` so that existing `services::config::TypeName` imports
-//! continue to work unchanged.
-
 use std::path::PathBuf;
 
 use clap::ValueEnum;
@@ -389,9 +382,6 @@ impl IntegrationTargetId {
     }
 }
 
-/// Validate one `integrations.optional_workflows` id against the build-generated
-/// optional-workflow catalog. Ids are not enumerated in Rust, so a workflow
-/// marked optional in the Pkl catalog needs no change here.
 pub(crate) fn parse_optional_workflow_id(raw: &str, source: &str) -> anyhow::Result<String> {
     if crate::services::setup::OPTIONAL_WORKFLOWS
         .iter()

@@ -120,9 +120,6 @@ pub struct BoundedMutationAttribution {
     pub reconstructed_events: usize,
     pub gap_resets: usize,
     pub barrier: Option<MutationAttributionBarrier>,
-    /// Whether an uninterrupted replay from the exact parent tree reached the
-    /// last loaded event. Removed lines resolve only when it did, and only in
-    /// paths that also reconciled with the commit tree.
     pub removal_replay_anchored: bool,
 }
 
@@ -153,11 +150,6 @@ fn empty_attribution() -> MutationAttributionResult {
     }
 }
 
-/// Resolves committed touched lines from bounded mutation history.
-///
-/// Added lines use the existing gap-tolerant replay. Removed lines resolve only
-/// through a separate, stricter replay anchored at `parent_tree`; without a
-/// parent tree (root or merge commits) every removed line stays unresolved.
 #[allow(clippy::too_many_arguments)]
 pub async fn resolve_bounded_mutation_attribution<P, R>(
     page_source: &P,
@@ -270,8 +262,6 @@ fn target_logical_paths(target: &ParsedPatch) -> BTreeSet<String> {
         .collect()
 }
 
-/// Every path whose parent lines a committed removal can name, plus the path
-/// that holds them in the commit.
 fn removal_parent_paths(target: &ParsedPatch) -> BTreeSet<String> {
     target
         .files
@@ -293,8 +283,6 @@ struct RemovalAnchor<'a> {
     paths: BTreeSet<String>,
 }
 
-/// The removal replay: it starts at the last event leaving the exact parent
-/// tree and is abandoned, never reset, at the first gap or failed transition.
 struct RemovalReplay {
     anchor: usize,
     lineage: MutationLineage,
@@ -348,11 +336,6 @@ fn advance_removal_replay(
     }
 }
 
-/// Reconciles the removal replay with the commit tree, path by path. A path
-/// keeps its removal claims only when it holds exactly its committed lines and
-/// any unobserved tail between the last event and the commit left it
-/// byte-identical; otherwise (for example a partially staged file) every
-/// removal claim the path bears on becomes unknown.
 async fn settle_removal_replay<R>(
     replay: Option<RemovalReplay>,
     last_after: &TreeId,
@@ -576,8 +559,6 @@ impl ProjectedLines {
     }
 }
 
-/// Removed lines are resolved by their canonical old-side identity: the
-/// file's old path and old line number, never new-file coordinates.
 fn removed_line_provenance(
     file: &PatchFileChange,
     removals: Option<&MutationLineage>,
@@ -666,11 +647,6 @@ where
     }
 }
 
-/// Resolves mutation attribution for the commit captured as `commit_oid`.
-///
-/// Both the commit tree and its first-parent tree are resolved from that exact
-/// object ID, never from a mutable `HEAD`, so a later `HEAD` move cannot
-/// change which revisions removed lines are anchored to.
 pub(crate) async fn resolve_post_commit_mutation_attribution(
     repository_root: &Path,
     db: &mut RepositoryAgentTraceDb,

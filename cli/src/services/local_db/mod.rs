@@ -1,5 +1,3 @@
-//! Local Turso database adapter.
-
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -11,7 +9,6 @@ use crate::services::{
 
 pub mod lifecycle;
 
-/// Local database configuration.
 pub struct LocalDbSpec;
 
 impl DbSpec for LocalDbSpec {
@@ -30,5 +27,4 @@ impl DbSpec for LocalDbSpec {
     const KIND: DatabaseKind = DatabaseKind::Local;
 }
 
-/// Local Turso database adapter.
 pub type LocalDb = TursoDb<LocalDbSpec>;

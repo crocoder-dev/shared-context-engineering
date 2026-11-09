@@ -18,11 +18,6 @@ const DEFAULT_COMMAND_NAMES: &[&str] = &[
     services::version::NAME,
 ];
 
-/// Static runtime command dispatcher for all known CLI commands.
-///
-/// Parsed command requests are represented as enum variants instead of boxed
-/// trait objects. Each variant delegates to the same service-owned command
-/// implementation used before the static-dispatch migration.
 pub enum RuntimeCommand {
     Help(services::help::command::HelpCommand),
     HelpText(services::help::command::HelpTextCommand),
@@ -79,10 +74,6 @@ impl RuntimeCommand {
     }
 }
 
-/// Statically populated command catalog.
-///
-/// The catalog owns deterministic command-name lookup only. Per-invocation
-/// command payloads are built by the parse layer as [`RuntimeCommand`] variants.
 pub struct CommandRegistry {
     names: &'static [&'static str],
 }
@@ -99,7 +90,6 @@ impl Default for CommandRegistry {
     }
 }
 
-/// Build the default deterministic command catalog with all known commands.
 pub fn build_default_registry() -> CommandRegistry {
     CommandRegistry {
         names: DEFAULT_COMMAND_NAMES,

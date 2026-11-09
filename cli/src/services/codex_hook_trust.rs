@@ -1,58 +1,14 @@
-//! Read-only diagnosis of Codex's own per-handler hook-*trust* bookkeeping
-//! (enabled / `trusted_hash`) for SCE-owned `.codex/hooks.json`
-//! registrations.
-//!
-//! This is deliberately only one of two independent dimensions Codex
-//! requires before it will actually execute a project hook handler. This
-//! module answers "given an eligible hook *source*, has this handler been
-//! enabled and durably trusted?" — it says nothing about whether Codex
-//! considers the *source* (SCE's project `.codex/hooks.json`) eligible at
-//! all. That second dimension is effective hook-discovery *policy*
-//! (`allow_managed_hooks_only`), owned entirely by `codex_hook_policy`. A
-//! project registration is only executable when both are satisfied:
-//! structurally current, policy-eligible, *and* trusted. See
-//! `codex_hook_policy`'s module documentation for why policy cannot be
-//! determined by reading any file this module could read, and for the
-//! upstream discovery-policy source references.
-//!
-//! Mirrors current upstream `openai/codex` (commit
-//! `8e649e3afa5cdddfb09a1b85a090b94775045d9b`):
-//! `hooks/src/engine/discovery.rs` (`hook_hash`, `hook_trust_status`,
-//! `hook_enabled`, `hook_trusted_hash`, `NormalizedHookIdentity`),
-//! `config/src/fingerprint.rs` (`version_for_toml`), and `hooks/src/lib.rs`
-//! (`hook_key`, `hook_event_key_label`). SCE never writes this state; see
-//! `codex_hook_config` for the SCE-owned merge/diagnosis boundary this module
-//! deliberately stays out of (no auto-trust, no state.toml writes).
-//!
-//! Scope limitation: Codex's effective hook state is layered from its user
-//! config (`$CODEX_HOME/config.toml`) and ephemeral, process-local session
-//! flags (`hooks/src/config_rules.rs` `hook_states_from_stack`). Doctor is a
-//! static, out-of-process inspection, so it can only ever read the durable
-//! user-config layer; a live Codex session with session-flag overrides can
-//! diverge from what doctor reports here.
-
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// Default output-context token budget Codex applies when
-/// `additionalContextLimit` is unset (`hooks/src/output_spill.rs`
-/// `DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT`). An explicit value equal to this
-/// default is normalized away before hashing, exactly as upstream does.
 const DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT: u64 = 2_500;
 
-/// Codex gives `SessionEnd` and `Interrupt` command hooks a one-second
-/// default timeout and clamps them to three seconds before hashing their
-/// normalized identity (`hooks/src/engine/discovery.rs`).
 const DEFAULT_LIFECYCLE_HOOK_TIMEOUT: u64 = 1;
 const MAX_LIFECYCLE_HOOK_TIMEOUT: u64 = 3;
 
-/// Events whose hooks may carry `additionalContext`
-/// (`hooks/src/engine/discovery.rs`); `Stop` cannot, so an
-/// `additionalContextLimit` set on a Stop handler is dropped before hashing,
-/// matching upstream's own normalization.
 const EVENTS_SUPPORTING_ADDITIONAL_CONTEXT: [&str; 4] = [
     "UserPromptSubmit",
     "PreToolUse",
@@ -60,40 +16,20 @@ const EVENTS_SUPPORTING_ADDITIONAL_CONTEXT: [&str; 4] = [
     "SessionStart",
 ];
 
-/// Effective trust readiness for one Codex hook registration's current
-/// on-disk handler. `Managed` never applies here: SCE only ever registers
-/// project-owned (non-managed) handlers in `.codex/hooks.json`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum TrustReadiness {
-    /// Enabled and `trusted_hash` matches the handler's current hash: this
-    /// handler is durably trusted. This alone does **not** mean Codex will
-    /// execute it — `Trusted` says nothing about whether Codex's
-    /// hook-discovery policy considers this project handler's *source*
-    /// eligible at all (see `codex_hook_policy`). The accurate reading is
-    /// "the current non-managed handler is enabled and durably trusted,
-    /// assuming Codex policy permits this hook source."
     Trusted,
-    /// Enabled but no `trusted_hash` is recorded for this handler yet.
     Untrusted,
-    /// Enabled but the recorded `trusted_hash` does not match the handler's
-    /// current hash (the handler content changed since it was trusted).
     Modified,
-    /// The user's Codex config explicitly disabled this handler
-    /// (`hooks.state."<key>".enabled = false`).
     Disabled,
-    /// Trust state could not be determined; carries a human-readable reason.
     Unknown(String),
 }
 
-/// Where doctor reads Codex's durable, user-scoped hook-trust state from.
-/// Injectable so tests never touch the real `$CODEX_HOME`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TrustContext {
     pub(crate) codex_home: Option<PathBuf>,
 }
 
-/// Resolve `$CODEX_HOME`, falling back to `~/.codex` (Codex's own default;
-/// see `openai/codex` `config/src/loader/local.rs`).
 pub(crate) fn default_trust_context() -> TrustContext {
     let codex_home = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
@@ -101,11 +37,6 @@ pub(crate) fn default_trust_context() -> TrustContext {
     TrustContext { codex_home }
 }
 
-/// Diagnose whether Codex will actually execute the given SCE-owned handler
-/// for one required registration. `hooks_json_path` must be the on-disk path
-/// to the `.codex/hooks.json` file the handler was read from, and `position`
-/// the `(group_index, handler_index)` it occupies there (from
-/// `codex_hook_config::RegistrationDiagnosis::position`).
 pub(crate) fn trust_readiness(
     context: &TrustContext,
     hooks_json_path: &Path,
@@ -148,12 +79,6 @@ pub(crate) fn trust_readiness(
     }
 }
 
-/// Mirrors upstream `HookStateToml` (`config/src/hook_config.rs`) exactly:
-/// both fields optional, no `deny_unknown_fields` (an unrecognized extra key
-/// is ignored, matching upstream). Deriving `Deserialize` from this shape
-/// (rather than reading `enabled`/`trusted_hash` independently) is what lets
-/// `read_hook_state` reject the whole entry, not just one bad field, exactly
-/// as upstream's `hook_states_from_stack` does.
 #[derive(Debug, Default, Clone, serde::Deserialize)]
 struct HookStateEntry {
     #[serde(default)]
@@ -162,17 +87,6 @@ struct HookStateEntry {
     trusted_hash: Option<String>,
 }
 
-/// Read `hooks.state."<key>"` from the user's Codex config, treating a
-/// missing config file as "no state recorded" (a normal, common state) rather
-/// than an error. A config file that exists but cannot be read or parsed is
-/// an error, since doctor cannot tell whether trust was actually granted.
-///
-/// A present entry that fails to deserialize as a whole (e.g. `enabled` set
-/// to a non-boolean) is treated as absent, matching upstream
-/// `hook_states_from_stack`'s `Err(_) => continue`: Codex never salvages
-/// individual fields from a malformed state entry, so neither does doctor —
-/// a malformed entry must never read as `Trusted` just because its
-/// `trusted_hash` string happens to be well-formed.
 fn read_hook_state(config_path: &Path, key: &str) -> Result<HookStateEntry, String> {
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
@@ -186,9 +100,6 @@ fn read_hook_state(config_path: &Path, key: &str) -> Result<HookStateEntry, Stri
             ))
         }
     };
-    // Parsed as a document-level `Table` (supports `[section]` headers), not
-    // as a bare `Value` (whose `FromStr` parses a single TOML value and would
-    // misread a leading `[` as an array literal).
     let document: toml::Table = contents.parse().map_err(|error| {
         format!(
             "Unable to parse Codex user config '{}' as TOML: {error}",
@@ -207,9 +118,6 @@ fn read_hook_state(config_path: &Path, key: &str) -> Result<HookStateEntry, Stri
     Ok(HookStateEntry::deserialize(entry.clone()).unwrap_or_default())
 }
 
-/// Build Codex's persisted hook-state key for one registration, matching
-/// `hooks::hook_key` (`"{key_source}:{event_label}:{group_index}:{handler_index}"`
-/// where `key_source` is the hooks file's absolute display path).
 fn state_key(
     hooks_json_path: &Path,
     event: &str,
@@ -228,11 +136,6 @@ fn state_key(
     ))
 }
 
-/// Hash one existing `command` handler's normalized identity exactly as
-/// upstream `hook_hash` does: build the same `{event_name, matcher?, hooks:
-/// [<one normalized handler>]}` shape, canonicalize (recursively sort object
-/// keys, matching `fingerprint::canonical_json`), and SHA-256 the compact
-/// JSON encoding.
 pub(crate) fn hash_command_handler(
     event: &str,
     matcher: Option<&str>,
@@ -319,8 +222,6 @@ fn version_for_canonical_json(value: &Value) -> String {
     format!("sha256:{hex}")
 }
 
-/// Recursively sort object keys, matching `fingerprint::canonical_json`
-/// exactly (arrays keep their order; scalars pass through unchanged).
 fn canonical_json(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
@@ -568,9 +469,6 @@ mod tests {
         assert!(matches!(readiness, TrustReadiness::Unknown(_)));
     }
 
-    /// Writes `[hooks.state."<key for hooks_json/event/position>"]` plus
-    /// `body` verbatim into a fresh `$CODEX_HOME/config.toml`, returning the
-    /// `TrustContext` pointed at it.
     fn write_state_toml(
         dir: &std::path::Path,
         label: &str,
@@ -597,10 +495,6 @@ mod tests {
 
     #[test]
     fn trust_readiness_ignores_the_whole_entry_when_enabled_has_the_wrong_type() {
-        // Upstream deserializes the complete `HookStateToml` entry; a
-        // present field with the wrong type fails the whole entry, so a
-        // syntactically-correct `trusted_hash` next to it must never be
-        // salvaged into a false `Trusted` result.
         let dir = temp_dir("malformed-enabled");
         let hooks_json = dir.join("hooks.json");
         fs::write(&hooks_json, "{}").unwrap();
@@ -629,12 +523,6 @@ mod tests {
         fs::write(&hooks_json, "{}").unwrap();
         let handler = bare_command_handler();
 
-        // `enabled = false` here is the distinguishing signal: if only the
-        // malformed `trusted_hash` field were dropped in isolation,
-        // `enabled = false` would still be honored and this would read
-        // `Disabled`. The correct whole-entry-drop behavior discards
-        // `enabled` too, so the result must be `Untrusted` (the same as no
-        // entry at all).
         let context = write_state_toml(
             &dir,
             "malformed-hash-type",
@@ -663,9 +551,6 @@ mod tests {
 
         let codex_home = dir.join("codex-home-malformed-entry");
         fs::create_dir_all(&codex_home).unwrap();
-        // The entry itself is a plain string, not a table: cannot
-        // deserialize as `HookStateToml` at all, so it must not panic and
-        // must fall back to "no state recorded" like a missing entry.
         fs::write(
             codex_home.join("config.toml"),
             format!("[hooks.state]\n\"{escaped_key}\" = \"not a table\"\n"),

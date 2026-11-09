@@ -1,5 +1,3 @@
-//! Encrypted auth Turso database adapter.
-
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -12,7 +10,6 @@ use crate::{
     },
 };
 
-/// Encrypted auth database configuration.
 pub struct AuthDbSpec;
 
 impl DbSpec for AuthDbSpec {
@@ -31,7 +28,6 @@ impl DbSpec for AuthDbSpec {
     const KIND: DatabaseKind = DatabaseKind::Auth;
 }
 
-/// Encrypted auth Turso database adapter.
 pub type AuthDb = EncryptedTursoDb<AuthDbSpec>;
 
 pub mod lifecycle;

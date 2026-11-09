@@ -17,8 +17,6 @@ let
   authenticityFailureMessage = "Release manifest authenticity check failed";
   checksumFailureMessage = "Downloaded sce archive checksum mismatch";
 
-  # Per-scenario paths; every scenario owns its own directory under
-  # ~/scenarios so installs, fixtures, and temp dirs never overlap.
   mkScenario = name: rec {
     dir = "${homeDir}/scenarios/${name}";
     prefixDir = "${dir}/prefix";
@@ -85,8 +83,6 @@ let
       ''}
     '';
 
-  # Runs as the test user with HOME, npm cache/config, and TMPDIR isolated
-  # under <scenarioDir>.
   asScenarioUser =
     scenarioDir: command:
     asUser ''
@@ -97,7 +93,6 @@ let
       ${command}
     '';
 
-  # Prepares the scenario's release fixture with the real binary.
   prepareScenarioFixture =
     scenario:
     asScenarioUser scenario.dir ''
@@ -108,7 +103,6 @@ let
         --binary ${sceReleasePackage}/bin/sce 2>&1
     '';
 
-  # Starts the scenario's fixture server detached and waits for its port.
   startScenarioServer =
     scenario:
     asScenarioUser scenario.dir ''
@@ -172,7 +166,6 @@ let
       echo "${label}: ${toString absentRuntimeTools} do not resolve on PATH=${path}"
     '';
 
-  # Reruns postinstall in place against the scenario's fixture server.
   rebuildScenarioPackage =
     scenario:
     asScenarioUser scenario.dir ''

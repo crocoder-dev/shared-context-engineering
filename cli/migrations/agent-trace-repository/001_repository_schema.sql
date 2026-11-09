@@ -1,13 +1,3 @@
--- Repository-scoped Agent Trace database baseline.
---
--- One logical Git repository maps to one database at
--- <state-root>/sce/repos/<repository-id>/agent-trace.db. This file is the
--- complete fresh schema for that database: repository-scoped databases are
--- always created new, so the baseline stays a single file instead of an
--- incremental migration chain. Trace tables are repository-level and
--- intentionally carry no checkout_id columns; checkout identity is
--- diagnostics-only context and is never persisted on trace rows.
-
 CREATE TABLE IF NOT EXISTS repository_metadata (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     repository_id TEXT NOT NULL,

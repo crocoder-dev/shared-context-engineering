@@ -7,10 +7,6 @@ import "../base/workflow-brownfield.pkl" as brownfield
 import "../base/workflow-catalog.pkl" as catalog
 import "../base/workflow-content.pkl" as model
 
-/// A skill is the unit of durable control flow. Compose the canonical phase
-/// packages into one workflow package instead of asking a command to transport
-/// phase results between sibling skills. Composition is target-neutral: targets
-/// differ only in the frontmatter lines their skills and commands support.
 class CompositeWorkflow {
   identity: catalog.WorkflowRecord
   slug: String = identity.commandSlug
@@ -73,7 +69,6 @@ local renderInternalDocuments = (workflow: CompositeWorkflow) ->
     }
   }.join("\n\n")
 
-/// Only handover uses the compact contract on this generic rendering path.
 local renderCompositePreamble = (workflow: CompositeWorkflow) ->
   if (workflow.slug == "handover")
     model.executionContract.apply("standard")
@@ -104,14 +99,6 @@ local renderCompositePreamble = (workflow: CompositeWorkflow) ->
     \(model.helperSkillCompositionRule)
     """
 
-/// `extraFrontmatterLines` carries the target-specific frontmatter a skill
-/// entrypoint supports. Each line ends with a newline; a target that adds none
-/// passes the empty string.
-/// The workflow's own `## Input`, `## Workflow`, and `## Rules` sit directly
-/// under the skill title, so the document reads top to bottom with no wrapper
-/// section between the preamble and the first instruction. A phase appendix is
-/// emitted only for phases a module still lists; once every phase is stated at
-/// the step that runs it, the listing is empty and no appendix heading renders.
 local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String, argumentsReference: String, invocationExample: String) -> new model.WorkflowDocument {
   path = "SKILL.md"
   text = if (workflow.structuredSource.compositeSkillBody != null)
@@ -147,9 +134,6 @@ local renderSkill = (workflow: CompositeWorkflow, extraFrontmatterLines: String,
     }.join("\n\n")
 }
 
-/// `extraFrontmatterLines` carries the target-specific routing frontmatter a
-/// command supports, under the same newline-terminated convention as
-/// `renderSkill`.
 hidden renderCommand = (workflow: CompositeWorkflow, extraFrontmatterLines: String) -> new model.WorkflowDocument {
   path = workflow.command.path
   text = """
@@ -192,10 +176,6 @@ local commitWorkflow = new CompositeWorkflow {
   outputText = ""
 }
 
-/// `sce-handover` invokes no sibling phase and waits for nothing mid-run, so its
-/// base module already exposes one complete, mode-invariant output reference as
-/// its sole `outputDocuments` entry; no additional composite-only header is
-/// needed the way the phase-based workflows above need one.
 local handoverWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["handover"]
   command = handover.workflow.command.document
@@ -207,12 +187,6 @@ local handoverWorkflow = new CompositeWorkflow {
   }.join("\n\n")
 }
 
-/// `sce-brownfield` is the second phase-free self-contained workflow, so like
-/// `sce-handover` its base module already exposes one complete output reference
-/// as its sole `outputDocuments` entry. It does wait mid-run, at the blocking
-/// clarification gate, but the shared composite preamble's control-flow
-/// paragraph already states that waits resume the same skill in the same
-/// session, so no composite-only header is needed here either.
 local brownfieldWorkflow = new CompositeWorkflow {
   identity = catalog.workflows["brownfield"]
   command = brownfield.workflow.command.document
@@ -233,12 +207,6 @@ workflows = new Mapping {
   [brownfieldWorkflow.slug] = brownfieldWorkflow
 }
 
-/// Each target renders the same package-relative workflow documents and differs
-/// only in the frontmatter its skill entrypoint carries, for a target whose
-/// harness does not substitute `$ARGUMENTS` into skill Markdown the prose that
-/// names the skill's invocation input, and, per workflow slug, an optional
-/// concrete `$sce-{slug}` invocation example appended to `## Input` (empty for
-/// a target that needs none).
 hidden skillDocuments = (extraSkillFrontmatterLines: String, argumentsReference: String, invocationExample: (String) -> String) -> new Mapping {
   for (_, workflow in workflows) {
     ["\(workflow.skillSlug)/SKILL.md"] = renderSkill.apply(workflow, extraSkillFrontmatterLines, argumentsReference, invocationExample.apply(workflow.skillSlug))

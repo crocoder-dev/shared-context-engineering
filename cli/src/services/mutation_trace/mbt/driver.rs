@@ -1,16 +1,3 @@
-//! MBT driver: connects Quint Connect's generated/replayed traces to the
-//! real `protocol.rs` transition functions.
-//!
-//! [`MutationCursorDriver::step`] dispatches on the `MbtAction` variant Quint
-//! recorded — never on a before/after state diff — and every arm
-//! unconditionally calls the corresponding `protocol::*` function with the
-//! transported arguments, including on an `MbtAction` variant Quint produced
-//! from a guarded/no-op path (T02's `mbtStutterAs` instrumentation): the
-//! driver has no way to distinguish that case from a real transition, and
-//! must not try to, since replaying the guarded call and comparing the
-//! resulting no-op state against Quint is the point of the regressions in
-//! T05.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use quint_connect::{switch, Config, Driver, Result, State, Step};
@@ -40,17 +27,6 @@ fn attempt_id(id: &str) -> AttemptId {
     AttemptId(id.to_string())
 }
 
-/// Replays a trace generated from/for `spec/mutation_cursor.qnt` through the
-/// real `protocol.rs` functions.
-///
-/// Holds exactly the state the plan authorizes: the pure protocol state
-/// (refines `worktrees`/`scopes`/`externalTaint`/`processedEvents`/
-/// `attempts`/`mutationEvents`) plus `worktree_trees`, the driver-only
-/// analogue of Quint's `worktreeTrees` var — the observed-tree input
-/// `prepare`/`recover` take explicitly, since the pure kernel performs no Git
-/// I/O. `MbtMutate` is the only action that touches `worktree_trees`; every
-/// other action calls a `protocol::*` function, never reimplementing its
-/// logic.
 pub(super) struct MutationCursorDriver {
     protocol: ProtocolState,
     worktree_trees: BTreeMap<WorktreeId, TreeId>,
@@ -172,7 +148,6 @@ impl MutationCursorDriver {
         self.protocol = protocol::recover(&self.protocol, worktree, observed_tree);
     }
 
-    /// Refines the explicit top-level `stutter` action: no state change.
     #[allow(clippy::unused_self)]
     fn mbt_stutter(&self) {}
 }

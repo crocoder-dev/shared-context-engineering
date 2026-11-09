@@ -1,5 +1,3 @@
-//! Agent trace Turso database adapter.
-
 use anyhow::{Context, Result};
 use turso::Value as TursoValue;
 
@@ -18,18 +16,12 @@ pub mod repository;
 #[cfg(test)]
 pub(crate) mod transaction_tests;
 
-/// Payload type discriminator for diff trace source payloads.
-///
-/// `OpenCode` normalized diff-trace payloads use [`PAYLOAD_TYPE_PATCH`].
-/// `Claude` structured `PostToolUse` payloads use [`PAYLOAD_TYPE_STRUCTURED`].
 pub const PAYLOAD_TYPE_PATCH: &str = "patch";
 pub const PAYLOAD_TYPE_STRUCTURED: &str = "structured";
 
-/// Parameterized SQL for inserting a captured diff trace payload.
 pub const INSERT_DIFF_TRACE_SQL: &str =
     "INSERT INTO diff_traces (time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
 
-/// Parameterized SQL for retrieving recent captured diff trace patches.
 pub const SELECT_RECENT_DIFF_TRACE_PATCHES_SQL: &str =
     "SELECT id, time_ms, session_id, patch, model_id, tool_name, tool_version, payload_type
 FROM diff_traces
@@ -90,14 +82,10 @@ pub const INSERT_MESSAGE_SQL: &str =
 VALUES (?1, ?2, ?3, ?4)
 ON CONFLICT (session_id, message_id) DO NOTHING";
 
-/// Parameterized SQL for inserting a part row (append-only, no upsert).
 pub const INSERT_PART_SQL: &str =
     "INSERT INTO parts (type, text, message_id, session_id, generated_at_unix_ms)
 VALUES (?1, ?2, ?3, ?4, ?5)";
 
-/// Parameterized SQL for checking whether a message row already exists,
-/// used as the existence guard for
-/// [`insert_conversation_text_event_with`].
 const SELECT_MESSAGE_EXISTS_SQL: &str =
     "SELECT 1 FROM messages WHERE session_id = ?1 AND message_id = ?2 LIMIT 1";
 
@@ -147,7 +135,6 @@ LIMIT 1";
 const CONVERSATION_TEXT_EVENT_OPERATION_NAME: &str = "insert conversation text event";
 const CONVERSATION_TEXT_EVENT_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 
-/// Diff trace payload to persist in the agent trace database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiffTraceInsert<'a> {
     pub time_ms: i64,
@@ -192,7 +179,6 @@ pub struct ClaudeModelStateObservation {
     pub observed_at_ms: i64,
 }
 
-/// Raw diff trace row read from the agent trace database.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiffTracePatchRow {
     pub id: i64,
@@ -217,19 +203,10 @@ pub struct ParsedDiffTracePatch {
     pub path_origin: DiffTracePathOrigin,
 }
 
-/// Coordinate system in which a diff-trace row's file paths are expressed.
-///
-/// Absolute paths resolve on their own under every origin; the origin only
-/// decides how a relative path is interpreted. An unknown origin fails closed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiffTracePathOrigin {
-    /// Git patch paths: relative paths are repository-relative.
     RepositoryRelative,
-    /// Claude structured paths with a recorded absolute `cwd`: relative paths
-    /// are relative to that working directory.
     WorkingDirectory(String),
-    /// Claude structured paths without a usable absolute `cwd`: relative paths
-    /// have no established coordinate system and cannot be resolved.
     AbsoluteOnly,
 }
 
@@ -295,7 +272,6 @@ impl std::fmt::Display for MessageRole {
     }
 }
 
-/// Message insert payload for the `messages` table.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsertMessageInsert {
     pub session_id: String,
@@ -304,7 +280,6 @@ pub struct InsertMessageInsert {
     pub generated_at_unix_ms: i64,
 }
 
-/// Part type constraint for the `parts` table.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PartType {
     Text,
@@ -324,7 +299,6 @@ impl std::fmt::Display for PartType {
     }
 }
 
-/// Part insert payload for the `parts` table (append-only, no upsert).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InsertPartInsert {
     pub part_type: PartType,
@@ -509,12 +483,6 @@ async fn insert_parts_with<M: DbSpec>(
     db.execute(&sql, params).await
 }
 
-/// Atomically insert one conversation `messages` row and its one `parts`
-/// row: if `(message.session_id, message.message_id)` already exists, this
-/// is a no-op (`Ok(false)`); otherwise both rows insert together in one
-/// transaction (`Ok(true)`). `fail_before_part_insert` is a test-only hook
-/// forcing the transaction to fail after the message insert and before the
-/// part insert, to prove both roll back together.
 async fn insert_conversation_text_event_with<M: DbSpec>(
     db: &mut TursoDb<M>,
     message: InsertMessageInsert,

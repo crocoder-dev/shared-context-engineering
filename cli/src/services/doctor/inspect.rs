@@ -724,12 +724,6 @@ fn inspect_hook_content_state_without_problem(
     }
 }
 
-/// Classifies a hook's on-disk bytes against the canonical template by SCE
-/// managed-block currency (merging the canonical block into `bytes` is a
-/// no-op) rather than whole-file equality, so foreign content a repository
-/// has appended around the block does not read as drift. An unbalanced or
-/// partial managed block is also reported `Stale`, since it needs the same
-/// `--fix` repair as a drifted one.
 fn hook_managed_block_content_state(
     hook_name: &str,
     bytes: &[u8],
@@ -741,9 +735,6 @@ fn hook_managed_block_content_state(
     }
 }
 
-/// Returns `true` when the doctor was able to check for integration targets
-/// and found none (neither configured in `.sce/config.json` nor detected
-/// via repo-root `.opencode/` / `.claude/` / `.pi/` directories).
 fn should_show_no_integrations_message(
     git_available: bool,
     bare_repository: bool,
@@ -762,26 +753,21 @@ fn resolve_doctor_integration_targets(repository_root: &Path) -> Vec<Integration
     let repo_paths = RepoPaths::new(repository_root);
     let config_path = repo_paths.sce_config_file();
 
-    // Try reading config first
     if config_path.exists() {
         if let Ok(raw) = std::fs::read_to_string(&config_path) {
             if let Ok(config) =
                 parse_file_config(&raw, &config_path, ConfigPathSource::DefaultDiscoveredLocal)
             {
                 if let Some(integrations) = config.integrations {
-                    // integrations key present with a target property
                     if integrations.value.target.is_empty() {
-                        // Empty target array — user has not recorded any integration targets
                         return Vec::new();
                     }
-                    // Non-empty configured targets
                     return integrations.value.target;
                 }
             }
         }
     }
 
-    // Fallback: no integrations config — detect installed directories
     let mut detected = Vec::new();
     if repo_paths.opencode_dir().exists() {
         detected.push(IntegrationTargetId::Opencode);
@@ -834,8 +820,6 @@ fn inspect_repository_integrations(
     }
     let mut integration_groups = Vec::new();
 
-    // An optional workflow's assets are expected on disk only when repo-local
-    // config records it as selected; an unrecorded selection means not selected.
     let selected_optional_workflows = persisted_optional_workflows(resolved_root);
 
     for target in &targets {
@@ -876,19 +860,6 @@ fn inspect_repository_integrations(
     integration_groups
 }
 
-/// `codex_policy_readiness` is accepted only to build `collect_codex_integration_groups`'
-/// per-registration content state; it never influences which files get
-/// repaired here (see `repair_codex_hooks_json_if_structurally_unhealthy`,
-/// which looks only at structural state). `sce doctor --fix` never writes
-/// Codex policy or trust state — both are Codex-owned and read-only from
-/// SCE's perspective.
-///
-/// Repairs each merge-target asset (`.claude/settings.json`,
-/// `.opencode/opencode.json`) whose SCE-owned fragment is currently missing or
-/// stale, by reinstalling just that asset through the same merge-install path
-/// `sce setup` uses. Assets whose fragment is already current are left
-/// untouched, and a fully missing integration is left to the existing
-/// "reinstall assets" guidance rather than being created here.
 pub(super) fn repair_merge_target_configs(
     repository_root: &Path,
     codex_policy_readiness: &CodexHookPolicyReadiness,
@@ -940,13 +911,6 @@ pub(super) fn repair_merge_target_configs(
     results
 }
 
-/// Repairs `.codex/hooks.json` when any required registration is
-/// structurally unhealthy (missing, stale, or the whole document is
-/// malformed). Never runs merely because a registration is not yet trusted
-/// by Codex: SCE cannot fix that, and reinstalling changes nothing about
-/// trust. Malformed documents are still attempted so the existing
-/// merge-refuses-to-overwrite-invalid-JSON behavior surfaces as a normal
-/// `Failed` fix result rather than being silently skipped.
 fn repair_codex_hooks_json_if_structurally_unhealthy(
     repository_root: &Path,
     groups: &[IntegrationGroupHealth],
@@ -1113,9 +1077,6 @@ fn push_codex_hook_malformed_problems(
     }
 }
 
-/// Remediation for `PolicyBlocked` is deliberately administrative: SCE cannot
-/// change Codex's enterprise/managed policy, so it must never suggest
-/// re-trusting or reinstalling the hook (that would not fix anything).
 const CODEX_HOOK_POLICY_BLOCKED_REMEDIATION: &str =
     "Ask the Codex administrator to allow project hooks or provide the SCE hook through an \
      allowed managed-hook mechanism. 'sce doctor --fix' cannot repair this: it is a Codex \
@@ -1572,9 +1533,6 @@ fn push_pi_integration_read_fail_problems(
     }
 }
 
-/// Codex requires the project's `.codex/hooks.json` to be reviewed and
-/// trusted inside the Codex CLI before it will execute; doctor can only
-/// diagnose the file on disk and reinstall it, never grant that trust.
 const CODEX_HOOK_TRUST_GUIDANCE: &str = "Codex also requires reviewing and trusting this project's hooks inside the Codex CLI before they take effect; 'sce doctor' cannot grant that trust on your behalf.";
 
 fn push_codex_integration_missing_problems(
@@ -2063,9 +2021,6 @@ fn collect_pi_integration_groups(
     ]
 }
 
-/// Codex's embedded-asset relative paths keep their own `.agents/`/`.codex/`
-/// output-root prefix (see `codex_asset`), so the integration root is the
-/// repository root itself rather than a single per-target subdirectory.
 fn collect_codex_integration_groups(
     repository_root: &Path,
     selected_optional_workflows: &[String],
@@ -2084,10 +2039,6 @@ fn collect_codex_integration_groups(
 
     for asset in embedded_assets {
         if asset.relative_path == CODEX_HOOKS_JSON_RELATIVE_PATH {
-            // `.codex/hooks.json` is diagnosed per required registration
-            // (structural state plus Codex's own hook-trust readiness)
-            // instead of as a single whole-file child; see
-            // `codex_hooks_json_registration_children`.
             hooks_json_generated_bytes = Some(asset.bytes);
             continue;
         }
@@ -2131,7 +2082,6 @@ fn collect_codex_integration_groups(
     ]
 }
 
-/// `.codex/hooks.json`'s relative path within Codex's embedded-asset set.
 const CODEX_HOOKS_JSON_RELATIVE_PATH: &str = ".codex/hooks.json";
 
 fn codex_hooks_json_registration_children(
@@ -2212,9 +2162,6 @@ fn codex_required_registration_children(
         .collect()
 }
 
-/// Human-readable explanation for `IntegrationContentState::PolicyBlocked`,
-/// shared by both the per-registration content state and the aggregate
-/// problem summary so their wording stays in sync.
 const CODEX_HOOK_POLICY_BLOCKED_REASON: &str =
     "Codex's effective 'allow_managed_hooks_only' policy is enabled, so Codex will not load \
      this project-owned (non-managed) '.codex/hooks.json' registration.";
@@ -2228,21 +2175,12 @@ fn codex_hook_registration_child(
     let suffix = codex_registration_suffix(diagnosis.command, diagnosis.event, diagnosis.matcher);
     let relative_path = format!("{CODEX_HOOKS_JSON_RELATIVE_PATH}#{suffix}");
 
-    // Decision order (AC28): structural state wins first (a missing or stale
-    // registration has no canonical on-disk handler for Codex to ever load,
-    // so policy/trust cannot apply); only a structurally current registration
-    // is further gated on Codex's effective hook-discovery *policy*, and only
-    // once policy allows project hooks at all is per-handler *trust*
-    // consulted. Policy and trust are independent dimensions — see
-    // `codex_hook_policy` and `codex_hook_trust`'s module documentation.
     let content_state = match &diagnosis.state {
         codex_hook_config::RegistrationStructuralState::Missing => IntegrationContentState::Missing,
         codex_hook_config::RegistrationStructuralState::Stale => IntegrationContentState::Stale,
         codex_hook_config::RegistrationStructuralState::PresentAndCurrent => {
             let (Some(handler), Some(position)) = (&diagnosis.owned_handler, diagnosis.position)
             else {
-                // Structurally impossible: `PresentAndCurrent` always carries
-                // both. Treat defensively as stale rather than panicking.
                 return IntegrationChildHealth {
                     relative_path,
                     path: hooks_json_path.to_path_buf(),
@@ -2296,12 +2234,8 @@ fn sort_integration_children(children: &mut [IntegrationChildHealth]) {
     children.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
 }
 
-/// The relative path of the `OpenCode` merge-target asset within `.opencode/`.
 const OPENCODE_CONFIG_RELATIVE_PATH: &str = "opencode.json";
 
-/// Identifies the two setup assets that are installed by JSON merge
-/// (`config_merge`) rather than whole-file replacement, and therefore need
-/// SCE-fragment-based content inspection instead of byte-exact `sha256`.
 enum MergeTargetAsset {
     ClaudeSettings,
     OpenCodeConfig,
@@ -2333,12 +2267,6 @@ fn build_integration_child_from_asset(
     }
 }
 
-/// Content state for a merge-target asset: `Match` when the existing file
-/// already carries a current, complete copy of the SCE-owned fragment
-/// alongside whatever else it holds; `Mismatch` when that fragment is absent
-/// or stale, or when the existing file cannot be parsed as JSON (a merge
-/// cannot succeed either way, so both drift and hard-error surface the same
-/// remediation: reinstall/`sce doctor --fix`).
 fn inspect_merge_target_asset_state(
     path: &Path,
     generated_bytes: &[u8],

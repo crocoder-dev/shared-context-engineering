@@ -121,12 +121,6 @@ module mutation_cursor {
     mutationEvents: Set[MutationEvent],
   }
 
-  // Verification-only transport for Quint Connect: identifies the semantic
-  // operation and concrete arguments each step invoked, including on a
-  // guarded/no-op path, so the Rust driver can dispatch on it. Every
-  // argument-carrying variant is a record, even single-field ones, to match
-  // Quint Connect's unit-vs-record action decoder. Never read by any other
-  // action, value, or invariant.
   type MbtAction =
     | MbtInit
     | MbtMutate({ worktree: WorktreeId, tree: TreeId })
@@ -162,8 +156,6 @@ module mutation_cursor {
     Attempt5
   )
 
-  // Representative identities used by symbolic verification. General
-  // simulation and deterministic scenarios retain the canonical domains above.
   val VERIFY_ATTEMPTS: Set[AttemptId] = Set(Attempt0, Attempt1, Attempt2)
   val VERIFY_EVENTS: Set[EventId] = Set(Event0, Event1, Event2)
   val VERIFY_TREES: Set[TreeId] = Set(Tree0, Tree1, Tree2)
@@ -443,10 +435,6 @@ module mutation_cursor {
     mbtAction' = MbtInit,
   }
 
-  // Shared no-semantic-change transition, parameterized on the MbtAction to
-  // record. `stutter` itself is the only caller that passes MbtStutter; every
-  // guarded/no-op action passes its own operation-specific variant instead,
-  // so the invoked operation is never erased by falling through to `stutter`.
   action mbtStutterAs(taken: MbtAction): bool = all {
     worktrees' = worktrees,
     scopes' = scopes,
@@ -993,11 +981,6 @@ module mutation_cursor {
     mutate(worktree, tree)
   }
 
-  // Stays a single top-level `step` alternative. `prepare` already sets
-  // `mbtAction' = MbtPrepare({ attempt, boundary })` on every path, and
-  // `boundary` here is the exact concrete value passed to whichever inner
-  // `any` branch fires, so Quint Connect already exposes which boundary kind
-  // was selected without a dedicated `PrepareKind` choice.
   action randomPrepare: bool = {
     nondet attempt = ATTEMPTS.oneOf()
     nondet scope = SCOPES.oneOf()
@@ -1401,8 +1384,6 @@ module mutation_cursor {
       )
     )
 
-  // Directional only: rejected attempts do not commit evidence. This does
-  // not claim that every stale attempt is rejected.
   val RejectedAttemptsDoNotCommitEvidence = ATTEMPTS.forall(id => {
     attempts.get(id).status != Rejected or not(evidenceAttempts.contains(id))
   })
@@ -1468,7 +1449,6 @@ module mutation_cursor {
     attempts.get(id).status == Rejected
   })
 
-  // Cheap, quantifier-shallow invariants over WORKTREES/SCOPES/ATTEMPTS.
   val SafetyCore = and {
     CursorRevisionConsistent,
     FailureKindMatchesTaint,
@@ -1484,11 +1464,6 @@ module mutation_cursor {
     RejectedAttemptsDoNotCommitEvidence,
   }
 
-  // Uniqueness and cross-referencing checks over the growing history logs
-  // (mutationEvents, cursorHistory, protocolHistory, scopeHistory,
-  // abandonHistory, recoveryHistory). These are the most expensive conjuncts to verify since
-  // their cost scales with trace depth, so they are split out to be checked
-  // in their own CI job rather than serialized with the rest of Safety.
   val SafetyHistory = and {
     MutationEventUniquePerWorktreeRevision,
     CursorHistoryUniquePerWorktreeRevision,
@@ -1503,7 +1478,6 @@ module mutation_cursor {
     RecoveryClearsExternalTaintOnlyAfterBaseline,
   }
 
-  // Attribution and scope-start semantics.
   val SafetyAttribution = and {
     AttributionMatchesObservedScopes,
     AiExclusiveRequiresExactlyOneActiveScope,
@@ -2242,12 +2216,6 @@ module mutation_cursor {
       .expect(scopes.get(Scope3).status == Abandoned)
       .expect(Safety)
 
-  // Non-default-values smoke scenario for the Rust MBT driver (T04): proves
-  // that a worktree/tree/attempt/boundary combination other than the
-  // WT0/Tree0-Tree1/Attempt0/Flush(WT0) defaults used throughout the runs
-  // above is transported end to end. `#[quint_test]` replays this exact
-  // scenario through `protocol::prepare`/`protocol::commit` and compares the
-  // resulting Rust state against the state asserted below.
   run testMbtDriverTransportsNonDefaultArguments =
     init
       .then(mutate(WT1, Tree3))
@@ -2258,15 +2226,6 @@ module mutation_cursor {
       .expect(attempts.get(Attempt5).status == Committed)
       .expect(Safety)
 
-  // Guarded-no-op regression: re-preparing Attempt0 after
-  // it is already Prepared hits `prepare`'s guarded branch
-  // (`attempts.get(attempt).status != Available`), which must still record
-  // `MbtPrepare({attempt: Attempt0, boundary: Advance(...)})` — the second
-  // call's own operation and arguments — rather than falling through to
-  // `MbtStutter`. `#[quint_test]` replays this through the real
-  // `protocol::prepare`, proving the Rust driver calls it a second time
-  // (never skipping the call because Quint's semantic state is unchanged)
-  // and independently reaches the same no-op outcome.
   run testMbtGuardedPrepareInvokesRealPrepare =
     init
       .then(prepare(Attempt0, Start({ scope: Scope0, event: Event0 })))
@@ -2275,13 +2234,6 @@ module mutation_cursor {
       .expect(attempts.get(Attempt0).boundary == Start({ scope: Scope0, event: Event0 }))
       .expect(Safety)
 
-  // Guarded-no-op regression: `recover(WT0)` on a worktree
-  // that is neither tainted, externally tainted, nor needing rebaseline hits
-  // `recover`'s guarded branch, which must still record
-  // `MbtRecover({worktree: WT0})` rather than `MbtStutter`. `#[quint_test]`
-  // replays this through the real `protocol::recover`, proving the Rust
-  // driver calls it (never skipping the call) and independently reaches the
-  // same no-op outcome.
   run testMbtGuardedRecoverInvokesRealRecover =
     init
       .then(recover(WT0))

@@ -241,11 +241,6 @@ mod roots {
     }
 }
 
-/// Returns the canonical path to the local Turso database file.
-///
-/// The path is `<state_root>/sce/local.db`, where `state_root` comes
-/// from the shared default-path catalog (`XDG_STATE_HOME` or platform
-/// equivalent).
 pub fn local_db_path() -> anyhow::Result<PathBuf> {
     Ok(sce_state_dir()?.join("local.db"))
 }
@@ -262,8 +257,6 @@ pub fn agent_trace_db_path_for_repository(repository_id: &str) -> anyhow::Result
     agent_trace_db_path_for_repository_at(&state_root, repository_id)
 }
 
-/// Builds the repository-scoped Agent Trace database path under an explicit
-/// state root: `<state_root>/sce/repos/<repository_id>/agent-trace.db`.
 pub fn agent_trace_db_path_for_repository_at(
     state_root: &std::path::Path,
     repository_id: &str,
@@ -272,8 +265,6 @@ pub fn agent_trace_db_path_for_repository_at(
     if repository_id.is_empty() {
         anyhow::bail!("repository ID must not be empty when resolving Agent Trace DB path");
     }
-    // The repository ID becomes a single path segment; reject anything that
-    // could escape the `repos/` directory.
     if repository_id.contains(['/', '\\']) || repository_id == "." || repository_id == ".." {
         anyhow::bail!("repository ID '{repository_id}' is not a valid path segment");
     }
@@ -285,10 +276,6 @@ pub fn agent_trace_db_path_for_repository_at(
         .join("agent-trace.db"))
 }
 
-/// Returns the canonical default observability log directory.
-///
-/// The path is `<state_root>/sce/logs`, where `state_root` comes from the
-/// shared default-path catalog (`XDG_STATE_HOME` or platform equivalent).
 pub fn observability_log_dir() -> anyhow::Result<PathBuf> {
     Ok(sce_state_dir()?.join("logs"))
 }
@@ -349,9 +336,6 @@ pub(crate) mod pi_asset {
     pub const EXTENSIONS_DIR: &str = "extensions";
 }
 
-/// Codex embedded-asset relative paths keep their own `.agents/`/`.codex/`
-/// output-root prefix (unlike OpenCode/Claude/Pi, whose relative paths are
-/// stripped of their single root), so `SKILLS_DIR` carries that prefix too.
 pub(crate) mod codex_asset {
     pub const SKILLS_DIR: &str = ".agents/skills";
 }
@@ -485,9 +469,6 @@ impl InstallTargetPaths {
         self.repo_root.join(repo_dir::PI)
     }
 
-    /// Codex has two output roots (`.agents/` for skills, `.codex/` for
-    /// hooks), both already embedded as prefixes on `CODEX_EMBEDDED_ASSETS`
-    /// relative paths, so the destination root is the repository root itself.
     pub(crate) fn codex_target_dir(&self) -> PathBuf {
         self.repo_root.clone()
     }

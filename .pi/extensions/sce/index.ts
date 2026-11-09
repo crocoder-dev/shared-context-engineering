@@ -94,11 +94,6 @@ type PendingFileMutation = {
 	before: string | undefined;
 };
 
-/**
- * Evaluate a bash command against SCE bash-tool policy by delegating to the
- * Rust `sce policy bash` command. Returns the parsed JSON result, or null if
- * the policy check could not be performed (fail-open).
- */
 function evaluateBashCommandPolicy(command: string): JsonPolicyResult | null {
 	try {
 		const result = spawnSync(
@@ -134,11 +129,6 @@ function evaluateBashCommandPolicy(command: string): JsonPolicyResult | null {
 	}
 }
 
-/**
- * Send a conversation-trace payload to `sce hooks conversation-trace`,
- * fire-and-forget. Fail-open: stderr is ignored so that sce intake errors do
- * not leak into the Pi TUI, and the returned promise never rejects.
- */
 function runConversationTraceHook(
 	cwd: string,
 	payload: ConversationTracePayload,
@@ -228,12 +218,6 @@ function buildMessageEndConversationTracePayload(
 	return { tool_name: TOOL_NAME, payloads };
 }
 
-/**
- * Resolve the installed Pi package version for diff-trace `tool_version`.
- * The package's `exports` map does not expose `package.json`, so resolve the
- * package entry point and read `package.json` from the package root instead.
- * Returns null when resolution fails (normalized diff traces permit it).
- */
 async function resolvePiToolVersion(): Promise<string | null> {
 	try {
 		const entryPath = fileURLToPath(
@@ -251,10 +235,6 @@ async function resolvePiToolVersion(): Promise<string | null> {
 	}
 }
 
-/**
- * Send a diff-trace payload to `sce hooks diff-trace`, fire-and-forget.
- * Fail-open: stderr is ignored and the returned promise never rejects.
- */
 function runDiffTraceHook(
 	cwd: string,
 	payload: DiffTracePayload,
@@ -292,11 +272,6 @@ function diffLabelFor(cwd: string, absolutePath: string): string {
 		: absolutePath;
 }
 
-/**
- * Rewrite temp-file path labels in git diff header lines to the repo-relative
- * target path. Only header lines before the first `@@` hunk marker are
- * touched so that content lines starting with `--- ` / `+++ ` are preserved.
- */
 function rewriteDiffLabels(
 	diff: string,
 	label: string,
@@ -319,12 +294,6 @@ function rewriteDiffLabels(
 	return lines.join("\n");
 }
 
-/**
- * Produce a unified diff between before/after contents by writing them to
- * temp files and spawning `git diff --no-index --no-ext-diff` (exit status 1
- * means "files differ"). Returns undefined for no-op diffs or any failure;
- * temp files are always cleaned up.
- */
 async function buildUnifiedDiff(
 	label: string,
 	before: string | undefined,
@@ -775,7 +744,6 @@ export default function sceExtension(pi: ExtensionAPI): void {
 
 		const policyResult = evaluateBashCommandPolicy(command);
 		if (!policyResult) {
-			// Fail open: if the policy check cannot be performed, allow the command.
 			return undefined;
 		}
 

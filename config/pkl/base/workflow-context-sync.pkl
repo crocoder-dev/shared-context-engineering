@@ -22,9 +22,6 @@ local decisionSkill = "`sce-decision`"
 local packageOnlyBlock = workflow.packageOnlyBlock
 local compositeOnlyBlock = workflow.compositeOnlyBlock
 
-/// One canonical source for both context-sync packages. Named SKILL and report
-/// sections preserve semantic ordering while role data owns lifecycle-specific
-/// content.
 class SyncReportRole {
   title: String
   inputStatus: (workflow.WorkflowRenderMode) -> String
@@ -1490,7 +1487,6 @@ local documentMapping = (documents: Listing<workflow.WorkflowDocument>) -> new M
   }
 }
 
-/// Shared materialization skeleton parameterized by lifecycle role.
 local packageFor = (role: SyncRole) -> new workflow.SkillPackage {
   slug = role.slug
   title = role.title

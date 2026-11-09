@@ -158,10 +158,6 @@ where
     ))
 }
 
-/// One retryable attempt. Closures returning a future implement it directly;
-/// operations that must lend an exclusive borrow (such as a transaction on a
-/// single connection) implement it on a struct, because an `FnMut` closure
-/// cannot return a future that borrows its own captured `&mut` state.
 pub trait RetryOperation<T> {
     async fn run(&mut self, attempt: u32) -> Result<T>;
 }

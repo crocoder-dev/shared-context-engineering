@@ -44,17 +44,11 @@ pub(crate) struct PolicyMatch {
     pub(crate) id: String,
     pub(crate) message: String,
     pub(crate) argv_prefix: Vec<String>,
-    /// Wrapper argv prefixes that already satisfy this policy. A policy does not
-    /// fire when the matched command was unwrapped from one of these wrappers,
-    /// so `use-nix-for-rg` with `[["nix"]]` stays quiet for
-    /// `nix shell nixpkgs#ripgrep -c rg ...` while still blocking a bare `rg`.
     pub(crate) satisfied_by: Vec<Vec<String>>,
     pub(crate) source: PolicySource,
     pub(crate) order: usize,
 }
 
-/// A command segment reduced to the argv a policy matches against, together with
-/// the argv of each wrapper it was unwrapped from (outermost first).
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NormalizedSegment {
     argv: Vec<String>,
@@ -934,8 +928,6 @@ mod tests {
         );
     }
 
-    // --- Malformed custom policy tests (TS parity) ---
-
     #[test]
     fn bash_policy_ignores_custom_policy_with_empty_id() {
         let config = config(
@@ -1026,8 +1018,6 @@ mod tests {
         ));
     }
 
-    // --- parseCommandSegments edge cases (TS parity) ---
-
     #[test]
     fn parse_command_segments_returns_none_for_empty_string() {
         assert_eq!(parse_command_segments(""), None);
@@ -1107,8 +1097,6 @@ mod tests {
             ]])
         );
     }
-
-    // --- Shell operator policy tests (TS parity) ---
 
     #[test]
     fn bash_policy_blocks_or_or_operator_segment() {

@@ -171,7 +171,6 @@ pub fn ensure_directory_is_writable(path: &std::path::Path, context: &str) -> Re
             )
         })?;
 
-    // Clean up probe file; best-effort with warning on failure
     if let Err(e) = std::fs::remove_file(&probe_path) {
         eprintln!(
             "Warning: Failed to clean up write-probe file '{}': {}",
