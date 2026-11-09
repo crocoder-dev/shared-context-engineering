@@ -1,16 +1,6 @@
-/**
- * Choreo: Choreograph distributed protocols in Quint
- *
- * Read the documentation: TODO LINK
- *
- * Gabriela Moreira, Josef Widder and Yassine Boukhari,
- * Informal Systems, 2025
- */
-
 module choreo {
   import basicSpells.* from "spells/basicSpells"
 
-  // TODO: try moving process id to local context
   type LocalState[process_id, ext] = {
     process_id: process_id
     | ext
@@ -35,17 +25,14 @@ module choreo {
     extensions: ext
   }
 
-  // This is the message routing to the # handler
   type Listener[p, s, m, e, ce, ext] =
     (LocalContext[p, s, m, e, ext]) => Set[Transition[p, s, m, e, ce]]
 
   type DeterministicListener[p, s, m, e, ce, ext] =
     (LocalContext[p, s, m, e, ext]) => Transition[p, s, m, e, ce]
 
-  // Only needed for micro_step
   type Input[m, e] = Message(m) | Event(e)
 
-  // Only needed for micro_step
   type MicroListener[p, s, m, e, ce, ext] =
     (LocalContext[p, s, m, e, ext], Input[m, e]) => Set[Transition[p, s, m, e, ce]]
 
@@ -59,13 +46,6 @@ module choreo {
     | TriggerEvent(e)
     | CustomEffect(ce)
 
-  /// A displayer is a function that takes a global context and returns a displayable representation of it.
-  /// This is used to visualize the state of the system for debugging or monitoring purposes.
-  /// After type instantiation, it should have the following signature:
-  /// ```
-  /// (Environment) => Display
-  /// ```
-  /// The display type can be anything.
   type Displayer[p, s, m, e, ext, d] = (GlobalContext[p, s, m, e, ext]) => d
 
   pure def apply_effect(
@@ -122,7 +102,6 @@ module choreo {
     transitions: Set[Transition[p, s, m, e, ce]],
     apply_custom_effect: EffectProcessor[p, s, m, e, ce, extensions],
   ): bool =
-    // FIXME: Quint was supposed to detect determinism alone
     if (transitions.size() == 1) {
       val transition = transitions.getOnlyElement()
       val post_env = apply_effect(s, v, transition, apply_custom_effect)
@@ -139,7 +118,6 @@ module choreo {
     apply_custom_effect: EffectProcessor[p, s, m, e, ce, extensions],
     displayer: Displayer[p, s, m, e, extensions, d],
   ): bool =
-    // FIXME: Quint was supposed to detect determinism alone
     if (transitions.size() == 1) {
       val transition = transitions.getOnlyElement()
       val post_env = apply_effect(s, v, transition, apply_custom_effect)

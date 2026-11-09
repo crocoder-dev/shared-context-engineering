@@ -1,19 +1,3 @@
-//! Patch domain model and parser for in-memory parsed patch representation.
-//!
-//! This module defines the core types for representing parsed unified-diff
-//! patches as structured data, capturing only touched lines (added/removed)
-//! plus the minimal per-file/per-hunk metadata needed to interpret them.
-//!
-//! Non-hunk headers and unchanged context lines are intentionally excluded.
-//!
-//! The types are `serde`-serializable and deserializable so they can round-trip
-//! through a structured representation (e.g., JSON) and be loaded back into
-//! the same struct shape.
-//!
-//! The parser supports both `Index:` (SVN-style) and `diff --git` (git-style)
-//! unified-diff formats and produces deterministic `ParsedPatch` structs from
-//! raw patch text.
-
 use serde::{Deserialize, Serialize};
 
 mod git_path;
@@ -24,80 +8,52 @@ const GIT_SOURCE_PREFIX: &str = "a/";
 const GIT_DESTINATION_PREFIX: &str = "b/";
 const DEV_NULL: &str = "/dev/null";
 
-/// Top-level parsed patch containing one or more file changes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParsedPatch {
     pub files: Vec<PatchFileChange>,
 }
 
-/// A single file's changes within a patch.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PatchFileChange {
-    /// Path of the file before the change. Empty string for new files.
     pub old_path: String,
-    /// Path of the file after the change. Empty string for deleted files.
     pub new_path: String,
-    /// Kind of file change.
     pub kind: FileChangeKind,
-    /// Hunks within this file change.
     pub hunks: Vec<PatchHunk>,
 }
 
-/// Kind of change applied to a file.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FileChangeKind {
-    /// File was newly created.
     Added,
-    /// File was modified in place.
     Modified,
-    /// File was deleted.
     Deleted,
-    /// File was renamed (path changed, content may or may not have changed).
     Renamed,
 }
 
-/// A single hunk within a file change, containing touched lines.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PatchHunk {
-    /// Starting line number in the old file (0 for new-file hunks).
     pub old_start: u64,
-    /// Number of lines in the old file context for this hunk (0 for new-file hunks).
     pub old_count: u64,
-    /// Starting line number in the new file (0 for deleted-file hunks).
     pub new_start: u64,
-    /// Number of lines in the new file context for this hunk (0 for deleted-file hunks).
     pub new_count: u64,
-    /// Optional model provenance associated with this hunk.
     #[serde(default)]
     pub model_id: Option<String>,
-    /// Touched lines within this hunk (added and removed lines only;
-    /// unchanged context lines are excluded).
     pub lines: Vec<TouchedLine>,
 }
 
-/// A single touched line within a hunk.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TouchedLine {
-    /// Kind of line change.
     pub kind: TouchedLineKind,
-    /// Line number in the new file for added lines, or in the old file
-    /// for removed lines.
     pub line_number: u64,
-    /// Content of the line (without the leading `+`/`-` prefix).
     pub content: String,
-    /// Optional session identifier associated with this touched line.
     #[serde(default)]
     pub session_id: Option<String>,
 }
 
-/// Kind of touched line.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TouchedLineKind {
-    /// Line was added.
     Added,
-    /// Line was removed.
     Removed,
 }
 
@@ -114,12 +70,6 @@ impl std::fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// Error produced when loading a `ParsedPatch` from serialized JSON fails.
-///
-/// `PatchLoadError` carries an actionable message describing why the JSON
-/// payload could not be reconstructed into a valid `ParsedPatch`. Common
-/// causes include malformed JSON syntax, missing required fields, or type
-/// mismatches in the serialized structure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PatchLoadError {
     pub message: String,
@@ -133,34 +83,12 @@ impl std::fmt::Display for PatchLoadError {
 
 impl std::error::Error for PatchLoadError {}
 
-/// Load a `ParsedPatch` from a JSON string previously produced by
-/// serializing a `ParsedPatch`.
-///
-/// This is the primary storage-agnostic entrypoint for reconstructing a
-/// parsed patch from serialized JSON content. Callers who have already read
-/// the JSON from a database, file, or any other source can pass the string
-/// directly.
-///
-/// # Errors
-///
-/// Returns `PatchLoadError` with an actionable message when the input is
-/// not valid JSON or does not match the expected `ParsedPatch` structure.
 pub fn load_patch_from_json(input: &str) -> Result<ParsedPatch, PatchLoadError> {
     serde_json::from_str(input).map_err(|e| PatchLoadError {
         message: format!("invalid patch JSON: {e}"),
     })
 }
 
-/// Parse raw unified-diff text into a `ParsedPatch`.
-///
-/// Supports both `Index:` (SVN-style) and `diff --git` (git-style) patch
-/// formats. Context lines (space-prefixed) are excluded from the output;
-/// only added (`+`) and removed (`-`) lines are captured as touched lines.
-///
-/// # Errors
-///
-/// Returns `ParseError` with an actionable message when the input is malformed,
-/// such as an invalid hunk header or a `---`/`+++` line that cannot be parsed.
 pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch, ParseError> {
     let mut files: Vec<PatchFileChange> = Vec::new();
     let mut current_file: Option<FileBuilder> = None;
@@ -168,9 +96,7 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
     let mut lines = input.lines().peekable();
 
     while let Some(line) = lines.next() {
-        // Detect file boundary: git-style diff header
         if let Some(rest) = line.strip_prefix("diff --git ") {
-            // Finalize any in-progress file before starting a new one.
             if let Some(fb) = current_file.take() {
                 files.push(fb.build()?);
             }
@@ -182,25 +108,19 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
             continue;
         }
 
-        // Detect file boundary: Index: (SVN-style) header
         if let Some(rest) = line.strip_prefix("Index: ") {
-            // Finalize any in-progress file before starting a new one.
             if let Some(fb) = current_file.take() {
                 files.push(fb.build()?);
             }
-            // The Index: line gives us the file path, but we'll also see ---/+++
-            // lines that may refine it. For now, store a placeholder.
             let index_path = rest.trim().to_string();
             current_file = Some(FileBuilder::new(index_path.clone(), index_path));
             continue;
         }
 
-        // Skip separator lines after Index:
         if line.starts_with("===") {
             continue;
         }
 
-        // Handle --- and +++ lines
         if let Some(rest) = line.strip_prefix("--- ") {
             let fb = current_file.as_mut().ok_or_else(|| ParseError {
                 message: format!(
@@ -227,7 +147,6 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
             continue;
         }
 
-        // Skip git-style metadata lines between diff --git and the first hunk
         if line.starts_with("new file mode ")
             || line.starts_with("deleted file mode ")
             || line.starts_with("old mode ")
@@ -239,7 +158,6 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
             || line.starts_with("copy from ")
             || line.starts_with("copy to ")
         {
-            // Track file kind from metadata
             if let Some(fb) = current_file.as_mut() {
                 if line.starts_with("new file mode ") {
                     fb.mark_added();
@@ -253,18 +171,14 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
             continue;
         }
 
-        // Parse hunk header: @@ -old_start[,old_count] +new_start[,new_count] @@
         if let Some(rest) = line.strip_prefix("@@ ") {
             if let Some(fb) = current_file.as_mut() {
                 let hunk = parse_hunk_header_and_body(rest, &mut lines, session_id)?;
                 fb.add_hunk(hunk);
             }
         }
-
-        // Skip any other header or unrecognized lines between file sections
     }
 
-    // Finalize the last file
     if let Some(fb) = current_file.take() {
         files.push(fb.build()?);
     }
@@ -272,8 +186,6 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
     Ok(ParsedPatch { files })
 }
 
-/// Builder for `PatchFileChange` that tracks path and kind information
-/// progressively as header lines are parsed.
 struct FileBuilder {
     header: Option<String>,
     old_path: Option<String>,
@@ -387,8 +299,6 @@ fn normalize_paths_for_kind(
     (old_path, new_path)
 }
 
-/// Determine file change kind from old/new paths when no explicit metadata
-/// was found.
 fn determine_file_kind(old_path: &str, new_path: &str) -> FileChangeKind {
     if old_path == "/dev/null" || old_path.is_empty() {
         FileChangeKind::Added
@@ -449,8 +359,6 @@ fn path_error(line: &str, error: &GitPathError) -> ParseError {
     }
 }
 
-/// Parse a hunk header (the part after `@@ `) and then consume hunk body lines
-/// until the next file boundary or end of input.
 fn parse_hunk_header_and_body<'a, I>(
     rest: &str,
     lines: &mut std::iter::Peekable<I>,
@@ -459,7 +367,6 @@ fn parse_hunk_header_and_body<'a, I>(
 where
     I: Iterator<Item = &'a str>,
 {
-    // Format: -old_start[,old_count] +new_start[,new_count] @@ [optional context]
     let header_end = rest.find("@@").ok_or_else(|| ParseError {
         message: format!("invalid hunk header: missing closing '@@' in {rest:?}"),
     })?;
@@ -475,27 +382,21 @@ where
     let (old_start, old_count) = parse_range_part(old_range, '-')?;
     let (new_start, new_count) = parse_range_part(new_range, '+')?;
 
-    // Consume hunk body lines until we hit a line that starts a new file
-    // section or another hunk header or end of input.
     let mut touched_lines: Vec<TouchedLine> = Vec::new();
     let mut old_line_num = old_start;
     let mut new_line_num = new_start;
 
     while let Some(&line) = lines.peek() {
-        // Stop at file boundaries
         if line.starts_with("diff --git ") || line.starts_with("Index: ") || line.starts_with("===")
         {
             break;
         }
-        // Stop at next hunk header
         if line.starts_with("@@ ") {
             break;
         }
-        // Stop at ---/+++ headers (next file section in Index: format)
         if line.starts_with("--- ") || line.starts_with("+++ ") {
             break;
         }
-        // Stop at git metadata lines
         if line.starts_with("new file mode ")
             || line.starts_with("deleted file mode ")
             || line.starts_with("old mode ")
@@ -510,11 +411,9 @@ where
             break;
         }
 
-        // Consume the line
         let line = lines.next().unwrap();
 
         if let Some(content) = line.strip_prefix('+') {
-            // Added line
             touched_lines.push(TouchedLine {
                 kind: TouchedLineKind::Added,
                 line_number: new_line_num,
@@ -523,7 +422,6 @@ where
             });
             new_line_num += 1;
         } else if let Some(content) = line.strip_prefix('-') {
-            // Removed line
             touched_lines.push(TouchedLine {
                 kind: TouchedLineKind::Removed,
                 line_number: old_line_num,
@@ -531,19 +429,9 @@ where
                 session_id: session_id.map(str::to_string),
             });
             old_line_num += 1;
-        } else if line.starts_with(' ') || line.starts_with('\t') {
-            // Context line — skip but advance both counters
+        } else if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
             old_line_num += 1;
             new_line_num += 1;
-        } else if line.is_empty() {
-            // Empty line within a hunk body — could be a context line with
-            // no leading space (some diffs emit this). Treat as context.
-            old_line_num += 1;
-            new_line_num += 1;
-        } else if line.starts_with('\\') {
-            // "\ No newline at end of file" — skip
-        } else {
-            // Unknown line format within hunk — skip
         }
     }
 
@@ -557,7 +445,6 @@ where
     })
 }
 
-/// Parse a range part like `-3,7` or `+1,9` from a hunk header.
 fn parse_range_part(s: &str, prefix: char) -> Result<(u64, u64), ParseError> {
     let s = s.strip_prefix(prefix).unwrap_or(s).trim();
     let parts: Vec<&str> = s.splitn(2, ',').collect();

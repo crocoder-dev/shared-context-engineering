@@ -138,8 +138,6 @@ impl HistoryRepo {
         Self::with_plan_paths(&[PLAN_PATH])
     }
 
-    /// Every path receives the same plan content in every commit, so the
-    /// committed touched lines are identical at identical positions.
     fn with_plan_paths(paths: &[&str]) -> Self {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = dir.path();
@@ -1192,8 +1190,6 @@ async fn claude_structured_rows_resolve_paths_against_their_recorded_cwd() {
     }
 }
 
-/// Claude actually edited this file from `cwd = <root>/cli`; the repository
-/// root holds a twin at [`PLAN_PATH`] with identical committed lines.
 const TWIN_PLAN_PATH: &str = "cli/context/plans/plan.md";
 
 struct StructuredOutcome {
@@ -1790,9 +1786,6 @@ struct PersistedDeletionTrace {
     committed: ParsedPatch,
 }
 
-/// Runs the real post-commit capture, the exact-OID mutation resolver over
-/// Turso-persisted events, and Agent Trace persistence. `HEAD` moves before
-/// the resolver runs, so it must use the captured commit, not `HEAD`.
 async fn persist_deletion_trace(
     repo: &DeletionRepo,
     rows: &[MutationEventPageRow],

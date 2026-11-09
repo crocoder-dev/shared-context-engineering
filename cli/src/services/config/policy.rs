@@ -1,11 +1,3 @@
-//! Bash-policy and attribution-hooks semantic validation, merge helpers,
-//! and policy rendering.
-//!
-//! This submodule owns built-in/custom bash-policy validation, duplicate/conflict/
-//! redundancy checks, attribution-hooks config parsing helpers, policy resolved-data
-//! structs, and policy-specific rendering. The parent `mod.rs` re-exports items
-//! needed by resolution and rendering consumers.
-
 use std::path::Path;
 use std::sync::OnceLock;
 

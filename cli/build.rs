@@ -50,8 +50,6 @@ const TARGETS: &[TargetSpec] = &[
     TargetSpec {
         const_name: "CODEX_EMBEDDED_ASSETS",
         generated_root: CODEX_TARGET_DIR,
-        // Not wired into any SetupTarget/install path yet (T05); only read by
-        // this task's own test so far.
         allow_dead_code: true,
     },
     TargetSpec {
@@ -61,9 +59,6 @@ const TARGETS: &[TargetSpec] = &[
     },
 ];
 
-/// Build-time-only staging directory (inside `OUT_DIR`) that merges Codex's two
-/// Pkl-generated output roots, `config/.agents` and `config/.codex`, into one
-/// tree so it can be embedded like every other single-root target below.
 const CODEX_TARGET_DIR: &str = "config/codex-target";
 const CODEX_AGENTS_SOURCE_DIR: &str = "config/.agents";
 const CODEX_HOOKS_SOURCE_DIR: &str = "config/.codex";
@@ -95,9 +90,6 @@ fn prepare_build_artifacts() -> io::Result<()> {
     if repository_sources_available(repository_root) {
         println!("cargo:rerun-if-env-changed={GENERATED_INPUT_ENV}");
         println!("cargo:rerun-if-env-changed={PACKAGE_FALLBACK_ENV}");
-        // Sandboxed source builds (Flatpak) compile a full repository checkout
-        // without Pkl, so they stage the packaging fallback and opt into it
-        // explicitly. Every other repository build must supply the handoff.
         if package_fallback_requested(env::var_os(PACKAGE_FALLBACK_ENV))? {
             stage_packaged_fallback(&manifest_dir, &out_dir)?;
         } else {
@@ -363,11 +355,6 @@ fn stage_static_inputs(
     )
 }
 
-/// Merges Codex's two Pkl-generated output roots into `CODEX_TARGET_DIR` so it
-/// can be embedded through the same single-root `TargetSpec` mechanism as every
-/// other target. Runs after both the repository-source and packaged-fallback
-/// staging branches, since either one populates the generated payload this
-/// reads from.
 fn stage_codex_target(out_dir: &Path) -> io::Result<()> {
     let pkl_output_root = out_dir.join(PKL_OUTPUT_DIR);
     let destination_root = pkl_output_root.join(CODEX_TARGET_DIR);
@@ -478,9 +465,6 @@ fn generate_embedded_asset_manifest(out_dir: &Path) -> io::Result<()> {
     output_file.write_all(output.as_bytes())
 }
 
-/// Projects the generated optional-workflow manifest into a Rust catalog so the
-/// CLI carries optional workflow identity without re-declaring it. Pkl stays the
-/// single source: adding an optional workflow to the catalog is enough.
 fn generate_optional_workflow_catalog(out_dir: &Path) -> io::Result<()> {
     let manifest_path = out_dir
         .join(PKL_OUTPUT_DIR)

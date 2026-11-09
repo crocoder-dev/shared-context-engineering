@@ -7,28 +7,10 @@ use super::types::{
     WorktreeId, WorktreeState,
 };
 
-/// Advances a worktree revision counter by one, refusing to wrap past
-/// `u64::MAX`.
-///
-/// Quint's `revision: int` (`spec/mutation_cursor.qnt:39`) is an unbounded
-/// integer; this refinement's `revision: u64` is not, so every action that
-/// advances a worktree's revision — [`commit`], [`taint`], [`abandon`], and
-/// [`recover`] — routes through this single checked helper rather than a raw
-/// `+ 1`, so the same bounded-integer refinement guard applies uniformly
-/// everywhere the counter can move. `None` signals that advancing would wrap,
-/// which every caller treats as a guarded no-op/rejection rather than ever
-/// wrapping the counter or committing partial state.
 fn next_revision(revision: u64) -> Option<u64> {
     revision.checked_add(1)
 }
 
-/// The live scopes belonging to `worktree`, read from `state`. Refines
-/// `liveScopesOn` (`spec/mutation_cursor.qnt:265-269`).
-///
-/// The Quint function filters a fixed `SCOPES` universe by
-/// `worktreeId == worktree and isLive(status)`. This refinement's `ScopeId`
-/// space is unbounded (see `types.rs`'s module doc comment), so it filters
-/// the known `state.scopes` map by the same predicate instead.
 pub fn live_scopes_on(state: &ProtocolState, worktree: &WorktreeId) -> BTreeSet<ScopeId> {
     state
         .scopes
@@ -38,15 +20,6 @@ pub fn live_scopes_on(state: &ProtocolState, worktree: &WorktreeId) -> BTreeSet<
         .collect()
 }
 
-/// The mutation-evidence attribution for `worktree`, read from `state`.
-/// Refines `attributionFor` (`spec/mutation_cursor.qnt:285-301`).
-///
-/// `IneligibleUnscoped` when the worktree is unhealthy, externally tainted,
-/// needs rebaseline, or has no live scopes; `AiExclusive` for exactly one
-/// live scope; `AiContended` for more than one. An unresolvable worktree (no
-/// durable state) also yields `IneligibleUnscoped`, matching the "no live
-/// scopes" case, since the Quint model's `worktree` always resolves within
-/// its finite domain and has no equivalent missing case to refine.
 pub fn attribution_for(state: &ProtocolState, worktree: &WorktreeId) -> Attribution {
     let live = live_scopes_on(state, worktree);
     let unhealthy = state
@@ -91,8 +64,6 @@ pub fn has_unconfirmed_required_scope(
     })
 }
 
-/// Whether `boundary` closes a scope whose pre-boundary status in `state` is
-/// `NeverSeen`. Refines `boundaryClosesNeverSeenScope`.
 pub fn boundary_closes_never_seen_scope(state: &ProtocolState, boundary: &Boundary) -> bool {
     is_close(boundary)
         && boundary_scope(boundary)
@@ -100,14 +71,6 @@ pub fn boundary_closes_never_seen_scope(state: &ProtocolState, boundary: &Bounda
             .is_some_and(|scope_state| scope_state.status == ScopeStatus::NeverSeen)
 }
 
-/// The attribution for a mutation observed at `boundary`, read from the
-/// pre-boundary `state`. Refines `attributionForBoundary`.
-///
-/// A `Close` of a `NeverSeen` scope is always `IneligibleUnscoped`: its
-/// `Start` was never durably observed, so the boundary can neither confirm
-/// nor attribute the change, whatever other scopes are live. Otherwise an
-/// unconfirmed live confirmation-required scope suppresses attribution, and
-/// the remaining cases fall through to [`attribution_for`].
 pub fn attribution_for_boundary(
     state: &ProtocolState,
     worktree: &WorktreeId,
@@ -123,20 +86,6 @@ pub fn attribution_for_boundary(
     attribution_for(state, worktree)
 }
 
-/// Prepares `attempt` against `boundary`, snapshotting the worktree's current
-/// `revision`/`cursor_tree` as the attempt's CAS baseline and `observed_tree`
-/// as its target `after_tree`. Refines `prepareAvailable`/`prepare`
-/// (`spec/mutation_cursor.qnt:417-453`).
-///
-/// `observed_tree` corresponds to Quint's `worktreeTrees.get(worktree)`: the
-/// currently observed tree at the boundary's resolved worktree, supplied by
-/// the caller rather than read internally, since the pure kernel performs no
-/// Git I/O.
-///
-/// A no-op (refining Quint's `stutter`) when `attempt` already exists with a
-/// status other than `Available`, when the boundary's worktree cannot be
-/// resolved (an unregistered scope for a hook boundary), or when that
-/// worktree has no durable state.
 pub fn prepare(
     state: &ProtocolState,
     attempt: AttemptId,
@@ -172,33 +121,16 @@ pub fn prepare(
     next
 }
 
-/// The computed evaluation flags `commitAttempt` derives before applying its
-/// state transition, exposed for callers that need them without
-/// reconstructing them from the returned state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct CommitEvaluation {
-    /// `fresh`: the attempt was `Prepared` against a CAS baseline
-    /// (`expected_revision`/`before_tree`) that still matches the worktree's
-    /// current `revision`/`cursor_tree`, the worktree is not externally
-    /// tainted, and, for hook boundaries, the event has not already been
-    /// processed.
     pub accepted: bool,
-    /// Whether this boundary observes live protocol state for its scope
-    /// (`Start` requires `NeverSeen`, `Advance` requires live, `Close`
-    /// accepts `NeverSeen` or live, `Flush` is always `true`).
     pub observes: bool,
-    /// `accepted and observes and before_tree != after_tree`.
     pub observed_change: bool,
-    /// `observed_change and not needs_rebaseline`. Gates whether [`commit`]
-    /// materializes a `MutationEvent` for this attempt.
     pub changed: bool,
-    /// `accepted and (not is_flush(boundary) or observed_change)`.
     pub advances_revision: bool,
 }
 
-/// The result of evaluating and committing one prepared attempt: the
-/// evaluation flags plus the resulting protocol state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitOutcome {
     pub evaluation: CommitEvaluation,
@@ -217,8 +149,6 @@ pub fn commit(state: &ProtocolState, attempt: &AttemptId) -> CommitOutcome {
     CommitOutcome { evaluation, state }
 }
 
-/// The prepared attempt and its boundary's resolved worktree/scope context,
-/// read once and shared by evaluation and application.
 struct ResolvedAttempt {
     planned: AttemptState,
     boundary: Boundary,
@@ -243,19 +173,6 @@ impl ResolvedAttempt {
         })
     }
 
-    /// Refines the `fresh`/`observes`/`accepted`/`observedChange`/`changed`/
-    /// `advancesRevision` computation at `spec/mutation_cursor.qnt:462-483`.
-    ///
-    /// `accepted` additionally requires revision headroom
-    /// ([`next_revision`]) — a Rust-only refinement guard with no Quint
-    /// counterpart, since Quint's `revision` is unbounded — but only when
-    /// this commit would actually advance the worktree's revision.
-    /// Non-`Flush` commits always advance revision when accepted, so they
-    /// always require headroom. A `Flush` advances revision only when it
-    /// observes a real tree change, so a fresh no-change `Flush` may still
-    /// commit at `revision: u64::MAX`, matching Quint: [`ResolvedAttempt::apply`]
-    /// never advances the revision for such a commit, so there is nothing
-    /// for the guard to protect there.
     fn evaluate(&self, state: &ProtocolState) -> CommitEvaluation {
         let current_scope = self
             .scope_id
@@ -298,8 +215,6 @@ impl ResolvedAttempt {
         }
     }
 
-    /// Refines the accepted/rejected state transition at
-    /// `spec/mutation_cursor.qnt:503-660`.
     fn apply(
         &self,
         state: &ProtocolState,
@@ -317,12 +232,6 @@ impl ResolvedAttempt {
             return next;
         }
 
-        // `evaluate` already proved that advancing the worktree's revision
-        // cannot wrap whenever `advances_revision` is true; this recomputes
-        // the same checked value rather than trusting a stored flag, so this
-        // function has no raw `+ 1` of its own. When `advances_revision` is
-        // false (a fresh no-change `Flush`), no headroom was required or
-        // proved, so no next revision is computed at all.
         let advanced_revision = if evaluation.advances_revision {
             Some(
                 next_revision(self.worktree_state.revision)
@@ -332,10 +241,6 @@ impl ResolvedAttempt {
             None
         };
 
-        // `observes` already encodes the exact scope-status guard
-        // `commitAttempt` repeats for its own scope transition (`NeverSeen`
-        // for `Start`, `NeverSeen` or live for `Close`), so reusing it here
-        // cannot diverge from the spec's separately-stated guard.
         if let Some(scope_id) = &self.scope_id {
             if is_start(&self.boundary) && evaluation.observes {
                 if let Some(entry) = next.scopes.get_mut(scope_id) {
@@ -396,25 +301,6 @@ impl ResolvedAttempt {
     }
 }
 
-/// Marks `worktree`'s Git snapshot capture as tainted by a snapshot failure.
-/// Refines `taintHealthy`/`taint` (`spec/mutation_cursor.qnt:663-710`).
-///
-/// Sets `tainted=true` and `failure_kind=SnapshotFailure`, advances
-/// `revision` by one, and leaves `cursor_tree`/`needs_rebaseline` untouched.
-/// A guarded no-op (refining Quint's `stutter`) when `worktree` is already
-/// unhealthy (`failure_kind != Healthy`; `failure_kind` is the semantic
-/// health source of truth and `tainted` is the redundant bit
-/// `FailureKindMatchesTaint` keeps equal to it), already in `external_taint`,
-/// has no durable state, or is
-/// already at `revision: u64::MAX` (see [`next_revision`] — this last case
-/// has no Quint counterpart either, since Quint's `revision` is unbounded).
-///
-/// The missing-worktree case has no Quint counterpart: `WorktreeId` ranges
-/// over the finite `WORKTREES` universe there, and `init` materializes a
-/// `WorktreeState` for every member, so every `WorktreeId` already resolves.
-/// This refinement's `WorktreeId` is an unbounded runtime value, so an
-/// unknown worktree is unresolved kernel input rather than a state `taint`
-/// may create — the same existence contract [`database_failure`] enforces.
 pub fn taint(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
     let Some(worktree_state) = state.worktrees.get(worktree) else {
         return state.clone();
@@ -442,24 +328,6 @@ pub fn taint(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
     next
 }
 
-/// Records a database failure for `worktree` by adding it to
-/// `external_taint`. Refines `recordDatabaseFailure`/`databaseFailure`
-/// (`spec/mutation_cursor.qnt:712-737`).
-///
-/// Changes `external_taint` only; every other durable worktree/scope field
-/// stays as it was. A guarded no-op (refining Quint's `stutter`) when
-/// `worktree` is already in `external_taint` or has no durable state.
-///
-/// Quint's `WorktreeId` ranges over the finite `WORKTREES` universe, and
-/// `init` materializes a `WorktreeState` for every member, so
-/// `recordDatabaseFailure` has no explicit existence guard because there is
-/// no state for it to guard against — every `WorktreeId` already resolves.
-/// This refinement's `WorktreeId` is an unbounded runtime value, so a
-/// referenced worktree must already exist in `ProtocolState.worktrees`
-/// before this action may operate on it; an unknown `WorktreeId` is
-/// unresolved kernel input, not a worktree this action may bring into
-/// existence, and keeping `external_taint` a subset of known worktrees
-/// matches `taint`'s own existence guard.
 pub fn database_failure(state: &ProtocolState, worktree: &WorktreeId) -> ProtocolState {
     if !state.worktrees.contains_key(worktree) || state.external_taint.contains(worktree) {
         return state.clone();
@@ -470,28 +338,6 @@ pub fn database_failure(state: &ProtocolState, worktree: &WorktreeId) -> Protoco
     next
 }
 
-/// Abandons `scope`, ending its lifecycle. Refines `abandonLiveScope`/`abandon`
-/// (`spec/mutation_cursor.qnt:739-805`).
-///
-/// Transitions the scope to `Abandoned`, preserving its `actor_kind` and
-/// `worktree_id` (scope identity stability), sets the owning worktree's
-/// `needs_rebaseline=true`, advances `revision` by one, and leaves
-/// `cursor_tree`/`tainted`/`failure_kind` untouched. A guarded no-op (refining
-/// Quint's `stutter`) when the scope is not live — `NeverSeen`, `Closed`, and
-/// `Abandoned` all stutter, so a terminal scope can never be reactivated or
-/// abandoned again — when its worktree is externally tainted, or when its
-/// worktree is already at `revision: u64::MAX` (see [`next_revision`]; no
-/// Quint counterpart, since Quint's `revision` is unbounded).
-///
-/// Quint's `abandon` resolves the owning worktree unconditionally from
-/// `scopes.get(scope).worktreeId`, because the model's finite `SCOPES`
-/// universe guarantees every `ScopeId` already has a `ScopeState`. This
-/// refinement's `ScopeId` is an unbounded runtime value with no such
-/// guarantee (see the runtime scope materialization contract in
-/// `context/cli/mutation-trace-protocol.md`), so an unknown scope, or a scope
-/// whose own `worktree_id` has no durable `WorktreeState`, is also a guarded
-/// no-op — the same existence contract [`taint`]/[`database_failure`]
-/// enforce.
 pub fn abandon(state: &ProtocolState, scope: &ScopeId) -> ProtocolState {
     let Some(scope_state) = state.scopes.get(scope) else {
         return state.clone();
@@ -528,32 +374,6 @@ pub fn abandon(state: &ProtocolState, scope: &ScopeId) -> ProtocolState {
     next
 }
 
-/// Recovers `worktree`, re-baselining its cursor to the currently observed
-/// tree and clearing its failure/rebaseline state. Refines
-/// `recoverNeeded`/`recover` (`spec/mutation_cursor.qnt:807-886`).
-///
-/// `observed_tree` corresponds to Quint's `worktreeTrees.get(worktree)`: the
-/// currently observed tree, supplied by the caller rather than read
-/// internally, since the pure kernel performs no Git I/O — the same
-/// explicit-input contract [`prepare`] follows.
-///
-/// Sets `cursor_tree=observed_tree`, `tainted=false`,
-/// `failure_kind=Healthy`, `needs_rebaseline=false`, advances `revision` by
-/// one, and removes `worktree` from `external_taint`. Health is read from
-/// `failure_kind`, never from the redundant `tainted` bit. When
-/// `failure_kind != Healthy` or the worktree is externally tainted, every
-/// live scope on it is transitioned to `Abandoned` (preserving
-/// `actor_kind`/`worktree_id`); a worktree recovering only from
-/// `needs_rebaseline` (`failure_kind == Healthy`, not externally tainted)
-/// preserves its live scopes untouched.
-///
-/// A guarded no-op (refining Quint's `stutter`) when the worktree has
-/// `failure_kind == Healthy`, is not externally tainted, and does not need
-/// rebaseline; when
-/// `worktree` has no durable state — the same existence contract
-/// [`taint`]/[`database_failure`]/[`abandon`] enforce; or when `worktree` is
-/// already at `revision: u64::MAX` (see [`next_revision`]; no Quint
-/// counterpart, since Quint's `revision` is unbounded).
 pub fn recover(
     state: &ProtocolState,
     worktree: &WorktreeId,

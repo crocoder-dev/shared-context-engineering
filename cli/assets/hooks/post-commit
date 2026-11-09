@@ -1,12 +1,10 @@
 #!/bin/sh
 set -eu
 
-# >>> sce managed block (do not edit) >>>
 if ! command -v sce >/dev/null 2>&1; then
-  # sce brand colors — only emit ANSI when stderr is a real terminal
   if [ -t 2 ]; then
-    RED="$(printf '\033[38;2;220;38;38m')"  # red #dc2626
-    G="$(printf '\033[38;2;5;150;105m')"    # brand green #059669
+    RED="$(printf '\033[38;2;220;38;38m')"
+    G="$(printf '\033[38;2;5;150;105m')"
     BOLD="$(printf '\033[1m')"
     R="$(printf '\033[0m')"
   else
@@ -35,4 +33,3 @@ else
 fi
 status=$?
 exit "$status"
-# <<< sce managed block <<<

@@ -1,11 +1,3 @@
-//! Structured editor-hook patch derivation.
-//!
-//! This module converts supported structured tool payloads into the CLI's
-//! canonical [`ParsedPatch`](crate::services::patch::ParsedPatch) domain model
-//! without going through rendered unified-diff text. The first supported source
-//! is Claude `PostToolUse` payloads for `Write` creates and `Edit` structured
-//! patches.
-
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -22,8 +14,6 @@ pub struct ClaudeStructuredPatch {
     pub time: u64,
     pub tool_name: String,
     pub tool_version: Option<String>,
-    /// The payload's absolute `cwd`, the base of any relative patch path.
-    /// `None` when `cwd` is missing, empty, or not absolute.
     pub working_directory: Option<String>,
 }
 
@@ -439,8 +429,6 @@ fn normalize_optional_version(value: Option<&Value>) -> VersionField {
     }
 }
 
-/// The payload `cwd` only when it is absolute: a relative `cwd` cannot anchor
-/// a relative patch path.
 fn absolute_cwd(payload: &Map<String, Value>) -> Option<String> {
     string_field(payload, &["cwd"]).filter(|cwd| Path::new(cwd).is_absolute())
 }

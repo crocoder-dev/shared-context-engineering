@@ -1,7 +1,3 @@
-//! Consumes the already-shipped [`crate::services::agent_trace_sync`] engine
-//! and [`crate::services::agent_trace_sync::control_plane`] client as-is; adds
-//! no local sync cursor or persisted progress of its own.
-
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::future::{poll_fn, Future};
@@ -73,12 +69,10 @@ pub enum SyncProgressEvent {
     },
 }
 
-/// Supplies timestamps for one trace-sync invocation.
 pub trait SyncProgressClock {
     fn now(&self) -> DateTime<Utc>;
 }
 
-/// Uses the system UTC clock for production sync invocations.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemSyncProgressClock;
 
@@ -95,15 +89,11 @@ where
     clock.now().to_rfc3339_opts(SecondsFormat::AutoSi, true)
 }
 
-/// Terminal failure of `sce sync`.
 #[derive(Debug)]
 pub enum TraceSyncError {
-    /// Local repository/storage/config resolution failed.
     Runtime(String),
     AuthDisabled(AuthPolicyConfigFile),
-    /// The initial `/state` call failed terminally.
     ControlPlane(ControlPlaneError),
-    /// One stream failed to converge.
     Stream {
         stream: &'static str,
         source: StreamSyncError,
@@ -124,11 +114,6 @@ impl fmt::Display for TraceSyncError {
 impl std::error::Error for TraceSyncError {}
 
 impl TraceSyncError {
-    /// True when this failure means the caller has no usable `WorkOS`
-    /// credentials, whether that surfaced from the initial `/state` call
-    /// (`ControlPlane`) or from a stream's batch/refresh path (`Stream`).
-    /// `Runtime` never carries a `ControlPlaneError` and is never an
-    /// authentication failure.
     pub fn is_authentication_failure(&self) -> bool {
         match self {
             Self::Runtime(_) | Self::AuthDisabled(_) => false,
@@ -137,9 +122,6 @@ impl TraceSyncError {
         }
     }
 
-    /// True when the failure came from local credential storage, whether it
-    /// surfaced during the initial state request or a stream batch/refresh
-    /// path.
     pub fn storage_failure(&self) -> Option<AuthStorageFailure> {
         match self {
             Self::ControlPlane(error) => error.storage_failure(),
@@ -149,7 +131,6 @@ impl TraceSyncError {
     }
 }
 
-/// Production sync entry point with injectable progress sink and clock.
 pub async fn run_current_sync_with_progress_and_clock<S, C>(
     repo_root: &Path,
     progress: &mut S,
@@ -505,12 +486,6 @@ where
     })
 }
 
-/// A control-plane failure that cannot be resolved by reconciling with
-/// `/state`: missing/invalid credentials, an unrecoverable `401`, a `400`, a
-/// `403` ownership rejection, or a terminal protocol/API mismatch
-/// (`404`/`405`/`415`/`422`, `ControlPlaneError::Protocol`). `5xx`, transport
-/// failures, and invalid batch responses are genuinely ambiguous and
-/// reconcile via a real `/state` call.
 fn is_stream_terminal(error: &ControlPlaneError) -> bool {
     matches!(
         error,

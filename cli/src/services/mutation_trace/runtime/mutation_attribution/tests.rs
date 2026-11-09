@@ -108,7 +108,6 @@ impl TreeRepo {
         TreeId(self.git(&["write-tree"]))
     }
 
-    /// Commits whatever `tree` last staged and returns the commit OID.
     fn commit(&self, message: &str) -> String {
         self.git(&[
             "-c",

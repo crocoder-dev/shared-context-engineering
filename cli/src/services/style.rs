@@ -77,11 +77,6 @@ pub(crate) fn error_code_with_color_policy(text: &str, color_enabled: bool) -> S
     style_if(text, color_enabled, |s| s.red().bold().to_string())
 }
 
-/// Styles human-readable stderr diagnostic bodies (yellow), following the
-/// stderr TTY/`NO_COLOR` policy passed in by the caller. `app_support`'s
-/// error-diagnostic renderer is the sole caller in production, threading
-/// `supports_color_stderr()` through explicitly so the same code path is
-/// exercisable with an injected policy in tests.
 #[must_use]
 pub(crate) fn error_text_with_color_policy(text: &str, color_enabled: bool) -> String {
     style_if(text, color_enabled, |s| s.yellow().to_string())
@@ -269,24 +264,14 @@ pub(crate) fn banner_link_with_color_policy(text: &str, url: &str, color_enabled
     })
 }
 
-/// Gradient color endpoints for the ASCII art banner.
-/// Right side: cyan (0, 255, 255), Left side: magenta (255, 0, 255).
 const GRADIENT_COLOR_RIGHT: (u8, u8, u8) = (0, 255, 255);
 const GRADIENT_COLOR_LEFT: (u8, u8, u8) = (255, 0, 255);
 
-/// Applies a right-to-left color gradient to ASCII art banner lines.
-///
-/// When color is enabled, each non-space character is colored based on its
-/// column position using a cyan-to-magenta gradient (cyan on the right,
-/// magenta on the left). Spaces are left unstyled.
-/// When color is disabled, returns the plain ASCII art unchanged.
 #[must_use]
 pub fn banner_with_gradient(lines: &[&str]) -> String {
     banner_with_gradient_with_color_policy(lines, supports_color())
 }
 
-/// Internal variant of [`banner_with_gradient`] that accepts an explicit
-/// color policy flag for testability.
 #[allow(clippy::cast_precision_loss)]
 #[must_use]
 pub(crate) fn banner_with_gradient_with_color_policy(
@@ -330,10 +315,6 @@ pub(crate) fn banner_with_gradient_with_color_policy(
         .join("\n")
 }
 
-/// Linear interpolation between two `u8` values.
-///
-/// Returns `a + (b - a) * t`, clamped to the `u8` range by construction
-/// since `a`, `b` are `u8` and `t` is in `[0, 1]`.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
     (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as u8
@@ -342,13 +323,6 @@ fn lerp_u8(a: u8, b: u8, t: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // `supports_color_stderr()` combines the real stderr TTY check with the
-    // `NO_COLOR` check into one `color_enabled` boolean; a real TTY can't be
-    // simulated in `cargo test`, so these `_with_color_policy` seams (the same
-    // pattern used elsewhere in this module and in `doctor/render.rs`) are
-    // exercised directly against that boolean instead of mutating process
-    // environment state.
 
     #[test]
     fn error_text_styles_when_color_enabled() {
@@ -359,8 +333,6 @@ mod tests {
 
     #[test]
     fn error_text_is_plain_when_color_disabled() {
-        // Covers both a non-TTY stderr (redirected) and `NO_COLOR` being set,
-        // since both collapse to `color_enabled: false`.
         assert_eq!(error_text_with_color_policy("boom", false), "boom");
     }
 

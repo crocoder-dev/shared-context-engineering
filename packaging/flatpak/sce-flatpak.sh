@@ -77,7 +77,6 @@ ensure_flatpak_user_remote() {
 }
 
 substitute_placeholder() {
-  # Streams a template, replacing every occurrence of $1 with literal $2.
   awk -v ph="$1" -v val="$2" \
     'BEGIN { len = length(ph) }
      {
@@ -148,7 +147,6 @@ generate_release_manifest() {
   printf '%s/%s\n' "${out_dir}" "${MANIFEST_NAME}"
 }
 
-# Constrained inputs (semver, hex SHA, fixed filenames, x86_64/aarch64) — no JSON escaping needed.
 emit_source_manifest_metadata() {
   local path="$1" version="$2" release_commit="$3" package_name="$4" checksum_name="$5" checksum="$6"
   cat > "${path}" <<EOF

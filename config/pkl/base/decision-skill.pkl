@@ -1,9 +1,5 @@
 import "workflow-content.pkl" as model
 
-/// Canonical standalone decision-writing package. It is intentionally outside
-/// the workflow catalog because synchronization invokes it internally; no
-/// user-facing command or prompt routes to this skill.
-
 local SKILL_SLUG = "sce-decision"
 local SKILL_DESCRIPTION = "Record one already-qualified decision as an immutable ADR, reusing an equivalent active ADR when present"
 

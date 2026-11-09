@@ -1,9 +1,3 @@
-//! Shared Turso database infrastructure.
-//!
-//! Provides a generic `TursoDb` adapter that wraps Turso connection
-//! management, tokio runtime bridging, and embedded migration execution for
-//! service-specific database specs.
-
 use std::{
     fs,
     marker::PhantomData,
@@ -51,22 +45,16 @@ pub enum DatabaseKind {
     Auth,
 }
 
-/// Service-specific Turso database configuration.
 pub trait DbSpec {
-    /// Human-readable database name used in diagnostics.
     fn db_name() -> &'static str;
 
-    /// Canonical database file path.
     fn db_path() -> Result<PathBuf>;
 
-    /// Ordered embedded migration SQL files as `(id, sql)` pairs.
     fn migrations() -> &'static [(&'static str, &'static str)];
 
-    /// Closed database identity selecting retry configuration and contention policy.
     const KIND: DatabaseKind;
 }
 
-/// Collect common filesystem health problems for a Turso database path.
 pub fn collect_db_path_health(db_name: &str, db_path: &Path, problems: &mut Vec<HealthProblem>) {
     let db_name_title = sentence_case(db_name);
 
@@ -139,7 +127,6 @@ pub fn collect_db_path_health(db_name: &str, db_path: &Path, problems: &mut Vec<
     }
 }
 
-/// Create the parent directory for a Turso database path.
 pub fn bootstrap_db_parent(db_name: &str, db_path: &Path) -> Result<PathBuf> {
     let parent = db_path
         .parent()
@@ -226,10 +213,6 @@ async fn apply_migration(
     id: &str,
     sql: &str,
 ) -> Result<()> {
-    // Migration files may contain multiple statements (the repository
-    // Agent Trace baseline is one multi-statement schema file), so batch
-    // execution is required; `execute` would stop after the first
-    // statement.
     conn.execute_batch(sql)
         .await
         .map_err(|e| anyhow::anyhow!("{db_name} migration {id} failed: {e}"))?;
@@ -240,9 +223,6 @@ async fn apply_migration(
     Ok(())
 }
 
-/// Body of [`TursoDb::execute_transactional_insert_pair_if_absent`], run
-/// against an already-open transaction. Kept as a standalone `async fn` so
-/// the caller can uniformly commit on `Ok` and roll back on `Err`.
 #[allow(clippy::too_many_arguments)]
 async fn execute_insert_pair_if_absent_body(
     tx: &turso::transaction::Transaction<'_>,
@@ -719,12 +699,6 @@ fn busy_timeout_from_config<M: DbSpec>(
     )
 }
 
-/// Resolve the Agent Trace write-contention deadline for `M`.
-///
-/// The deadline decides whether another outer write-contention retry may
-/// start; it does not interrupt a running Turso operation. It is taken from
-/// `policies.database_retry.agent_trace_db.contention_deadline_ms` when
-/// configured. Every other database resolves to zero.
 fn resolve_contention_deadline<M: DbSpec>() -> std::time::Duration {
     contention_deadline_from_config::<M>(crate::services::config::get_database_retry_config())
 }
@@ -900,7 +874,6 @@ fn contention_exhausted_error(
     )
 }
 
-/// Install `busy_timeout` on `conn`; a zero timeout leaves the handler unset.
 fn apply_busy_timeout(
     conn: &turso::Connection,
     db_name: &str,
@@ -943,10 +916,6 @@ pub enum ExistingDbOpen<T> {
 }
 
 impl<M: DbSpec> TursoDb<M> {
-    /// Open or create the database at the spec-provided canonical path.
-    ///
-    /// Parent directories are created automatically. Migrations are run after
-    /// the database connection is established.
     pub async fn new() -> Result<Self> {
         let db = Self::open_without_migrations().await?;
 
@@ -957,11 +926,6 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(db)
     }
 
-    /// Open or create the database at an explicit path.
-    ///
-    /// Parent directories are created automatically. Migrations are run after
-    /// the database connection is established. The service-specific retry and
-    /// migration configuration still comes from `M`.
     pub async fn new_at(db_path: impl AsRef<Path>) -> Result<Self> {
         let db = Self::open_without_migrations_at(db_path).await?;
 
@@ -972,12 +936,6 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(db)
     }
 
-    /// Open or create the database at the spec-provided canonical path without
-    /// running embedded migrations.
-    ///
-    /// Parent directories are created automatically and the connection-open
-    /// retry policy is preserved. Runtime callers that use this path are
-    /// responsible for verifying schema readiness before query/write work.
     pub async fn open_without_migrations() -> Result<Self> {
         let db_name = M::db_name();
         let db_path = M::db_path().with_context(|| format!("failed to resolve {db_name} path"))?;
@@ -1042,14 +1000,6 @@ impl<M: DbSpec> TursoDb<M> {
         })
     }
 
-    /// Execute a SQL statement that does not return rows.
-    ///
-    /// # Arguments
-    /// * `sql` - SQL statement, which may contain `?` placeholders.
-    /// * `params` - Parameter values implementing `IntoParams`.
-    ///
-    /// # Returns
-    /// Number of rows affected.
     pub async fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
         let params = turso::params::IntoParams::into_params(params).map_err(|e| {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
@@ -1102,28 +1052,6 @@ impl<M: DbSpec> TursoDb<M> {
         .await
     }
 
-    /// Run an "insert row pair if absent" write transaction.
-    ///
-    /// If `exists_sql` (bound to `exists_params`) finds a matching row, no
-    /// insert statements run, the no-write transaction commits, and this
-    /// returns `false`. Otherwise `first_sql` then `second_sql` execute in order inside one
-    /// `BEGIN IMMEDIATE` transaction and commit together, returning `true`.
-    /// `BEGIN IMMEDIATE` serializes concurrent callers against the same
-    /// database file, so the existence check and both inserts are never
-    /// interleaved with another writer's attempt. The whole attempt is
-    /// retried as one unit on transient failure.
-    ///
-    /// `fail_before_second` is a test-only hook: when `true`, an error is
-    /// forced immediately after `first_sql` succeeds and before `second_sql`
-    /// runs or the transaction commits, so callers can prove the whole
-    /// transaction — including the already-executed `first_sql` — rolls
-    /// back together.
-    ///
-    /// Takes `&mut self` and begins the transaction with the checked
-    /// `Transaction::new(&mut Connection, ..)`, so the exclusive borrow spans
-    /// the whole transaction and no other operation on this adapter can run
-    /// inside it. Dropping the future uncommitted schedules a rollback that
-    /// runs on the connection's next use rather than immediately.
     #[allow(clippy::too_many_arguments)]
     pub async fn execute_transactional_insert_pair_if_absent(
         &mut self,
@@ -1174,7 +1102,6 @@ impl<M: DbSpec> TursoDb<M> {
         .await
     }
 
-    /// Execute a SQL query and synchronously map all returned rows.
     pub async fn query_map<T, F>(
         &self,
         sql: &str,
@@ -1230,14 +1157,6 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(results)
     }
 
-    /// Run a compare-and-swap guard plus ordered statements in one
-    /// `BEGIN IMMEDIATE` transaction.
-    ///
-    /// Takes `&mut self` and begins the transaction with the checked
-    /// `Transaction::new(&mut Connection, ..)`, so the exclusive borrow spans
-    /// the whole transaction and no other operation on this adapter can run
-    /// inside it. Dropping the future uncommitted schedules a rollback that
-    /// runs on the connection's next use rather than immediately.
     pub async fn execute_transactional_cas_batch(
         &mut self,
         operation_name: &str,
@@ -1273,22 +1192,10 @@ impl<M: DbSpec> TursoDb<M> {
         }
     }
 
-    /// Run all embedded migrations in order.
-    ///
-    /// Applied migration IDs are recorded in `__sce_migrations` so later
-    /// initializations apply only migrations that were not already recorded.
-    /// Existing databases without migration metadata are brought forward by
-    /// re-applying the current idempotent migration set and recording each ID.
     pub async fn run_migrations(&self) -> Result<()> {
         self.core.run_migrations().await
     }
 
-    /// Run a passive WAL checkpoint (`PRAGMA wal_checkpoint(PASSIVE)`).
-    ///
-    /// PASSIVE checkpoints only what is currently safe to move from the WAL
-    /// into the main database file and never blocks on active readers or
-    /// writers, so it does not guarantee WAL truncation. Safe to call
-    /// repeatedly. Routine maintenance only; not a durability boundary.
     pub async fn passive_checkpoint(&self) -> Result<()> {
         let operation_name = format!("checkpoint {} database WAL", M::db_name());
 
@@ -1324,12 +1231,6 @@ impl<M: DbSpec> TursoDb<M> {
         .await
     }
 
-    /// Check migration metadata for problems that would prevent safe hook
-    /// runtime access.
-    ///
-    /// Returns a list of problems: missing migration metadata table,
-    /// incomplete applied migrations, or unexpected extra migrations.
-    /// An empty list means the schema is ready.
     pub async fn migration_metadata_problems(&self) -> Result<Vec<String>> {
         let migration_table_exists = self.query_map(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '__sce_migrations' LIMIT 1",
@@ -1386,12 +1287,6 @@ impl<M: DbSpec> TursoDb<M> {
         Ok(problems)
     }
 
-    /// Verify that the database schema needed by hook runtime readers and
-    /// writers already exists.
-    ///
-    /// This check is intentionally non-mutating. Missing or incomplete schema
-    /// is reported with the provided setup guidance instead of running
-    /// migrations from a high-frequency hook path.
     pub async fn ensure_schema_ready(&self, setup_guidance: &str) -> Result<()> {
         let problems = self.migration_metadata_problems().await?;
 
@@ -1567,14 +1462,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         Ok(conn)
     }
 
-    /// Execute a SQL statement that does not return rows.
-    ///
-    /// # Arguments
-    /// * `sql` - SQL statement, which may contain `?` placeholders.
-    /// * `params` - Parameter values implementing `IntoParams`.
-    ///
-    /// # Returns
-    /// Number of rows affected.
     pub async fn execute(&self, sql: &str, params: impl turso::params::IntoParams) -> Result<u64> {
         let params = turso::params::IntoParams::into_params(params).map_err(|e| {
             anyhow::anyhow!("{} parameter conversion failed: {sql}: {e}", M::db_name())
@@ -1599,7 +1486,6 @@ impl<M: DbSpec> EncryptedTursoDb<M> {
         .await
     }
 
-    /// Execute a SQL query and synchronously map all returned rows.
     pub async fn query_map<T, F>(
         &self,
         sql: &str,

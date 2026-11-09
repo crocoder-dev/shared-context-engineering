@@ -1,13 +1,3 @@
-//! Domain<->SQL codecs and bounded read access for the mutation-cursor
-//! persistence layer.
-//!
-//! The codecs are the only translation between `super::types` domain values
-//! and the `TEXT`/`BLOB` representations `cli/migrations/agent-trace-
-//! repository/004_mutation_trace_protocol.sql` constrains those columns to.
-//! Every codec here is an explicit function over a fixed set of variants — no
-//! codec derives from `Debug` or a serde representation, so a variant rename
-//! cannot silently change the durable encoding.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
@@ -21,15 +11,10 @@ use super::types::{
     ScopeId, ScopeState, ScopeStatus, TreeId, WorktreeId, WorktreeState,
 };
 
-/// Encodes a worktree/event revision as the 8-byte big-endian `BLOB` stored
-/// by every `revision` column in migration `004`.
 pub fn encode_revision(revision: u64) -> [u8; 8] {
     revision.to_be_bytes()
 }
 
-/// Decodes a worktree/event revision from the 8-byte big-endian `BLOB`
-/// migration `004`'s `CHECK (typeof(revision) = 'blob' AND length(revision)
-/// = 8)` constraint guarantees on every stored value.
 pub fn decode_revision(blob: &[u8]) -> Result<u64> {
     let bytes: [u8; 8] = blob.try_into().map_err(|_| {
         anyhow::anyhow!("revision blob must be exactly 8 bytes, got {}", blob.len())
@@ -37,8 +22,6 @@ pub fn decode_revision(blob: &[u8]) -> Result<u64> {
     Ok(u64::from_be_bytes(bytes))
 }
 
-/// Encodes an [`ActorKind`] as the `mutation_trace_scopes.actor_kind` `TEXT`
-/// value migration `004`'s `CHECK (actor_kind IN (...))` allow-list expects.
 pub fn encode_actor_kind(actor_kind: ActorKind) -> &'static str {
     match actor_kind {
         ActorKind::ClaudeCode => "claude_code",
@@ -48,7 +31,6 @@ pub fn encode_actor_kind(actor_kind: ActorKind) -> &'static str {
     }
 }
 
-/// Decodes an [`ActorKind`] from `mutation_trace_scopes.actor_kind`.
 pub fn decode_actor_kind(value: &str) -> Result<ActorKind> {
     match value {
         "claude_code" => Ok(ActorKind::ClaudeCode),
@@ -59,9 +41,6 @@ pub fn decode_actor_kind(value: &str) -> Result<ActorKind> {
     }
 }
 
-/// Encodes a [`FailureKind`] as the `failure_kind` `TEXT` value migration
-/// `003` constrains `mutation_trace_worktrees.failure_kind` and
-/// `mutation_trace_events.failure_kind` to.
 pub fn encode_failure_kind(failure_kind: FailureKind) -> &'static str {
     match failure_kind {
         FailureKind::Healthy => "healthy",
@@ -69,7 +48,6 @@ pub fn encode_failure_kind(failure_kind: FailureKind) -> &'static str {
     }
 }
 
-/// Decodes a [`FailureKind`] from a `failure_kind` column.
 pub fn decode_failure_kind(value: &str) -> Result<FailureKind> {
     match value {
         "healthy" => Ok(FailureKind::Healthy),
@@ -78,8 +56,6 @@ pub fn decode_failure_kind(value: &str) -> Result<FailureKind> {
     }
 }
 
-/// Encodes a [`ScopeStatus`] as the `mutation_trace_scopes.status` `TEXT`
-/// value migration `004`'s `CHECK (status IN (...))` allow-list expects.
 pub fn encode_scope_status(status: ScopeStatus) -> &'static str {
     match status {
         ScopeStatus::NeverSeen => "never_seen",
@@ -89,7 +65,6 @@ pub fn encode_scope_status(status: ScopeStatus) -> &'static str {
     }
 }
 
-/// Decodes a [`ScopeStatus`] from `mutation_trace_scopes.status`.
 pub fn decode_scope_status(value: &str) -> Result<ScopeStatus> {
     match value {
         "never_seen" => Ok(ScopeStatus::NeverSeen),
@@ -100,10 +75,6 @@ pub fn decode_scope_status(value: &str) -> Result<ScopeStatus> {
     }
 }
 
-/// [`Attribution`]'s discriminant, decoupled from its `AiExclusive` payload
-/// (`ScopeId`). Reconstructing a full [`Attribution`] from a persisted row
-/// also needs `attribution_scope_id`, which is a `mutation_trace_events`
-/// query concern owned by a later task, not by this codec.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttributionKind {
     IneligibleUnscoped,
@@ -111,14 +82,8 @@ pub enum AttributionKind {
     AiContended,
 }
 
-/// Maximum number of mutation-event rows returned by one attribution-history
-/// page request.
 pub const MUTATION_ATTRIBUTION_PAGE_SIZE: usize = 32;
 
-/// The cold-path subset of a historical mutation event needed by attribution.
-///
-/// This deliberately omits boundary data and active scopes: attribution only
-/// needs the tree transition and the event's health/attribution state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationEventPageRow {
     pub revision: u64,
@@ -136,7 +101,6 @@ pub struct MutationEventTrees {
     pub after_tree: TreeId,
 }
 
-/// The discriminant of an [`Attribution`] value.
 pub fn attribution_kind(attribution: &Attribution) -> AttributionKind {
     match attribution {
         Attribution::IneligibleUnscoped => AttributionKind::IneligibleUnscoped,
@@ -145,9 +109,6 @@ pub fn attribution_kind(attribution: &Attribution) -> AttributionKind {
     }
 }
 
-/// Encodes an [`AttributionKind`] as the
-/// `mutation_trace_events.attribution_kind` `TEXT` value migration `004`'s
-/// `CHECK (attribution_kind IN (...))` allow-list expects.
 pub fn encode_attribution_kind(kind: AttributionKind) -> &'static str {
     match kind {
         AttributionKind::IneligibleUnscoped => "ineligible_unscoped",
@@ -156,7 +117,6 @@ pub fn encode_attribution_kind(kind: AttributionKind) -> &'static str {
     }
 }
 
-/// Decodes an [`AttributionKind`] from `mutation_trace_events.attribution_kind`.
 pub fn decode_attribution_kind(value: &str) -> Result<AttributionKind> {
     match value {
         "ineligible_unscoped" => Ok(AttributionKind::IneligibleUnscoped),
@@ -166,11 +126,6 @@ pub fn decode_attribution_kind(value: &str) -> Result<AttributionKind> {
     }
 }
 
-/// [`Boundary`]'s discriminant, decoupled from its `scope`/`event`/`worktree`
-/// payload. Reconstructing a full [`Boundary`] from a persisted row also
-/// needs `boundary_scope_id`/`boundary_event_id`, which is a
-/// `mutation_trace_events` query concern owned by a later task, not by this
-/// codec.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BoundaryKind {
     Start,
@@ -179,7 +134,6 @@ pub enum BoundaryKind {
     Flush,
 }
 
-/// The discriminant of a [`Boundary`] value.
 pub fn boundary_kind(boundary: &Boundary) -> BoundaryKind {
     match boundary {
         Boundary::Start { .. } => BoundaryKind::Start,
@@ -189,9 +143,6 @@ pub fn boundary_kind(boundary: &Boundary) -> BoundaryKind {
     }
 }
 
-/// Encodes a [`BoundaryKind`] as the `mutation_trace_events.boundary_kind`
-/// `TEXT` value migration `004`'s `CHECK (boundary_kind IN (...))`
-/// allow-list expects.
 pub fn encode_boundary_kind(kind: BoundaryKind) -> &'static str {
     match kind {
         BoundaryKind::Start => "start",
@@ -201,7 +152,6 @@ pub fn encode_boundary_kind(kind: BoundaryKind) -> &'static str {
     }
 }
 
-/// Decodes a [`BoundaryKind`] from `mutation_trace_events.boundary_kind`.
 #[allow(
     dead_code,
     reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
@@ -297,15 +247,10 @@ const SELECT_ALL_TREE_ROOTS_SQL: &str = "SELECT cursor_tree AS tree FROM mutatio
      SELECT before_tree AS tree FROM mutation_trace_events
      UNION
      SELECT after_tree  AS tree FROM mutation_trace_events";
-/// Idle-insert: only takes effect when `worktree_id` has no row yet, so an
-/// existing worktree's cursor/revision/failure state is never overwritten.
 const INSERT_WORKTREE_IF_ABSENT_SQL: &str = "INSERT INTO mutation_trace_worktrees
         (worktree_id, cursor_tree, revision, tainted, failure_kind, needs_rebaseline)
      VALUES (?1, ?2, ?3, 0, 'healthy', 0)
      ON CONFLICT (worktree_id) DO NOTHING";
-/// Idle-insert: only takes effect when `scope_id` has no row yet, so an
-/// existing scope's worktree/actor/status is never overwritten. The caller
-/// re-reads the row afterward to detect a worktree/actor mismatch.
 const INSERT_SCOPE_IF_ABSENT_SQL: &str =
     "INSERT INTO mutation_trace_scopes (scope_id, worktree_id, actor_kind, status)
      VALUES (?1, ?2, ?3, 'never_seen')
@@ -330,17 +275,6 @@ const INSERT_MUTATION_EVENT_SQL: &str = "INSERT INTO mutation_trace_events
 const INSERT_MUTATION_EVENT_ACTIVE_SCOPE_SQL: &str =
     "INSERT INTO mutation_trace_event_active_scopes (worktree_id, revision, scope_id) VALUES (?1, ?2, ?3)";
 
-/// Bounded runtime projection of one worktree's durable protocol state,
-/// loaded by [`MutationTraceStore::load_worktree`]. Scoped to that worktree's
-/// currently `Active` scopes plus, when present, the scope `load_worktree`
-/// was explicitly asked about (regardless of its status) — never every
-/// historical scope, and never a `mutation_trace_events` row.
-///
-/// `attempts`, `mutation_events`, and `external_taint` are always empty:
-/// `AttemptState` is transient and never persisted, historical
-/// `MutationEvent`s are a cold-path concern
-/// ([`MutationTraceStore::load_mutation_event`]), and `external_taint` is
-/// never DB-authoritative (see the plan's non-goals).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorktreeProjection {
     pub worktree_id: WorktreeId,
@@ -350,10 +284,6 @@ pub struct WorktreeProjection {
 }
 
 impl WorktreeProjection {
-    /// Widens this bounded projection into a full [`ProtocolState`] so pure
-    /// `protocol.rs` functions can operate on it unchanged. `worktrees`
-    /// carries only the one loaded worktree; `attempts`, `mutation_events`,
-    /// and `external_taint` are always empty.
     pub fn into_protocol_state(self) -> ProtocolState {
         let mut worktrees = BTreeMap::new();
         worktrees.insert(self.worktree_id, self.worktree_state);
@@ -572,10 +502,6 @@ impl<'a> MutationTraceStore<'a> {
         Self { db }
     }
 
-    /// Idempotently initializes `worktree`'s durable cursor row: `revision=0`,
-    /// healthy, not tainted, not needing rebaseline, with `cursor_tree` set to
-    /// `initial_tree`. A no-op when the worktree row already exists — an
-    /// existing cursor, revision, or failure state is never overwritten.
     pub async fn initialize_worktree(
         &self,
         worktree: &WorktreeId,
@@ -595,21 +521,6 @@ impl<'a> MutationTraceStore<'a> {
         Ok(())
     }
 
-    /// Idempotently registers `scope` as belonging to `worktree` and
-    /// `actor_kind`. Inserts a new `NeverSeen` row when `scope` has none yet.
-    /// When a row already exists, returns its current state unchanged as long
-    /// as its `worktree_id` and `actor_kind` agree with the arguments — this
-    /// never resurrects a terminal scope or changes its status — and returns
-    /// `Err` when either disagrees, since a scope's worktree and actor are
-    /// permanent facts fixed at first registration.
-    ///
-    /// `worktree` must already have a durable `mutation_trace_worktrees` row
-    /// (via [`MutationTraceStore::initialize_worktree`]), checked before any
-    /// scope row is inserted or read back — this never auto-creates the
-    /// worktree. This applies identically to a fresh `scope` and to an
-    /// existing one: an existing scope whose stored `worktree_id` has no
-    /// worktree row is never returned as valid merely because it matches the
-    /// arguments.
     pub async fn register_scope(
         &self,
         scope: &ScopeId,
@@ -654,27 +565,6 @@ impl<'a> MutationTraceStore<'a> {
         Ok(scope_state)
     }
 
-    /// Loads a bounded projection of `worktree`'s durable protocol state, or
-    /// `None` when the worktree does not exist.
-    ///
-    /// `scope` and `event_key.scope_id` are two ways of naming the same
-    /// operation-local scope identity: when both are supplied they must
-    /// agree, or this returns `Err` before loading or querying anything.
-    /// Otherwise the supplied `scope`, or `event_key.scope_id` when only
-    /// `event_key` is supplied, becomes the effective referenced scope: a
-    /// durable `mutation_trace_scopes` row for it must exist, or this returns
-    /// `Err` — a missing effective scope is never silently omitted from the
-    /// projection. When it exists it is loaded and included in the
-    /// projection regardless of its status, and this returns `Err` if it
-    /// belongs to a worktree other than the one requested. Both checks run
-    /// before the `processed_events` replay lookup, so an orphan
-    /// `mutation_trace_processed_events` row can never enter the projection
-    /// without its owning scope. The projection's `scopes` otherwise contains
-    /// only this worktree's currently `Active` scopes. `processed_events`
-    /// contains `event_key` only when a matching `(scope_id, event_id)` row
-    /// already exists; the lookup never references a `worktree_id` column,
-    /// since `mutation_trace_processed_events` has none. This method never
-    /// queries `mutation_trace_events`.
     pub async fn load_worktree(
         &self,
         worktree: &WorktreeId,
@@ -725,10 +615,6 @@ impl<'a> MutationTraceStore<'a> {
         }))
     }
 
-    /// Reconstructs one historical [`MutationEvent`] for `(worktree,
-    /// revision)`, decoding its full `Attribution` and `Boundary`, or `None`
-    /// when no such row exists. Never called from `load_worktree` or from
-    /// any hook-boundary path.
     #[allow(
         dead_code,
         reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"
@@ -775,14 +661,6 @@ impl<'a> MutationTraceStore<'a> {
         }))
     }
 
-    /// Reads one descending page of the historical mutation events for exactly
-    /// `worktree`. When `revision_cursor` is present, only revisions strictly
-    /// below it are returned, so the caller can continue from the last row of
-    /// a prior page without duplicates. The requested limit is always capped
-    /// at [`MUTATION_ATTRIBUTION_PAGE_SIZE`].
-    ///
-    /// This is a read-only cold path. It does not load active scopes, processed
-    /// events, boundary data, or any timestamp column.
     pub async fn load_mutation_event_page(
         &self,
         worktree: &WorktreeId,
@@ -960,24 +838,6 @@ impl<'a> MutationTraceStore<'a> {
         Ok(rows.into_iter().collect())
     }
 
-    /// Loads the durable [`ScopeState`] for `scope_id` — its status,
-    /// `actor_kind`, and `worktree_id` — or `None` when no
-    /// `mutation_trace_scopes` row exists for it.
-    ///
-    /// A cold-path single-row read, and deliberately the narrowest scope seam
-    /// there is: it reads one `mutation_trace_scopes` row and nothing else. It
-    /// never consults `mutation_trace_events`,
-    /// `mutation_trace_processed_events`, or the scope's
-    /// `mutation_trace_worktrees` row, and it must not widen into a
-    /// projection — [`MutationTraceStore::load_worktree`] is the projection
-    /// seam, and a caller needing worktree state alongside a scope belongs
-    /// there instead.
-    ///
-    /// This never adjudicates worktree identity: a scope whose `worktree_id`
-    /// differs from the caller's own worktree is returned as-is, not rejected.
-    /// Comparing the two is the caller's decision, since the same row is a
-    /// legitimate read from its owning worktree and a cross-worktree reference
-    /// from any other.
     pub async fn load_scope(&self, scope_id: &ScopeId) -> Result<Option<ScopeState>> {
         let rows = self
             .db
@@ -1242,11 +1102,6 @@ fn boundary_payload(boundary: &Boundary) -> (Option<&str>, Option<&str>) {
     }
 }
 
-/// Derives the single effective referenced scope from `scope` and
-/// `event_key`, per the four-case definition in the
-/// `mutation-cursor-store-persistence` plan's T03: `None` when neither is
-/// supplied; the supplied one when only one is; the agreeing identity when
-/// both are supplied and equal; `Err` when both are supplied and disagree.
 fn effective_referenced_scope<'k>(
     scope: Option<&'k ScopeId>,
     event_key: Option<&'k EventKey>,
@@ -1406,9 +1261,6 @@ fn mutation_event_page_row_from_turso(row: &turso::Row) -> Result<MutationEventP
     })
 }
 
-/// Raw decoded `mutation_trace_events` row fields, prior to reconstructing
-/// the full `Attribution`/`Boundary`/`active_scopes` a [`MutationEvent`]
-/// carries.
 #[allow(
     dead_code,
     reason = "single-event loader has no production reader; attribution history uses load_mutation_event_page"

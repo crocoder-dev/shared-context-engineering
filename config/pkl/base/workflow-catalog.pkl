@@ -1,6 +1,3 @@
-/// Target-neutral workflow identity plus the small amount of target routing
-/// metadata that varies by workflow. Content modules and renderers remain
-/// responsible for workflow behavior and output formatting.
 class WorkflowRecord {
   commandSlug: String
   skillSlug: String
@@ -10,9 +7,6 @@ class WorkflowRecord {
   openCodeAgentSlug: String
   claudeAllowedTools: String
 
-  /// An optional workflow is generated for every target like any other, but is
-  /// installed only when a repository explicitly selects it. Core workflows
-  /// leave this at `false`.
   optional: Boolean = false
 }
 

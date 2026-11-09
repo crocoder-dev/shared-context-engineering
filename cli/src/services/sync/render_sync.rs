@@ -1,5 +1,3 @@
-//! Renderers for `sce sync` (text and JSON).
-
 use anyhow::{Context, Result};
 use serde_json::json;
 

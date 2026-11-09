@@ -1,51 +1,3 @@
-//! Effective Codex hook-discovery *policy* readiness for SCE's project-owned
-//! `.codex/hooks.json` registrations, obtained by asking the installed Codex
-//! binary for its own composed effective configuration requirements rather
-//! than reproducing Codex's multi-layer requirements composition in SCE.
-//!
-//! This is deliberately a separate dimension from `codex_hook_trust`: policy
-//! answers "will Codex consider this hook *source* eligible at all?", while
-//! trust answers "given an eligible source, has this handler been enabled and
-//! durably trusted?". A registration is only executable when both are
-//! satisfied.
-//!
-//! Upstream reference (`openai/codex` commit
-//! `a8468330bb5f45e9f4d2ec630b01ea8c52908be3`):
-//! - `hooks/src/engine/discovery.rs` `HookDiscoveryPolicy::allows`:
-//!   `!allow_managed_hooks_only || source.is_managed`, applied per config
-//!   layer before that layer's `hooks.json`/TOML hooks are even loaded.
-//!   Project `.codex/hooks.json` hooks are `HookSource::Project`,
-//!   `is_managed = false` (`hook_metadata_for_config_layer_source`), so they
-//!   are entirely excluded from discovery when the policy is active,
-//!   regardless of structural or trust state.
-//! - `config/src/config_requirements.rs` `ConfigRequirements::allow_managed_hooks_only`
-//!   (`Option<bool>`) is populated only from `requirements.toml`/managed
-//!   layers; `docs/config.md` documents that putting it in `config.toml` does
-//!   not enable the policy, confirmed by
-//!   `hooks/src/engine/mod_tests.rs::allow_managed_hooks_only_in_config_toml_does_not_enable_policy`.
-//! - Requirements are composed from multiple sources
-//!   (`config/src/config_requirements.rs` `RequirementSource`: system
-//!   `requirements.toml`, legacy managed `config.toml`/MDM, MDM managed
-//!   preferences, backend-delivered enterprise-managed layers, and composites
-//!   of these), so SCE cannot safely re-derive the effective value by reading
-//!   any single file; it must ask the installed Codex binary for its own
-//!   composed answer.
-//! - `codex app-server` exposes that composed answer read-only via the
-//!   `configRequirements/read` method
-//!   (`app-server-protocol/src/protocol/common.rs`
-//!   `ConfigRequirementsRead => "configRequirements/read"`, no params),
-//!   returning `v2::ConfigRequirementsReadResponse { requirements: Option<ConfigRequirements> }`
-//!   (`app-server-protocol/src/protocol/v2/config.rs`), where
-//!   `ConfigRequirements::allow_managed_hooks_only: Option<bool>` serializes
-//!   as camelCase `allowManagedHooksOnly`. `requirements` itself is `null`
-//!   when no requirements are configured at all.
-//! - Transport: `codex app-server --stdio` speaks newline-delimited JSON-RPC
-//!   2.0 with the `"jsonrpc"` field omitted (`app-server/README.md`
-//!   "Protocol"). A connection must send `initialize`
-//!   (`app-server-protocol/src/protocol/v1.rs` `InitializeParams`/`ClientInfo`)
-//!   and then an `initialized` notification before any other request is
-//!   accepted ("Lifecycle Overview"/"Initialization").
-
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -53,45 +5,21 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// Effective Codex hook-discovery policy readiness for SCE's project-owned
-/// `.codex/hooks.json` registrations. Independent of `codex_hook_trust`'s
-/// per-handler enabled/trust bookkeeping.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CodexHookPolicyReadiness {
-    /// Effective `allow_managed_hooks_only` is absent, `false`, or no
-    /// requirements are configured at all: Codex's discovery policy does not
-    /// exclude project `.codex/hooks.json` handlers.
     ProjectHooksAllowed,
-    /// Effective `allow_managed_hooks_only = true`: Codex's discovery policy
-    /// discards every non-managed hook source, including SCE's project
-    /// `.codex/hooks.json` registrations, regardless of their structural or
-    /// trust state.
     PolicyBlocked,
-    /// The effective policy could not be determined (no Codex executable,
-    /// spawn/initialization failure, malformed response, timeout, etc.);
-    /// carries a human-readable reason. Doctor must never treat this the same
-    /// as `ProjectHooksAllowed`.
     Unknown(String),
 }
 
-/// Default command used to probe Codex's effective policy in production:
-/// `codex app-server --stdio`, invoked directly (no shell).
 const DEFAULT_CODEX_COMMAND: &str = "codex";
 
-/// Upper bound on the whole probe's wall-clock lifetime (spawn, initialize,
-/// `configRequirements/read`, and teardown). `sce doctor` must never hang
-/// because Codex is broken, slow, or unavailable.
 pub(crate) const DEFAULT_POLICY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Production entry point: probe the installed `codex` binary on `PATH`.
 pub(crate) fn probe_default() -> CodexHookPolicyReadiness {
     probe_effective_policy(DEFAULT_CODEX_COMMAND.as_ref(), DEFAULT_POLICY_PROBE_TIMEOUT)
 }
 
-/// Probe one Codex executable's effective hook-discovery policy over
-/// `codex app-server --stdio`, bounded by `timeout`. Never panics on
-/// malformed output; always terminates and reaps the child process before
-/// returning, on every exit path (success, protocol error, or timeout).
 pub(crate) fn probe_effective_policy(
     codex_command: &std::ffi::OsStr,
     timeout: Duration,
@@ -158,11 +86,6 @@ pub(crate) fn probe_effective_policy(
     readiness
 }
 
-/// Drives the initialize/initialized/`configRequirements/read` exchange over
-/// an already-spawned child's stdin/stdout channel. Split out from
-/// `probe_effective_policy` so the child-process teardown in the caller is
-/// unconditional (this function only ever returns a readiness value, never
-/// panics or leaks the process).
 fn run_policy_probe_session(
     stdin: &mut ChildStdin,
     rx: &mpsc::Receiver<String>,
@@ -227,8 +150,6 @@ fn terminate_and_reap_with_unknown(child: Child, reason: String) -> CodexHookPol
     CodexHookPolicyReadiness::Unknown(reason)
 }
 
-/// Ensures the probed Codex process is always terminated and reaped,
-/// regardless of which path through `probe_effective_policy` returns.
 struct ChildGuard(Child);
 
 impl ChildGuard {
@@ -256,10 +177,6 @@ enum ResponseOutcome {
     Error(String),
 }
 
-/// Reads JSONL lines from `rx` until one whose `id` matches `expected_id` is
-/// found, skipping unrelated notifications/responses (bounded, so a chatty or
-/// malicious process cannot spin this loop forever), or until `deadline`
-/// elapses.
 fn read_response_for_id(
     rx: &mpsc::Receiver<String>,
     expected_id: i64,
@@ -323,9 +240,6 @@ fn read_response_for_id(
     }
 }
 
-/// Parses a `configRequirements/read` response's `result` value into policy
-/// readiness. Pure and independent of process I/O so it can be tested with
-/// captured fixtures.
 fn parse_config_requirements_result(result: &Value) -> CodexHookPolicyReadiness {
     let Some(requirements) = result.get("requirements") else {
         return CodexHookPolicyReadiness::Unknown(
@@ -355,8 +269,6 @@ fn parse_config_requirements_result(result: &Value) -> CodexHookPolicyReadiness 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -- parse_config_requirements_result: pure-parser fixtures --------------
 
     #[test]
     fn null_requirements_allows_project_hooks() {
@@ -430,20 +342,10 @@ mod tests {
         ));
     }
 
-    // -- probe_effective_policy: real subprocess spawn, using fake `codex` --
-    // scripts (executed directly, never through `sh -c`/`bash -c`/`eval`) so
-    // these tests never depend on a real installed Codex binary.
-
     #[cfg(unix)]
     fn temp_script(name: &str, contents: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::{AtomicU64, Ordering};
-        // A coarse-resolution clock in some sandboxes can make
-        // `SystemTime::now()` collide across concurrently-running test
-        // threads that write to the same OS temp directory; an atomic
-        // counter guarantees uniqueness regardless of clock resolution
-        // (`Command::spawn` on a path another thread's child process is
-        // still executing otherwise fails with `ETXTBSY`).
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nonce = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -459,13 +361,6 @@ mod tests {
         path
     }
 
-    /// Some sandboxed/overlay filesystems spuriously return `ETXTBSY`
-    /// ("Text file busy") when `exec`ing a script that was written and
-    /// `chmod`ed moments earlier by a concurrently-running test thread, even
-    /// with a guaranteed-unique path. Retrying a couple of times is the
-    /// standard mitigation for this known transient OS race and keeps these
-    /// tests meaningful (they still fail on a genuine, persistent spawn
-    /// failure).
     #[cfg(unix)]
     fn probe_effective_policy_retrying_on_transient_busy_text(
         codex_command: &std::ffi::OsStr,

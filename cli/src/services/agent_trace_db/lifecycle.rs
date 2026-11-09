@@ -236,9 +236,6 @@ fn resolve_lifecycle_agent_trace_db_path(repo_root: Option<&Path>) -> Result<Pat
         return agent_trace_db_path_for_repository(&identity.identity.repository_id);
     }
 
-    // Outside a Git repository there is no repository identity to select an
-    // active Agent Trace DB, and there is no global/checkout fallback path.
-    // Report an actionable diagnostic instead of probing a sentinel path.
     anyhow::bail!(
         "Agent Trace diagnostics require a Git repository; run 'sce doctor' inside a repository \
          or configure agent_trace.repository_id in .sce/config.json"

@@ -195,8 +195,6 @@
 
         craneLib = (crane.mkLib pkgs).overrideToolchain (_: rustToolchain);
 
-        # Rust target triple for fully static musl Linux builds.
-        # null on non-Linux systems where the musl pipeline is never referenced.
         muslTarget =
           if pkgs.stdenv.isLinux then
             if pkgs.stdenv.hostPlatform.isAarch64 then
@@ -208,13 +206,6 @@
           else
             null;
 
-        # Per-target environment variables that tell cc-rs (and CMake) to
-        # compile C/C++ dependencies with the musl toolchain rather than the
-        # host glibc toolchain.  Without these, native deps like aws-lc-sys
-        # and zstd-sys emit glibc symbols that musl cannot satisfy.
-        # Nix's musl gcc wrapper exposes target-prefixed binaries
-        # (e.g. x86_64-unknown-linux-musl-cc), not bin/cc.
-        # Use cc.targetPrefix to construct the correct path.
         muslEnvVars =
           let
             staticPkgs = pkgs.pkgsStatic;
@@ -235,9 +226,6 @@
               "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0";
           };
 
-        # Separate toolchain that adds the musl target alongside the host target.
-        # Host-targeted checks (cli-tests, cli-clippy, cli-fmt) continue to use
-        # rustToolchain and are completely unaffected by this addition.
         rustToolchainMusl = pkgs.rust-bin.stable.${rustVersion}.default.override {
           extensions = [
             "rustfmt"
@@ -289,12 +277,6 @@
             (pkgs.lib.fileset.maybeMissing ./cli/migrations)
             cliBuildInputFileset
             (pkgs.lib.fileset.maybeMissing ./cli/assets/hooks)
-            # The `mutation_trace::mbt` Quint Connect tests shell out to
-            # `quint run`/`quint test` against `../spec/*.qnt` (relative to
-            # the `cli/` crate root). `commonCargoSources` only covers Cargo
-            # package sources, so the top-level `spec/` tree must be listed
-            # explicitly or it never reaches the sandbox and every MBT test
-            # fails with an opaque "Quint returned non-zero code."
             (pkgs.lib.fileset.maybeMissing ./spec)
           ];
         };
@@ -378,8 +360,6 @@
           ];
         };
 
-        # Fixed-output derivation to fetch Bun dependencies
-        # The output hash must be updated when package.json or bun.lock changes
         configLibBashPolicyDeps = pkgs.stdenv.mkDerivation {
           pname = "config-lib-bash-policy-deps";
           version = "0.1.0";
@@ -392,8 +372,6 @@
           };
           nativeBuildInputs = [ bunPackage ];
           dontBuild = true;
-          # Shebang patching would embed the bash store path, breaking the
-          # fixed-output hash whenever bash changes.
           dontFixup = true;
           installPhase = ''
             bun install --frozen-lockfile --no-progress
@@ -429,19 +407,10 @@
           nativeBuildInputs = [ rustToolchain ];
         };
 
-        # Commit embedding is release-only: SCE_GIT_COMMIT is applied via
-        # releaseCommitArgs to the release derivations only. Keeping it out of
-        # commonCargoArgs means the native package, cargo tests, Clippy, and fmt
-        # stay commit-independent (cache-reusable across commits).
         releaseCommitArgs = {
           SCE_GIT_COMMIT = shortGitCommit;
         };
 
-        # Produce the canonical Pkl payload before entering any Cargo
-        # derivation. The output is content-addressed by only the producer and
-        # its canonical generator inputs, so native, release, test, and Clippy
-        # builds share one handoff while dependency-only and formatting
-        # derivations remain independent of it.
         cliGeneratedInput = pkgs.runCommand "sce-cli-generated-input"
           {
             src = cliGeneratedInputSrc;
@@ -489,7 +458,6 @@
           src = craneLib.cleanCargoSource ./cli;
         };
 
-        # Release consumers only need compiled dependencies, not check artifacts.
         cargoArtifacts = craneLib.buildDepsOnly (
           cargoDepsArgs
           // {
@@ -497,23 +465,11 @@
           }
         );
 
-        # Keep production artifacts on Crane's release profile. The test and
-        # Clippy derivations use the unoptimized Cargo test profile with a
-        # separate dependency cache, so changing CLI sources does not require
-        # repeatedly optimizing the entire Rust test binary.
         testProfileArgs = {
           CARGO_PROFILE = "test";
-          # Smaller dependency artifacts for test/Clippy derivations.
-          # This uses the measured J variant (debug info disabled for all
-          # test-profile crates); Rust panic locations remain available.
           CARGO_PROFILE_TEST_DEBUG = "0";
         };
 
-        # The deps-only derivation must also prepare test/dev-dependency artifacts.
-        # The usual cargo build is redundant here: the checked targets are followed
-        # by cargo test --no-run during the check phase.
-        # Only test/Clippy vendoring removes the Turso kits' C ABI outputs.
-        # Native and release Cargo vendoring remains untouched.
         testCargoVendorDir = craneLib.vendorCargoDeps {
           cargoLock = ./cli/Cargo.lock;
           overrideVendorCargoPackage = package: drv:
@@ -570,9 +526,6 @@
           }
         );
 
-        # Separate Crane pipeline that builds a fully static musl binary on Linux.
-        # On macOS this derivation is never referenced (sceReleasePackage selects
-        # scePackage), so the null muslTarget is harmless.
         cargoDepsArgsMusl =
           (cargoDepsArgs // muslEnvVars)
           // {
@@ -598,8 +551,6 @@
         scePackageMusl = craneLibMusl.buildPackage (
           (commonCargoArgs // muslEnvVars // releaseCommitArgs)
           // {
-            # Crane expects cargoArtifacts rather than cargoArtifactsMusl.
-            # Reuse the separately prepared musl dependency artifacts.
             cargoArtifacts = cargoArtifactsMusl;
             nativeBuildInputs = [
               rustToolchainMusl
@@ -611,9 +562,6 @@
             ];
             CARGO_BUILD_TARGET = muslTarget;
 
-            # libloading (pulled by turso_core) emits `-ldl`, but musl has no
-            # separate libdl — the symbols live in libc.  Provide a stub archive
-            # so the linker can satisfy `-ldl` without pulling in glibc.
             preBuild = ''
               mkdir -p /tmp/musl-dl-shim
               cat > /tmp/musl-dl-shim/dl.c <<'CEOF'
@@ -631,12 +579,6 @@
           }
         );
 
-        # Native-toolchain release build for Darwin. Identical to scePackage
-        # except it embeds the real Git commit (SCE_GIT_COMMIT), so on macOS the
-        # release output reports the commit while native `.#sce` stays
-        # commit-independent. cargoArtifacts is deps-only and unaffected by
-        # SCE_GIT_COMMIT (only the cli crate's build.rs reads it), so it is
-        # shared with scePackage at no extra rebuild cost.
         sceReleasePackageNative = craneLib.buildPackage (
           commonCargoArgs
           // releaseCommitArgs
@@ -649,12 +591,8 @@
           }
         );
 
-        # Release package selection: static musl on Linux (fully static, no
-        # /nix/store runtime references), native-with-commit on macOS.
         sceReleasePackage = if pkgs.stdenv.isLinux then scePackageMusl else sceReleasePackageNative;
 
-        # Shared development tooling for the default shell. Excludes `scePackage`
-        # so `nix develop` does not compile the CLI; opt-in shells layer it back on.
         defaultDevShellPackages =
           (with pkgs; [
             biome
@@ -1661,10 +1599,6 @@
               mkdir -p "$out"
             '';
 
-        # Linux-only: audit the real static-musl release binary for forbidden
-        # /nix/store runtime references. Unlike nativePortabilityAuditCheck
-        # (a fixture-based unit test of the audit script), this inspects the
-        # actual sceReleasePackage binary.
         releasePortabilityAuditCheck =
           pkgs.runCommand "sce-release-portability-audit"
             {
@@ -1701,9 +1635,6 @@
           expectedVersion = version;
         };
 
-        # The dedicated MBT runner is opt-in as a package, not a flake check:
-        # cli-tests already executes the same mutation_trace::mbt test module.
-        # The Quint workflow tests the spec separately, without rebuilding Rust MBT.
         mutationTraceQuintConnectCheck = craneLib.cargoTest (
           testCargoArgs
           // {
@@ -1752,11 +1683,6 @@
 
         checks =
           {
-            # `mutation_trace::mbt` (the Quint Connect model-based-testing
-            # harness) is an ordinary `#[cfg(test)]` module reached by the
-            # full `cargo test` this check runs, so the pinned Quint binary
-            # must be on PATH for this check. The focused MBT runner is
-            # available separately as .#mutation-trace-quint-connect.
             cli-tests = craneLib.cargoTest (
               testCargoArgs
               // {
@@ -1938,8 +1864,6 @@
           shellHook = defaultDevShellHook;
         };
 
-        # Opt-in shell exposing the repository-built CLI as `sce` while keeping
-        # the default development shell fast.
         devShells.sce = pkgs.mkShell {
           packages = defaultDevShellPackages ++ [ scePackage ];
 

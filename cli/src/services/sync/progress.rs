@@ -1,5 +1,3 @@
-//! Sync-owned progress reporting contracts and terminal presentation.
-
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
@@ -7,14 +5,9 @@ use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 
 use super::sync::SyncProgressEvent;
 
-/// Receives deterministic progress events and can finalize a successful run.
 pub trait ProgressReporter<E> {
     fn report(&mut self, event: E);
 
-    /// Finalizes a successfully completed report.
-    ///
-    /// Reporters that do not need a separate successful-finalization step can
-    /// keep the default no-op implementation.
     fn finish_successfully(&mut self) {}
 }
 
@@ -27,7 +20,6 @@ where
     }
 }
 
-/// Discards progress for callers that only need the final result.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NoopProgressReporter;
 

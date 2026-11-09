@@ -1,13 +1,3 @@
-//! Config schema embedding, JSON validation, serde DTO definitions,
-//! and config-file load/parse helpers.
-//!
-//! This submodule owns the JSON Schema constant/validator, top-level
-//! allowed-key validation, typed config-file deserialization, and the
-//! file-parse orchestration that bridges schema validation to the
-//! runtime config model. Policy-specific semantic validation (bash-policy
-//! preset/custom conflict and redundancy checks) remains in the parent
-//! module and is called through `super::` from parse helpers here.
-
 use std::path::Path;
 use std::sync::OnceLock;
 

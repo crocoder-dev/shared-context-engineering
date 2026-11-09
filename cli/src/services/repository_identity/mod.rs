@@ -1,46 +1,22 @@
-//! Pure repository identity canonicalization and hashing.
-//!
-//! Turns an explicit configured identity or a Git remote URL into a
-//! scheme-neutral canonical identity, then derives a stable repository ID as
-//! `sha256("sce-repository-id-v1\0" + canonical_identity)` hex.
-//!
-//! This root module performs no I/O: it never opens databases, reads Git
-//! config, or touches the filesystem. Runtime precedence resolution and Git
-//! remote lookup live in [`resolve`]. Errors intentionally never echo the
-//! raw input so credential-bearing remote URLs cannot leak through
-//! diagnostics.
-
 pub mod resolve;
 
 use sha2::{Digest, Sha256};
 
-/// Domain-separation prefix hashed before the canonical identity.
 pub const REPOSITORY_ID_HASH_DOMAIN: &[u8] = b"sce-repository-id-v1\0";
 
-/// A resolved repository identity: the safe canonical form plus its hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryIdentity {
-    /// Credential-free canonical identity, safe to display and store.
     pub canonical_identity: String,
-    /// Lowercase hex SHA-256 of the domain prefix plus canonical identity.
     pub repository_id: String,
 }
 
-/// Canonicalization failure. Variants carry no input fragments so
-/// credential-bearing URLs never leak into error output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RepositoryIdentityError {
-    /// Explicit identity was empty after trimming whitespace.
     EmptyExplicitIdentity,
-    /// Remote URL was empty after trimming whitespace.
     EmptyRemoteUrl,
-    /// Remote URL scheme is not a supported Git transport.
     UnsupportedRemoteUrl,
-    /// Remote URL has no usable host component.
     MissingHost,
-    /// Remote URL has no usable repository path component.
     MissingPath,
-    /// Remote URL port component is not a valid number.
     InvalidPort,
 }
 
@@ -62,9 +38,6 @@ impl std::fmt::Display for RepositoryIdentityError {
 
 impl std::error::Error for RepositoryIdentityError {}
 
-/// Builds a repository identity from an explicitly configured identity
-/// string (`agent_trace.repository_id`). Canonicalization is trimming only:
-/// explicit identities are operator-chosen opaque values, not URLs.
 pub fn repository_identity_from_explicit(
     raw: &str,
 ) -> Result<RepositoryIdentity, RepositoryIdentityError> {
@@ -75,8 +48,6 @@ pub fn repository_identity_from_explicit(
     Ok(identity_from_canonical(canonical.to_string()))
 }
 
-/// Builds a repository identity from a Git remote URL. Equivalent SSH,
-/// SCP-style, and HTTPS URLs canonicalize to the same identity.
 pub fn repository_identity_from_remote_url(
     raw: &str,
 ) -> Result<RepositoryIdentity, RepositoryIdentityError> {
@@ -84,7 +55,6 @@ pub fn repository_identity_from_remote_url(
     Ok(identity_from_canonical(canonical))
 }
 
-/// Derives the repository ID hex digest for a canonical identity.
 pub fn derive_repository_id(canonical_identity: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(REPOSITORY_ID_HASH_DOMAIN);
@@ -92,10 +62,6 @@ pub fn derive_repository_id(canonical_identity: &str) -> String {
     hex_encode(&hasher.finalize())
 }
 
-/// Canonicalizes a Git remote URL to the scheme-neutral form
-/// `host[:port]/path` with credentials stripped, hostname lowercased,
-/// default ports removed, and query/fragment/trailing-slash/trailing-`.git`
-/// cleaned up. The returned string never contains credentials.
 pub fn canonicalize_remote_url(raw: &str) -> Result<String, RepositoryIdentityError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -143,7 +109,6 @@ fn canonicalize_scheme_url(scheme: &str, rest: &str) -> Result<String, Repositor
 }
 
 fn canonicalize_scp_style(input: &str) -> Result<String, RepositoryIdentityError> {
-    // SCP-style form: [user@]host:path — the colon must come before any '/'.
     let host_port_end = input.find(':');
     let first_slash = input.find('/');
     let colon = match (host_port_end, first_slash) {
@@ -159,7 +124,6 @@ fn canonicalize_scp_style(input: &str) -> Result<String, RepositoryIdentityError
     if host.is_empty() {
         return Err(RepositoryIdentityError::MissingHost);
     }
-    // SCP-style implies SSH on the default port; no port component exists.
     let path = clean_path(path)?;
     Ok(format!("{host}/{path}"))
 }
@@ -172,7 +136,6 @@ fn strip_userinfo(authority: &str) -> &str {
 }
 
 fn split_host_port(host_port: &str) -> Result<(String, Option<u16>), RepositoryIdentityError> {
-    // IPv6 literals are bracketed: [::1]:2222
     if let Some(rest) = host_port.strip_prefix('[') {
         let Some(close) = rest.find(']') else {
             return Err(RepositoryIdentityError::MissingHost);

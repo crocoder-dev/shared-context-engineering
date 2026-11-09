@@ -1,10 +1,3 @@
-//! Shared structural ownership and merge logic for Codex's repository hook config.
-//!
-//! The accepted shape intentionally mirrors the relevant current upstream
-//! `HooksFile`, `HookEventsToml`, `MatcherGroup`, and `HookHandlerConfig` JSON
-//! deserialization rules. This keeps setup and doctor aligned without taking a
-//! dependency on Codex's source or preserving JSON that Codex cannot load.
-
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -80,11 +73,6 @@ pub(crate) fn hook_event_key_label(event: &str) -> &'static str {
     }
 }
 
-/// Merge the canonical generated Codex hooks into an existing file.
-///
-/// A missing file is installed verbatim. An existing file is parsed and
-/// structurally validated before any merged bytes are returned, allowing the
-/// caller to preserve it unchanged when parsing or validation fails.
 pub(crate) fn merge_or_create(
     existing_bytes: Option<&[u8]>,
     generated_bytes: &[u8],
@@ -120,27 +108,13 @@ struct Registration {
     handler: Value,
 }
 
-/// The structural state of one required Codex hook registration, independent
-/// of Codex's own separate hook-trust bookkeeping (see `codex_hook_trust`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum RegistrationStructuralState {
-    /// Exactly one SCE-owned handler exists anywhere for this event, it sits
-    /// in the registration's canonical matcher group, and it matches the
-    /// canonical generated handler byte-for-byte.
     PresentAndCurrent,
-    /// No SCE-owned handler exists in any matcher group for this event.
     Missing,
-    /// An SCE-owned handler exists somewhere for this event, but the
-    /// registration is not `PresentAndCurrent`: more than one owned handler
-    /// (whether duplicated within one group or spread across groups), one
-    /// sitting in the wrong matcher group, or one whose content does not
-    /// match the canonical generated handler.
     Stale,
 }
 
-/// One required Codex hook registration's structural diagnosis, carrying the
-/// existing owned handler JSON (when present) so callers can compute Codex's
-/// own trust hash for it without re-parsing the document.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RegistrationDiagnosis {
     pub(crate) command: CodexHookCommand,
@@ -148,17 +122,9 @@ pub(crate) struct RegistrationDiagnosis {
     pub(crate) matcher: Option<&'static str>,
     pub(crate) state: RegistrationStructuralState,
     pub(crate) owned_handler: Option<Value>,
-    /// Position of the matching matcher group among `hooks.<event>`, and of
-    /// the owned handler within that group's `hooks` array, exactly as
-    /// upstream's `hook_key` enumerates them. `None` when no owned handler
-    /// was found (state is `Missing`), since there is nothing to key.
     pub(crate) position: Option<(usize, usize)>,
 }
 
-/// Whole-document diagnosis backing `sce doctor`'s Codex hook-registration
-/// reporting. `Malformed` covers both unparsable JSON and JSON that fails
-/// Codex's own structural schema; either way no per-registration state can be
-/// determined and the document cannot be safely merged.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum HooksDocumentDiagnosis {
     Absent,
@@ -166,9 +132,6 @@ pub(crate) enum HooksDocumentDiagnosis {
     Registrations(Vec<RegistrationDiagnosis>),
 }
 
-/// Diagnose each required registration's structural state without writing
-/// anything. Mirrors `merge_or_create`'s validation rules exactly so a
-/// `PresentAndCurrent` result here always implies a no-op merge.
 pub(crate) fn diagnose_document(
     existing_bytes: Option<&[u8]>,
     generated_bytes: &[u8],
@@ -214,13 +177,6 @@ struct OwnedHandlerSighting {
     in_canonical_group: bool,
 }
 
-/// Diagnose one required registration by scanning **every** matcher group
-/// under `hooks.<event>`, not just the first one whose matcher matches.
-/// Setup's merge (`merge_event_groups`) strips SCE-owned handlers from every
-/// group for the event, so a duplicate or misplaced SCE handler sitting in a
-/// second group is exactly as stale as one in the first; scoping discovery
-/// to only the first matching group would let such a document read
-/// `PresentAndCurrent` even though `merge_or_create` would still rewrite it.
 fn diagnose_registration(
     hooks: &Map<String, Value>,
     registration: &Registration,

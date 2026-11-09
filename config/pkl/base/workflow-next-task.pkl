@@ -27,10 +27,6 @@ local invokeTaskExecution = model.semanticReference.apply("Invoke task execution
 local planReviewHeadings = new model.PhaseHeadings { step = 1 }
 local taskExecutionHeadings = new model.PhaseHeadings { step = 2 }
 
-/// Contract references. A package owns `references/*-contract.yaml`, so these
-/// sentences resolve there. A composite workflow has no such file and describes
-/// its internal states inline, so the reference would resolve to nothing and is
-/// dropped. Each block-shaped reference owns its surrounding blank lines.
 local readinessHandoffSentence = model.semanticReference.apply(
   """
 
@@ -83,10 +79,6 @@ local executionCompletionBullet = model.semanticReference.apply(
   "- One valid terminal internal state was returned."
 )
 
-/// User-visible layouts. Package mode states each layout at its branch, because a
-/// command file has no sibling `references/output.md`. Composite mode cites the
-/// `output.md` section that owns the layout, and keeps only the field mapping,
-/// branch conditions, and prohibitions that travelled with it.
 local reviewBlockedBranch = model.semanticReference.apply(
   """
   `blocked` -> Do not invoke implementation. Present the result as prose. Do not print the raw result. Stop.
@@ -218,10 +210,6 @@ local continuationLayouts = model.semanticReference.apply(
   If all tasks are completed, render the **All tasks complete** layout instead.
   """
 )
-
-/// Canonical `/next-task` workflow command and its self-contained skill
-/// packages. Text mirrors the project-root `.pi/` behavioral baseline; target
-/// renderers consume this model in later workflow-rendering tasks.
 
 local planReviewPackage = new model.SkillPackage {
   slug = "sce-plan-review"

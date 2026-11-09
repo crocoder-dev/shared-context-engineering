@@ -1,13 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
-// Mock state for spawnSync calls
 let mockSpawnSyncResult: {
 	status: number;
 	stdout: string;
 	error?: Error;
 } | null = null;
 
-// Mock the node:child_process module to intercept spawnSync calls
 const { mock } = await import("bun:test");
 mock.module("node:child_process", () => ({
 	spawnSync: (
@@ -52,7 +50,6 @@ mock.module("node:child_process", () => ({
 	},
 }));
 
-// Import the plugin after mocking
 const { SceBashPolicyPlugin } = await import(
 	"./opencode-bash-policy-plugin.ts"
 );
@@ -97,7 +94,6 @@ describe("SceBashPolicyPlugin", () => {
 		test("ignores non-bash tool events", async () => {
 			const plugin = await SceBashPolicyPlugin({});
 
-			// Should return undefined for non-bash tools
 			const result = await plugin["tool.execute.before"](
 				{ tool: "read" },
 				{ args: { command: "git status" } },
@@ -153,7 +149,6 @@ describe("SceBashPolicyPlugin", () => {
 
 			const plugin = await SceBashPolicyPlugin({});
 
-			// Should return undefined (allow) without throwing
 			const result = await plugin["tool.execute.before"](
 				{ tool: "bash" },
 				{ args: { command: "git status" } },
@@ -197,7 +192,6 @@ describe("SceBashPolicyPlugin", () => {
 
 			const plugin = await SceBashPolicyPlugin({});
 
-			// Should return undefined (allow) without throwing
 			const result = await plugin["tool.execute.before"](
 				{ tool: "bash" },
 				{ args: { command: "git status" } },
@@ -251,8 +245,6 @@ describe("SceBashPolicyPlugin", () => {
 		});
 
 		test("passes normalized input format to sce policy bash", () => {
-			// Verify that the normalized JSON request format matches
-			// what sce policy bash --input normalized expects
 			const command = "git status";
 			const request = JSON.stringify({ command });
 			const parsed = JSON.parse(request);

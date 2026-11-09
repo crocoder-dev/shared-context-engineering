@@ -20,9 +20,6 @@ pub enum TransitionOrigin {
 }
 
 impl TransitionOrigin {
-    /// The provenance of a line this transition adds, and equally of a parent
-    /// line this transition removes: the effective actor is the transition,
-    /// never the actor that originally introduced the line.
     fn provenance(&self) -> LineProvenance {
         match self {
             TransitionOrigin::MutationAi(scope_id) => LineProvenance::MutationAi {
@@ -40,9 +37,6 @@ pub struct LineageError {
     pub reason: String,
 }
 
-/// Stable identity of one line of the exact parent commit: its parent-side
-/// path and 1-based line number. It never changes while the line survives,
-/// however other lines move around it.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ParentLineId {
     pub path: String,
@@ -53,14 +47,9 @@ pub struct ParentLineId {
 struct ProvenanceLine {
     content: String,
     provenance: LineProvenance,
-    /// Set only for lines carried unchanged from the parent baseline; lines
-    /// introduced by any later transition have no parent identity.
     parent_identity: Option<ParentLineId>,
 }
 
-/// The effective removal of a parent line: who removed it, and the content it
-/// had. Its provenance is invalidated to `Unknown` once the same content is
-/// plausibly restored, because text equality never proves identity.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RemovalRecord {
     content: String,
@@ -74,8 +63,6 @@ struct TransitionEffects {
 }
 
 impl TransitionEffects {
-    /// Records the parent identity of every removed line that has one; lines
-    /// introduced after the parent are removed without a trace.
     fn record_removed(&mut self, region: &[ProvenanceLine], offsets: &BTreeSet<usize>) {
         for offset in offsets {
             let line = &region[*offset];
@@ -94,8 +81,6 @@ impl TransitionEffects {
 pub struct MutationLineage {
     files: BTreeMap<String, Vec<ProvenanceLine>>,
     removals: BTreeMap<ParentLineId, RemovalRecord>,
-    /// Maps a tracked path to the parent path whose lines it holds, following
-    /// only renames the replay observed.
     parent_paths: BTreeMap<String, String>,
 }
 
@@ -144,8 +129,6 @@ impl MutationLineage {
         }
     }
 
-    /// Starts a lineage at the exact parent commit: every baseline line gets
-    /// a stable parent identity so later removals of it can be recorded.
     #[must_use]
     pub fn from_parent(files: &BTreeMap<String, Option<String>>) -> Self {
         MutationLineage {
@@ -162,8 +145,6 @@ impl MutationLineage {
         }
     }
 
-    /// Restarts from an unanchored baseline. Every parent identity and
-    /// removal claim is dropped: none survives an unverified reset.
     pub fn reset_all(&mut self, files: &BTreeMap<String, Option<String>>) {
         *self = MutationLineage::from_baseline(files);
     }
@@ -190,9 +171,6 @@ impl MutationLineage {
         Ok(())
     }
 
-    /// An added line whose content equals an earlier-removed line of the same
-    /// parent file may be a restoration of it. Identity cannot be proven from
-    /// text, so the earlier removal claim becomes unknown for good.
     fn invalidate_restored_removals(&mut self, added: &[(String, String)]) {
         if self.removals.is_empty() {
             return;
@@ -290,12 +268,10 @@ impl MutationLineage {
         }
     }
 
-    /// The tracked paths, including every path a rename moved lines into.
     pub fn tracked_paths(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
 
-    /// Whether the tracked lines of `path` are exactly the lines of `content`.
     #[must_use]
     pub fn matches_content(&self, path: &str, content: Option<&str>) -> bool {
         let Some(tracked) = self.files.get(path) else {
@@ -311,8 +287,6 @@ impl MutationLineage {
                 .all(|(line, expected)| line.content == *expected)
     }
 
-    /// Makes every removal claim that the lines at `path` bear on unknown:
-    /// removals from `path` itself and from the parent path it holds.
     pub fn distrust_removals(&mut self, path: &str) {
         let parent_path = self.parent_paths.get(path).cloned();
         for (identity, record) in &mut self.removals {
@@ -322,13 +296,11 @@ impl MutationLineage {
         }
     }
 
-    /// The parent path whose lines `path` holds, when the replay established it.
     #[must_use]
     pub fn parent_path_of(&self, path: &str) -> Option<&str> {
         self.parent_paths.get(path).map(String::as_str)
     }
 
-    /// Every recorded parent-line removal with its effective provenance.
     #[cfg(test)]
     #[must_use]
     pub fn removed_identities(&self) -> Vec<(ParentLineId, LineProvenance)> {
@@ -346,14 +318,6 @@ impl MutationLineage {
             .collect()
     }
 
-    /// Resolves the committed old-side removed lines of one canonical file
-    /// against the replayed parent identities.
-    ///
-    /// The committed file must hold the lines of `parent_path` by an observed
-    /// path history. Where the canonical diff and the replay disagree about
-    /// which parent lines were removed, they chose different alignments among
-    /// equal content, so every committed removal sharing that content is
-    /// ambiguous and stays `Unknown`.
     #[must_use]
     pub fn committed_removals(
         &self,

@@ -1,5 +1,3 @@
-//! Best-effort launcher for one-shot automatic Agent Trace synchronization.
-
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,8 +32,6 @@ impl AutoSyncCommand {
     }
 }
 
-/// Launches the current executable to synchronize the repository in the
-/// background. Launcher failures are intentionally ignored by the caller.
 pub fn launch(repository_root: &Path) {
     let _ = launch_with(repository_root, std::env::current_exe, spawn_command);
 }
@@ -65,8 +61,6 @@ fn spawn_command(spec: AutoSyncCommand) -> io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
-    // Dropping Child does not wait for it; the spawned sync continues
-    // independently of the post-commit caller.
     let _child = command.spawn()?;
     Ok(())
 }

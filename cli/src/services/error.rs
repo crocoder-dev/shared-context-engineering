@@ -363,9 +363,6 @@ impl std::fmt::Display for UserError {
     }
 }
 
-/// Typed CLI-boundary error separating expected, user-facing failures from
-/// internal failures whose technical `anyhow` source is preserved for
-/// observability and diagnostic rendering.
 #[derive(Debug)]
 pub enum CliError {
     User {
@@ -401,14 +398,10 @@ impl CliError {
         Self::internal(FailureClass::Dependency, source)
     }
 
-    /// Compatibility helper for parse failures still expressed as a plain
-    /// message rather than a live `anyhow::Error` source.
     pub fn parse(message: impl Into<String>) -> Self {
         Self::internal(FailureClass::Parse, anyhow::Error::msg(message.into()))
     }
 
-    /// Compatibility helper for validation failures still expressed as a
-    /// plain message rather than a live `anyhow::Error` source.
     pub fn validation(message: impl Into<String>) -> Self {
         Self::internal(FailureClass::Validation, anyhow::Error::msg(message.into()))
     }

@@ -143,8 +143,6 @@ impl IntegrationGroupKey {
             (IntegrationTarget::Pi, IntegrationArea::Extensions) => "Pi extensions",
             (IntegrationTarget::Codex, IntegrationArea::Skills) => "Codex skills",
             (IntegrationTarget::Codex, IntegrationArea::Hooks) => "Codex hooks",
-            // These combinations are not produced by inspection, but retaining
-            // deterministic labels keeps the key total for future targets/areas.
             (IntegrationTarget::Pi, IntegrationArea::Plugins) => "Pi plugins",
             (IntegrationTarget::Pi, IntegrationArea::Agents) => "Pi agents",
             (IntegrationTarget::Pi, IntegrationArea::Commands) => "Pi commands",
@@ -194,30 +192,10 @@ pub(super) enum IntegrationContentState {
     Missing,
     Mismatch,
     ReadFailed(String),
-    /// A Codex hook registration is present but not canonical (an SCE-owned
-    /// handler exists but differs from the generated one, or duplicates
-    /// exist). Distinct from `Mismatch`, which describes a whole-file
-    /// byte/fragment comparison rather than one registration.
     Stale,
-    /// The whole `.codex/hooks.json` document could not be structurally
-    /// validated, so no per-registration state could be determined.
     Malformed(String),
-    /// The registration is structurally current, but Codex will not execute
-    /// it yet: disabled, never trusted, or trusted against stale content.
-    /// Carries a short machine-readable reason (`"untrusted"`, `"modified"`,
-    /// `"disabled"`, or `"unknown"`).
     NotTrusted(String),
-    /// The registration is structurally current, but Codex's effective
-    /// hook-discovery policy (`allow_managed_hooks_only = true`) discards
-    /// every project-owned hook source, so Codex will never even consider
-    /// this handler — independent of, and checked before, trust readiness.
-    /// Carries a human-readable explanation.
     PolicyBlocked(String),
-    /// Whether Codex's effective hook-discovery policy allows project hooks
-    /// could not be determined (no Codex executable, probe failure, timeout,
-    /// malformed response, etc.). Never treated as healthy: AC28 requires
-    /// proof Codex will actually execute the registration, and an unknown
-    /// policy is not proof. Carries a human-readable reason.
     PolicyUnknown(String),
 }
 

@@ -20,8 +20,6 @@ use crate::services::mutation_trace::runtime::{
     ReconciliationCounts, ReconciliationFix, ReconciliationRecommendation, StateWarning,
 };
 
-/// Guidance message rendered in the Integrations section when no integration
-/// targets are configured, detected, or both.
 const NO_INTEGRATIONS_MESSAGE: &str = "No integrations installed; run 'sce setup'";
 
 pub(super) fn render_report(request: DoctorRequest, execution: &DoctorExecution) -> Result<String> {
@@ -621,10 +619,6 @@ fn asset_path_components(area: IntegrationArea, relative_path: &str) -> Vec<Stri
             _ => None,
         })
         .collect::<Vec<_>>();
-    // Codex's relative paths keep their own `.agents/`/`.codex/` output-root
-    // prefix (unlike OpenCode/Claude/Pi, whose relative paths are already
-    // stripped of their single root), so drop that leading root segment
-    // before the shared per-area prefix stripping below.
     if components
         .first()
         .is_some_and(|first| first == ".agents" || first == ".codex")

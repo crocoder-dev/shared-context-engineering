@@ -38,9 +38,6 @@ impl RepositoryRoot {
         repository_root
     }
 
-    /// Resolves `path` to its repository identity. Absolute paths stand on
-    /// their own; a relative path is interpreted only in the coordinate system
-    /// `origin` establishes, and is rejected when there is none.
     pub(crate) fn repository_path(
         &self,
         path: &str,

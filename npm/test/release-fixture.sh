@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Shared hermetic release-fixture harness for npm package tests.
-#
-# Sourced as a library (pack-smoke.sh, VM scenarios, release canary) or run
-# directly:
-#
-#   release-fixture.sh prepare <dir> [--package-dir <path> | --tarball <path>]
-#                                    [--binary <path>]
-#   release-fixture.sh serve <dir> [--port-file <file>]
-#
-# The fixture swaps a throwaway signing key into the staged package and
-# repacks it, so it never proves the exact release artifact or production key.
 set -euo pipefail
 
 FIXTURE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,8 +40,6 @@ fixture_assert_launcher_mode() {
   fixture_log "packed $FIXTURE_LAUNCHER_ENTRY mode $launcher_mode"
 }
 
-# Stages package contents into <stage-dir> from a packed tarball (asserting its
-# launcher mode first) or, when <tarball> is empty, from <package-dir>.
 fixture_stage_package() {
   local stage_dir="$1"
   local package_dir="$2"
@@ -69,8 +56,6 @@ fixture_stage_package() {
   rm -rf "$stage_dir/runtime" "$stage_dir/node_modules"
 }
 
-# Sets FIXTURE_VERSION and FIXTURE_TARGET_{TRIPLE,OS,ARCH} from the staged
-# package.json and the package's own platform resolution.
 fixture_resolve_platform() {
   local stage_dir="$1"
   local platform_json
@@ -89,8 +74,6 @@ fixture_resolve_platform() {
   FIXTURE_TARGET_ARCH="$(node -p "JSON.parse(process.argv[1]).arch" "$platform_json")"
 }
 
-# Generates a throwaway manifest signing key (its public half replaces the
-# staged package key) and a self-signed loopback TLS certificate.
 fixture_generate_keys() {
   local stage_dir="$1"
   local keys_dir="$2"
@@ -110,8 +93,6 @@ fixture_generate_tls_cert() {
     -keyout "$keys_dir/tls-key.pem" -out "$keys_dir/tls-cert.pem" 2>/dev/null
 }
 
-# Builds the canonical archive (stub binary, or <binary> when given), its
-# checksum, and the signed release manifest in <release-dir>.
 fixture_build_release() {
   local release_dir="$1"
   local keys_dir="$2"
@@ -169,8 +150,6 @@ EOF
     openssl base64 -A >"$release_dir/$manifest_name.sig"
 }
 
-# Packs <stage-dir> into <pack-dir>, asserts the launcher mode, and sets
-# FIXTURE_TARBALL.
 fixture_pack() {
   local stage_dir="$1"
   local pack_dir="$2"
@@ -181,9 +160,6 @@ fixture_pack() {
   fixture_assert_launcher_mode "$FIXTURE_TARBALL"
 }
 
-# Starts fixture-release-server.mjs in the background, waits for its port
-# file, and sets FIXTURE_SERVER_PID and FIXTURE_PORT. Callers own cleanup via
-# fixture_serve_stop.
 fixture_serve_start() {
   local release_dir="$1"
   local keys_dir="$2"
@@ -215,8 +191,6 @@ fixture_serve_stop() {
   fi
 }
 
-# Installs <tarball> into <prefix-dir> offline against the loopback fixture
-# server at <port>, trusting <tls-cert>; npm cache/config live in <npm-state-dir>.
 fixture_npm_install() {
   local prefix_dir="$1"
   local tarball="$2"
@@ -238,8 +212,6 @@ fixture_npm_install() {
     fixture_fail "npm install of the packed tarball failed."
 }
 
-# Asserts the installed runtime/sce mode and the .bin/sce symlink target, and
-# sets FIXTURE_SCE_BIN.
 fixture_assert_install_layout() {
   local prefix_dir="$1"
   local installed_dir="$prefix_dir/$FIXTURE_INSTALLED_PACKAGE_DIR"

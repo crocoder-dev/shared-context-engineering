@@ -86,12 +86,6 @@ enum CredentialStorePlatform {
     Unsupported,
 }
 
-/// Guards the one-time registration of the platform-native credential store.
-///
-/// `OnceLock::get_or_try_init` is still unstable in the effective stable
-/// toolchain, so a small atomic in-progress guard serializes fallible
-/// initialization. The `OnceLock` is set only after success; on panic or
-/// error, the in-progress guard is released and the next caller can retry.
 static DEFAULT_STORE: OnceLock<bool> = OnceLock::new();
 static DEFAULT_STORE_INITIALIZING: AtomicBool = AtomicBool::new(false);
 
@@ -364,7 +358,6 @@ fn derive_env_encryption_key(secret: &str) -> Result<String> {
     Ok(hex_encode(&Sha256::digest(secret.as_bytes())))
 }
 
-/// Generate a 64-character lowercase hex key from 32 random bytes.
 fn generate_key() -> String {
     use rand::Rng;
 
@@ -372,7 +365,6 @@ fn generate_key() -> String {
     hex_encode(&key)
 }
 
-/// Hex-encode a byte slice into a lowercase hex string.
 fn hex_encode(bytes: &[u8]) -> String {
     use std::fmt::Write;
 

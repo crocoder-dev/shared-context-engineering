@@ -21,8 +21,6 @@ local expectedWorkflowSkillByCommand = new Mapping {
   }
 }
 
-/// Workflow packages render the package-local references owned by each
-/// canonical workflow. Exact coverage rejects stale or missing references.
 local phaseReferencePathsByWorkflow = new Mapping {
   ["change-to-plan"] = new Listing {
     "references/context-load.md"
@@ -65,9 +63,6 @@ local expectedSkillDocumentPaths = new Mapping {
   ["sce-decision/references/adr-template.md"] = true
 }
 
-/// Codex additionally carries `agents/openai.yaml` for each of the six catalog
-/// workflow skills, disabling implicit invocation; `sce-decision` has no
-/// user-facing entrypoint on any target and keeps no such file.
 local expectedCodexSkillDocumentPaths = new Mapping {
   for (path, _ in expectedSkillDocumentPaths) {
     [path] = true
@@ -125,8 +120,6 @@ local assertExactKeys = (actual: Mapping, expected: Mapping, label: String) ->
   ) "\(label): complete"
   else error("\(label) inventory does not match the canonical workflow matrix")
 
-/// Routing is target-neutral: every collapsed target's command names exactly its
-/// own workflow skill and no other. `target` labels which one is being checked.
 local assertCommandRoute = (target: String, slug: String, document: String) ->
   let (expectedInvocation = "Invoke the `\(expectedWorkflowSkillByCommand[slug])` skill exactly once")
     if (
@@ -158,8 +151,6 @@ inventoryChecks {
   ["codex-skill-documents"] = assertExactKeys.apply(codexSkillDocuments, expectedCodexSkillDocumentPaths, "Codex skill document")
 }
 
-/// Force rendering after exact inventory checks so target-specific metadata
-/// lookups and every nested package document are evaluated.
 opencodeAgentCoverage {
   for (slug, document in opencodeAgents) {
     [slug] = document.rendered

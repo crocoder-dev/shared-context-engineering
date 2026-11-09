@@ -205,16 +205,12 @@ exec "$@"
 """
 }
 
-/// Claude commands are intentionally thin. Each routes to exactly one composite
-/// workflow skill, which owns all phases, waits, and final response rendering.
 commands {
   for (slug, workflow in workflowResults.workflows) {
     [slug] = workflowResults.renderCommand.apply(workflow, "allowed-tools: \(metadata.commandAllowedTools[slug])\n")
   }
 }
 
-/// Claude has six command-routed workflow packages plus the standalone
-/// decision-writing package used internally during synchronization.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("compatibility: claude\n", "$ARGUMENTS", (_) -> "")) {
     [path] = document

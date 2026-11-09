@@ -10,9 +10,6 @@ local commandAgentLine = (slug: String) ->
   let (agentSlug = catalog.workflows[slug].openCodeAgentSlug)
     "agent: \"\(metadata.agentDisplayNames[agentSlug])\"\n"
 
-/// One command declares one workflow skill as both its entry skill and its whole
-/// skill chain. The skill owns every phase, so there is no sibling package to
-/// hand off to.
 local commandSkillLines = (slug: String) ->
   let (skillSlug = catalog.workflows[slug].skillSlug)
     "entry-skill: \"\(skillSlug)\"\nskills:\n  - \"\(skillSlug)\"\n"
@@ -51,8 +48,6 @@ agents {
   }
 }
 
-/// OpenCode commands are intentionally thin. Each routes to exactly one composite
-/// workflow skill, which owns all phases, waits, and final response rendering.
 commands {
   for (slug, workflow in workflowResults.workflows) {
     [slug] = workflowResults.renderCommand.apply(
@@ -62,10 +57,6 @@ commands {
   }
 }
 
-/// OpenCode has six command-routed workflow packages plus the standalone
-/// decision-writing package used internally during synchronization. Package-
-/// relative paths stay flattened for deterministic generation, and only skill
-/// entrypoints carry OpenCode-supported metadata.
 skillDocuments {
   for (path, document in workflowResults.skillDocuments.apply("compatibility: \(metadata.skillCompatibility)\n", "$ARGUMENTS", (_) -> "")) {
     [path] = document

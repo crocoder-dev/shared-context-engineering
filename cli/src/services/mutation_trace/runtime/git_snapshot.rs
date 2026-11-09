@@ -204,9 +204,6 @@ impl GitSnapshotService {
         .await
     }
 
-    /// Resolves the tree of `commit_oid` and, for a single-parent commit, the
-    /// tree of its first parent, by explicit object ID and never through `HEAD`.
-    /// Root and merge commits have no parent tree to anchor removals to.
     pub async fn committed_trees(&self, commit_oid: &str) -> Result<CommittedTrees> {
         if commit_oid.is_empty() || !commit_oid.chars().all(|c| c.is_ascii_hexdigit()) {
             bail!("commit OID '{commit_oid}' is not a hexadecimal object ID");
@@ -502,12 +499,7 @@ pub struct PinnedRef {
 
 #[derive(Debug)]
 pub enum PinInventoryError {
-    /// `git for-each-ref` itself failed to execute or exited non-zero.
     Git(anyhow::Error),
-    /// A ref under the SCE namespace is not shaped like a `pin_tree` output: a
-    /// symbolic ref, a non-tree target, a name/target SHA mismatch, an
-    /// unparseable `for-each-ref` line, or an unexpected extra path segment.
-    /// `reason` carries the specific discriminant for tests and `Display`.
     MalformedRef { ref_name: String, reason: String },
 }
 

@@ -40,22 +40,12 @@ pub enum BatchAttemptOutcome {
     Terminal(ControlPlaneError),
 }
 
-/// Terminal failure of [`sync_stream`].
 #[derive(Debug)]
 pub enum StreamSyncError {
-    /// The local-row reader closure failed.
     Read(String),
-    /// The `/state`-refresh closure failed.
     Refresh(ControlPlaneError),
-    /// A syntactically successful batch response did not match the rows
-    /// that were sent (`accepted != rows.len()` or
-    /// `cursor != rows.last().source_row_id()`).
     InvalidResponse(String),
-    /// The batch failed with a terminal control-plane error. Unlike
-    /// [`Self::Refresh`], this does not represent a failed `/state` call.
     Terminal(ControlPlaneError),
-    /// The reconciliation loop exceeded [`RECONCILIATION_MAX_ATTEMPTS`]
-    /// without converging.
     DidNotConverge,
 }
 
@@ -79,10 +69,6 @@ impl fmt::Display for StreamSyncError {
 impl std::error::Error for StreamSyncError {}
 
 impl StreamSyncError {
-    /// True only when the underlying `ControlPlaneError` (from a `Refresh`
-    /// or `Terminal` failure) means the caller has no usable credentials.
-    /// `Read`, `InvalidResponse`, and `DidNotConverge` never carry a
-    /// `ControlPlaneError` and are never authentication failures.
     pub fn is_authentication_failure(&self) -> bool {
         match self {
             Self::Refresh(error) | Self::Terminal(error) => error.is_authentication_failure(),
@@ -90,10 +76,6 @@ impl StreamSyncError {
         }
     }
 
-    /// True only when the underlying `ControlPlaneError` (from a `Refresh`
-    /// or `Terminal` failure) means local credential storage is unavailable.
-    /// `Read`, `InvalidResponse`, and `DidNotConverge` never carry a
-    /// `ControlPlaneError` and are never storage failures.
     pub fn storage_failure(&self) -> Option<AuthStorageFailure> {
         match self {
             Self::Refresh(error) | Self::Terminal(error) => error.storage_failure(),
@@ -102,7 +84,6 @@ impl StreamSyncError {
     }
 }
 
-/// Outcome of a fully converged [`sync_stream`] run for one stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamSyncOutcome {
     pub uploaded: usize,
@@ -111,18 +92,6 @@ pub struct StreamSyncOutcome {
     pub batches: usize,
 }
 
-/// Synchronizes one Agent Trace capture stream: reads local rows after
-/// `cursor` via `read_after`, uploads them in batches bounded by
-/// `batch_limit` via `ingest_batch`, and advances the cursor only from a
-/// validated server response. Never infers the next cursor from
-/// `cursor + rows.len()`; it always uses the server-reported `cursor`
-/// (or, on reconciliation, the freshly fetched `/state` cursor).
-///
-/// On `Conflict` or `Ambiguous`, calls `refresh_cursor` and resumes from the
-/// refreshed value: if it advanced, the next read naturally skips the
-/// already-accepted rows; if unchanged, the same rows are re-read and
-/// resent. Both cases share one bounded reconciliation counter. A `Terminal`
-/// outcome stops immediately without calling `refresh_cursor`.
 pub async fn sync_stream<'a, T, ReadFn, IngestFn, RefreshFn>(
     initial_cursor: i64,
     batch_limit: usize,

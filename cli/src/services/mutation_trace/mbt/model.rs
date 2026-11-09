@@ -1,24 +1,3 @@
-//! Comparable model state and Quint ITF wire types for the MBT harness.
-//!
-//! Quint Connect deserializes trace state via the [`itf`] wire format, where
-//! sum types serialize as `{ tag, value }` records (see the `quint-connect`
-//! crate README's "Enums" section). The `Wire*` types here mirror that exact
-//! shape for every Quint type reachable from `spec/mutation_cursor.qnt`'s
-//! comparable state, then convert into this crate's own domain types
-//! (`super::super::types`) via `From` impls, so [`ModelState`] and the values
-//! [`super::driver::MutationCursorDriver`] extracts stay expressed in the
-//! same production types the rest of `mutation_trace` uses.
-//!
-//! [`WireModelState`] and every semantic `Wire*` record use
-//! `#[serde(deny_unknown_fields)]`, so a new Quint state variable or record
-//! field fails deserialization instead of being silently dropped. `spec/
-//! mutation_cursor.qnt`'s verification-only variables (`scopeStartCount`,
-//! `everTerminal`, every `*History` set, `evidenceAttempts`, `mbtAction`) are
-//! given explicit [`IgnoredAny`] fields on [`WireModelState`], so they are a
-//! deliberate exclusion from the compared state rather than an accidental
-//! one — adding a new Quint variable forces a choice between modeling it as
-//! semantic state or classifying it here as verification-only.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{de::IgnoredAny, Deserialize};
@@ -28,10 +7,6 @@ use super::super::types::{
     FailureKind, MutationEvent, ScopeId, ScopeState, ScopeStatus, TreeId, WorktreeId,
     WorktreeState,
 };
-
-// ---------------------------------------------------------------------
-// Finite identity wire types (`spec/mutation_cursor.qnt`'s unit sum types)
-// ---------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize)]
 #[serde(tag = "tag")]
@@ -166,10 +141,6 @@ impl From<WireAttemptId> for AttemptId {
     }
 }
 
-// ---------------------------------------------------------------------
-// Enum wire types
-// ---------------------------------------------------------------------
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize)]
 #[serde(tag = "tag")]
 pub(super) enum WireActorKind {
@@ -245,10 +216,6 @@ impl From<WireAttemptStatus> for AttemptStatus {
         }
     }
 }
-
-// ---------------------------------------------------------------------
-// Structured wire types
-// ---------------------------------------------------------------------
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -414,17 +381,6 @@ impl From<WireMutationEvent> for MutationEvent {
     }
 }
 
-// ---------------------------------------------------------------------
-// Comparable model state
-// ---------------------------------------------------------------------
-
-/// The comparable subset of `spec/mutation_cursor.qnt`'s state: every
-/// variable named by AC5 (`worktrees`, `scopes`, `worktreeTrees`,
-/// `externalTaint`, `processedEvents`, `attempts`, `mutationEvents`),
-/// expressed in this crate's own domain types. Every other Quint variable is
-/// verification-only and is dropped via an explicit [`IgnoredAny`] field on
-/// [`WireModelState`], not by serde's default unknown-field handling — see
-/// that type.
 #[derive(Debug, Eq, PartialEq, Deserialize)]
 #[serde(from = "WireModelState")]
 pub struct ModelState {
@@ -437,12 +393,6 @@ pub struct ModelState {
     pub mutation_events: BTreeSet<MutationEvent>,
 }
 
-/// Mirrors every `var` in `spec/mutation_cursor.qnt`'s state, so adding a
-/// new Quint variable without updating this struct fails deserialization
-/// (`deny_unknown_fields`) instead of silently vanishing. Verification-only
-/// variables are still accepted, but only via an explicit [`IgnoredAny`]
-/// field — modeling a new Quint variable here as `IgnoredAny` is a
-/// deliberate "not semantic state" decision, not an oversight.
 #[allow(
     dead_code,
     reason = "verification-only Quint variables are deserialized to satisfy deny_unknown_fields and never read"
@@ -450,7 +400,6 @@ pub struct ModelState {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WireModelState {
-    // Semantic state: compared against Rust via `ModelState`.
     worktrees: BTreeMap<WireWorktreeId, WireWorktreeState>,
     scopes: BTreeMap<WireScopeId, WireScopeState>,
     worktree_trees: BTreeMap<WireWorktreeId, WireTreeId>,
@@ -459,8 +408,6 @@ struct WireModelState {
     attempts: BTreeMap<WireAttemptId, WireAttemptState>,
     mutation_events: BTreeSet<WireMutationEvent>,
 
-    // Verification-only: present in Quint's state for the model checker,
-    // not part of the Rust refinement comparison.
     scope_start_count: IgnoredAny,
     ever_terminal: IgnoredAny,
     cursor_history: IgnoredAny,

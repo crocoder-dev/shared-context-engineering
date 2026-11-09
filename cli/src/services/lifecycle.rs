@@ -266,9 +266,6 @@ impl LifecycleProvider {
     }
 }
 
-/// Returns lifecycle providers in deterministic orchestration order.
-///
-/// Provider order is config → `local_db` → `auth_db` → `agent_trace_db` → hooks when hook lifecycle behavior is requested.
 pub fn lifecycle_providers(include_hooks: bool) -> Vec<LifecycleProvider> {
     let mut providers = vec![
         LifecycleProvider::Config,

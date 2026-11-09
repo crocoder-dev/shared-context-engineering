@@ -1,14 +1,5 @@
 import "workflow-content.pkl" as model
 
-/// Canonical `/handover` workflow command and its self-contained `sce-handover`
-/// skill package. Text mirrors the project-root `.pi/` behavioral baseline;
-/// target renderers consume this model in later workflow-rendering tasks.
-///
-/// Unlike the other canonical workflows, `sce-handover` invokes no sibling
-/// phase and waits for nothing mid-run, so package and composite rendering
-/// differ only by frontmatter, title, and the generic preamble sections a
-/// composite skill receives from its renderer.
-
 local COMMAND = """
     ---
     description: "Write a session handover document, or load one for continuation"
