@@ -435,7 +435,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. The `sce setup` ordering now upgrades stale canonical `$schema` declarations before the remote preflight and before dispatch, which changes setup behavior for stale files. Setup output is unchanged until T06, and durable documentation is scheduled for T08.
   - Context synchronization: synced
 
-- [ ] T06: `Report schema upgrade outcomes in setup output` (status:todo)
+- [x] T06: `Report schema upgrade outcomes in setup output` (status:done)
   - Task ID: T06
   - Scope:
     - In:
@@ -454,7 +454,44 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - Silent outcomes (absent file, no declaration, current series) render nothing.
   - Verify:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `cli/src/services/setup/command.rs`
+    - `cli/src/services/setup/schema_upgrade.rs`
+    - `cli/src/services/setup/mod.rs`
+  - Result:
+    - `render_schema_upgrade_section(&[SchemaUpgradeReport]) -> Option<String>` in `command.rs` renders a `Config schema:` heading and one `- `-prefixed line for each `Upgraded` or `Skipped` file, using the fixed wording. It returns `None` when every outcome is `Unchanged`, which covers an absent file, no declaration, and the current series.
+    - `SetupCommand::execute` puts the section first, before the context baseline message. Context-only mode plans no upgrades, so it never renders the section.
+    - Wording:
+      - Upgraded: `upgraded '<path>' from v<from> to v<current_schema_version()>`.
+      - Newer series: `version.series()` gives the `X.Y` series.
+      - Unrecognized: the line names `sce_config_schema_url()`.
+      - Symlink-managed: `it is a symlink; SCE cannot modify a symlink-managed config. Update the file's source directly.`
+      - Concurrent modification: `it changed while setup was upgrading '$schema'. Rerun 'sce setup'.`
+    - The setup exit code is unchanged (successful).
+    - Removed the `dead_code` expects on `SetupRepository.schema_upgrades` and on `mod schema_upgrade`.
+    - 7 new tests in `setup::command::tests`:
+      - the section is omitted for no reports or only `Unchanged` reports;
+      - the upgraded line, with `Unchanged` files skipped;
+      - the newer-series line;
+      - the unrecognized line;
+      - the candidate-invalid line;
+      - the symlink, concurrent-modification, and I/O lines;
+      - real setup resolution with an invalid stale local file and a valid stale global file, which renders both lines in order.
+    - Approved assumptions:
+      - `Skipped(Io)`, which covers unreadable or non-JSON files and I/O write failures, renders `left '<path>' unchanged; setup could not upgrade '$schema': <error>`. The plan gave this case no fixed wording.
+    - Deviations:
+      - `from` was removed from `SchemaUpgradePlan::CandidateInvalid` and `SchemaUpgradeSkip::CandidateInvalid`. The fixed candidate-invalid wording does not use it, and once the expects were removed it was dead code that failed `clippy -D warnings`. The T04 test drops its `from` assertion.
+      - When the user cancels an interactive prompt, the section is also put before the cancellation text, because upgrades are committed before dispatch prompts. That text still reads "No files were changed." Its wording was left unchanged because other sections are out of scope.
+      - `execute` carries `#[allow(clippy::too_many_lines)]`, matching `config/resolver.rs` and `config/render.rs`.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`: passed (108 passed, 0 failed).
+    - Supplementary checks:
+      - `… test … schema_upgrade`: passed (23 passed, 0 failed).
+      - `clippy --all-targets -- -D warnings`: passed.
+      - `cargo fmt --check`: passed.
+  - Context impact: localized, user-visible. `sce setup` output now starts with a `Config schema:` section whenever a canonical file's `$schema` is upgraded or skipped. Durable documentation of the section is scheduled for T08.
+  - Context synchronization: synced
 
 - [ ] T07: `Add an end-to-end setup schema-upgrade scenario check` (status:todo)
   - Task ID: T07

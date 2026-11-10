@@ -25,7 +25,6 @@ pub(crate) enum SchemaUpgradePlan {
         from: SchemaVersion,
     },
     CandidateInvalid {
-        from: SchemaVersion,
         reason: String,
     },
 }
@@ -41,7 +40,7 @@ pub(crate) enum SchemaUpgradeOutcome {
 pub(crate) enum SchemaUpgradeSkip {
     NewerSeries(SchemaVersion),
     Unrecognized,
-    CandidateInvalid { from: SchemaVersion, reason: String },
+    CandidateInvalid { reason: String },
     SymlinkManaged,
     ConcurrentModification,
     Io(anyhow::Error),
@@ -88,7 +87,6 @@ pub(crate) fn plan_schema_upgrade(path: &Path, layer: ConfigLayer) -> SchemaUpgr
     };
     if let Err(error) = parse_file_config(&candidate, path, layer.path_source()) {
         return SchemaUpgradePlan::CandidateInvalid {
-            from,
             reason: format!("{error:#}"),
         };
     }
@@ -124,8 +122,8 @@ where
         SchemaUpgradePlan::NewerSeries(version) => SchemaUpgradeSkip::NewerSeries(version),
         SchemaUpgradePlan::Unrecognized => SchemaUpgradeSkip::Unrecognized,
         SchemaUpgradePlan::Unreadable(error) => SchemaUpgradeSkip::Io(error),
-        SchemaUpgradePlan::CandidateInvalid { from, reason } => {
-            SchemaUpgradeSkip::CandidateInvalid { from, reason }
+        SchemaUpgradePlan::CandidateInvalid { reason } => {
+            SchemaUpgradeSkip::CandidateInvalid { reason }
         }
         SchemaUpgradePlan::Ready {
             original,
@@ -494,10 +492,9 @@ mod tests {
         write_config(&path, &contents);
 
         let plan = plan_schema_upgrade(&path, ConfigLayer::Repository);
-        let SchemaUpgradePlan::CandidateInvalid { from, reason } = &plan else {
+        let SchemaUpgradePlan::CandidateInvalid { reason } = &plan else {
             panic!("expected an invalid candidate, got {plan:?}");
         };
-        assert_eq!(from.to_string(), older);
         assert!(reason.contains("unknown_key"), "{reason}");
         assert!(!reason.contains("/$schema"), "{reason}");
 
