@@ -141,6 +141,7 @@ export function parseVersion(versionStdout: string): string | undefined {
 export const LOGIN_LABELS: Record<string, string> = {
   logged_in: `${GREEN} logged in`,
   not_logged_in: `${RED} not logged in, run \`sce auth login\``,
+  unavailable: `${YELLOW} login status unavailable, run \`sce doctor\``,
   not_required: `${WHITE} login not required`,
 }
 

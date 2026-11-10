@@ -451,6 +451,7 @@ pub(crate) enum ProblemKind {
     MutationScopeHealthInvalid,
     ManagedTelemetryUnavailable,
     SceLoginRequired,
+    SceLoginUnavailable,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -552,6 +553,7 @@ pub(super) fn problem_kind(kind: ProblemKind) -> &'static str {
         ProblemKind::MutationScopeHealthInvalid => "mutation_scope_health_invalid",
         ProblemKind::ManagedTelemetryUnavailable => "managed_telemetry_unavailable",
         ProblemKind::SceLoginRequired => "sce_login_required",
+        ProblemKind::SceLoginUnavailable => "sce_login_unavailable",
     }
 }
 
