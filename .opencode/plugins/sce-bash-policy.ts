@@ -13,6 +13,11 @@ interface JsonPolicyResult {
 const SCE_INSTALL_URL =
 	"https://sce.crocoder.dev/docs/getting-started#install-cli";
 
+/**
+ * Evaluate a bash command against SCE bash-tool policy by delegating to the
+ * Rust `sce policy bash` command. Returns the parsed JSON result, or null if
+ * the policy check could not be performed (fail-open).
+ */
 function evaluateBashCommandPolicy(command: string): JsonPolicyResult | null {
 	try {
 		const result = spawnSync(
@@ -67,6 +72,7 @@ export const SceBashPolicyPlugin: Plugin = async () => {
 
 			const policyResult = evaluateBashCommandPolicy(command);
 			if (!policyResult) {
+				// Fail open: if the policy check cannot be performed, allow the command.
 				return;
 			}
 

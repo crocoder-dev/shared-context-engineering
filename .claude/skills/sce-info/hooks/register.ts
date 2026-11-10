@@ -32,7 +32,7 @@ export function gradientColor(col: number): string {
 export const PULSE = ['#ff3131', '#e02b2b', '#b82323', '#8f1b1b', '#b82323', '#e02b2b'] as const
 export const PULSE_INTERVAL_MS = 150
 
-export const EXPECTED_SCE_VERSION = '0.4.0-pre-alpha-v13'
+export const EXPECTED_SCE_VERSION = '0.4.0-pre-alpha-v14'
 export const SITE = 'sce.crocoder.dev'
 export const INSTALL_URL = `https://${SITE}/docs/getting-started#install-cli`
 export const FOOTER = `Visit ${SITE} to learn more.`
