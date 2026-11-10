@@ -72,6 +72,7 @@ test('login and auto sync states each get a colored label', () => {
   expect(line('not_logged_in', 'disabled')).toBe(`🟢 ${SCE} ┃ 🔴 not logged in, run \`sce auth login\` ┃ 🟡 auto sync off`)
   expect(line('not_required', 'not_ready')).toBe(`🟢 ${SCE} ┃ ⚪ login not required ┃ 🔴 auto sync not ready`)
   expect(line('logged_in', 'not_applicable')).toBe(`🟢 ${SCE} ┃ 🟢 logged in ┃ ⚪ auto sync n/a`)
+  expect(line('unavailable', 'ready')).toBe(`🟢 ${SCE} ┃ 🟡 login status unavailable, run \`sce doctor\` ┃ 🟢 auto sync on`)
 })
 
 test('git hooks show a setup hint unless every hook is installed and current', () => {

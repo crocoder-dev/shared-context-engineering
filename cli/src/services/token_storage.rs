@@ -84,6 +84,12 @@ pub struct StoredTokens {
     pub stored_at_unix_seconds: u64,
 }
 
+pub(crate) enum StoredTokensLookup {
+    Missing,
+    SchemaNotCurrent,
+    Found(StoredTokens),
+}
+
 impl StoredTokens {
     fn from_token_response(token: &TokenResponse) -> Result<Self, TokenStorageError> {
         let stored_at_unix_seconds = current_unix_timestamp_seconds()?;
@@ -193,6 +199,20 @@ pub async fn load_tokens(
         return Ok(None);
     };
 
+    load_tokens_from_db(db).await
+}
+
+pub(crate) async fn load_current_tokens() -> Result<StoredTokensLookup, TokenStorageError> {
+    match open_existing_current_auth_db(CredentialAccess::NonInteractive).await? {
+        ExistingDbOpen::Missing => Ok(StoredTokensLookup::Missing),
+        ExistingDbOpen::SchemaNotCurrent => Ok(StoredTokensLookup::SchemaNotCurrent),
+        ExistingDbOpen::Open(db) => Ok(load_tokens_from_db(db)
+            .await?
+            .map_or(StoredTokensLookup::Missing, StoredTokensLookup::Found)),
+    }
+}
+
+async fn load_tokens_from_db(db: &AuthDb) -> Result<Option<StoredTokens>, TokenStorageError> {
     let sql = "SELECT access_token, token_type, expires_in, refresh_token, scope, \
         stored_at_unix_seconds FROM auth_credentials WHERE id = ?1";
 
@@ -254,3 +274,6 @@ fn current_unix_timestamp_seconds() -> Result<u64, TokenStorageError> {
         })?
         .as_secs())
 }
+
+#[cfg(test)]
+mod tests;

@@ -315,6 +315,13 @@ fn sce_login_node(report: &HookDoctorReport, access: DoctorAccess) -> DoctorDisp
             DoctorDisplayStatus::Fail,
             problem_details(report, |kind| matches!(kind, ProblemKind::SceLoginRequired)),
         ),
+        LoginState::Unavailable(_) => top_level_node(
+            "SCE login status unavailable",
+            DoctorDisplayStatus::Warn,
+            problem_details(report, |kind| {
+                matches!(kind, ProblemKind::SceLoginUnavailable)
+            }),
+        ),
     }
 }
 
@@ -1335,7 +1342,7 @@ mod access_render_tests {
     use crate::services::doctor::managed_telemetry;
     use crate::services::doctor::types::{
         DoctorDisplayNode, HookDoctorReport, HookPathSource, PostCommitAutoSyncHealth,
-        PostCommitAutoSyncState, ProblemSeverity, Readiness,
+        PostCommitAutoSyncState, ProblemKind, ProblemSeverity, Readiness,
     };
     use crate::services::doctor::DoctorMode;
     use crate::services::managed_telemetry::ManagedTelemetryHealth;
@@ -1374,7 +1381,7 @@ mod access_render_tests {
 
     fn inspect<Fut>(policy: &ResolvedAccessPolicy, authorized: impl FnOnce() -> Fut) -> DoctorAccess
     where
-        Fut: Future<Output = bool>,
+        Fut: Future<Output = LoginState>,
     {
         tokio::runtime::Builder::new_current_thread()
             .build()
@@ -1421,7 +1428,7 @@ mod access_render_tests {
                 telemetry_default(),
                 not_enabled(),
             ),
-            || async { false },
+            || async { LoginState::NotLoggedIn },
         );
         let report = report(access);
 
@@ -1432,7 +1439,7 @@ mod access_render_tests {
             render(&sce_login_node(&report, access)),
             vec![
                 "  [FAIL] SCE login",
-                "    Problem: auth.mode: mandatory is set in the repository SCE config (`.sce/config.json`), but no valid SCE login was found.",
+                "    Problem: auth.mode: mandatory is set in the repository SCE config (`.sce/config.json`), but no saved SCE session is available.",
                 "    Remediation: Run 'sce auth login'.",
             ]
         );
@@ -1456,7 +1463,7 @@ mod access_render_tests {
                 telemetry_default(),
                 not_enabled(),
             ),
-            || async { true },
+            || async { LoginState::LoggedIn },
         );
         let report = report(access);
 
@@ -1466,6 +1473,35 @@ mod access_render_tests {
             vec!["  [PASS] SCE login"]
         );
         assert_eq!(access.login_json()["state"], "logged_in");
+    }
+
+    #[test]
+    fn unavailable_login_renders_warning_and_reason_without_logout_guidance() {
+        use crate::services::doctor::access::LoginUnavailableReason;
+
+        let access = inspect(
+            &policy(
+                AuthMode::Mandatory,
+                REPOSITORY,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async { LoginState::Unavailable(LoginUnavailableReason::DatabaseLocked) },
+        );
+        let report = report(access);
+        assert_eq!(report.problems[0].kind, ProblemKind::SceLoginUnavailable);
+        assert_eq!(report.problems[0].severity, ProblemSeverity::Warning);
+        assert_eq!(report.problems[0].next_action, "manual_steps");
+        assert_eq!(
+            render(&sce_login_node(&report, access)),
+            vec![
+                "  [WARN] SCE login status unavailable",
+                "    Problem: SCE cannot read the saved session because authentication storage is locked.",
+                "    Remediation: Wait for other SCE processes to exit, then rerun 'sce doctor'.",
+            ]
+        );
+        assert_eq!(access.login_json()["state"], "unavailable");
+        assert_eq!(access.login_json()["reason"], "database_locked");
     }
 
     #[test]
@@ -1509,7 +1545,7 @@ mod access_render_tests {
                 },
                 TelemetryPolicyState::Enabled,
             ),
-            || async { false },
+            || async { LoginState::NotLoggedIn },
         );
 
         assert_eq!(
@@ -1549,7 +1585,7 @@ mod access_render_tests {
                 telemetry_default(),
                 not_enabled(),
             ),
-            || async { false },
+            || async { LoginState::NotLoggedIn },
         );
         let health = ManagedTelemetryHealth::DisabledByConfig {
             auth_db_present: true,
@@ -1593,7 +1629,7 @@ mod access_render_tests {
                 },
                 TelemetryPolicyState::Disabled(TelemetryDisabledReason::UserOptOut),
             ),
-            || async { false },
+            || async { LoginState::NotLoggedIn },
         );
         let health = ManagedTelemetryHealth::DisabledByConfig {
             auth_db_present: true,

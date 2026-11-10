@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use crate::app::{ContextWithRepoRoot, HasRepoRoot};
-use crate::services::auth_command;
 use crate::services::codex_hook_policy;
 use crate::services::config::{ResolvedAccessPolicy, TelemetryPolicyState};
 use crate::services::default_paths::{resolve_sce_default_locations, resolve_state_data_root};
@@ -122,10 +121,7 @@ async fn execute_doctor_with_context(
     recommendation_seam: &impl Fn(&Path) -> Option<ReconciliationRecommendation>,
 ) -> DoctorExecution {
     let policy = access_policy_for(repository_root);
-    let access = DoctorAccess::inspect(policy.as_ref(), || {
-        auth_command::repository_telemetry_authorized(repository_root)
-    })
-    .await;
+    let access = DoctorAccess::inspect(policy.as_ref(), access::inspect_login).await;
     execute_doctor_with_lifecycle_providers(
         request,
         repository_root,
@@ -519,6 +515,7 @@ fn doctor_problem_kind(kind: HealthProblemKind) -> ProblemKind {
         HealthProblemKind::MutationScopeHealthInvalid => ProblemKind::MutationScopeHealthInvalid,
         HealthProblemKind::ManagedTelemetryUnavailable => ProblemKind::ManagedTelemetryUnavailable,
         HealthProblemKind::SceLoginRequired => ProblemKind::SceLoginRequired,
+        HealthProblemKind::SceLoginUnavailable => ProblemKind::SceLoginUnavailable,
     }
 }
 
@@ -600,6 +597,7 @@ fn health_problem_kind(kind: ProblemKind) -> HealthProblemKind {
         ProblemKind::MutationScopeHealthInvalid => HealthProblemKind::MutationScopeHealthInvalid,
         ProblemKind::ManagedTelemetryUnavailable => HealthProblemKind::ManagedTelemetryUnavailable,
         ProblemKind::SceLoginRequired => HealthProblemKind::SceLoginRequired,
+        ProblemKind::SceLoginUnavailable => HealthProblemKind::SceLoginUnavailable,
     }
 }
 
