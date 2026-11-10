@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
+use crate::services::agent_trace::sce_config_schema_url;
 use crate::services::auth_command::{self, AuthFormat, LoginReport};
+use crate::services::config::schema_declaration::current_schema_version;
 use crate::services::config::{AuthMode, ResolvedAccessPolicy, ValueSource};
 use crate::services::default_paths::RepoPaths;
 use crate::services::error::{AuthPolicyConfigFile, CliError, UserError};
@@ -17,10 +19,13 @@ use crate::services::setup::access_preferences::{
     RepositoryAccessPreferencesError,
 };
 use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
-use crate::services::setup::schema_upgrade::{CanonicalSchemaUpgrades, SchemaUpgradeReport};
+use crate::services::setup::schema_upgrade::{
+    CanonicalSchemaUpgrades, SchemaUpgradeOutcome, SchemaUpgradeReport, SchemaUpgradeSkip,
+};
 use crate::services::{config, managed_telemetry, setup};
 
 const SCE_ACCESS_HEADING: &str = "SCE access:";
+const CONFIG_SCHEMA_HEADING: &str = "Config schema:";
 const SAVED_ACCESS_SCOPE: &str = "applies only to this repository";
 const AUTH_LOGOUT_HINT_LINE: &str =
     "- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.";
@@ -43,6 +48,7 @@ pub struct SetupCommand {
 }
 
 impl SetupCommand {
+    #[allow(clippy::too_many_lines)]
     pub async fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
@@ -53,9 +59,14 @@ impl SetupCommand {
 
         let repository = resolve_setup_repository(&setup_start_path, self.request.context_only)?;
         let repository_root = repository.root;
+        let mut sections =
+            Vec::from_iter(render_schema_upgrade_section(&repository.schema_upgrades));
 
         let (setup_dispatch, interactive_access) = match self.prepare_dispatch(&repository_root)? {
-            PreparedSetup::Cancelled => return Ok(setup::setup_cancelled_text()),
+            PreparedSetup::Cancelled => {
+                sections.push(setup::setup_cancelled_text());
+                return Ok(sections.join("\n\n"));
+            }
             PreparedSetup::Ready {
                 dispatch,
                 interactive_access,
@@ -64,8 +75,6 @@ impl SetupCommand {
 
         let claude_telemetry_selected = dispatch_targets_claude(setup_dispatch.as_ref());
         let authorization_check = RepositoryAuthorizationCheck::for_mode(self.request.config_mode);
-
-        let mut sections = Vec::new();
 
         let context_message =
             setup::bootstrap_context_baseline(&repository_root).map_err(unexpected_failure)?;
@@ -507,6 +516,54 @@ fn render_setup_access_section(
     lines.join("\n")
 }
 
+fn render_schema_upgrade_section(reports: &[SchemaUpgradeReport]) -> Option<String> {
+    let lines: Vec<String> = reports
+        .iter()
+        .filter_map(|report| {
+            let path = report.path.display();
+            let skip = match &report.outcome {
+                SchemaUpgradeOutcome::Unchanged => return None,
+                SchemaUpgradeOutcome::Upgraded { from } => {
+                    return Some(format!(
+                        "- upgraded '{path}' from v{from} to v{}",
+                        current_schema_version()
+                    ));
+                }
+                SchemaUpgradeOutcome::Skipped(skip) => skip,
+            };
+            let reason = match skip {
+                SchemaUpgradeSkip::NewerSeries(version) => format!(
+                    "it declares newer schema series {}; upgrade the SCE CLI",
+                    version.series()
+                ),
+                SchemaUpgradeSkip::Unrecognized => format!(
+                    "'$schema' is not a canonical SCE schema URL; set it to {}",
+                    sce_config_schema_url()
+                ),
+                SchemaUpgradeSkip::CandidateInvalid { reason } => format!(
+                    "upgrading '$schema' to v{} would fail validation: {reason}. Fix the listed fields, then rerun 'sce setup'.",
+                    current_schema_version()
+                ),
+                SchemaUpgradeSkip::SymlinkManaged => "it is a symlink; SCE cannot modify a symlink-managed config. Update the file's source directly.".to_string(),
+                SchemaUpgradeSkip::ConcurrentModification => {
+                    "it changed while setup was upgrading '$schema'. Rerun 'sce setup'.".to_string()
+                }
+                SchemaUpgradeSkip::Io(error) => {
+                    format!("setup could not upgrade '$schema': {error:#}")
+                }
+            };
+            Some(format!("- left '{path}' unchanged; {reason}"))
+        })
+        .collect();
+
+    (!lines.is_empty()).then(|| {
+        std::iter::once(CONFIG_SCHEMA_HEADING.to_string())
+            .chain(lines)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
 fn format_policy_source(source: ValueSource) -> String {
     match source.config_source() {
         Some(config_source) => format!(
@@ -734,13 +791,6 @@ where
 
 struct SetupRepository {
     root: PathBuf,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the setup report renders the schema upgrade outcomes"
-        )
-    )]
     schema_upgrades: Vec<SchemaUpgradeReport>,
 }
 
@@ -851,6 +901,8 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    use crate::services::config::schema_declaration::SchemaVersion;
 
     use crate::services::config::AuthMode;
     use crate::services::setup::{
@@ -1989,6 +2041,131 @@ mod tests {
             fs::read_to_string(fixture.repo_config_path()).unwrap(),
             local
         );
+    }
+
+    fn schema_report(path: &str, outcome: SchemaUpgradeOutcome) -> SchemaUpgradeReport {
+        SchemaUpgradeReport {
+            path: std::path::PathBuf::from(path),
+            outcome,
+        }
+    }
+
+    fn schema_version(raw: &str) -> SchemaVersion {
+        SchemaVersion::parse(raw).unwrap()
+    }
+
+    fn render_schema_skip(skip: SchemaUpgradeSkip) -> String {
+        render_schema_upgrade_section(&[schema_report(
+            "/repo/.sce/config.json",
+            SchemaUpgradeOutcome::Skipped(skip),
+        )])
+        .unwrap()
+    }
+
+    #[test]
+    fn schema_upgrade_section_is_omitted_when_every_file_is_unchanged() {
+        assert_eq!(render_schema_upgrade_section(&[]), None);
+        assert_eq!(
+            render_schema_upgrade_section(&[
+                schema_report("/repo/.sce/config.json", SchemaUpgradeOutcome::Unchanged),
+                schema_report("/home/sce/config.json", SchemaUpgradeOutcome::Unchanged),
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_upgraded_line_and_skips_unchanged_files() {
+        let section = render_schema_upgrade_section(&[
+            schema_report(
+                "/repo/.sce/config.json",
+                SchemaUpgradeOutcome::Upgraded {
+                    from: schema_version("0.3.3"),
+                },
+            ),
+            schema_report("/home/sce/config.json", SchemaUpgradeOutcome::Unchanged),
+        ]);
+
+        assert_eq!(
+            section.unwrap(),
+            format!(
+                "Config schema:\n- upgraded '/repo/.sce/config.json' from v0.3.3 to v{}",
+                current_schema_version()
+            )
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_newer_series_line() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::NewerSeries(schema_version("1.4.2-rc.1"))),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; it declares newer schema series 1.4; upgrade the SCE CLI"
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_unrecognized_line() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::Unrecognized),
+            format!(
+                "Config schema:\n- left '/repo/.sce/config.json' unchanged; '$schema' is not a canonical SCE schema URL; set it to {}",
+                sce_config_schema_url()
+            )
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_candidate_invalid_line() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::CandidateInvalid {
+                reason: "unknown field 'unknown_key'".to_string(),
+            }),
+            format!(
+                "Config schema:\n- left '/repo/.sce/config.json' unchanged; upgrading '$schema' to v{} would fail validation: unknown field 'unknown_key'. Fix the listed fields, then rerun 'sce setup'.",
+                current_schema_version()
+            )
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_symlink_concurrent_and_io_lines() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::SymlinkManaged),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; it is a symlink; SCE cannot modify a symlink-managed config. Update the file's source directly."
+        );
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::ConcurrentModification),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; it changed while setup was upgrading '$schema'. Rerun 'sce setup'."
+        );
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::Io(anyhow::anyhow!("permission denied"))),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; setup could not upgrade '$schema': permission denied"
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_reports_each_canonical_file_from_setup_resolution() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        fixture.write_repo_config(&stale(r#"  "unknown_key": true"#));
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+
+        let repository = fixture.resolve_repository(false).unwrap();
+        let section = render_schema_upgrade_section(&repository.schema_upgrades).unwrap();
+
+        let lines: Vec<&str> = section.lines().collect();
+        assert_eq!(lines[0], "Config schema:");
+        assert!(lines[1].starts_with(&format!(
+            "- left '{}' unchanged; upgrading '$schema' to v{} would fail validation: ",
+            fixture.repo_config_path().display(),
+            current_schema_version()
+        )));
+        assert!(section.contains("unknown_key"));
+        assert!(lines[1].ends_with(". Fix the listed fields, then rerun 'sce setup'."));
+        assert!(section.contains(&format!("- upgraded '{}' from v", fixture.global.display())));
     }
 
     fn walk_files(root: &Path) -> Vec<std::path::PathBuf> {
