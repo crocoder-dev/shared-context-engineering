@@ -209,7 +209,7 @@ pub(crate) fn resolve_agent_trace_storage_runtime_config(
     )
 }
 
-fn resolve_agent_trace_storage_runtime_config_with<FEnv, FRead, FGlobalPath>(
+pub(crate) fn resolve_agent_trace_storage_runtime_config_with<FEnv, FRead, FGlobalPath>(
     cwd: &Path,
     env_lookup: FEnv,
     read_file: FRead,

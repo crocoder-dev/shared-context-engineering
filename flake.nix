@@ -1438,6 +1438,19 @@
           checkCommand = "bash ./scripts/test-codex-hook-command.sh";
         };
 
+        setupSchemaUpgradeCheck =
+          pkgs.runCommand "setup-schema-upgrade-check"
+            {
+              nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.diffutils pkgs.gnugrep pkgs.gnused pkgs.git ];
+            }
+            ''
+              set -euo pipefail
+
+              bash ${./scripts/test-setup-schema-upgrade.sh} --sce-bin ${scePackage}/bin/sce
+
+              mkdir -p "$out"
+            '';
+
         configLibBunTests = mkBunCheck {
           name = "config-lib-bun-tests";
           src = configLibBashPolicySrc;
@@ -1723,6 +1736,7 @@
             cli-generated-input = cliGeneratedInputCheck;
             pkl-generated = pklGeneratedCheck;
             codex-hook-command = codexHookCommandCheck;
+            setup-schema-upgrade = setupSchemaUpgradeCheck;
 
             npm-bun-tests = npmTests;
             npm-pack-smoke = npmPackSmoke;

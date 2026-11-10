@@ -14,8 +14,10 @@ pub(crate) mod access_preferences;
 mod atomic_write;
 pub(crate) mod claude_telemetry;
 pub mod command;
+mod config_file_write;
 pub(crate) mod config_merge;
 pub(crate) mod hook_merge;
+mod schema_upgrade;
 
 #[derive(Debug)]
 struct MissingGitRemoteError {

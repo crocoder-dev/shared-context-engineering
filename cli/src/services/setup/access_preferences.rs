@@ -1,16 +1,15 @@
 use std::{
-    fmt, fs, io,
+    fmt,
     path::{Path, PathBuf},
 };
 
 use anyhow::Context;
 use serde_json::{Map, Value};
 
-use crate::services::agent_trace::sce_config_schema_url;
-use crate::services::config::schema::{parse_file_config, CONFIG_SCHEMA_DECLARATION_KEY};
-use crate::services::config::{AuthMode, ConfigPathSource};
+use crate::services::config::schema::parse_file_config;
+use crate::services::config::AuthMode;
 
-use super::atomic_write::write_atomically;
+use super::config_file_write::{read_optional, write_guarded, ConfigLayer, GuardedWriteError};
 
 const AUTH_KEY: &str = "auth";
 const AUTH_MODE_KEY: &str = "mode";
@@ -66,45 +65,22 @@ impl fmt::Display for RepositoryAccessPreferencesError {
 
 impl std::error::Error for RepositoryAccessPreferencesError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConfigLayer {
-    Global,
-    Repository,
-}
-
-impl ConfigLayer {
-    fn path_source(self) -> ConfigPathSource {
-        match self {
-            Self::Global => ConfigPathSource::DefaultDiscoveredGlobal,
-            Self::Repository => ConfigPathSource::DefaultDiscoveredLocal,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Global => "global SCE config",
-            Self::Repository => "repository SCE config",
-        }
-    }
-
-    fn bootstrap_value(self) -> Value {
-        match self {
-            Self::Global => Value::Object(Map::from_iter([(
-                CONFIG_SCHEMA_DECLARATION_KEY.to_string(),
-                Value::String(sce_config_schema_url()),
-            )])),
-            Self::Repository => serde_json::from_str(&super::repo_local_config_bootstrap_payload())
-                .expect("repo-local config bootstrap payload must be valid JSON"),
-        }
-    }
-}
-
 #[derive(Debug)]
 enum WriteFailure {
     Invalid(String),
     ConcurrentModification,
     SymlinkManaged,
     Io(anyhow::Error),
+}
+
+impl From<GuardedWriteError> for WriteFailure {
+    fn from(error: GuardedWriteError) -> Self {
+        match error {
+            GuardedWriteError::ConcurrentModification => Self::ConcurrentModification,
+            GuardedWriteError::SymlinkManaged => Self::SymlinkManaged,
+            GuardedWriteError::Io(error) => Self::Io(error),
+        }
+    }
 }
 
 pub(crate) fn read_global_access_preferences(path: &Path) -> anyhow::Result<AccessPreferences> {
@@ -229,15 +205,13 @@ where
     parse_file_config(&serialized, path, layer.path_source())
         .map_err(|error| WriteFailure::Invalid(format!("{error:#}")))?;
 
-    let current = reread(path).map_err(WriteFailure::Io)?;
-    if current != original {
-        return Err(WriteFailure::ConcurrentModification);
-    }
-    if is_symlink(path, layer).map_err(WriteFailure::Io)? {
-        return Err(WriteFailure::SymlinkManaged);
-    }
-
-    write_atomically(path, serialized.as_bytes()).map_err(WriteFailure::Io)?;
+    write_guarded(
+        path,
+        layer,
+        original.as_deref(),
+        serialized.as_bytes(),
+        reread,
+    )?;
     Ok(AccessWriteOutcome::Written)
 }
 
@@ -261,28 +235,13 @@ fn set_nested_value(object: &mut Map<String, Value>, section: &str, key: &str, v
     }
 }
 
-fn is_symlink(path: &Path, layer: ConfigLayer) -> anyhow::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to inspect {} '{}'", layer.label(), path.display())),
-    }
-}
-
-fn read_optional(path: &Path, layer: ConfigLayer) -> anyhow::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to read {} '{}'", layer.label(), path.display())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::agent_trace::sce_config_schema_url;
+    use crate::services::config::schema::CONFIG_SCHEMA_DECLARATION_KEY;
     use serde_json::json;
+    use std::fs;
 
     fn repository_config_path(dir: &Path) -> PathBuf {
         dir.join(".sce").join("config.json")

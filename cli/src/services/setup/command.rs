@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 
 use crate::app::ContextWithRepoRoot;
+use crate::services::agent_trace::sce_config_schema_url;
 use crate::services::auth_command::{self, AuthFormat, LoginReport};
+use crate::services::config::schema_declaration::current_schema_version;
 use crate::services::config::{AuthMode, ResolvedAccessPolicy, ValueSource};
 use crate::services::default_paths::RepoPaths;
 use crate::services::error::{AuthPolicyConfigFile, CliError, UserError};
@@ -17,9 +19,13 @@ use crate::services::setup::access_preferences::{
     RepositoryAccessPreferencesError,
 };
 use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
+use crate::services::setup::schema_upgrade::{
+    CanonicalSchemaUpgrades, SchemaUpgradeOutcome, SchemaUpgradeReport, SchemaUpgradeSkip,
+};
 use crate::services::{config, managed_telemetry, setup};
 
 const SCE_ACCESS_HEADING: &str = "SCE access:";
+const CONFIG_SCHEMA_HEADING: &str = "Config schema:";
 const SAVED_ACCESS_SCOPE: &str = "applies only to this repository";
 const AUTH_LOGOUT_HINT_LINE: &str =
     "- SCE login: stored SCE credentials remain on this machine; run 'sce auth logout' to remove them.";
@@ -42,6 +48,7 @@ pub struct SetupCommand {
 }
 
 impl SetupCommand {
+    #[allow(clippy::too_many_lines)]
     pub async fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
@@ -50,10 +57,16 @@ impl SetupCommand {
                 .map_err(unexpected_failure)?,
         };
 
-        let repository_root = resolve_setup_repository(&setup_start_path)?;
+        let repository = resolve_setup_repository(&setup_start_path, self.request.context_only)?;
+        let repository_root = repository.root;
+        let mut sections =
+            Vec::from_iter(render_schema_upgrade_section(&repository.schema_upgrades));
 
         let (setup_dispatch, interactive_access) = match self.prepare_dispatch(&repository_root)? {
-            PreparedSetup::Cancelled => return Ok(setup::setup_cancelled_text()),
+            PreparedSetup::Cancelled => {
+                sections.push(setup::setup_cancelled_text());
+                return Ok(sections.join("\n\n"));
+            }
             PreparedSetup::Ready {
                 dispatch,
                 interactive_access,
@@ -62,8 +75,6 @@ impl SetupCommand {
 
         let claude_telemetry_selected = dispatch_targets_claude(setup_dispatch.as_ref());
         let authorization_check = RepositoryAuthorizationCheck::for_mode(self.request.config_mode);
-
-        let mut sections = Vec::new();
 
         let context_message =
             setup::bootstrap_context_baseline(&repository_root).map_err(unexpected_failure)?;
@@ -505,6 +516,54 @@ fn render_setup_access_section(
     lines.join("\n")
 }
 
+fn render_schema_upgrade_section(reports: &[SchemaUpgradeReport]) -> Option<String> {
+    let lines: Vec<String> = reports
+        .iter()
+        .filter_map(|report| {
+            let path = report.path.display();
+            let skip = match &report.outcome {
+                SchemaUpgradeOutcome::Unchanged => return None,
+                SchemaUpgradeOutcome::Upgraded { from } => {
+                    return Some(format!(
+                        "- upgraded '{path}' from v{from} to v{}",
+                        current_schema_version()
+                    ));
+                }
+                SchemaUpgradeOutcome::Skipped(skip) => skip,
+            };
+            let reason = match skip {
+                SchemaUpgradeSkip::NewerSeries(version) => format!(
+                    "it declares newer schema series {}; upgrade the SCE CLI",
+                    version.series()
+                ),
+                SchemaUpgradeSkip::Unrecognized => format!(
+                    "'$schema' is not a canonical SCE schema URL; set it to {}",
+                    sce_config_schema_url()
+                ),
+                SchemaUpgradeSkip::CandidateInvalid { reason } => format!(
+                    "upgrading '$schema' to v{} would fail validation: {reason}. Fix the listed fields, then rerun 'sce setup'.",
+                    current_schema_version()
+                ),
+                SchemaUpgradeSkip::SymlinkManaged => "it is a symlink; SCE cannot modify a symlink-managed config. Update the file's source directly.".to_string(),
+                SchemaUpgradeSkip::ConcurrentModification => {
+                    "it changed while setup was upgrading '$schema'. Rerun 'sce setup'.".to_string()
+                }
+                SchemaUpgradeSkip::Io(error) => {
+                    format!("setup could not upgrade '$schema': {error:#}")
+                }
+            };
+            Some(format!("- left '{path}' unchanged; {reason}"))
+        })
+        .collect();
+
+    (!lines.is_empty()).then(|| {
+        std::iter::once(CONFIG_SCHEMA_HEADING.to_string())
+            .chain(lines)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
 fn format_policy_source(source: ValueSource) -> String {
     match source.config_source() {
         Some(config_source) => format!(
@@ -730,7 +789,33 @@ where
     format_claude_telemetry_report(&installed, authorization)
 }
 
-fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
+struct SetupRepository {
+    root: PathBuf,
+    schema_upgrades: Vec<SchemaUpgradeReport>,
+}
+
+fn resolve_setup_repository(
+    start_path: &Path,
+    context_only: bool,
+) -> Result<SetupRepository, CliError> {
+    resolve_setup_repository_with(
+        start_path,
+        context_only,
+        |key| std::env::var(key).ok(),
+        config::resolver::resolve_default_global_config_path,
+    )
+}
+
+fn resolve_setup_repository_with<FEnv, FGlobalPath>(
+    start_path: &Path,
+    context_only: bool,
+    env_lookup: FEnv,
+    resolve_global_config_path: FGlobalPath,
+) -> Result<SetupRepository, CliError>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FGlobalPath: Fn() -> anyhow::Result<PathBuf>,
+{
     let repository_root = setup::ensure_git_repository(start_path).map_err(|source| {
         let user_error = match source {
             setup::GitRepositoryResolutionError::NotGitRepository(_) => UserError::NotGitRepository,
@@ -740,8 +825,27 @@ fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::P
         CliError::user_with_source(user_error, source)
     })?;
 
-    let storage_config = config::resolve_agent_trace_storage_runtime_config(&repository_root)
-        .map_err(unexpected_failure)?;
+    let schema_upgrades = if context_only {
+        CanonicalSchemaUpgrades::default()
+    } else {
+        CanonicalSchemaUpgrades::plan(
+            &RepoPaths::new(&repository_root).sce_config_file(),
+            resolve_global_config_path().ok().as_deref(),
+        )
+    };
+
+    let storage_config = config::resolver::resolve_agent_trace_storage_runtime_config_with(
+        &repository_root,
+        env_lookup,
+        |path| match schema_upgrades.candidate(path) {
+            Some(candidate) => String::from_utf8(candidate.to_vec()).map_err(anyhow::Error::from),
+            None => std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config file '{}'.", path.display())),
+        },
+        Path::exists,
+        resolve_global_config_path,
+    )
+    .map_err(unexpected_failure)?;
 
     setup::ensure_git_remote(&repository_root, &storage_config.repository_remote).map_err(
         |source| {
@@ -753,7 +857,10 @@ fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::P
         },
     )?;
 
-    Ok(repository_root)
+    Ok(SetupRepository {
+        root: repository_root,
+        schema_upgrades: schema_upgrades.commit(),
+    })
 }
 
 fn unexpected_failure(source: impl Into<anyhow::Error>) -> CliError {
@@ -794,6 +901,8 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    use crate::services::config::schema_declaration::SchemaVersion;
 
     use crate::services::config::AuthMode;
     use crate::services::setup::{
@@ -1680,6 +1789,383 @@ mod tests {
             }),
             None
         );
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git should run");
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+
+    fn schema_url(version: &str) -> String {
+        format!("https://sce.crocoder.dev/v{version}/config.json")
+    }
+
+    fn older_series_url() -> String {
+        let config::schema_declaration::SchemaSeries { major, minor } =
+            config::schema_declaration::current_schema_series();
+        if minor > 0 {
+            schema_url(&format!("{major}.{}.3", minor - 1))
+        } else {
+            schema_url(&format!("{}.9.3", major - 1))
+        }
+    }
+
+    fn stale(body: &str) -> String {
+        format!(
+            "{{\n  \"$schema\": \"{}\",\n{body}\n}}\n",
+            older_series_url()
+        )
+    }
+
+    fn upgraded(stale: &str) -> String {
+        stale.replace(
+            &older_series_url(),
+            &crate::services::agent_trace::sce_config_schema_url(),
+        )
+    }
+
+    impl AccessFixture {
+        fn git_repository(remotes: &[&str]) -> Self {
+            let fixture = Self::new();
+            fs::remove_dir(fixture.repo.join(".git")).unwrap();
+            git(&fixture.repo, &["init", "-q"]);
+            for remote in remotes {
+                git(
+                    &fixture.repo,
+                    &[
+                        "remote",
+                        "add",
+                        remote,
+                        &format!("https://example.com/{remote}.git"),
+                    ],
+                );
+            }
+            fixture
+        }
+
+        fn resolve_repository(&self, context_only: bool) -> Result<SetupRepository, CliError> {
+            resolve_setup_repository_with(
+                &self.repo,
+                context_only,
+                |_| None,
+                || Ok(self.global.clone()),
+            )
+        }
+
+        fn snapshot(&self) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+            (
+                fs::read(self.repo_config_path()).ok(),
+                fs::read(&self.global).ok(),
+            )
+        }
+    }
+
+    fn upgraded_paths(repository: &SetupRepository) -> Vec<std::path::PathBuf> {
+        repository
+            .schema_upgrades
+            .iter()
+            .filter(|report| {
+                matches!(
+                    report.outcome,
+                    setup::schema_upgrade::SchemaUpgradeOutcome::Upgraded { .. }
+                )
+            })
+            .map(|report| report.path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn setup_preflight_checks_remote_from_stale_local_config_and_upgrades_it() {
+        let fixture = AccessFixture::git_repository(&["upstream"]);
+        let local = stale(r#"  "agent_trace": { "repository_remote": "upstream" }"#);
+        fixture.write_repo_config(&local);
+
+        let repository = fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(fixture.repo_config_path()).unwrap(),
+            upgraded(&local)
+        );
+        assert_eq!(upgraded_paths(&repository), [fixture.repo_config_path()]);
+        assert!(!fixture.global.exists());
+    }
+
+    #[test]
+    fn setup_failed_remote_preflight_writes_no_schema_upgrade() {
+        let fixture = AccessFixture::git_repository(&["upstream"]);
+        fixture.write_repo_config(&stale(
+            r#"  "agent_trace": { "repository_remote": "missing" }"#,
+        ));
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+        let before = fixture.snapshot();
+
+        let Err(error) = fixture.resolve_repository(false) else {
+            panic!("preflight should fail for a missing remote");
+        };
+
+        assert!(
+            matches!(
+                error,
+                CliError::User {
+                    error: UserError::NotGitRemote,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn setup_failed_git_gate_writes_no_schema_upgrade() {
+        let fixture = AccessFixture::new();
+        fs::remove_dir(fixture.repo.join(".git")).unwrap();
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+        let before = fixture.snapshot();
+
+        assert!(fixture.resolve_repository(false).is_err());
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn setup_access_gate_locks_on_stale_global_disabled_after_upgrade() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        let global = stale(r#"  "auth": { "mode": "disabled" }"#);
+        fs::write(&fixture.global, &global).unwrap();
+        assert_eq!(
+            SetupAccessGate::from_policy(&fixture.policy(), false).auth_locked_by,
+            None
+        );
+
+        let repository = fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            upgraded_paths(&repository),
+            std::slice::from_ref(&fixture.global)
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.global).unwrap(),
+            upgraded(&global)
+        );
+        assert_eq!(
+            SetupAccessGate::from_policy(&fixture.policy(), false).auth_locked_by,
+            Some(AuthPolicyConfigFile::Global)
+        );
+        let prompter = FakePrompter::answering(None, false);
+        fixture.prepare(&prompter, false).unwrap();
+        assert!(prompter.asked().is_empty(), "{:?}", prompter.asked());
+    }
+
+    #[test]
+    fn setup_dispatch_uses_saved_answers_from_upgraded_local_config() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        fixture.write_repo_config(&stale(
+            r#"  "auth": { "mode": "optional" },
+  "telemetry": { "enabled": false },
+  "integrations": { "target": ["claude"], "optional_workflows": ["brownfield"] }"#,
+        ));
+        assert!(setup::persisted_integration_targets(&fixture.repo).is_empty());
+
+        fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            setup::persisted_integration_targets(&fixture.repo),
+            [ConcreteSetupTarget::Claude]
+        );
+        assert_eq!(
+            setup::persisted_optional_workflows(&fixture.repo),
+            ["brownfield"]
+        );
+        let prompter = FakePrompter::answering(None, false);
+        let access_save = ready_access_save(fixture.prepare(&prompter, false).unwrap());
+        assert_eq!(prompter.asked(), ["login"]);
+        assert_eq!(access_save.outcome, AccessWriteOutcome::Unchanged);
+    }
+
+    #[test]
+    fn setup_context_only_plans_no_schema_upgrade() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        fixture.write_repo_config(&stale(r#"  "auth": { "mode": "optional" }"#));
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+        let before = fixture.snapshot();
+
+        let repository = fixture.resolve_repository(true).unwrap();
+
+        assert!(repository.schema_upgrades.is_empty());
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn setup_upgrades_valid_global_when_stale_local_candidate_is_invalid() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        let local = stale(r#"  "unknown_key": true"#);
+        fixture.write_repo_config(&local);
+        let global = stale(r#"  "auth": { "mode": "optional" }"#);
+        fs::write(&fixture.global, &global).unwrap();
+
+        let repository = fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            upgraded_paths(&repository),
+            std::slice::from_ref(&fixture.global)
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.global).unwrap(),
+            upgraded(&global)
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.repo_config_path()).unwrap(),
+            local
+        );
+        let prompter = FakePrompter::answering(None, false);
+        let access_save = ready_access_save(fixture.prepare(&prompter, false).unwrap());
+        assert_eq!(prompter.asked(), ["login"]);
+        assert_eq!(access_save.outcome, AccessWriteOutcome::Unchanged);
+        assert_eq!(
+            fs::read_to_string(fixture.repo_config_path()).unwrap(),
+            local
+        );
+    }
+
+    fn schema_report(path: &str, outcome: SchemaUpgradeOutcome) -> SchemaUpgradeReport {
+        SchemaUpgradeReport {
+            path: std::path::PathBuf::from(path),
+            outcome,
+        }
+    }
+
+    fn schema_version(raw: &str) -> SchemaVersion {
+        SchemaVersion::parse(raw).unwrap()
+    }
+
+    fn render_schema_skip(skip: SchemaUpgradeSkip) -> String {
+        render_schema_upgrade_section(&[schema_report(
+            "/repo/.sce/config.json",
+            SchemaUpgradeOutcome::Skipped(skip),
+        )])
+        .unwrap()
+    }
+
+    #[test]
+    fn schema_upgrade_section_is_omitted_when_every_file_is_unchanged() {
+        assert_eq!(render_schema_upgrade_section(&[]), None);
+        assert_eq!(
+            render_schema_upgrade_section(&[
+                schema_report("/repo/.sce/config.json", SchemaUpgradeOutcome::Unchanged),
+                schema_report("/home/sce/config.json", SchemaUpgradeOutcome::Unchanged),
+            ]),
+            None
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_upgraded_line_and_skips_unchanged_files() {
+        let section = render_schema_upgrade_section(&[
+            schema_report(
+                "/repo/.sce/config.json",
+                SchemaUpgradeOutcome::Upgraded {
+                    from: schema_version("0.3.3"),
+                },
+            ),
+            schema_report("/home/sce/config.json", SchemaUpgradeOutcome::Unchanged),
+        ]);
+
+        assert_eq!(
+            section.unwrap(),
+            format!(
+                "Config schema:\n- upgraded '/repo/.sce/config.json' from v0.3.3 to v{}",
+                current_schema_version()
+            )
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_newer_series_line() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::NewerSeries(schema_version("1.4.2-rc.1"))),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; it declares newer schema series 1.4; upgrade the SCE CLI"
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_unrecognized_line() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::Unrecognized),
+            format!(
+                "Config schema:\n- left '/repo/.sce/config.json' unchanged; '$schema' is not a canonical SCE schema URL; set it to {}",
+                sce_config_schema_url()
+            )
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_candidate_invalid_line() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::CandidateInvalid {
+                reason: "unknown field 'unknown_key'".to_string(),
+            }),
+            format!(
+                "Config schema:\n- left '/repo/.sce/config.json' unchanged; upgrading '$schema' to v{} would fail validation: unknown field 'unknown_key'. Fix the listed fields, then rerun 'sce setup'.",
+                current_schema_version()
+            )
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_renders_symlink_concurrent_and_io_lines() {
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::SymlinkManaged),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; it is a symlink; SCE cannot modify a symlink-managed config. Update the file's source directly."
+        );
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::ConcurrentModification),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; it changed while setup was upgrading '$schema'. Rerun 'sce setup'."
+        );
+        assert_eq!(
+            render_schema_skip(SchemaUpgradeSkip::Io(anyhow::anyhow!("permission denied"))),
+            "Config schema:\n- left '/repo/.sce/config.json' unchanged; setup could not upgrade '$schema': permission denied"
+        );
+    }
+
+    #[test]
+    fn schema_upgrade_section_reports_each_canonical_file_from_setup_resolution() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        fixture.write_repo_config(&stale(r#"  "unknown_key": true"#));
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+
+        let repository = fixture.resolve_repository(false).unwrap();
+        let section = render_schema_upgrade_section(&repository.schema_upgrades).unwrap();
+
+        let lines: Vec<&str> = section.lines().collect();
+        assert_eq!(lines[0], "Config schema:");
+        assert!(lines[1].starts_with(&format!(
+            "- left '{}' unchanged; upgrading '$schema' to v{} would fail validation: ",
+            fixture.repo_config_path().display(),
+            current_schema_version()
+        )));
+        assert!(section.contains("unknown_key"));
+        assert!(lines[1].ends_with(". Fix the listed fields, then rerun 'sce setup'."));
+        assert!(section.contains(&format!("- upgraded '{}' from v", fixture.global.display())));
     }
 
     fn walk_files(root: &Path) -> Vec<std::path::PathBuf> {
