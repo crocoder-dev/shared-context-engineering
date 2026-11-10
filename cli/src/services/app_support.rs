@@ -83,26 +83,35 @@ pub(crate) fn classify_observability_configuration_error(error: &anyhow::Error) 
 pub(crate) fn invalid_discovered_config_guidance(
     observability_config: &services::config::ResolvedObservabilityRuntimeConfig,
 ) -> Option<String> {
-    if observability_config.validation_errors.is_empty() {
+    discovered_config_guidance(
+        &observability_config.loaded_config_paths,
+        &observability_config.validation_errors,
+    )
+}
+
+fn discovered_config_guidance(
+    loaded_config_paths: &[services::config::LoadedConfigPath],
+    validation_errors: &[String],
+) -> Option<String> {
+    if validation_errors.is_empty() {
         return None;
     }
 
-    let has_invalid_local_config =
-        observability_config
-            .loaded_config_paths
-            .iter()
-            .any(|loaded_path| {
-                loaded_path.source == services::config::ConfigPathSource::DefaultDiscoveredLocal
-                    && observability_config
-                        .validation_errors
-                        .iter()
-                        .any(|error| error.contains(loaded_path.path.to_string_lossy().as_ref()))
-            });
+    let has_invalid_local_config = loaded_config_paths.iter().any(|loaded_path| {
+        loaded_path.source == services::config::ConfigPathSource::DefaultDiscoveredLocal
+            && validation_errors
+                .iter()
+                .any(|error| error.contains(loaded_path.path.to_string_lossy().as_ref()))
+    });
+    let only_older_schema_series = validation_errors
+        .iter()
+        .all(|error| services::config::schema_declaration::is_older_series_only_failure(error));
 
-    Some(if has_invalid_local_config {
-        "Local `.sce` config is invalid. Fix `.sce` and run `sce config validate`.".to_string()
-    } else {
-        "A discovered config file is invalid. Fix it and run `sce config validate`.".to_string()
+    Some(match (has_invalid_local_config, only_older_schema_series) {
+        (true, true) => "Local `.sce` config declares an older config schema series. Run `sce setup` to upgrade it.".to_string(),
+        (false, true) => "A discovered config file declares an older config schema series. Run `sce setup` to upgrade it.".to_string(),
+        (true, false) => "Local `.sce` config is invalid. Fix `.sce` and run `sce config validate`.".to_string(),
+        (false, false) => "A discovered config file is invalid. Fix it and run `sce config validate`.".to_string(),
     })
 }
 
@@ -225,4 +234,81 @@ fn write_error_diagnostic_with_color_policy<W: Write>(
 
 fn write_startup_diagnostic<W: Write>(writer: &mut W, diagnostic: &str) {
     let _ = writeln!(writer, "{}", services::style::error_code(diagnostic));
+}
+
+#[cfg(test)]
+mod discovered_config_guidance_tests {
+    use std::path::{Path, PathBuf};
+
+    use serde_json::json;
+
+    use super::discovered_config_guidance;
+    use crate::services::config::schema::parse_file_config;
+    use crate::services::config::{ConfigPathSource, LoadedConfigPath};
+
+    const LOCAL_CONFIG_PATH: &str = "/repo/.sce/config.json";
+
+    fn local_loaded_path() -> LoadedConfigPath {
+        LoadedConfigPath {
+            path: PathBuf::from(LOCAL_CONFIG_PATH),
+            source: ConfigPathSource::DefaultDiscoveredLocal,
+        }
+    }
+
+    fn validation_error(value: &serde_json::Value) -> String {
+        parse_file_config(
+            &value.to_string(),
+            Path::new(LOCAL_CONFIG_PATH),
+            ConfigPathSource::DefaultDiscoveredLocal,
+        )
+        .unwrap_err()
+        .to_string()
+    }
+
+    #[test]
+    fn older_schema_series_only_guidance_mentions_setup() {
+        let error = validation_error(&json!({
+            "$schema": "https://sce.crocoder.dev/v0.0.1/config.json",
+        }));
+
+        let guidance = discovered_config_guidance(&[local_loaded_path()], &[error]).unwrap();
+
+        assert!(guidance.contains("sce setup"), "{guidance}");
+        assert!(guidance.starts_with("Local `.sce` config"), "{guidance}");
+    }
+
+    #[test]
+    fn older_schema_series_with_other_errors_keeps_generic_guidance() {
+        let error = validation_error(&json!({
+            "$schema": "https://sce.crocoder.dev/v0.0.1/config.json",
+            "log_level": "loud",
+        }));
+
+        let guidance = discovered_config_guidance(&[local_loaded_path()], &[error]).unwrap();
+
+        assert_eq!(
+            guidance,
+            "Local `.sce` config is invalid. Fix `.sce` and run `sce config validate`."
+        );
+    }
+
+    #[test]
+    fn foreign_schema_declaration_keeps_generic_guidance() {
+        let error = validation_error(&json!({ "$schema": "https://example.com/s.json" }));
+
+        let guidance = discovered_config_guidance(&[], &[error]).unwrap();
+
+        assert_eq!(
+            guidance,
+            "A discovered config file is invalid. Fix it and run `sce config validate`."
+        );
+    }
+
+    #[test]
+    fn no_validation_errors_yields_no_guidance() {
+        assert_eq!(
+            discovered_config_guidance(&[local_loaded_path()], &[]),
+            None
+        );
+    }
 }

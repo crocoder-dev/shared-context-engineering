@@ -7,6 +7,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::policy::{parse_bash_policy_presets, parse_custom_bash_policies, CustomBashPolicyEntry};
+use super::schema_declaration::{
+    classify_schema_declaration, current_schema_series, current_schema_version,
+    schema_declaration_issue, SCHEMA_DECLARATION_POINTER,
+};
 use super::types::{
     parse_optional_workflow_id, AgentTraceDbRetryConfig, AuthMode, ConfigPathSource,
     DatabaseRetryConfig, IntegrationTargetId, IntegrationsConfig, LogFormat, LogLevel,
@@ -234,17 +238,33 @@ pub(crate) type ParsedFilePolicies = (
 );
 
 pub(crate) fn validate_config_value_against_schema(value: &Value, path: &Path) -> Result<()> {
-    let mut errors = config_schema_validator()
-        .iter_errors(value)
-        .map(|error| {
-            let location = error.instance_path().to_string();
-            if location.is_empty() {
-                error.to_string()
-            } else {
-                format!("{location}: {error}")
+    let current_version = current_schema_version();
+    let declaration_issue = schema_declaration_issue(
+        &classify_schema_declaration(
+            value.get(CONFIG_SCHEMA_DECLARATION_KEY),
+            current_schema_series(),
+        ),
+        &current_version,
+    );
+    let mut declaration_reported = false;
+    let mut errors = Vec::new();
+    for error in config_schema_validator().iter_errors(value) {
+        let location = error.instance_path().to_string();
+        if location.is_empty() {
+            errors.push(error.to_string());
+            continue;
+        }
+        if location == SCHEMA_DECLARATION_POINTER {
+            if let Some(issue) = &declaration_issue {
+                if !declaration_reported {
+                    errors.push(issue.clone());
+                    declaration_reported = true;
+                }
+                continue;
             }
-        })
-        .collect::<Vec<_>>();
+        }
+        errors.push(format!("{location}: {error}"));
+    }
 
     if errors.is_empty() {
         return Ok(());
@@ -1133,7 +1153,7 @@ mod schema_declaration_acceptance_tests {
         )
     }
 
-    fn declaration_accepted(declaration: Value) -> bool {
+    fn declaration_accepted(declaration: &Value) -> bool {
         parse_value(&json!({ "$schema": declaration })).is_ok()
     }
 
@@ -1152,7 +1172,7 @@ mod schema_declaration_acceptance_tests {
 
         for version in accepted {
             let url = schema_url(&version);
-            assert!(declaration_accepted(json!(url)), "expected {url} accepted");
+            assert!(declaration_accepted(&json!(url)), "expected {url} accepted");
         }
     }
 
@@ -1173,7 +1193,10 @@ mod schema_declaration_acceptance_tests {
 
         for version in rejected {
             let url = schema_url(&version);
-            assert!(!declaration_accepted(json!(url)), "expected {url} rejected");
+            assert!(
+                !declaration_accepted(&json!(url)),
+                "expected {url} rejected"
+            );
         }
     }
 
@@ -1204,10 +1227,7 @@ mod schema_declaration_acceptance_tests {
         ];
 
         for value in rejected {
-            assert!(
-                !declaration_accepted(value.clone()),
-                "expected {value} rejected"
-            );
+            assert!(!declaration_accepted(&value), "expected {value} rejected");
         }
     }
 

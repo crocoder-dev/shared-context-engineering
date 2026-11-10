@@ -214,7 +214,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. The generated config schema now accepts the whole series. `context/sce/config-schema-publication.md` still describes the exact-version `const` until T08 updates it.
   - Context synchronization: synced
 
-- [ ] T02: `Add typed schema-declaration classification and actionable $schema errors` (status:todo)
+- [x] T02: `Add typed schema-declaration classification and actionable $schema errors` (status:done)
   - Task ID: T02
   - Scope:
     - In:
@@ -239,7 +239,36 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_declaration`
     - `… test … config`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `cli/src/services/config/schema_declaration.rs` (new)
+    - `cli/src/services/config/mod.rs`
+    - `cli/src/services/config/schema.rs`
+    - `cli/src/services/app_support.rs`
+  - Result:
+    - New `schema_declaration` module defines:
+      - `SchemaVersion`, with a typed parser that mirrors the Pkl `seriesPattern` grammar, plus `series()` and `release()`.
+      - `SchemaSeries`.
+      - `current_schema_version()` and `current_schema_series()`, both parsed from `PACKAGE_VERSION`.
+      - `classify_schema_declaration`, returning `Absent | CurrentSeries | OlderSeries | NewerSeries | Unrecognized`.
+      - `schema_declaration_issue`.
+      - `is_older_series_only_failure`.
+    - `validate_config_value_against_schema` collapses every `/$schema` schema error into one classified issue. Other errors and the sorted ` | ` join are unchanged.
+    - `invalid_discovered_config_guidance` delegates to `discovered_config_guidance`. When every validation error is only an older-series declaration, the guidance names `sce setup`, for both the local and the discovered-file wording.
+    - Deviation (user instruction during the run): the messages print full `major.minor.patch` versions rather than `X.Y` series. Prerelease and build are dropped. Final wording:
+      - Older: `/$schema: declares SCE config schema version 0.3.3; this CLI uses 0.4.0 and accepts 0.4.x; run 'sce setup' to upgrade the repository and global config, or set `$schema` to <current url>`.
+      - Newer: `… version 0.5.0, which was written by a newer SCE release; this CLI uses 0.4.0 and accepts 0.4.x; upgrade the SCE CLI`.
+      - Unrecognized: `/$schema: is not a canonical SCE schema URL; use <current url>`.
+    - Fixed a T01 test helper (`declaration_accepted` now takes `&Value`) to clear the clippy `needless_pass_by_value` failure under `--all-targets -D warnings`.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_declaration`: passed (13 passed, 0 failed). This includes the classifier/embedded-schema parity matrix, the injected-`0.5` classifier tests, and the guidance tests.
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml config`: passed (109 passed, 0 failed).
+    - Supplementary checks:
+      - `clippy --all-targets -- -D warnings`: passed.
+      - `cargo fmt --check`: passed.
+      - Behavioral check: `sce config validate` against a discovered `.sce/config.json` declaring `0.3.3`, `0.5.0`, or `https://example.com/s.json` printed the matching message, and a sha256 check confirmed each file was unchanged. `0.3.3` plus `log_level: "loud"` reported both issues.
+  - Context impact: localized. `$schema` validation messages and the startup guidance changed. `context/cli/config-precedence-contract.md` does not yet describe the actionable messages; T08 updates it.
+  - Context synchronization: synced
 
 - [ ] T03: `Extract the guarded config-file write shared by setup writers` (status:todo)
   - Task ID: T03
