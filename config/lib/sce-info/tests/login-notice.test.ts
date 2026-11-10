@@ -41,6 +41,13 @@ test('session start logs nothing when already logged in', async ($, on) => {
   expect(lines).toEqual([])
 })
 
+test('unavailable login status does not ask the user to log in again', async ($, on) => {
+  answerDoctor(on, JSON.stringify({ sce_login: { state: 'unavailable', reason: 'credential_inaccessible', auth_mode: 'mandatory' } }))
+  const lines = collectLog(on)
+  await $.session.start(START)
+  expect(lines).toEqual([])
+})
+
 test('session start logs nothing when login is not mandatory', async ($, on) => {
   answerDoctor(on, JSON.stringify({ sce_login: { state: 'not_required', auth_mode: 'optional' } }))
   const lines = collectLog(on)

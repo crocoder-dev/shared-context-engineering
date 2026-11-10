@@ -1448,6 +1448,19 @@
           testCommand = "bun test";
         };
 
+        sceInfoLoginStatusTests = mkBunCheck {
+          name = "sce-info-login-status-tests";
+          src = pkgs.lib.fileset.toSource {
+            root = workspaceRoot;
+            fileset = pkgs.lib.fileset.unions [
+              ./config/lib/sce-info/hooks/register.ts
+              ./config/lib/sce-info/tests/login-state.test.ts
+            ];
+          };
+          workdir = "config/lib/sce-info";
+          testCommand = "bun test tests/login-state.test.ts";
+        };
+
         configLibBiomeCheck = mkBiomeCheck {
           name = "config-lib-biome-check";
           src = configLibBashPolicySrc;
@@ -1717,6 +1730,7 @@
             npm-biome-format = npmBiomeFormat;
 
             config-lib-bun-tests = configLibBunTests;
+            sce-info-login-status-tests = sceInfoLoginStatusTests;
             config-lib-biome-check = configLibBiomeCheck;
             config-lib-biome-format = configLibBiomeFormat;
 

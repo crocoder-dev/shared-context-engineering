@@ -48,6 +48,16 @@ Current migration baseline:
 
 Storage operations live in `cli/src/services/telemetry_credential_storage.rs`: `save_telemetry_credential` is a single-statement `INSERT OR REPLACE` of the fixed row (last complete writer wins), `load_telemetry_credential` returns the row only when token, accessor, and identity are non-empty, the expiry is non-negative and in the future, and the stored WorkOS session's access-token `(sub, workspace_id)` claims equal the row's identity (it never mints or refreshes), `load_repository_telemetry_credential` additionally requires a matching repository binding, `bind_repository_telemetry` records a binding for the current credential identity, and `delete_telemetry_credential` removes the row. `TelemetryCredential` has a redacted `Debug`, and storage errors use fixed messages without secret values. Saving or deleting never touches `auth_credentials`. Managed OTLP export reads this row at CLI startup through `load_telemetry_credential` and uses only the token as bearer. The shared `AuthDb` singleton comes from `token_storage::get_auth_db`. `sce auth logout` deletes both the `auth_credentials` row and the telemetry row; see [telemetry-credential.md](telemetry-credential.md) for lifecycle and security boundaries.
 
+## Stored session inspection
+
+`token_storage::load_current_tokens()` reads only the WorkOS session row through
+`open_existing_current_auth_db(NonInteractive)`. It distinguishes missing storage
+or a missing row from an outdated schema, and preserves storage errors. Doctor
+uses this path for login status independently of telemetry credentials and
+repository bindings. It creates no database or key and performs no migration or
+network refresh. A stored refresh token keeps a session renewable after access
+token expiry; remote revocation is not checked by this offline inspection.
+
 ## Concurrency and schema readiness
 
 - Many short-lived `sce` processes read `auth.db` at once: every admitted Claude hook resolves the telemetry credential at startup. `EncryptedTursoDb::new()` therefore opens with Turso multiprocess WAL, alongside encryption, so concurrent readers share the file. Multiprocess WAL creates `auth.db-wal` and the `auth.db-tshm` coordination file next to the database. SCE also creates `auth.db-open.lock` once `auth.db` exists, to serialize Turso cold opens (see [Serialized cold opens](#serialized-cold-opens-after-a-legacy-write)).

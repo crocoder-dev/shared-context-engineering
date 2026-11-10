@@ -34,22 +34,33 @@ blocking local SCE features.
 
 - Effective mode not `mandatory`: `[PASS] SCE login (not required)`. No
   credential lookup runs.
-- `mandatory` with a valid stored credential: `[PASS] SCE login`.
+- `mandatory` with a saved WorkOS session: `[PASS] SCE login`. A non-empty
+  refresh token keeps an expired access token renewable; a current access
+  token also suffices. This is an offline storage check, not remote session
+  validation, and it never refreshes credentials.
 - `mandatory` without one: `[FAIL] SCE login`, expanded into
-  `Problem: auth.mode: mandatory is set in the <config file>, but no valid SCE
-  login was found.` and `Remediation: Run 'sce auth login'.`. The config file is
+  `Problem: auth.mode: mandatory is set in the <config file>, but no saved SCE
+  session is available.` and `Remediation: Run 'sce auth login'.`. The config file is
   the layer that decided the mode (repository `.sce/config.json`, global SCE
   config, `--config` file, or `SCE_CONFIG_FILE` file). The problem is
   `global_state`, severity `error` (blocking), `manual_only`, next action
   `auth_login`, so `--fix` reports it as a `manual` fix result and never logs in.
-- "Valid stored credential" uses the setup login check
-  (`auth_command::repository_telemetry_authorized`): a repository-bound
-  credential that the current session owns. It is looked up only when `auth.db`
-  exists, non-interactively, under `CREDENTIAL_LOOKUP_DEADLINE`, and it fails
-  closed: an unavailable store counts as not logged in. Doctor never creates
-  `auth.db` or a credential-store key.
+- Login reads only the WorkOS `auth_credentials` row, non-interactively under
+  `CREDENTIAL_LOOKUP_DEADLINE`. Telemetry credential expiry, provisioning, and
+  repository enrollment do not determine login status. Setup and telemetry
+  header authorization retain their repository-bound credential checks.
+- Unreadable credential storage, database contention, outdated schema, timeout,
+  or an invalid system clock produce `[WARN] SCE login status unavailable`,
+  with a `sce_login_unavailable` warning and cause-specific remediation. They
+  never imply logout. Doctor never creates `auth.db` or a credential-store key,
+  migrates the schema, or makes a network request to inspect the login.
 - JSON adds a top-level `sce_login` object: `state` (`not_required`,
-  `logged_in`, `not_logged_in`), `auth_mode`, `source`, and `config_source`.
+  `logged_in`, `not_logged_in`, `unavailable`), `auth_mode`, `source`, and
+  `config_source`. Only `unavailable` adds `reason`: `credential_inaccessible`,
+  `database_locked`, `database_error`, `path_resolution_error`,
+  `schema_not_current`, `lookup_timeout`, or `clock_error`.
+- The Claude status bar renders `unavailable` as yellow
+  `login status unavailable, run sce doctor`, without a login-required notice.
 - Code: `cli/src/services/doctor/access.rs`.
 
 ## Header and status vocabulary
