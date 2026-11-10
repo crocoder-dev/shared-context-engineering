@@ -493,7 +493,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized, user-visible. `sce setup` output now starts with a `Config schema:` section whenever a canonical file's `$schema` is upgraded or skipped. Durable documentation of the section is scheduled for T08.
   - Context synchronization: synced
 
-- [ ] T07: `Add an end-to-end setup schema-upgrade scenario check` (status:todo)
+- [x] T07: `Add an end-to-end setup schema-upgrade scenario check` (status:done)
   - Task ID: T07
   - Scope:
     - In:
@@ -511,7 +511,33 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify:
     - `nix develop -c ./scripts/test-setup-schema-upgrade.sh`
     - `nix flake check`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `scripts/test-setup-schema-upgrade.sh` (new, staged intent-to-add so the flake source includes it)
+    - `flake.nix`
+  - Result:
+    - The new script runs a built `sce` (`--sce-bin`, `$SCE_BIN`, or `sce` on `PATH`). It isolates `HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, and the Git global config. Each phase uses a fresh temporary Git repo with an `https://example.com/acme/demo.git` `origin`.
+    - The global config path follows the CLI's platform resolution: `$XDG_CONFIG_HOME/sce/config.json`, or `~/Library/Application Support/sce/config.json` on Darwin.
+    - The current version, current URL, and newer series (`major.(minor+1).0`) are read from `sce version`. The only literal series in the script is the `0.3.3` fixture.
+    - Phases:
+      1. **Read-only.** For older (`0.3.3`), newer, and foreign declarations in both files, `sce version`, `config validate`, `config show`, `doctor`, and `doctor --fix` leave both sha256 hashes unchanged. Every command except `version` prints the matching `$schema` message.
+      2. **Upgrade.** `sce setup --hooks --repo` reports both `upgraded …` lines. Each file equals its original with only the URL swapped, with exactly one changed line, using a fixture with `auth.mode`, `telemetry.enabled`, `integrations.target`, custom `policies.bash`, and irregular whitespace. `sce config validate` then reports valid.
+      3. **Idempotency.** A second run prints no `Config schema:` section and leaves both hashes unchanged.
+      4. **Mixed.** With an unknown-key stale local file and a valid stale global file, the local file is byte-identical and its candidate-invalid line names `not_a_real_key` and `rerun 'sce setup'`. The global file is upgraded with only `$schema` changed.
+      5. **Newer.** The local file is byte-identical, the newer-series line is reported, and no global config is created.
+      6. **Symlink.** A global config symlinked to a `dotfiles` target stays a symlink with the same target and target bytes, and is reported with the symlink line.
+    - `flake.nix` adds a `setupSchemaUpgradeCheck` `runCommand`, which runs the script against `scePackage` with `bash`, `coreutils`, `diffutils`, `gnugrep`, `gnused`, and `git`, and exposes it as `checks.<system>.setup-schema-upgrade`.
+    - Approved assumptions:
+      - Read-only commands may exit non-zero on a stale config. The script asserts on their output and hashes, not their exit codes. Setup must exit 0.
+      - `nix develop -c ./scripts/test-setup-schema-upgrade.sh` needs a built `sce` on `PATH` or `SCE_BIN`. The dev shell does not provide one, so the local run put `cli/target/debug` on `PATH`.
+  - Verify:
+    - `nix develop -c ./scripts/test-setup-schema-upgrade.sh` (with `cli/target/debug` on `PATH`): passed (all 6 phases).
+    - `nix flake check`: passed ("all checks passed!", running on x86_64-linux only; Darwin and aarch64 systems were omitted by default).
+    - Supplementary checks:
+      - `nix build .#checks.x86_64-linux.setup-schema-upgrade -L`: passed in the Nix sandbox (all 6 phases).
+      - Negative control: against a stale pre-T02 `cli/target/release/sce` (exact-version `const`), the script failed at the first read-only assertion, as expected.
+  - Context impact: localized. This adds a test-only script and a flake check, with no runtime behavior change. A new check name now appears in `nix flake check`.
+  - Context synchronization: synced
 
 - [ ] T08: `Document series compatibility and setup schema upgrades` (status:todo)
   - Task ID: T08
