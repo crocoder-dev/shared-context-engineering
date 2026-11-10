@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context};
 use serde_json::Value;
@@ -139,6 +139,61 @@ where
     SchemaUpgradeOutcome::Skipped(skip)
 }
 
+#[derive(Debug)]
+pub(crate) struct SchemaUpgradeReport {
+    pub(crate) path: PathBuf,
+    pub(crate) outcome: SchemaUpgradeOutcome,
+}
+
+#[derive(Debug)]
+struct PlannedSchemaUpgrade {
+    path: PathBuf,
+    layer: ConfigLayer,
+    plan: SchemaUpgradePlan,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct CanonicalSchemaUpgrades {
+    files: Vec<PlannedSchemaUpgrade>,
+}
+
+impl CanonicalSchemaUpgrades {
+    pub(crate) fn plan(repository_config_path: &Path, global_config_path: Option<&Path>) -> Self {
+        let files = [
+            Some((repository_config_path, ConfigLayer::Repository)),
+            global_config_path.map(|path| (path, ConfigLayer::Global)),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|(path, layer)| PlannedSchemaUpgrade {
+            path: path.to_path_buf(),
+            layer,
+            plan: plan_schema_upgrade(path, layer),
+        })
+        .collect();
+        Self { files }
+    }
+
+    pub(crate) fn candidate(&self, path: &Path) -> Option<&[u8]> {
+        self.files.iter().find_map(|file| match &file.plan {
+            SchemaUpgradePlan::Ready { candidate, .. } if file.path == path => {
+                Some(candidate.as_slice())
+            }
+            _ => None,
+        })
+    }
+
+    pub(crate) fn commit(self) -> Vec<SchemaUpgradeReport> {
+        self.files
+            .into_iter()
+            .map(|file| SchemaUpgradeReport {
+                outcome: commit_schema_upgrade(&file.path, file.layer, file.plan),
+                path: file.path,
+            })
+            .collect()
+    }
+}
+
 struct ConfigDocument<'a> {
     raw: &'a str,
     value: Value,
@@ -195,7 +250,6 @@ fn build_candidate(document: &ConfigDocument<'_>, target_url: &str) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
 
     use serde_json::json;
 

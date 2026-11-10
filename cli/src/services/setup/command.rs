@@ -17,6 +17,7 @@ use crate::services::setup::access_preferences::{
     RepositoryAccessPreferencesError,
 };
 use crate::services::setup::claude_telemetry::CLAUDE_TELEMETRY_DISABLED_BY_CONFIG_LINE;
+use crate::services::setup::schema_upgrade::{CanonicalSchemaUpgrades, SchemaUpgradeReport};
 use crate::services::{config, managed_telemetry, setup};
 
 const SCE_ACCESS_HEADING: &str = "SCE access:";
@@ -50,7 +51,8 @@ impl SetupCommand {
                 .map_err(unexpected_failure)?,
         };
 
-        let repository_root = resolve_setup_repository(&setup_start_path)?;
+        let repository = resolve_setup_repository(&setup_start_path, self.request.context_only)?;
+        let repository_root = repository.root;
 
         let (setup_dispatch, interactive_access) = match self.prepare_dispatch(&repository_root)? {
             PreparedSetup::Cancelled => return Ok(setup::setup_cancelled_text()),
@@ -730,7 +732,40 @@ where
     format_claude_telemetry_report(&installed, authorization)
 }
 
-fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::PathBuf, CliError> {
+struct SetupRepository {
+    root: PathBuf,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the setup report renders the schema upgrade outcomes"
+        )
+    )]
+    schema_upgrades: Vec<SchemaUpgradeReport>,
+}
+
+fn resolve_setup_repository(
+    start_path: &Path,
+    context_only: bool,
+) -> Result<SetupRepository, CliError> {
+    resolve_setup_repository_with(
+        start_path,
+        context_only,
+        |key| std::env::var(key).ok(),
+        config::resolver::resolve_default_global_config_path,
+    )
+}
+
+fn resolve_setup_repository_with<FEnv, FGlobalPath>(
+    start_path: &Path,
+    context_only: bool,
+    env_lookup: FEnv,
+    resolve_global_config_path: FGlobalPath,
+) -> Result<SetupRepository, CliError>
+where
+    FEnv: Fn(&str) -> Option<String>,
+    FGlobalPath: Fn() -> anyhow::Result<PathBuf>,
+{
     let repository_root = setup::ensure_git_repository(start_path).map_err(|source| {
         let user_error = match source {
             setup::GitRepositoryResolutionError::NotGitRepository(_) => UserError::NotGitRepository,
@@ -740,8 +775,27 @@ fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::P
         CliError::user_with_source(user_error, source)
     })?;
 
-    let storage_config = config::resolve_agent_trace_storage_runtime_config(&repository_root)
-        .map_err(unexpected_failure)?;
+    let schema_upgrades = if context_only {
+        CanonicalSchemaUpgrades::default()
+    } else {
+        CanonicalSchemaUpgrades::plan(
+            &RepoPaths::new(&repository_root).sce_config_file(),
+            resolve_global_config_path().ok().as_deref(),
+        )
+    };
+
+    let storage_config = config::resolver::resolve_agent_trace_storage_runtime_config_with(
+        &repository_root,
+        env_lookup,
+        |path| match schema_upgrades.candidate(path) {
+            Some(candidate) => String::from_utf8(candidate.to_vec()).map_err(anyhow::Error::from),
+            None => std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read config file '{}'.", path.display())),
+        },
+        Path::exists,
+        resolve_global_config_path,
+    )
+    .map_err(unexpected_failure)?;
 
     setup::ensure_git_remote(&repository_root, &storage_config.repository_remote).map_err(
         |source| {
@@ -753,7 +807,10 @@ fn resolve_setup_repository(start_path: &std::path::Path) -> Result<std::path::P
         },
     )?;
 
-    Ok(repository_root)
+    Ok(SetupRepository {
+        root: repository_root,
+        schema_upgrades: schema_upgrades.commit(),
+    })
 }
 
 fn unexpected_failure(source: impl Into<anyhow::Error>) -> CliError {
@@ -1679,6 +1736,258 @@ mod tests {
                 Err(anyhow::anyhow!("resolution failed"))
             }),
             None
+        );
+    }
+
+    fn git(repo: &Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .expect("git should run");
+        assert!(output.status.success(), "git {args:?} failed");
+    }
+
+    fn schema_url(version: &str) -> String {
+        format!("https://sce.crocoder.dev/v{version}/config.json")
+    }
+
+    fn older_series_url() -> String {
+        let config::schema_declaration::SchemaSeries { major, minor } =
+            config::schema_declaration::current_schema_series();
+        if minor > 0 {
+            schema_url(&format!("{major}.{}.3", minor - 1))
+        } else {
+            schema_url(&format!("{}.9.3", major - 1))
+        }
+    }
+
+    fn stale(body: &str) -> String {
+        format!(
+            "{{\n  \"$schema\": \"{}\",\n{body}\n}}\n",
+            older_series_url()
+        )
+    }
+
+    fn upgraded(stale: &str) -> String {
+        stale.replace(
+            &older_series_url(),
+            &crate::services::agent_trace::sce_config_schema_url(),
+        )
+    }
+
+    impl AccessFixture {
+        fn git_repository(remotes: &[&str]) -> Self {
+            let fixture = Self::new();
+            fs::remove_dir(fixture.repo.join(".git")).unwrap();
+            git(&fixture.repo, &["init", "-q"]);
+            for remote in remotes {
+                git(
+                    &fixture.repo,
+                    &[
+                        "remote",
+                        "add",
+                        remote,
+                        &format!("https://example.com/{remote}.git"),
+                    ],
+                );
+            }
+            fixture
+        }
+
+        fn resolve_repository(&self, context_only: bool) -> Result<SetupRepository, CliError> {
+            resolve_setup_repository_with(
+                &self.repo,
+                context_only,
+                |_| None,
+                || Ok(self.global.clone()),
+            )
+        }
+
+        fn snapshot(&self) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+            (
+                fs::read(self.repo_config_path()).ok(),
+                fs::read(&self.global).ok(),
+            )
+        }
+    }
+
+    fn upgraded_paths(repository: &SetupRepository) -> Vec<std::path::PathBuf> {
+        repository
+            .schema_upgrades
+            .iter()
+            .filter(|report| {
+                matches!(
+                    report.outcome,
+                    setup::schema_upgrade::SchemaUpgradeOutcome::Upgraded { .. }
+                )
+            })
+            .map(|report| report.path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn setup_preflight_checks_remote_from_stale_local_config_and_upgrades_it() {
+        let fixture = AccessFixture::git_repository(&["upstream"]);
+        let local = stale(r#"  "agent_trace": { "repository_remote": "upstream" }"#);
+        fixture.write_repo_config(&local);
+
+        let repository = fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(fixture.repo_config_path()).unwrap(),
+            upgraded(&local)
+        );
+        assert_eq!(upgraded_paths(&repository), [fixture.repo_config_path()]);
+        assert!(!fixture.global.exists());
+    }
+
+    #[test]
+    fn setup_failed_remote_preflight_writes_no_schema_upgrade() {
+        let fixture = AccessFixture::git_repository(&["upstream"]);
+        fixture.write_repo_config(&stale(
+            r#"  "agent_trace": { "repository_remote": "missing" }"#,
+        ));
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+        let before = fixture.snapshot();
+
+        let Err(error) = fixture.resolve_repository(false) else {
+            panic!("preflight should fail for a missing remote");
+        };
+
+        assert!(
+            matches!(
+                error,
+                CliError::User {
+                    error: UserError::NotGitRemote,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn setup_failed_git_gate_writes_no_schema_upgrade() {
+        let fixture = AccessFixture::new();
+        fs::remove_dir(fixture.repo.join(".git")).unwrap();
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+        let before = fixture.snapshot();
+
+        assert!(fixture.resolve_repository(false).is_err());
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn setup_access_gate_locks_on_stale_global_disabled_after_upgrade() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        let global = stale(r#"  "auth": { "mode": "disabled" }"#);
+        fs::write(&fixture.global, &global).unwrap();
+        assert_eq!(
+            SetupAccessGate::from_policy(&fixture.policy(), false).auth_locked_by,
+            None
+        );
+
+        let repository = fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            upgraded_paths(&repository),
+            std::slice::from_ref(&fixture.global)
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.global).unwrap(),
+            upgraded(&global)
+        );
+        assert_eq!(
+            SetupAccessGate::from_policy(&fixture.policy(), false).auth_locked_by,
+            Some(AuthPolicyConfigFile::Global)
+        );
+        let prompter = FakePrompter::answering(None, false);
+        fixture.prepare(&prompter, false).unwrap();
+        assert!(prompter.asked().is_empty(), "{:?}", prompter.asked());
+    }
+
+    #[test]
+    fn setup_dispatch_uses_saved_answers_from_upgraded_local_config() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        fixture.write_repo_config(&stale(
+            r#"  "auth": { "mode": "optional" },
+  "telemetry": { "enabled": false },
+  "integrations": { "target": ["claude"], "optional_workflows": ["brownfield"] }"#,
+        ));
+        assert!(setup::persisted_integration_targets(&fixture.repo).is_empty());
+
+        fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            setup::persisted_integration_targets(&fixture.repo),
+            [ConcreteSetupTarget::Claude]
+        );
+        assert_eq!(
+            setup::persisted_optional_workflows(&fixture.repo),
+            ["brownfield"]
+        );
+        let prompter = FakePrompter::answering(None, false);
+        let access_save = ready_access_save(fixture.prepare(&prompter, false).unwrap());
+        assert_eq!(prompter.asked(), ["login"]);
+        assert_eq!(access_save.outcome, AccessWriteOutcome::Unchanged);
+    }
+
+    #[test]
+    fn setup_context_only_plans_no_schema_upgrade() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        fixture.write_repo_config(&stale(r#"  "auth": { "mode": "optional" }"#));
+        fs::write(
+            &fixture.global,
+            stale(r#"  "auth": { "mode": "optional" }"#),
+        )
+        .unwrap();
+        let before = fixture.snapshot();
+
+        let repository = fixture.resolve_repository(true).unwrap();
+
+        assert!(repository.schema_upgrades.is_empty());
+        assert_eq!(fixture.snapshot(), before);
+    }
+
+    #[test]
+    fn setup_upgrades_valid_global_when_stale_local_candidate_is_invalid() {
+        let fixture = AccessFixture::git_repository(&["origin"]);
+        let local = stale(r#"  "unknown_key": true"#);
+        fixture.write_repo_config(&local);
+        let global = stale(r#"  "auth": { "mode": "optional" }"#);
+        fs::write(&fixture.global, &global).unwrap();
+
+        let repository = fixture.resolve_repository(false).unwrap();
+
+        assert_eq!(
+            upgraded_paths(&repository),
+            std::slice::from_ref(&fixture.global)
+        );
+        assert_eq!(
+            fs::read_to_string(&fixture.global).unwrap(),
+            upgraded(&global)
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.repo_config_path()).unwrap(),
+            local
+        );
+        let prompter = FakePrompter::answering(None, false);
+        let access_save = ready_access_save(fixture.prepare(&prompter, false).unwrap());
+        assert_eq!(prompter.asked(), ["login"]);
+        assert_eq!(access_save.outcome, AccessWriteOutcome::Unchanged);
+        assert_eq!(
+            fs::read_to_string(fixture.repo_config_path()).unwrap(),
+            local
         );
     }
 

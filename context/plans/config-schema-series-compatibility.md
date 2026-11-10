@@ -377,7 +377,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. This adds a new internal setup module that is not yet wired into the `sce setup` flow, so user-visible behavior is unchanged until T05 and T06.
   - Context synchronization: synced
 
-- [ ] T05: `Run schema upgrades before setup's preflight readers` (status:todo)
+- [x] T05: `Run schema upgrades before setup's preflight readers` (status:done)
   - Task ID: T05
   - Scope:
     - In:
@@ -399,7 +399,41 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Done when: AC8 holds and the existing `setup` tests pass.
   - Verify:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `cli/src/services/setup/command.rs`
+    - `cli/src/services/setup/schema_upgrade.rs`
+    - `cli/src/services/config/resolver.rs`
+  - Result:
+    - `schema_upgrade.rs` adds:
+      - `CanonicalSchemaUpgrades`, which plans the repository file and, when its path resolves, the global file through `plan_schema_upgrade`. A missing file plans as `NotPresent` and is never created.
+      - `candidate(path)`, which returns the `Ready` candidate bytes for a planned path.
+      - `commit(self) -> Vec<SchemaUpgradeReport { path, outcome }>`.
+    - `resolve_setup_repository` now takes `context_only` and delegates to `resolve_setup_repository_with`, which takes injectable env lookup and global-path resolvers. It runs these steps in order:
+      1. `ensure_git_repository`.
+      2. Plan the upgrades, which is skipped in context-only mode. Only the canonical local and global paths are planned; an explicit config path never is.
+      3. `resolve_agent_trace_storage_runtime_config_with`, now `pub(crate)`, with a `read_file` overlay that serves candidate bytes for the planned paths.
+      4. `ensure_git_remote`.
+      5. Commit the upgrades.
+    - It returns a `SetupRepository { root, schema_upgrades }`. `execute` then runs `prepare_dispatch` and every later reader or writer against the committed files.
+    - `SetupRepository.schema_upgrades` carries `#[cfg_attr(not(test), expect(dead_code, …))]` until T06 renders it. The module-level `expect(dead_code)` on `schema_upgrade` stays, because the skip details are still unread.
+    - 7 new tests in `setup::command::tests`:
+      - The remote preflight uses `upstream` from a stale local file in an `upstream`-only repo. The file is upgraded with only `$schema` changed, and the global file is not created.
+      - A failing remote preflight leaves both stale files byte-identical.
+      - A failing Git gate leaves the stale global file byte-identical.
+      - A stale global `auth.mode: disabled` does not lock the gate before the upgrade, locks it as `Global` after the upgrade, and suppresses the access prompts.
+      - A stale local file's targets, optional workflows, and saved access answers drive dispatch after the upgrade: only `login` is prompted, and the access write is `Unchanged`.
+      - Context-only mode plans and writes nothing.
+      - With an invalid stale local file and a valid stale global file, only the global file is upgraded, the local file stays byte-identical, and prompts are skipped as today.
+    - Approved assumption: the global file is passed to the planner whenever its path resolves. `NotPresent` covers "planned only if the file exists" without a separate existence check.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup`: passed (101 passed, 0 failed).
+    - Supplementary checks:
+      - `… test … schema_upgrade`: passed (16 passed, 0 failed).
+      - `clippy --all-targets -- -D warnings`: passed.
+      - `cargo fmt --check`: passed.
+  - Context impact: localized. The `sce setup` ordering now upgrades stale canonical `$schema` declarations before the remote preflight and before dispatch, which changes setup behavior for stale files. Setup output is unchanged until T06, and durable documentation is scheduled for T08.
+  - Context synchronization: synced
 
 - [ ] T06: `Report schema upgrade outcomes in setup output` (status:todo)
   - Task ID: T06
