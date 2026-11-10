@@ -1,6 +1,7 @@
 #!/bin/sh
 set -eu
 
+# >>> sce managed block (do not edit) >>>
 if ! command -v sce >/dev/null 2>&1; then
   if [ -t 2 ]; then
     RED="$(printf '\033[38;2;220;38;38m')"
@@ -27,3 +28,4 @@ fi
 sce hooks commit-msg "$@"
 status=$?
 exit "$status"
+# <<< sce managed block <<<

@@ -315,4 +315,18 @@ mod tests {
 
         assert!(merge.unreachable_block_advisory);
     }
+
+    #[test]
+    fn embedded_required_hook_templates_contain_one_balanced_managed_block() {
+        for hook_asset in crate::services::setup::iter_required_hook_assets() {
+            assert!(
+                matches!(
+                    locate_block(hook_asset.bytes),
+                    BlockLocation::Balanced(_, _)
+                ),
+                "embedded hook template '{}' must contain one balanced SCE managed block",
+                hook_asset.relative_path
+            );
+        }
+    }
 }
