@@ -90,21 +90,21 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: The embedded config schema accepts every canonical `https://sce.crocoder.dev/v<major>.<minor>.<patch>[-pre][+build]/config.json` declaration in the CLI's `major.minor` series. It rejects other series, malformed or foreign URLs, and non-string values. Every other field is still validated.
+- [x] AC1: The embedded config schema accepts every canonical `https://sce.crocoder.dev/v<major>.<minor>.<patch>[-pre][+build]/config.json` declaration in the CLI's `major.minor` series. It rejects other series, malformed or foreign URLs, and non-string values. Every other field is still validated.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_declaration`, which runs the embedded-schema compatibility matrix and the classifier parity tests, plus the `$schema`-valid/other-field-invalid case.
-- [ ] AC2: The accepted series comes from `.version` alone. Changing the release series changes the generated `$schema` rule and the Rust classifier without editing any other constant.
+- [x] AC2: The accepted series comes from `.version` alone. Changing the release series changes the generated `$schema` rule and the Rust classifier without editing any other constant.
   - Validate: `nix run .#pkl-check-generated`, which runs the Pkl series-pattern fixtures for `0.4.0-pre-alpha-v14`, `0.5.0`, and `1.4.2`. Also confirm that `nix shell nixpkgs#ripgrep -c rg -n '0\\.4' config/pkl/base/sce-config-schema*.pkl cli/src/services/config/schema_declaration.rs` finds no hard-coded series outside test fixtures.
-- [ ] AC3: `sce config validate`, `sce doctor` (including `--fix`), and ordinary command startup never modify a config file with an older, newer, or foreign declaration. Each prints an actionable `$schema` message.
+- [x] AC3: `sce config validate`, `sce doctor` (including `--fix`), and ordinary command startup never modify a config file with an older, newer, or foreign declaration. Each prints an actionable `$schema` message.
   - Validate: the T07 end-to-end scenario's read-only phase compares file hashes before and after each command.
-- [ ] AC4: `sce setup` upgrades an older-series declaration in the existing repository `.sce/config.json` and the existing global config. Only the `$schema` value changes, and every other byte is preserved, including auth policy, telemetry consent, integrations, and custom policies. A second run leaves both files byte-identical.
+- [x] AC4: `sce setup` upgrades an older-series declaration in the existing repository `.sce/config.json` and the existing global config. Only the `$schema` value changes, and every other byte is preserved, including auth policy, telemetry consent, integrations, and custom policies. A second run leaves both files byte-identical.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_upgrade` plus the T07 scenario's upgrade and idempotency phases.
-- [ ] AC5: Setup never writes a newer-series, malformed, foreign, absent, or same-series declaration. It never creates a missing global config for a schema upgrade, and it never writes an explicit `--config`/`SCE_CONFIG_FILE` file at a non-canonical path.
+- [x] AC5: Setup never writes a newer-series, malformed, foreign, absent, or same-series declaration. It never creates a missing global config for a schema upgrade, and it never writes an explicit `--config`/`SCE_CONFIG_FILE` file at a non-canonical path.
   - Validate: `schema_upgrade` unit matrix plus the `setup` command tests from T05.
-- [ ] AC6: When an older-series candidate fails validation, the file stays byte-identical and setup reports the path, the validation errors, and the remediation. Any other canonical file is still upgraded.
+- [x] AC6: When an older-series candidate fails validation, the file stays byte-identical and setup reports the path, the validation errors, and the remediation. Any other canonical file is still upgraded.
   - Validate: `schema_upgrade` candidate-invalid test plus the T07 mixed-file phase.
-- [ ] AC7: Upgrade writes keep the existing protections. A symlinked file, whether its target is valid or dangling, is refused and left untouched. A file whose bytes change between planning and commit is refused. The write is atomic and keeps the file mode.
+- [x] AC7: Upgrade writes keep the existing protections. A symlinked file, whether its target is valid or dangling, is refused and left untouched. A file whose bytes change between planning and commit is refused. The write is atomic and keeps the file mode.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_upgrade` (symlink, dangling-symlink, concurrent-modification, and mode cases) and `… test … access_preferences`, which must stay unchanged after the T03 refactor.
-- [ ] AC8: An older-series declaration does not change setup's preflights. The remote preflight checks the remote configured in a stale but otherwise valid local file. Access prompts, the access gate, and saved selections come from the upgraded files. A failed Git or remote preflight writes nothing.
+- [x] AC8: An older-series declaration does not change setup's preflights. The remote preflight checks the remote configured in a stale but otherwise valid local file. Access prompts, the access gate, and saved selections come from the upgraded files. A failed Git or remote preflight writes nothing.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` (T05 ordering tests).
 
 ### Full validation
@@ -539,7 +539,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. This adds a test-only script and a flake check, with no runtime behavior change. A new check name now appears in `nix flake check`.
   - Context synchronization: synced
 
-- [ ] T08: `Document series compatibility and setup schema upgrades` (status:todo)
+- [x] T08: `Document series compatibility and setup schema upgrades` (status:done)
   - Task ID: T08
   - Scope:
     - In:
@@ -560,7 +560,38 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - The ADR is linked from the setup bootstrap and schema publication files.
   - Verify:
     - `nix shell nixpkgs#ripgrep -c rg -n 'const.*config.json|global config is only read|sce.crocoder.dev/config.json' context --glob '!context/plans/**' --glob '!context/decisions/**'` returns no stale claims.
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `context/decisions/2026-11-10-setup-upgrades-config-schema-declarations.md` (new)
+    - `context/cli/config-precedence-contract.md`
+    - `context/sce/config-schema-publication.md`
+    - `context/sce/setup-repo-local-config-bootstrap.md`
+    - `context/glossary.md`
+  - Result:
+    - The new ADR records:
+      - series acceptance;
+      - `sce setup` as the only `$schema` writer, limited to the canonical repository and global files;
+      - the global write limited to `$schema`, which amends the read-only global statement in the 2026-10-22 access-answers ADR without changing where access answers go;
+      - candidate validation before the guarded atomic write;
+      - no downgrade;
+      - no field migrations;
+      - non-fatal reporting and preflight ordering;
+      - historical snapshots left unchanged.
+    - `config-precedence-contract.md`:
+      - The drifted unversioned URL becomes `https://sce.crocoder.dev/v<version>/config.json`.
+      - It now states that validate, doctor (including `--fix`), and startup leave declarations byte-identical and that only setup upgrades them, with an ADR link.
+    - `config-schema-publication.md` documents setup's older-series `$schema`-only upgrade and no-downgrade rule, with an ADR link. It states that historical exact-`const` snapshots are never rewritten and that the next `bump-version` publishes the first series-pattern snapshot.
+    - `setup-repo-local-config-bootstrap.md` links the ADR from the schema-upgrade ordering bullet. The "global config is only read" claim was already replaced during T05/T06 synchronization.
+    - `glossary.md` adds the `config schema compatibility series` entry.
+    - Approved assumptions:
+      - The remaining verify-grep hits are false positives: `context/context-map.md:27` ("construction … sce/config.json") and `context/patterns.md:159` ("constructors … sce/config.json").
+      - The publication file's statement that pre-rule snapshots keep their exact-version `const` is accurate history, not a current-schema claim, so it stays.
+    - Commit `77507bb0` (T07's staged changes) landed outside this task during execution. It is not part of this task's changes.
+  - Verify:
+    - The verify grep ran (exit 0). It found no stale exact-`const`, read-only-global, or unversioned-declaration claims. Only the two false positives above matched.
+    - Supplementary: every relative link in the new ADR resolves. The ADR is linked from `setup-repo-local-config-bootstrap.md`, `config-schema-publication.md`, `config-precedence-contract.md`, and `glossary.md`.
+  - Context impact: localized. This task changes documentation only, with no code or behavior change. It adds one ADR and one glossary term.
+  - Context synchronization: synced
 
 ## Open questions
 
@@ -568,3 +599,41 @@ None. The one judgment call is that schema-upgrade failures are reported but
 not fatal. It is recorded under Assumptions with its rationale. It follows the
 documented degraded-invalid-config setup behavior. Revise the plan if setup
 should instead exit non-zero when a stale canonical file cannot be upgraded.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-11-10
+
+### Commands run
+
+- `nix flake check` -> exit 0 ("all checks passed!" on x86_64-linux, including `checks.x86_64-linux.setup-schema-upgrade`; other systems omitted by default)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 145 files)
+- `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (no warnings)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (844 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_declaration` -> exit 0 (13 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_upgrade` -> exit 0 (23 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml access_preferences` -> exit 0 (7 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml setup` -> exit 0 (108 passed, 0 failed)
+- `nix shell nixpkgs#ripgrep -c rg -n '0\.4' config/pkl/base/sce-config-schema*.pkl cli/src/services/config/schema_declaration.rs` -> exit 0 (3 hits, all inside the `#[cfg(test)] mod schema_declaration_tests` fixtures at lines 315, 342, 345; none in the Pkl files)
+- `nix develop -c ./scripts/test-setup-schema-upgrade.sh` (with freshly built `cli/target/debug` on `PATH`) -> exit 0 (all 6 phases passed)
+
+### Success-criteria verification
+
+- [x] AC1: Embedded schema accepts same-series canonical declarations and rejects other series, malformed/foreign URLs, and non-strings while validating other fields -> `schema_declaration` tests: 13 passed
+- [x] AC2: Accepted series derives from `.version` alone -> `pkl-check-generated` passed (series-pattern fixtures); ripgrep found no hard-coded `0.4` series outside test fixtures
+- [x] AC3: validate, doctor (incl. `--fix`), and startup never modify stale/newer/foreign files and print actionable `$schema` messages -> T07 script read-only phase passed (hashes unchanged)
+- [x] AC4: setup upgrades older-series `$schema` only in both canonical files; second run byte-identical -> `schema_upgrade` 23 passed; T07 upgrade and idempotency phases passed
+- [x] AC5: setup never writes newer/malformed/foreign/absent/same-series declarations, never creates a global config, never writes explicit non-canonical files -> `schema_upgrade` matrix and `setup` tests (108) passed; T07 newer phase passed
+- [x] AC6: invalid older-series candidate leaves file byte-identical and is reported with errors and remediation while the other file upgrades -> `schema_upgrade` candidate-invalid test passed; T07 mixed phase passed
+- [x] AC7: symlink, dangling-symlink, concurrent-modification refusal; atomic, mode-preserving writes -> `schema_upgrade` cases passed; `access_preferences` 7 passed; T07 symlink phase passed
+- [x] AC8: stale declaration does not change setup preflights; failed preflight writes nothing -> `setup` tests (T05 ordering) 108 passed
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- `nix flake check` ran on x86_64-linux only; Darwin and aarch64 checks (including the Darwin global-config path in the T07 script) were not exercised.
+- The branch stacks on PR #351's head; it still needs a rebase onto `main` after #351 merges.
