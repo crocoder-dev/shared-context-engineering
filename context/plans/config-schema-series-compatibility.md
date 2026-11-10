@@ -309,7 +309,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. This is an internal refactor of setup's write helpers with no behavior change.
   - Context synchronization: synced
 
-- [ ] T04: `Plan and commit a validated $schema-only upgrade for one config file` (status:todo)
+- [x] T04: `Plan and commit a validated $schema-only upgrade for one config file` (status:done)
   - Task ID: T04
   - Scope:
     - In:
@@ -339,7 +339,43 @@ Persist this field in every plan; this is durable plan state, not chat state:
     - All protections hold.
   - Verify:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_upgrade`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `cli/src/services/setup/schema_upgrade.rs` (new)
+    - `cli/src/services/setup/mod.rs`
+  - Result:
+    - New `schema_upgrade` module defines:
+      - `SchemaUpgradePlan { NotPresent, NoDeclaration, Current, NewerSeries(SchemaVersion), Unrecognized, Unreadable(anyhow::Error), Ready { original, candidate, from }, CandidateInvalid { from, reason } }`;
+      - `SchemaUpgradeOutcome { Upgraded { from }, Unchanged, Skipped(SchemaUpgradeSkip) }`;
+      - `SchemaUpgradeSkip { NewerSeries, Unrecognized, CandidateInvalid { from, reason }, SymlinkManaged, ConcurrentModification, Io }`, which converts from `GuardedWriteError`.
+    - `plan_schema_upgrade(path, layer)` reads the file with `read_optional`. It classifies `$schema` with `classify_schema_declaration` against `current_schema_series()`. For an older series, it builds the candidate and validates it with `parse_file_config` and `layer.path_source()`. It never writes.
+    - Building the candidate: the JSON-encoded old URL literal is swapped for the current URL only when it occurs exactly once and the reparsed result equals the original with only `$schema` replaced. Otherwise the candidate falls back to `to_string_pretty` plus a trailing newline.
+    - `commit_schema_upgrade(path, layer, plan)` writes only for `Ready`, through `write_guarded` against the planned original bytes. `NotPresent`, `NoDeclaration`, and `Current` map to `Unchanged`. The other plans map to `Skipped`.
+    - Approved assumptions:
+      - `Unreadable` (a read failure, non-UTF-8, non-JSON, or a non-object) maps to `Skipped(Io)` rather than adding a new skip variant.
+      - A dangling symlink reads as `NotPresent`. It yields `Unchanged`, and the link is left intact; there is nothing to upgrade.
+    - `mod schema_upgrade` carries `#[expect(dead_code, reason = …)]` until T05/T06 consume the planner and its skip details. Because it is an `expect`, the build fails once the module is fully used, which forces its removal.
+    - 13 unit tests cover:
+      - a missing file and no declaration;
+      - same-series prerelease, patch, and build values left unchanged;
+      - older-series `0.3.3`/`0.1.0` upgrades that change only the `$schema` bytes, using a fixture with `auth.mode`, `telemetry.enabled`, `integrations.target`, and custom `policies.bash` and irregular whitespace;
+      - a second plan returning `Current` and leaving the file byte-identical;
+      - the ambiguous-literal fallback;
+      - newer-series, foreign, unversioned, `v0.4`, `http://`, and non-string values left untouched;
+      - unreadable files;
+      - an unknown key yielding `CandidateInvalid` with the file byte-identical;
+      - the global layer validated as `DefaultDiscoveredGlobal`;
+      - concurrent modification between plan and commit;
+      - symlink and dangling-symlink handling;
+      - an atomic write that keeps the file mode.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema_upgrade`: passed (13 passed, 0 failed).
+    - Supplementary checks:
+      - `… test … setup`: passed (94 passed, 0 failed), including `access_preferences` and `config_file_write`.
+      - `clippy --all-targets -- -D warnings`: passed.
+      - `cargo fmt --check`: passed.
+  - Context impact: localized. This adds a new internal setup module that is not yet wired into the `sce setup` flow, so user-visible behavior is unchanged until T05 and T06.
+  - Context synchronization: synced
 
 - [ ] T05: `Run schema upgrades before setup's preflight readers` (status:todo)
   - Task ID: T05
