@@ -3,6 +3,7 @@ pub mod lifecycle;
 pub mod policy;
 pub mod resolver;
 pub mod schema;
+pub(crate) mod schema_declaration;
 pub mod types;
 
 mod render;
