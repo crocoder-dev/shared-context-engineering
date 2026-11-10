@@ -881,7 +881,10 @@ pub(crate) mod tests {
     const CHILD_KILL_AFTER: Duration = Duration::from_secs(30);
     const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-    pub(crate) fn run_fault_child(test_name: &str) -> (Duration, std::process::Output) {
+    // Only bounds the child's lifetime by `CHILD_KILL_AFTER`; tight timing assertions belong
+    // inside the child via `assert_finishes_within`, because process spawn and test-harness
+    // startup are not bounded on a loaded machine.
+    pub(crate) fn run_fault_child(test_name: &str) {
         let started = std::time::Instant::now();
         let mut child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", test_name, "--nocapture", "--test-threads=1"])
@@ -897,7 +900,6 @@ pub(crate) mod tests {
             }
             std::thread::sleep(CHILD_POLL_INTERVAL);
         }
-        let elapsed = started.elapsed();
         let output = child.wait_with_output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
@@ -905,11 +907,18 @@ pub(crate) mod tests {
             "{stdout}\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        (elapsed, output)
     }
 
     pub(crate) fn is_fault_child() -> bool {
         std::env::var_os(FAULT_CHILD_ENV).is_some()
+    }
+
+    pub(crate) fn assert_finishes_within<T>(bound: Duration, work: impl FnOnce() -> T) -> T {
+        let started = std::time::Instant::now();
+        let value = work();
+        let elapsed = started.elapsed();
+        assert!(elapsed < bound, "work finished after {elapsed:?}");
+        value
     }
 
     async fn stalled_keychain_lookup() -> Result<
@@ -931,12 +940,7 @@ pub(crate) mod tests {
 
     #[test]
     fn stalled_startup_credential_lookup_cannot_extend_process_lifetime() {
-        let (elapsed, _) =
-            run_fault_child("app::tests::isolated_stalled_startup_credential_lookup");
-        let bound = services::managed_telemetry::CREDENTIAL_LOOKUP_DEADLINE * 2
-            + RUNTIME_SHUTDOWN_GRACE
-            + Duration::from_secs(3);
-        assert!(elapsed < bound, "child exited after {elapsed:?}");
+        run_fault_child("app::tests::isolated_stalled_startup_credential_lookup");
     }
 
     #[test]
@@ -944,37 +948,40 @@ pub(crate) mod tests {
         if !is_fault_child() {
             return;
         }
-        let runtime = build_runtime().unwrap();
-        runtime.block_on(async {
-            let (keychain, fallback) =
-                RuntimeTelemetry::resolve_with(stalled_keychain_lookup(), ManagedSpanKind::Command)
-                    .await;
-            assert!(matches!(keychain, RuntimeTelemetry::Noop(_)));
-            assert_eq!(
-                fallback.map(|fallback| fallback.reason),
-                Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
-            );
-            let (database, fallback) = RuntimeTelemetry::resolve_with(
-                stalled_blocking_database_lookup(),
-                ManagedSpanKind::ClaudeHook,
-            )
-            .await;
-            assert!(matches!(database, RuntimeTelemetry::Noop(_)));
-            assert_eq!(
-                fallback.map(|fallback| fallback.reason),
-                Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
-            );
+        let bound = services::managed_telemetry::CREDENTIAL_LOOKUP_DEADLINE * 2
+            + RUNTIME_SHUTDOWN_GRACE
+            + Duration::from_secs(3);
+        assert_finishes_within(bound, || {
+            let runtime = build_runtime().unwrap();
+            runtime.block_on(async {
+                let (keychain, fallback) = RuntimeTelemetry::resolve_with(
+                    stalled_keychain_lookup(),
+                    ManagedSpanKind::Command,
+                )
+                .await;
+                assert!(matches!(keychain, RuntimeTelemetry::Noop(_)));
+                assert_eq!(
+                    fallback.map(|fallback| fallback.reason),
+                    Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
+                );
+                let (database, fallback) = RuntimeTelemetry::resolve_with(
+                    stalled_blocking_database_lookup(),
+                    ManagedSpanKind::ClaudeHook,
+                )
+                .await;
+                assert!(matches!(database, RuntimeTelemetry::Noop(_)));
+                assert_eq!(
+                    fallback.map(|fallback| fallback.reason),
+                    Some(services::managed_telemetry::TelemetryFallbackReason::LookupTimeout)
+                );
+            });
+            finish_runtime(runtime);
         });
-        finish_runtime(runtime);
     }
 
     #[test]
     fn stalled_telemetry_headers_lookup_fails_closed_within_deadline() {
-        let (elapsed, _) = run_fault_child("app::tests::isolated_stalled_telemetry_headers_lookup");
-        let bound = services::managed_telemetry::CREDENTIAL_LOOKUP_DEADLINE
-            + RUNTIME_SHUTDOWN_GRACE
-            + Duration::from_secs(3);
-        assert!(elapsed < bound, "child exited after {elapsed:?}");
+        run_fault_child("app::tests::isolated_stalled_telemetry_headers_lookup");
     }
 
     #[test]
@@ -983,20 +990,26 @@ pub(crate) mod tests {
             return;
         }
         let repo = tempfile::tempdir().unwrap();
-        let runtime = build_runtime().unwrap();
-        let result = runtime.block_on(services::auth_command::telemetry_headers_with(
-            Some(repo.path().to_path_buf()),
-            true,
-            false,
-            || true,
-            |_: &std::path::Path| Some("repository-a".to_string()),
-            |_: String| async {
-                stalled_keychain_lookup().await.map(
-                    services::telemetry_credential_storage::TelemetryCredentialLookup::into_valid,
-                )
-            },
-        ));
-        finish_runtime(runtime);
+        let bound = services::managed_telemetry::CREDENTIAL_LOOKUP_DEADLINE
+            + RUNTIME_SHUTDOWN_GRACE
+            + Duration::from_secs(3);
+        let result = assert_finishes_within(bound, || {
+            let runtime = build_runtime().unwrap();
+            let result = runtime.block_on(services::auth_command::telemetry_headers_with(
+                Some(repo.path().to_path_buf()),
+                true,
+                false,
+                || true,
+                |_: &std::path::Path| Some("repository-a".to_string()),
+                |_: String| async {
+                    stalled_keychain_lookup().await.map(
+                        services::telemetry_credential_storage::TelemetryCredentialLookup::into_valid,
+                    )
+                },
+            ));
+            finish_runtime(runtime);
+            result
+        });
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let code = app_support::render_run_outcome(

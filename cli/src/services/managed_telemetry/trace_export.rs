@@ -1001,11 +1001,9 @@ pub(crate) mod tests {
 
     #[test]
     fn stalled_exporter_shutdown_cannot_extend_process_lifetime() {
-        let (elapsed, _) = crate::app::tests::run_fault_child(
+        crate::app::tests::run_fault_child(
             "services::managed_telemetry::trace_export::tests::isolated_stalled_exporter_shutdown",
         );
-        let bound = SHUTDOWN_TIMEOUT + Duration::from_secs(2);
-        assert!(elapsed < bound, "child exited after {elapsed:?}");
     }
 
     #[test]
@@ -1013,6 +1011,11 @@ pub(crate) mod tests {
         if !crate::app::tests::is_fault_child() {
             return;
         }
+        let bound = SHUTDOWN_TIMEOUT + Duration::from_secs(2);
+        crate::app::tests::assert_finishes_within(bound, run_stalled_exporter_shutdown);
+    }
+
+    fn run_stalled_exporter_shutdown() {
         let runtime = crate::app::build_runtime().expect("runtime");
         runtime.block_on(async {
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
