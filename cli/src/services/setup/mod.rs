@@ -17,6 +17,11 @@ pub mod command;
 mod config_file_write;
 pub(crate) mod config_merge;
 pub(crate) mod hook_merge;
+#[expect(
+    dead_code,
+    reason = "setup ordering and the setup report consume the planner and its skip details"
+)]
+mod schema_upgrade;
 
 #[derive(Debug)]
 struct MissingGitRemoteError {
