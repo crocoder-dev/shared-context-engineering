@@ -11,9 +11,16 @@ schema, not the separate Agent Trace schema.
 
 ## Current behavior
 
-- The schema's `$id` and the config `$schema` property use
-  `https://sce.crocoder.dev/v<version>/config.json`, where `<version>` is the
-  CLI release version.
+- The schema's `$id` is `https://sce.crocoder.dev/v<version>/config.json`,
+  where `<version>` is the CLI release version.
+- The config `$schema` property accepts any canonical
+  `https://sce.crocoder.dev/v<major>.<minor>.<patch>[-pre][+build]/config.json`
+  declaration in the CLI's `major.minor` release series through an anchored
+  `pattern`. `config/pkl/base/sce-config-schema-url.pkl` derives the concrete
+  URL and the series pattern from `.version`. Other series, malformed or foreign
+  URLs, and non-string values are rejected. See
+  [the series-acceptance decision](../decisions/2026-11-10-config-schema-accepts-release-series-declarations.md).
+- Snapshots published before this rule keep their exact-version `const`.
 - `sce setup` writes that same versioned declaration into a newly created
   repo-local `.sce/config.json`.
 - The generated working-tree schema remains ephemeral. Its version is read
