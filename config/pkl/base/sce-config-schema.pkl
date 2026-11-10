@@ -1,9 +1,11 @@
 import "bash-policy-presets.pkl" as bash_policy_presets
+import "sce-config-schema-url.pkl" as schema_url
 import "workflow-catalog.pkl" as catalog
 import "../deps/org.json_schema/JsonSchema.pkl"
 
 local presetIds = bash_policy_presets.presets.toList().map((preset) -> preset.id).toListing()
-local configSchemaUrl = "https://sce.crocoder.dev/v\(read("../../../.version").text.trim())/config.json"
+local sceVersion = read("../../../.version").text.trim()
+local configSchemaUrl = schema_url.concreteUrl(sceVersion)
 
 local optionalWorkflowIds = catalog.workflows.toMap()
   .filter((_, workflow) -> workflow.optional)
@@ -98,7 +100,8 @@ local sceConfigSchema = new JsonSchema {
   properties {
     ["$schema"] = new JsonSchema {
       type = "string"
-      `const` = configSchemaUrl
+      description = "Canonical SCE config schema URL. Accepts any release in the \(schema_url.series(sceVersion)) series."
+      pattern = schema_url.seriesPattern(sceVersion)
     }
     ["log_level"] = new JsonSchema {
       type = "string"

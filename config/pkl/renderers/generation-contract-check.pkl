@@ -5,6 +5,7 @@ import "claude-content.pkl" as claude
 import "pi-content.pkl" as pi
 import "codex-content.pkl" as codex
 import "codex-metadata.pkl" as codexMetadata
+import "../base/sce-config-schema-url.pkl" as schemaUrl
 
 hidden expectedArtifactPaths = new Mapping {
   for (_, document in opencode.agents) {
@@ -1243,12 +1244,41 @@ hidden assertWorkflowLanguageConsistency = (artifacts: Mapping) ->
     ) "workflow language: shared vocabulary, phase naming, report naming, and document format are consistent"
     else throw("generated workflow language/format drifted from the shared T11 conventions")
 
+hidden assertConfigSchemaSeriesPattern = (artifacts: Mapping) ->
+  let (generatedSchema = artifacts["config/schema/sce-config.schema.json"])
+  let (pattern04 = schemaUrl.seriesPattern("0.4.0-pre-alpha-v14"))
+  let (pattern05 = schemaUrl.seriesPattern("0.5.0"))
+  let (pattern14 = schemaUrl.seriesPattern("1.4.2"))
+    if (
+      pattern04 == #"^https://sce\.crocoder\.dev/v0\.4\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?/config\.json$"#
+        && pattern05.startsWith(#"^https://sce\.crocoder\.dev/v0\.5\."#)
+        && pattern14.startsWith(#"^https://sce\.crocoder\.dev/v1\.4\."#)
+        && pattern04 != pattern05
+        && pattern05 != pattern14
+        && schemaUrl.series("0.4.0-pre-alpha-v14") == "0.4"
+        && schemaUrl.series("0.5.0") == "0.5"
+        && schemaUrl.series("1.4.2") == "1.4"
+        && schemaUrl.concreteUrl("0.4.0-pre-alpha-v14") == "https://sce.crocoder.dev/v0.4.0-pre-alpha-v14/config.json"
+        && schemaUrl.concreteUrl("1.4.2") == "https://sce.crocoder.dev/v1.4.2/config.json"
+        && "https://sce.crocoder.dev/v0.4.0-pre-alpha-v1/config.json".matches(Regex(pattern04))
+        && "https://sce.crocoder.dev/v0.4.7+build.5/config.json".matches(Regex(pattern04))
+        && !"https://sce.crocoder.dev/v0.5.0/config.json".matches(Regex(pattern04))
+        && !"https://sce.crocoder.dev/v0.4/config.json".matches(Regex(pattern04))
+        && "https://sce.crocoder.dev/v0.5.0/config.json".matches(Regex(pattern05))
+        && "https://sce.crocoder.dev/v1.4.0/config.json".matches(Regex(pattern14))
+        && !"https://sce.crocoder.dev/v1.5.0/config.json".matches(Regex(pattern14))
+        && generatedSchema.contains("\"pattern\"")
+        && !generatedSchema.contains("\"const\": \"https://sce.crocoder.dev/")
+    ) "config schema: $schema accepts a .version-derived major.minor series pattern"
+    else throw("generated config schema $schema rule must be the series pattern derived from .version, not an exact-version const")
+
 contractChecks {
   ["workflow-language-consistency"] = assertWorkflowLanguageConsistency.apply(generatedArtifacts)
   ["workflow-vocabulary-decision-result"] = if (generatedArtifacts["config/.pi/skills/sce-decision/SKILL.md"].contains("internal result") && !generatedArtifacts["config/.pi/skills/sce-decision/SKILL.md"].contains("Return internal state") && !generatedArtifacts["config/.pi/skills/sce-decision/SKILL.md"].contains("internal handoff")) "sce-decision: uses internal-result vocabulary" else throw("sce-decision vocabulary drifted from workflow-vocabulary.md")
   ["compact-execution-contracts"] = assertCompactExecutionContracts.apply(workflowDocuments)
   ["compact-execution-contract-negative-fixtures"] = assertCompactExecutionContractFixtures
   ["artifact-paths"] = assertExactArtifactPaths.apply(generatedArtifacts)
+  ["config-schema-series-pattern"] = assertConfigSchemaSeriesPattern.apply(generatedArtifacts)
   ["sce-info-runtime"] = assertSceInfoRuntimeContract.apply(generatedArtifacts)
   ["codex-hook-invocation"] = assertCodexHookInvocationContract.apply(generatedArtifacts)
   ["codex-hook-helper-fail-closed"] = assertCodexHelperFailClosedMode.apply(generatedArtifacts)

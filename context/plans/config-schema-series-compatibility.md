@@ -176,7 +176,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Derive a series-scoped $schema rule from .version in the Pkl schema` (status:todo)
+- [x] T01: `Derive a series-scoped $schema rule from .version in the Pkl schema` (status:done)
   - Task ID: T01
   - Scope:
     - In:
@@ -193,7 +193,26 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify:
     - `nix run .#pkl-check-generated`
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `config/pkl/base/sce-config-schema-url.pkl` (new)
+    - `config/pkl/base/sce-config-schema.pkl`
+    - `config/pkl/renderers/generation-contract-check.pkl`
+    - `cli/src/services/config/schema.rs`
+  - Result:
+    - The new helper exposes `concreteUrl`, `series`, and `seriesPattern`, and throws on a non-semver version.
+    - The generated `$schema` property is now `type: string` with an anchored `^https://sce\.crocoder\.dev/v<major>\.<minor>\.(0|[1-9][0-9]*)(-prerelease)?(+build)?/config\.json$` pattern. Its description names the series. `$id` is still the concrete URL.
+    - New contract check `config-schema-series-pattern` covers `0.4.0-pre-alpha-v14`, `0.5.0`, and `1.4.2`. It also asserts that the generated schema has no exact-version `const`.
+    - `accepts_versioned_schema_declaration` is replaced by module `schema_declaration_acceptance_tests`, with 4 tests built from the series in `PACKAGE_VERSION`: same-series acceptance; rejection of other series; rejection of malformed, foreign, and non-string values; and the case where `$schema` is valid but another field is invalid.
+    - Per a user instruction during the run, the new Pkl helper has no comments.
+  - Verify:
+    - `nix run .#pkl-check-generated`: passed (145 files; contract checks include `config-schema-series-pattern`).
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml schema`: passed (29 passed, 0 failed).
+    - Supplementary checks:
+      - `cargo fmt --check`: passed.
+      - `rg -n '0\.4'` over the schema Pkl files and `schema.rs`: no matches.
+  - Context impact: localized. The generated config schema now accepts the whole series. `context/sce/config-schema-publication.md` still describes the exact-version `const` until T08 updates it.
+  - Context synchronization: synced
 
 - [ ] T02: `Add typed schema-declaration classification and actionable $schema errors` (status:todo)
   - Task ID: T02

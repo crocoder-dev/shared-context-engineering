@@ -971,15 +971,6 @@ mod agent_trace_config_tests {
     }
 
     #[test]
-    fn accepts_versioned_schema_declaration() {
-        let schema_url = format!(
-            "https://sce.crocoder.dev/v{}/config.json",
-            env!("CARGO_PKG_VERSION")
-        );
-        parse(&format!(r#"{{"$schema":"{schema_url}"}}"#)).unwrap();
-    }
-
-    #[test]
     fn parses_agent_trace_repository_identity_keys() {
         let config = parse(
             r#"{"agent_trace":{"repository_id":"team-monorepo","repository_remote":"upstream"}}"#,
@@ -1111,6 +1102,126 @@ mod agent_trace_config_tests {
             .to_string();
 
         assert!(error.contains("failed schema validation"), "{error}");
+    }
+}
+
+#[cfg(test)]
+mod schema_declaration_acceptance_tests {
+    use std::path::Path;
+
+    use serde_json::{json, Value};
+
+    use super::{parse_file_config, ConfigPathSource};
+    use crate::services::version::PACKAGE_VERSION;
+
+    fn current_series() -> (u64, u64) {
+        let mut parts = PACKAGE_VERSION.split('.');
+        let major = parts.next().unwrap().parse().unwrap();
+        let minor = parts.next().unwrap().parse().unwrap();
+        (major, minor)
+    }
+
+    fn schema_url(version: &str) -> String {
+        format!("https://sce.crocoder.dev/v{version}/config.json")
+    }
+
+    fn parse_value(value: &Value) -> anyhow::Result<super::FileConfig> {
+        parse_file_config(
+            &value.to_string(),
+            Path::new("/tmp/sce-config.json"),
+            ConfigPathSource::Flag,
+        )
+    }
+
+    fn declaration_accepted(declaration: Value) -> bool {
+        parse_value(&json!({ "$schema": declaration })).is_ok()
+    }
+
+    #[test]
+    fn schema_declaration_accepts_current_series_releases() {
+        let (major, minor) = current_series();
+        let accepted = [
+            PACKAGE_VERSION.to_string(),
+            format!("{major}.{minor}.0"),
+            format!("{major}.{minor}.7"),
+            format!("{major}.{minor}.0-pre-alpha-v1"),
+            format!("{major}.{minor}.0-pre-alpha-v14"),
+            format!("{major}.{minor}.7+build.5"),
+            format!("{major}.{minor}.12-rc.1+build.5"),
+        ];
+
+        for version in accepted {
+            let url = schema_url(&version);
+            assert!(declaration_accepted(json!(url)), "expected {url} accepted");
+        }
+    }
+
+    #[test]
+    fn schema_declaration_rejects_other_series() {
+        let (major, minor) = current_series();
+        let mut rejected = vec![
+            format!("{major}.{}.0", minor + 1),
+            format!("{}.{minor}.0", major + 1),
+            format!("{}.0.0", major + 1),
+        ];
+        if minor > 0 {
+            rejected.push(format!("{major}.{}.3", minor - 1));
+        }
+        if major > 0 {
+            rejected.push(format!("{}.{minor}.0", major - 1));
+        }
+
+        for version in rejected {
+            let url = schema_url(&version);
+            assert!(!declaration_accepted(json!(url)), "expected {url} rejected");
+        }
+    }
+
+    #[test]
+    fn schema_declaration_rejects_malformed_and_foreign_values() {
+        let (major, minor) = current_series();
+        let rejected = [
+            json!("https://example.com/s.json"),
+            json!("https://sce.crocoder.dev/config.json"),
+            json!(schema_url(&format!("{major}.{minor}"))),
+            json!(schema_url(&format!("{major}.{minor}.01"))),
+            json!(schema_url(&format!("{major}.{minor}.x"))),
+            json!(format!(
+                "http://sce.crocoder.dev/v{major}.{minor}.0/config.json"
+            )),
+            json!(format!(
+                "https://sce.crocoder.dev/v{major}.{minor}.0/config.json.bak"
+            )),
+            json!(format!(
+                "https://sce.crocoder.dev/v{major}x{minor}.0/config.json"
+            )),
+            json!(format!(
+                " https://sce.crocoder.dev/v{major}.{minor}.0/config.json"
+            )),
+            json!(1),
+            json!(null),
+            json!({ "url": schema_url(PACKAGE_VERSION) }),
+        ];
+
+        for value in rejected {
+            assert!(
+                !declaration_accepted(value.clone()),
+                "expected {value} rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_declaration_valid_still_validates_other_fields() {
+        let error = parse_value(&json!({
+            "$schema": schema_url(PACKAGE_VERSION),
+            "log_level": "loud",
+        }))
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("log_level"), "unexpected error: {error}");
+        assert!(!error.contains("$schema"), "unexpected error: {error}");
     }
 }
 
