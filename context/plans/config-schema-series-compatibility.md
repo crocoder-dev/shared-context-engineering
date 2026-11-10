@@ -270,7 +270,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized. `$schema` validation messages and the startup guidance changed. `context/cli/config-precedence-contract.md` does not yet describe the actionable messages; T08 updates it.
   - Context synchronization: synced
 
-- [ ] T03: `Extract the guarded config-file write shared by setup writers` (status:todo)
+- [x] T03: `Extract the guarded config-file write shared by setup writers` (status:done)
   - Task ID: T03
   - Scope:
     - In:
@@ -284,7 +284,30 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Verify:
     - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml access_preferences`
     - `… test … setup`
-  - Context synchronization: pending
+  - Completed: 2026-11-10
+  - Files changed:
+    - `cli/src/services/setup/config_file_write.rs` (new)
+    - `cli/src/services/setup/access_preferences.rs`
+    - `cli/src/services/setup/mod.rs`
+  - Result:
+    - New `config_file_write` module (`pub(super)`) owns:
+      - `ConfigLayer`, with `path_source`, `label`, and `bootstrap_value`;
+      - `read_optional`;
+      - the private `is_symlink`;
+      - `GuardedWriteError { ConcurrentModification, SymlinkManaged, Io(anyhow::Error) }`;
+      - `write_guarded(path, layer, original: Option<&[u8]>, serialized: &[u8], reread)`. It rereads and compares against `original`, refuses a symlink through `fs::symlink_metadata`, then calls `write_atomically`, in the same order as before.
+    - `access_preferences.rs` now uses the shared helper. Its private `WriteFailure` converts from `GuardedWriteError` through `From`. Every public type, error variant, and message is unchanged. The test bodies are unchanged; only the test module imports moved.
+    - `atomic_write.rs` is unchanged, and `claude_telemetry.rs` still uses it directly.
+    - Deviation: the done check names a dangling-symlink test, but `access_preferences` had none. Three helper tests were added in `config_file_write` instead: creating a missing file, refusing a file created after planning, and refusing a dangling symlink while leaving it intact.
+  - Verify:
+    - `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml access_preferences`: passed (7 passed, 0 failed). This covers the symlink, concurrent-modification, invalid-file, and mode-preservation tests.
+    - `… test … setup`: passed (81 passed, 0 failed).
+    - Supplementary checks:
+      - `… test … config_file_write`: passed (3 passed, 0 failed).
+      - `clippy --all-targets -- -D warnings`: passed.
+      - `cargo fmt --check`: passed.
+  - Context impact: localized. This is an internal refactor of setup's write helpers with no behavior change.
+  - Context synchronization: synced
 
 - [ ] T04: `Plan and commit a validated $schema-only upgrade for one config file` (status:todo)
   - Task ID: T04
