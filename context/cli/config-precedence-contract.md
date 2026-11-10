@@ -55,7 +55,7 @@ Supported auth-adjacent runtime keys can participate in one shared key-declared 
   2. config file value (`control_plane_base_url`)
   3. baked default (`https://sce.crocoderlab.dev`)
 
-The control-plane default is separate from the config schema declaration (`https://sce.crocoder.dev/config.json`) and from the SCE web URL owner used for Agent Trace links.
+The control-plane default is separate from the config schema declaration (`https://sce.crocoder.dev/v<version>/config.json`) and from the SCE web URL owner used for Agent Trace links.
 
 When a supported auth-adjacent key omits a baked default, the same resolver still reports `value: null` / `(unset)` with no resolved source when both env and config inputs are absent.
 
@@ -84,7 +84,7 @@ When a default-discovered global or repo-local config file exists but fails JSON
   - Older series: `declares SCE config schema version 0.3.3; this CLI uses 0.4.0 and accepts 0.4.x; run 'sce setup' to upgrade the repository and global config, or set `$schema` to <current url>`.
   - Newer series: `declares SCE config schema version <v>, which was written by a newer SCE release; …; upgrade the SCE CLI`.
   - Malformed, foreign, or non-string: `is not a canonical SCE schema URL; use <current url>`.
-- When every collected discovered-config validation error is only an older-series `$schema` issue, the startup diagnostic says the local or discovered config "declares an older config schema series" and tells the user to run `sce setup`; any other failure keeps the generic "is invalid … run `sce config validate`" guidance. Validation itself never rewrites the file.
+- When every collected discovered-config validation error is only an older-series `$schema` issue, the startup diagnostic says the local or discovered config "declares an older config schema series" and tells the user to run `sce setup`; any other failure keeps the generic "is invalid … run `sce config validate`" guidance. Validation itself never rewrites the file. `sce config validate`, `sce doctor` (including `--fix`), and command startup leave older, newer, and foreign declarations byte-identical. Only `sce setup` upgrades an older-series declaration, and it changes only `$schema` in the canonical repository and global files ([setup schema upgrade decision](../decisions/2026-11-10-setup-upgrades-config-schema-declarations.md)).
 - Startup/runtime config resolution degrades gracefully for default-discovered files across ordinary startup, setup, and Agent Trace storage: invalid discovered files are skipped and reported via collected `validation_errors`, while explicit `--config` / `SCE_CONFIG_FILE` targets still fail immediately on the same parse or validation errors.
 
 - Config file content must be valid JSON with a top-level object.

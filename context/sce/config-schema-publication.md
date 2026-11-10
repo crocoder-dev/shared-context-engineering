@@ -20,9 +20,15 @@ schema, not the separate Agent Trace schema.
   URL and the series pattern from `.version`. Other series, malformed or foreign
   URLs, and non-string values are rejected. See
   [the series-acceptance decision](../decisions/2026-11-10-config-schema-accepts-release-series-declarations.md).
-- Snapshots published before this rule keep their exact-version `const`.
+- Snapshots published before this rule keep their exact-version `const` and are
+  never rewritten. The next `nix run .#bump-version` publishes the first
+  series-pattern snapshot.
 - `sce setup` writes that same versioned declaration into a newly created
-  repo-local `.sce/config.json`.
+  repo-local `.sce/config.json`. It also upgrades an older-series declaration
+  in the existing canonical repository and global config, and changes only
+  `$schema`. It never downgrades a newer series or rewrites an unrecognized
+  value. See
+  [the setup schema upgrade decision](../decisions/2026-11-10-setup-upgrades-config-schema-declarations.md).
 - The generated working-tree schema remains ephemeral. Its version is read
   from the root `.version` file during Pkl generation. Repository builds and
   packaged builds consume the validated generated payload through Cargo
