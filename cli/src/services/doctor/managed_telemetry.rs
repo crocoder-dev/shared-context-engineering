@@ -162,7 +162,7 @@ pub(super) fn problem(health: ManagedTelemetryHealth) -> Option<DoctorProblem> {
     })
 }
 
-pub(super) fn json(health: ManagedTelemetryHealth, access: DoctorAccess) -> Value {
+pub(super) fn json(health: ManagedTelemetryHealth, access: &DoctorAccess) -> Value {
     let mut payload = health_json(health);
     payload["policy"] = access.telemetry_policy_json();
     payload

@@ -31,7 +31,7 @@ pub(super) fn render_report(request: DoctorRequest, execution: &DoctorExecution)
 
 fn format_execution(execution: &DoctorExecution) -> String {
     let report = &execution.report;
-    let base_report = format_report(report, execution.managed_telemetry, execution.access);
+    let base_report = format_report(report, execution.managed_telemetry, &execution.access);
     let mut lines = base_report
         .lines()
         .map(ToOwned::to_owned)
@@ -107,7 +107,7 @@ fn format_age(age_ms: i64) -> String {
 fn format_report(
     report: &HookDoctorReport,
     managed_telemetry: ManagedTelemetryHealth,
-    access: DoctorAccess,
+    access: &DoctorAccess,
 ) -> String {
     format_report_with_color_policy(report, managed_telemetry, access, supports_color())
 }
@@ -115,7 +115,7 @@ fn format_report(
 fn format_report_with_color_policy(
     report: &HookDoctorReport,
     managed_telemetry: ManagedTelemetryHealth,
-    access: DoctorAccess,
+    access: &DoctorAccess,
     color_enabled: bool,
 ) -> String {
     let blocking_problem_count = report
@@ -261,7 +261,7 @@ fn format_human_text_row(
 fn environment_nodes(
     report: &HookDoctorReport,
     managed_telemetry: ManagedTelemetryHealth,
-    access: DoctorAccess,
+    access: &DoctorAccess,
 ) -> Vec<DoctorDisplayNode> {
     vec![
         top_level_node(
@@ -302,15 +302,15 @@ fn environment_nodes(
     ]
 }
 
-fn sce_login_node(report: &HookDoctorReport, access: DoctorAccess) -> DoctorDisplayNode {
-    match access.login {
+fn sce_login_node(report: &HookDoctorReport, access: &DoctorAccess) -> DoctorDisplayNode {
+    match &access.login {
         LoginState::NotRequired => top_level_node(
             "SCE login (not required)",
             DoctorDisplayStatus::Pass,
             Vec::new(),
         ),
         LoginState::LoggedIn => top_level_node("SCE login", DoctorDisplayStatus::Pass, Vec::new()),
-        LoginState::NotLoggedIn => top_level_node(
+        LoginState::NotLoggedIn | LoginState::SessionRejected(_) => top_level_node(
             "SCE login",
             DoctorDisplayStatus::Fail,
             problem_details(report, |kind| matches!(kind, ProblemKind::SceLoginRequired)),
@@ -327,7 +327,7 @@ fn sce_login_node(report: &HookDoctorReport, access: DoctorAccess) -> DoctorDisp
 
 fn managed_telemetry_node(
     health: ManagedTelemetryHealth,
-    access: DoctorAccess,
+    access: &DoctorAccess,
 ) -> DoctorDisplayNode {
     let label = access.telemetry_label();
     let mut details = access
@@ -1004,7 +1004,7 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         "hooks": hooks,
         "mutation_scope_health": mutation_scope_health_json(&report.mutation_scope_health),
         "sce_login": execution.access.login_json(),
-        "managed_telemetry": managed_telemetry::json(execution.managed_telemetry, execution.access),
+        "managed_telemetry": managed_telemetry::json(execution.managed_telemetry, &execution.access),
         "problems": report.problems.iter().map(|problem| json!({
             "kind": problem_kind(problem.kind),
             "target": problem_target(problem),
@@ -1389,7 +1389,7 @@ mod access_render_tests {
             .block_on(DoctorAccess::inspect(Some(policy), authorized))
     }
 
-    fn report(access: DoctorAccess) -> HookDoctorReport {
+    fn report(access: &DoctorAccess) -> HookDoctorReport {
         HookDoctorReport {
             mode: DoctorMode::Diagnose,
             readiness: Readiness::Ready,
@@ -1430,16 +1430,57 @@ mod access_render_tests {
             ),
             || async { LoginState::NotLoggedIn },
         );
-        let report = report(access);
+        let report = report(&access);
 
         assert_eq!(access.login, LoginState::NotLoggedIn);
         assert_eq!(report.problems.len(), 1);
         assert_eq!(report.problems[0].severity, ProblemSeverity::Error);
         assert_eq!(
-            render(&sce_login_node(&report, access)),
+            render(&sce_login_node(&report, &access)),
             vec![
                 "  [FAIL] SCE login",
                 "    Problem: auth.mode: mandatory is set in the repository SCE config (`.sce/config.json`), but no saved SCE session is available.",
+                "    Remediation: Run 'sce auth login'.",
+            ]
+        );
+        assert_eq!(
+            access.login_json(),
+            json!({
+                "state": "not_logged_in",
+                "auth_mode": "mandatory",
+                "source": "config_file",
+                "config_source": "default_discovered_local",
+            })
+        );
+    }
+
+    #[test]
+    fn rejected_session_reports_blocking_failure_with_workos_reason() {
+        let access = inspect(
+            &policy(
+                AuthMode::Mandatory,
+                REPOSITORY,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async {
+                LoginState::SessionRejected(
+                    "Stored WorkOS refresh token is no longer valid (Session ended due to inactivity.)"
+                        .to_string(),
+                )
+            },
+        );
+        let report = report(&access);
+
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(report.problems[0].kind, ProblemKind::SceLoginRequired);
+        assert_eq!(report.problems[0].severity, ProblemSeverity::Error);
+        assert_eq!(report.problems[0].next_action, "auth_login");
+        assert_eq!(
+            render(&sce_login_node(&report, &access)),
+            vec![
+                "  [FAIL] SCE login",
+                "    Problem: auth.mode: mandatory is set in the repository SCE config (`.sce/config.json`), but WorkOS rejected the saved SCE session: Stored WorkOS refresh token is no longer valid (Session ended due to inactivity.).",
                 "    Remediation: Run 'sce auth login'.",
             ]
         );
@@ -1465,11 +1506,11 @@ mod access_render_tests {
             ),
             || async { LoginState::LoggedIn },
         );
-        let report = report(access);
+        let report = report(&access);
 
         assert!(report.problems.is_empty());
         assert_eq!(
-            render(&sce_login_node(&report, access)),
+            render(&sce_login_node(&report, &access)),
             vec!["  [PASS] SCE login"]
         );
         assert_eq!(access.login_json()["state"], "logged_in");
@@ -1488,12 +1529,12 @@ mod access_render_tests {
             ),
             || async { LoginState::Unavailable(LoginUnavailableReason::DatabaseLocked) },
         );
-        let report = report(access);
+        let report = report(&access);
         assert_eq!(report.problems[0].kind, ProblemKind::SceLoginUnavailable);
         assert_eq!(report.problems[0].severity, ProblemSeverity::Warning);
         assert_eq!(report.problems[0].next_action, "manual_steps");
         assert_eq!(
-            render(&sce_login_node(&report, access)),
+            render(&sce_login_node(&report, &access)),
             vec![
                 "  [WARN] SCE login status unavailable",
                 "    Problem: SCE cannot read the saved session because authentication storage is locked.",
@@ -1502,6 +1543,36 @@ mod access_render_tests {
         );
         assert_eq!(access.login_json()["state"], "unavailable");
         assert_eq!(access.login_json()["reason"], "database_locked");
+    }
+
+    #[test]
+    fn unreachable_stale_session_renders_unavailable_warning() {
+        use crate::services::doctor::access::LoginUnavailableReason;
+
+        let access = inspect(
+            &policy(
+                AuthMode::Mandatory,
+                REPOSITORY,
+                telemetry_default(),
+                not_enabled(),
+            ),
+            || async { LoginState::Unavailable(LoginUnavailableReason::SessionUnreachable) },
+        );
+        let report = report(&access);
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(report.problems[0].kind, ProblemKind::SceLoginUnavailable);
+        assert_eq!(report.problems[0].severity, ProblemSeverity::Warning);
+        assert_eq!(report.problems[0].next_action, "manual_steps");
+        assert_eq!(
+            render(&sce_login_node(&report, &access)),
+            vec![
+                "  [WARN] SCE login status unavailable",
+                "    Problem: SCE could not reach WorkOS to confirm the saved session, and it has not been confirmed in the last 24 hours.",
+                "    Remediation: Check network connectivity, then rerun 'sce doctor'.",
+            ]
+        );
+        assert_eq!(access.login_json()["state"], "unavailable");
+        assert_eq!(access.login_json()["reason"], "session_unreachable");
     }
 
     #[test]
@@ -1515,11 +1586,11 @@ mod access_render_tests {
             ),
             || async { panic!("credential lookup must not run outside mandatory mode") },
         );
-        let report = report(access);
+        let report = report(&access);
 
         assert!(report.problems.is_empty());
         assert_eq!(
-            render(&sce_login_node(&report, access)),
+            render(&sce_login_node(&report, &access)),
             vec!["  [PASS] SCE login (not required)"]
         );
         assert_eq!(
@@ -1551,7 +1622,7 @@ mod access_render_tests {
         assert_eq!(
             render(&managed_telemetry_node(
                 ManagedTelemetryHealth::Healthy,
-                access
+                &access
             )),
             vec![
                 "  [PASS] Managed telemetry: enabled for this repository",
@@ -1559,7 +1630,7 @@ mod access_render_tests {
             ]
         );
         assert_eq!(
-            managed_telemetry::json(ManagedTelemetryHealth::Healthy, access),
+            managed_telemetry::json(ManagedTelemetryHealth::Healthy, &access),
             json!({
                 "state": "healthy",
                 "reason": null,
@@ -1592,7 +1663,7 @@ mod access_render_tests {
         };
 
         assert_eq!(
-            render(&managed_telemetry_node(health, access)),
+            render(&managed_telemetry_node(health, &access)),
             vec![
                 "  [PASS] Managed telemetry: disabled (reason: not_enabled)",
                 "    Source: default",
@@ -1600,7 +1671,7 @@ mod access_render_tests {
             ]
         );
         assert_eq!(
-            managed_telemetry::json(health, access),
+            managed_telemetry::json(health, &access),
             json!({
                 "state": "disabled_by_config",
                 "reason": "disabled_by_config",
@@ -1636,14 +1707,14 @@ mod access_render_tests {
         };
 
         assert_eq!(
-            render(&managed_telemetry_node(health, access)),
+            render(&managed_telemetry_node(health, &access)),
             vec![
                 "  [PASS] Managed telemetry: disabled (reason: user_opt_out)",
                 "    Source: global SCE config",
             ]
         );
         assert_eq!(
-            managed_telemetry::json(health, access)["policy"],
+            managed_telemetry::json(health, &access)["policy"],
             json!({
                 "state": "disabled",
                 "reason": "user_opt_out",

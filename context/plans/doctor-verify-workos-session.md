@@ -30,17 +30,17 @@ separation of login status from telemetry credentials stay unchanged.
 
 ## Acceptance criteria
 
-- [ ] AC1: Under `mandatory`, with an unexpired stored access token, doctor reports `logged_in` without any network call.
+- [x] AC1: Under `mandatory`, with an unexpired stored access token, doctor reports `logged_in` without any network call.
   - Validate: `cargo test -p sce doctor::access` covers the fresh-token case with a refresh seam that fails the test if called.
-- [ ] AC2: Under `mandatory`, with an expired access token and a refresh WorkOS accepts, doctor reports `logged_in` and persists the refreshed tokens.
+- [x] AC2: Under `mandatory`, with an expired access token and a refresh WorkOS accepts, doctor reports `logged_in` and persists the refreshed tokens.
   - Validate: `cargo test -p sce doctor::access` asserts `logged_in` and that the save seam received the refreshed token.
-- [ ] AC3: When WorkOS rejects the refresh (`AuthError::Unauthorized`, e.g. inactivity), doctor reports a blocking `[FAIL] SCE login` whose problem summary includes the WorkOS reason, and JSON `sce_login.state` is `not_logged_in`, so the Claude status line shows red and the session-start login notice fires.
+- [x] AC3: When WorkOS rejects the refresh (`AuthError::Unauthorized`, e.g. inactivity), doctor reports a blocking `[FAIL] SCE login` whose problem summary includes the WorkOS reason, and JSON `sce_login.state` is `not_logged_in`, so the Claude status line shows red and the session-start login notice fires.
   - Validate: `cargo test -p sce doctor` asserts the state, summary text, and rendered JSON.
-- [ ] AC4: When the refresh fails on transport or deadline, doctor reports `logged_in` if `now - stored_at_unix_seconds < 24h`, otherwise `[WARN] SCE login status unavailable` with JSON `sce_login.state: "unavailable"` and `reason: "session_unreachable"`.
+- [x] AC4: When the refresh fails on transport or deadline, doctor reports `logged_in` if `now - stored_at_unix_seconds < 24h`, otherwise `[WARN] SCE login status unavailable` with JSON `sce_login.state: "unavailable"` and `reason: "session_unreachable"`.
   - Validate: `cargo test -p sce doctor::access` covers both sides of the 24h boundary; `cargo test -p sce doctor` covers rendering.
-- [ ] AC5: A rejected refresh that races with a newer stored session (another SCE process rotated the refresh token) reports `logged_in`, not `not_logged_in`.
+- [x] AC5: A rejected refresh that races with a newer stored session (another SCE process rotated the refresh token) reports `logged_in`, not `not_logged_in`.
   - Validate: `cargo test -p sce doctor::access` covers the reload-after-rejection case.
-- [ ] AC6: Non-mandatory modes, missing tokens, and the existing `unavailable` storage reasons keep their current results.
+- [x] AC6: Non-mandatory modes, missing tokens, and the existing `unavailable` storage reasons keep their current results.
   - Validate: existing `cargo test -p sce doctor` cases pass unchanged.
 
 ### Full validation
@@ -95,14 +95,48 @@ separation of login status from telemetry credentials stay unchanged.
   - Context impact: doctor login row contract (`context/sce/doctor-human-text-contract.md`), access-policy doctor login bullet (`context/cli/access-policy.md`), and auth DB writers (`context/sce/auth-db.md`) now differ from code: doctor makes a network refresh under `mandatory` and saves refreshed tokens, and adds two `unavailable` reasons.
   - Context synchronization: synced
 
-- [ ] T02: `Report the WorkOS rejection reason in the doctor login problem` (status:todo)
+- [x] T02: `Report the WorkOS rejection reason in the doctor login problem` (status:done)
   - Task ID: T02
   - Scope: In — carry the `AuthError::Unauthorized` message from a rejected refresh into the `sce_login_required` problem summary in text and JSON `problems`; keep `sce_login.state: "not_logged_in"` and the existing remediation; render tests. Out — new login states or status-line labels.
   - Dependencies: T01
   - Done when: AC3 holds and existing doctor render tests pass.
-  - Verify: `cargo test -p sce doctor`
-  - Context synchronization: pending
+  - Verify: `cargo test -p sce doctor` — passed via `nix build .#checks.x86_64-linux.cli-tests` (repository bash policy blocks direct cargo); all `services::doctor::access::tests` and `services::doctor::render::access_render_tests` pass, including the new `rejected_renewal_requires_login_and_keeps_the_workos_reason`, `rejection_reason_without_advice_is_kept_whole`, and `rejected_session_reports_blocking_failure_with_workos_reason`; suite result `852 passed; 0 failed`. `nix build .#checks.x86_64-linux.cli-fmt .#checks.x86_64-linux.cli-clippy` — passed.
+  - Completed: 2026-11-17
+  - Files changed: `cli/src/services/doctor/access.rs`, `cli/src/services/doctor/access/tests.rs`, `cli/src/services/doctor/managed_telemetry.rs`, `cli/src/services/doctor/mod.rs`, `cli/src/services/doctor/render.rs`
+  - Result: A rejected refresh (without concurrent rotation) now yields internal `LoginState::SessionRejected(reason)`, where `reason` is the `Unauthorized` message with its trailing ` Try: …` advice and final period removed. It serializes as `sce_login.state: "not_logged_in"`, renders `[FAIL] SCE login`, and produces `sce_login_required` (error, `auth_login`, remediation `Run 'sce auth login'.`) with summary `auth.mode: mandatory is set in the {source}, but WorkOS rejected the saved SCE session: {reason}.`; JSON `problems` carries the same summary. `LoginState` and `DoctorAccess` are now `Clone` (not `Copy`); their methods and render/telemetry JSON helpers take `&DoctorAccess`. Missing or empty stored sessions keep the existing "no saved SCE session is available" summary.
+  - Context impact: doctor login row contract (`context/sce/doctor-human-text-contract.md`) and access-policy doctor login bullet (`context/cli/access-policy.md`) should describe the WorkOS-rejection summary variant of the blocking `SCE login` failure.
+  - Context synchronization: synced
 
 ## Open questions
 
 - The keep-alive effect assumes WorkOS counts a refresh-token exchange as session activity for its inactivity timeout. That doesn't affect this plan's correctness, because a rejected refresh is still reported accurately. It's worth confirming in the WorkOS environment's session settings before relying on it to prevent expiry.
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-11-17
+
+### Commands run
+
+- `nix flake check` -> exit 0 (all checks passed, including `cli-tests` with 853 passed / 0 failed, `cli-clippy`, `cli-fmt`; x86_64-linux only)
+- `SCE_CLI_GENERATED_INPUT_DIR=/nix/store/3nphfld7c91i9b26ykibfr0g45rp1b11-sce-cli-generated-input nix develop .. -c cargo clippy --all-targets -- -D warnings` (from `cli/`) -> exit 0 (no warnings; the build script requires the generated-input directory)
+- `cargo test -p sce doctor` -> not run directly (blocked by repository bash policy `use-nix-flake-check-over-cargo-test`); every doctor test ran and passed inside the `nix flake check` `cli-tests` check
+
+### Success-criteria verification
+
+- [x] AC1: Unexpired access token reports `logged_in` with no network call -> `current_access_token_is_logged_in_without_contacting_workos` passes with `no_refresh` and `no_save` seams that panic if called.
+- [x] AC2: Expired token plus an accepted refresh reports `logged_in` and saves the refreshed tokens -> `expired_access_token_is_renewed_and_saved` asserts `LoggedIn`, that the refresh seam received `saved-refresh`, and that the separate `save` seam received the refreshed `TokenResponse` (`renewed-access` / `rotated-refresh`).
+- [x] AC3: A WorkOS rejection reports a blocking `[FAIL] SCE login` with the reason and JSON `not_logged_in` -> `rejected_renewal_requires_login_and_keeps_the_workos_reason`, `rejection_reason_without_advice_is_kept_whole`, and `render::access_render_tests::rejected_session_reports_blocking_failure_with_workos_reason` assert the state, the summary text, the problem fields, and the JSON.
+- [x] AC4: Transport or deadline failure reports `logged_in` within 24h, otherwise `unavailable`/`session_unreachable` -> `unreachable_workos_keeps_recently_confirmed_session_logged_in` (23h, deadline) and `unreachable_workos_reports_stale_session_as_unavailable` (25h) cover the boundary; `render::access_render_tests::unreachable_stale_session_renders_unavailable_warning` asserts the `[WARN] SCE login status unavailable` row, the problem and remediation text, and JSON `state: "unavailable"`, `reason: "session_unreachable"`.
+- [x] AC5: A rejection racing a newer stored session reports `logged_in` -> `rejected_renewal_after_rotation_by_another_process_is_logged_in` asserts `LoggedIn` after two lookups, with a `no_save` seam.
+- [x] AC6: Non-mandatory modes, missing tokens, and existing storage reasons keep their results -> `non_mandatory_mode_skips_credential_lookup`, `missing_empty_or_expired_unrenewable_session_requires_login`, `storage_failures_are_unknown_login_status_instead_of_logout`, `outdated_schema_is_unavailable_instead_of_logged_out`, and `lookup_timeout_does_not_claim_the_session_is_missing` pass.
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- No test exercises the production `inspect_login` closures that wrap the real `renew_stored_token_from_refresh_token` and `save_tokens`; they are thin wrappers.
+- The `auth_config_unavailable` reason has no render test; no acceptance criterion requires one.
+- The WorkOS keep-alive assumption from Open questions is still unconfirmed.

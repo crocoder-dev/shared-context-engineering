@@ -174,7 +174,7 @@ async fn execute_doctor_with_lifecycle_providers(
 ) -> DoctorExecution {
     let policy_readiness = (dependencies.probe_codex_hook_policy)();
     let managed_telemetry = dependencies.managed_telemetry;
-    let access = dependencies.access;
+    let access = dependencies.access.clone();
 
     let providers = lifecycle_providers(true);
     let initial_problems = diagnose_lifecycle_providers(context, &providers).await;

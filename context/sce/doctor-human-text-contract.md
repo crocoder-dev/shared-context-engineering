@@ -53,7 +53,13 @@ blocking local SCE features.
 - `mandatory` without a stored session, an expired access token without a
   refresh token, or a rejected refresh: `[FAIL] SCE login`, expanded into
   `Problem: auth.mode: mandatory is set in the <config file>, but no saved SCE
-  session is available.` and `Remediation: Run 'sce auth login'.`. The config file is
+  session is available.` and `Remediation: Run 'sce auth login'.`. For a
+  rejected refresh the problem names the WorkOS reason instead: `... but WorkOS
+  rejected the saved SCE session: <reason>.`, where `<reason>` is the
+  `AuthError::Unauthorized` message without its trailing `Try: ...` advice (for
+  example `Stored WorkOS refresh token is no longer valid (Session ended due to
+  inactivity.)`). It never contains token values. JSON `problems` carries the
+  same summary, and `sce_login.state` stays `not_logged_in`. The config file is
   the layer that decided the mode (repository `.sce/config.json`, global SCE
   config, `--config` file, or `SCE_CONFIG_FILE` file). The problem is
   `global_state`, severity `error` (blocking), `manual_only`, next action

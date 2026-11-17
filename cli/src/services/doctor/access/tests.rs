@@ -41,12 +41,31 @@ fn found(stored: &StoredTokens) -> StoredTokensLookup {
     StoredTokensLookup::Found(stored.clone())
 }
 
-fn no_renewal(_: String) -> std::future::Ready<Result<StoredTokens, SessionRenewalError>> {
-    panic!("renewal must not run")
+fn no_refresh(_: String) -> std::future::Ready<Result<TokenResponse, AuthError>> {
+    panic!("refresh must not run")
 }
 
-fn renewed() -> StoredTokens {
-    tokens("renewed-access", "rotated-refresh", HOUR, now())
+fn no_save(_: TokenResponse) -> std::future::Ready<Result<StoredTokens, TokenStorageError>> {
+    panic!("save must not run")
+}
+
+fn refreshed_token() -> TokenResponse {
+    TokenResponse {
+        access_token: "renewed-access".to_string(),
+        token_type: "Bearer".to_string(),
+        expires_in: HOUR,
+        refresh_token: "rotated-refresh".to_string(),
+        scope: None,
+    }
+}
+
+fn saved(token: &TokenResponse) -> StoredTokens {
+    tokens(
+        &token.access_token,
+        &token.refresh_token,
+        token.expires_in,
+        now(),
+    )
 }
 
 async fn inspect_lookup(lookup: StoredTokensLookup) -> LoginState {
@@ -57,22 +76,21 @@ async fn inspect_lookup(lookup: StoredTokensLookup) -> LoginState {
             let next = lookup.lock().unwrap().take();
             async move { Ok(next.expect("lookup runs once")) }
         },
-        no_renewal,
+        no_refresh,
+        no_save,
     )
     .await
 }
 
-async fn inspect_renewal(
-    stored: StoredTokens,
-    renewal: Result<StoredTokens, SessionRenewalError>,
-) -> LoginState {
+async fn inspect_failed_refresh(stored: StoredTokens, error: AuthError) -> LoginState {
     inspect_login_with(
         CREDENTIAL_LOOKUP_DEADLINE,
         move || {
             let stored = stored.clone();
             async move { Ok(found(&stored)) }
         },
-        move |_| async move { renewal },
+        move |_| async move { Err(error) },
+        no_save,
     )
     .await
 }
@@ -100,8 +118,10 @@ async fn missing_empty_or_expired_unrenewable_session_requires_login() {
 
 #[tokio::test]
 async fn expired_access_token_is_renewed_and_saved() {
-    let renewed_with = Arc::new(Mutex::new(None));
-    let captured = Arc::clone(&renewed_with);
+    let refreshed_with = Arc::new(Mutex::new(None));
+    let saved_token = Arc::new(Mutex::new(None));
+    let captured_refresh = Arc::clone(&refreshed_with);
+    let captured_save = Arc::clone(&saved_token);
     let stored = expired_session_confirmed(2 * HOUR);
     let login = inspect_login_with(
         CREDENTIAL_LOOKUP_DEADLINE,
@@ -110,28 +130,48 @@ async fn expired_access_token_is_renewed_and_saved() {
             async move { Ok(found(&stored)) }
         },
         move |refresh_token| async move {
-            *captured.lock().unwrap() = Some(refresh_token);
-            Ok(renewed())
+            *captured_refresh.lock().unwrap() = Some(refresh_token);
+            Ok(refreshed_token())
+        },
+        move |token| async move {
+            let stored = saved(&token);
+            *captured_save.lock().unwrap() = Some(token);
+            Ok(stored)
         },
     )
     .await;
     assert_eq!(login, LoginState::LoggedIn);
     assert_eq!(
-        renewed_with.lock().unwrap().as_deref(),
+        refreshed_with.lock().unwrap().as_deref(),
         Some("saved-refresh")
     );
+    assert_eq!(*saved_token.lock().unwrap(), Some(refreshed_token()));
 }
 
 #[tokio::test]
-async fn rejected_renewal_requires_login() {
-    let login = inspect_renewal(
+async fn rejected_renewal_requires_login_and_keeps_the_workos_reason() {
+    let login = inspect_failed_refresh(
         expired_session_confirmed(HOUR),
-        Err(SessionRenewalError::Auth(AuthError::Unauthorized(
-            "Session ended due to inactivity.".to_string(),
-        ))),
+        AuthError::Unauthorized(
+            "Stored WorkOS refresh token is no longer valid (Session ended due to inactivity.). Try: run 'sce auth login' again to authenticate again.".to_string(),
+        ),
     )
     .await;
-    assert_eq!(login, LoginState::NotLoggedIn);
+    assert_eq!(
+        login,
+        LoginState::SessionRejected(
+            "Stored WorkOS refresh token is no longer valid (Session ended due to inactivity.)"
+                .to_string()
+        )
+    );
+}
+
+#[test]
+fn rejection_reason_without_advice_is_kept_whole() {
+    assert_eq!(
+        rejection_reason("refresh token already used"),
+        "refresh token already used"
+    );
 }
 
 #[tokio::test]
@@ -144,15 +184,16 @@ async fn rejected_renewal_after_rotation_by_another_process_is_logged_in() {
             let next = if lookups.fetch_add(1, Ordering::SeqCst) == 0 {
                 found(&stored)
             } else {
-                StoredTokensLookup::Found(renewed())
+                StoredTokensLookup::Found(saved(&refreshed_token()))
             };
             async move { Ok(next) }
         },
         |_| async {
-            Err(SessionRenewalError::Auth(AuthError::Unauthorized(
+            Err(AuthError::Unauthorized(
                 "refresh token already used".to_string(),
-            )))
+            ))
         },
+        no_save,
     )
     .await;
     assert_eq!(login, LoginState::LoggedIn);
@@ -168,6 +209,7 @@ async fn unreachable_workos_keeps_recently_confirmed_session_logged_in() {
             async move { Ok(found(&stored)) }
         },
         |_| std::future::pending(),
+        no_save,
     )
     .await;
     assert_eq!(login, LoginState::LoggedIn);
@@ -175,11 +217,9 @@ async fn unreachable_workos_keeps_recently_confirmed_session_logged_in() {
 
 #[tokio::test]
 async fn unreachable_workos_reports_stale_session_as_unavailable() {
-    let login = inspect_renewal(
+    let login = inspect_failed_refresh(
         expired_session_confirmed(25 * HOUR),
-        Err(SessionRenewalError::Auth(AuthError::InvalidResponse(
-            "upstream unavailable".to_string(),
-        ))),
+        AuthError::InvalidResponse("upstream unavailable".to_string()),
     )
     .await;
     assert_eq!(
@@ -190,11 +230,8 @@ async fn unreachable_workos_reports_stale_session_as_unavailable() {
 
 #[tokio::test]
 async fn missing_client_id_is_unavailable_instead_of_logged_out() {
-    let login = inspect_renewal(
-        expired_session_confirmed(HOUR),
-        Err(SessionRenewalError::Auth(AuthError::MissingClientId)),
-    )
-    .await;
+    let login =
+        inspect_failed_refresh(expired_session_confirmed(HOUR), AuthError::MissingClientId).await;
     assert_eq!(
         login,
         LoginState::Unavailable(LoginUnavailableReason::AuthConfigUnavailable)
@@ -203,11 +240,19 @@ async fn missing_client_id_is_unavailable_instead_of_logged_out() {
 
 #[tokio::test]
 async fn failed_save_after_renewal_is_unavailable() {
-    let login = inspect_renewal(
-        expired_session_confirmed(HOUR),
-        Err(SessionRenewalError::Storage(
-            TokenStorageError::DatabaseLocked("private detail".to_string()),
-        )),
+    let stored = expired_session_confirmed(HOUR);
+    let login = inspect_login_with(
+        CREDENTIAL_LOOKUP_DEADLINE,
+        move || {
+            let stored = stored.clone();
+            async move { Ok(found(&stored)) }
+        },
+        |_| async { Ok(refreshed_token()) },
+        |_| async {
+            Err(TokenStorageError::DatabaseLocked(
+                "private detail".to_string(),
+            ))
+        },
     )
     .await;
     assert_eq!(
@@ -243,7 +288,8 @@ async fn storage_failures_are_unknown_login_status_instead_of_logout() {
                 let error = error.lock().unwrap().take().expect("lookup runs once");
                 async move { Err(error) }
             },
-            no_renewal,
+            no_refresh,
+            no_save,
         )
         .await;
         assert_eq!(login, LoginState::Unavailable(reason));
@@ -263,8 +309,13 @@ async fn outdated_schema_is_unavailable_instead_of_logged_out() {
 
 #[tokio::test]
 async fn lookup_timeout_does_not_claim_the_session_is_missing() {
-    let login =
-        inspect_login_with(Duration::from_millis(1), std::future::pending, no_renewal).await;
+    let login = inspect_login_with(
+        Duration::from_millis(1),
+        std::future::pending,
+        no_refresh,
+        no_save,
+    )
+    .await;
     assert_eq!(
         login,
         LoginState::Unavailable(LoginUnavailableReason::LookupTimeout)

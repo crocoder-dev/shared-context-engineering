@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use crate::services::auth::{self, AuthError};
+use crate::services::auth::{self, AuthError, TokenResponse};
 use crate::services::config::{
     self, AuthMode, ConfigPathSource, ResolvedAccessPolicy, TelemetryDisabledReason,
     TelemetryPolicyState, ValueSource,
@@ -24,20 +24,21 @@ const LOGIN_STATE_LOGGED_IN: &str = "logged_in";
 const LOGIN_STATE_NOT_LOGGED_IN: &str = "not_logged_in";
 const SESSION_CONFIRMATION_GRACE: Duration = Duration::from_hours(24);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LoginState {
     NotRequired,
     LoggedIn,
     NotLoggedIn,
+    SessionRejected(String),
     Unavailable(LoginUnavailableReason),
 }
 
 impl LoginState {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::NotRequired => LOGIN_STATE_NOT_REQUIRED,
             Self::LoggedIn => LOGIN_STATE_LOGGED_IN,
-            Self::NotLoggedIn => LOGIN_STATE_NOT_LOGGED_IN,
+            Self::NotLoggedIn | Self::SessionRejected(_) => LOGIN_STATE_NOT_LOGGED_IN,
             Self::Unavailable(_) => "unavailable",
         }
     }
@@ -127,34 +128,35 @@ pub(super) async fn inspect_login(repository_root: &Path) -> LoginState {
     inspect_login_with(
         CREDENTIAL_LOOKUP_DEADLINE,
         token_storage::load_current_tokens,
-        |refresh_token| renew_session(client_id, refresh_token),
+        |refresh_token| async move {
+            auth::renew_stored_token_from_refresh_token(
+                &reqwest::Client::new(),
+                auth::WORKOS_DEFAULT_BASE_URL,
+                &client_id,
+                &refresh_token,
+            )
+            .await
+        },
+        |token| async move {
+            token_storage::save_tokens(&token, CredentialAccess::NonInteractive).await
+        },
     )
     .await
 }
 
-async fn renew_session(
-    client_id: String,
-    refresh_token: String,
-) -> Result<StoredTokens, SessionRenewalError> {
-    let token = auth::renew_stored_token_from_refresh_token(
-        &reqwest::Client::new(),
-        auth::WORKOS_DEFAULT_BASE_URL,
-        &client_id,
-        &refresh_token,
-    )
-    .await
-    .map_err(SessionRenewalError::Auth)?;
-    token_storage::save_tokens(&token, CredentialAccess::NonInteractive)
-        .await
-        .map_err(SessionRenewalError::Storage)
-}
-
-async fn inspect_login_with<L, LF, R, RF>(deadline: Duration, lookup: L, renew: R) -> LoginState
+async fn inspect_login_with<L, LF, R, RF, S, SF>(
+    deadline: Duration,
+    lookup: L,
+    refresh: R,
+    save: S,
+) -> LoginState
 where
     L: Fn() -> LF,
     LF: Future<Output = Result<StoredTokensLookup, TokenStorageError>> + Send + 'static,
     R: FnOnce(String) -> RF,
-    RF: Future<Output = Result<StoredTokens, SessionRenewalError>> + Send + 'static,
+    RF: Future<Output = Result<TokenResponse, AuthError>> + Send + 'static,
+    S: FnOnce(TokenResponse) -> SF + Send + 'static,
+    SF: Future<Output = Result<StoredTokens, TokenStorageError>> + Send + 'static,
 {
     let tokens = match load_session(deadline, lookup()).await {
         Ok(tokens) => tokens,
@@ -172,13 +174,18 @@ where
     }
     // Refresh and save run as one unit: WorkOS rotates the refresh token, so a
     // refresh whose result is not saved invalidates the stored session.
-    match run_with_deadline(deadline, renew(tokens.refresh_token.clone())).await {
+    let refreshed = refresh(tokens.refresh_token.clone());
+    let renewal = async move {
+        let token = refreshed.await.map_err(SessionRenewalError::Auth)?;
+        save(token).await.map_err(SessionRenewalError::Storage)
+    };
+    match run_with_deadline(deadline, renewal).await {
         Some(Ok(_)) => LoginState::LoggedIn,
-        Some(Err(SessionRenewalError::Auth(AuthError::Unauthorized(_)))) => {
+        Some(Err(SessionRenewalError::Auth(AuthError::Unauthorized(reason)))) => {
             if session_rotated_elsewhere(deadline, lookup(), &tokens.refresh_token).await {
                 LoginState::LoggedIn
             } else {
-                LoginState::NotLoggedIn
+                LoginState::SessionRejected(rejection_reason(&reason))
             }
         }
         Some(Err(SessionRenewalError::Auth(AuthError::MissingClientId))) => {
@@ -221,6 +228,17 @@ where
         .is_ok_and(|tokens| tokens.refresh_token != rejected_refresh_token)
 }
 
+/// Drops the trailing `Try: ...` advice from an `AuthError::Unauthorized`
+/// message, because the login problem carries its own remediation.
+fn rejection_reason(message: &str) -> String {
+    message
+        .split_once(" Try:")
+        .map_or(message, |(reason, _)| reason)
+        .trim()
+        .trim_end_matches('.')
+        .to_string()
+}
+
 fn unreachable_session_state(tokens: &StoredTokens) -> LoginState {
     let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         return LoginState::Unavailable(LoginUnavailableReason::ClockError);
@@ -244,7 +262,7 @@ fn storage_unavailable_reason(error: &TokenStorageError) -> LoginUnavailableReas
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DoctorAccess {
     pub(super) auth_mode: AuthMode,
     pub(super) auth_mode_source: ValueSource,
@@ -292,7 +310,7 @@ impl DoctorAccess {
         }
     }
 
-    pub(super) fn telemetry_label(self) -> String {
+    pub(super) fn telemetry_label(&self) -> String {
         match self.telemetry {
             TelemetryPolicyState::Enabled => {
                 "Managed telemetry: enabled for this repository".to_string()
@@ -303,18 +321,28 @@ impl DoctorAccess {
         }
     }
 
-    pub(super) fn telemetry_source_label(self) -> Option<&'static str> {
+    pub(super) fn telemetry_source_label(&self) -> Option<&'static str> {
         self.telemetry_source.map(source_label)
     }
 
-    pub(super) fn login_problem(self) -> Option<DoctorProblem> {
-        let (kind, severity, summary, remediation, next_action) = match self.login {
+    pub(super) fn login_problem(&self) -> Option<DoctorProblem> {
+        let (kind, severity, summary, remediation, next_action) = match &self.login {
             LoginState::NotRequired | LoginState::LoggedIn => return None,
             LoginState::NotLoggedIn => (
                 ProblemKind::SceLoginRequired,
                 ProblemSeverity::Error,
                 format!(
                     "auth.mode: mandatory is set in the {}, but no saved SCE session is available.",
+                    source_label(self.auth_mode_source)
+                ),
+                LOGIN_REMEDIATION,
+                NEXT_ACTION_AUTH_LOGIN,
+            ),
+            LoginState::SessionRejected(reason) => (
+                ProblemKind::SceLoginRequired,
+                ProblemSeverity::Error,
+                format!(
+                    "auth.mode: mandatory is set in the {}, but WorkOS rejected the saved SCE session: {reason}.",
                     source_label(self.auth_mode_source)
                 ),
                 LOGIN_REMEDIATION,
@@ -344,20 +372,20 @@ impl DoctorAccess {
         })
     }
 
-    pub(super) fn login_json(self) -> Value {
+    pub(super) fn login_json(&self) -> Value {
         let mut result = json!({
             "state": self.login.as_str(),
             "auth_mode": self.auth_mode.as_str(),
             "source": self.auth_mode_source.as_str(),
             "config_source": self.auth_mode_source.config_source().map(ConfigPathSource::as_str),
         });
-        if let LoginState::Unavailable(reason) = self.login {
+        if let LoginState::Unavailable(reason) = &self.login {
             result["reason"] = json!(reason.as_str());
         }
         result
     }
 
-    pub(super) fn telemetry_policy_json(self) -> Value {
+    pub(super) fn telemetry_policy_json(&self) -> Value {
         json!({
             "state": self.telemetry.as_str(),
             "reason": self.telemetry.disabled_reason().map(TelemetryDisabledReason::as_str),
