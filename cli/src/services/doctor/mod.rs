@@ -121,7 +121,8 @@ async fn execute_doctor_with_context(
     recommendation_seam: &impl Fn(&Path) -> Option<ReconciliationRecommendation>,
 ) -> DoctorExecution {
     let policy = access_policy_for(repository_root);
-    let access = DoctorAccess::inspect(policy.as_ref(), access::inspect_login).await;
+    let access =
+        DoctorAccess::inspect(policy.as_ref(), || access::inspect_login(repository_root)).await;
     execute_doctor_with_lifecycle_providers(
         request,
         repository_root,

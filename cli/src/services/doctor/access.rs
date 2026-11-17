@@ -1,14 +1,17 @@
 use std::future::Future;
-use std::time::Duration;
+use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
+use crate::services::auth::{self, AuthError};
 use crate::services::config::{
-    AuthMode, ConfigPathSource, ResolvedAccessPolicy, TelemetryDisabledReason,
+    self, AuthMode, ConfigPathSource, ResolvedAccessPolicy, TelemetryDisabledReason,
     TelemetryPolicyState, ValueSource,
 };
+use crate::services::db::encryption_key::CredentialAccess;
 use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
-use crate::services::token_storage::{self, StoredTokensLookup, TokenStorageError};
+use crate::services::token_storage::{self, StoredTokens, StoredTokensLookup, TokenStorageError};
 
 use super::types::{
     DoctorProblem, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
@@ -19,6 +22,7 @@ const NEXT_ACTION_AUTH_LOGIN: &str = "auth_login";
 const LOGIN_STATE_NOT_REQUIRED: &str = "not_required";
 const LOGIN_STATE_LOGGED_IN: &str = "logged_in";
 const LOGIN_STATE_NOT_LOGGED_IN: &str = "not_logged_in";
+const SESSION_CONFIRMATION_GRACE: Duration = Duration::from_hours(24);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum LoginState {
@@ -48,6 +52,8 @@ pub(super) enum LoginUnavailableReason {
     SchemaNotCurrent,
     LookupTimeout,
     ClockError,
+    SessionUnreachable,
+    AuthConfigUnavailable,
 }
 
 impl LoginUnavailableReason {
@@ -60,6 +66,8 @@ impl LoginUnavailableReason {
             Self::SchemaNotCurrent => "schema_not_current",
             Self::LookupTimeout => "lookup_timeout",
             Self::ClockError => "clock_error",
+            Self::SessionUnreachable => "session_unreachable",
+            Self::AuthConfigUnavailable => "auth_config_unavailable",
         }
     }
 
@@ -93,49 +101,146 @@ impl LoginUnavailableReason {
                 "SCE cannot determine the saved session status because the system clock is invalid.",
                 "Correct the system clock, then rerun 'sce doctor'.",
             ),
+            Self::SessionUnreachable => (
+                "SCE could not reach WorkOS to confirm the saved session, and it has not been confirmed in the last 24 hours.",
+                "Check network connectivity, then rerun 'sce doctor'.",
+            ),
+            Self::AuthConfigUnavailable => (
+                "SCE cannot confirm the saved session because the WorkOS client ID is not configured.",
+                "Check the SCE auth configuration with 'sce config show', then rerun 'sce doctor'.",
+            ),
         }
     }
 }
 
-pub(super) async fn inspect_login() -> LoginState {
+#[derive(Debug)]
+enum SessionRenewalError {
+    Auth(AuthError),
+    Storage(TokenStorageError),
+}
+
+pub(super) async fn inspect_login(repository_root: &Path) -> LoginState {
+    let client_id = config::resolve_auth_runtime_config(repository_root)
+        .ok()
+        .and_then(|config| config.workos_client_id.value)
+        .unwrap_or_default();
     inspect_login_with(
         CREDENTIAL_LOOKUP_DEADLINE,
-        token_storage::load_current_tokens(),
+        token_storage::load_current_tokens,
+        |refresh_token| renew_session(client_id, refresh_token),
     )
     .await
 }
 
-async fn inspect_login_with<Fut>(deadline: Duration, lookup: Fut) -> LoginState
+async fn renew_session(
+    client_id: String,
+    refresh_token: String,
+) -> Result<StoredTokens, SessionRenewalError> {
+    let token = auth::renew_stored_token_from_refresh_token(
+        &reqwest::Client::new(),
+        auth::WORKOS_DEFAULT_BASE_URL,
+        &client_id,
+        &refresh_token,
+    )
+    .await
+    .map_err(SessionRenewalError::Auth)?;
+    token_storage::save_tokens(&token, CredentialAccess::NonInteractive)
+        .await
+        .map_err(SessionRenewalError::Storage)
+}
+
+async fn inspect_login_with<L, LF, R, RF>(deadline: Duration, lookup: L, renew: R) -> LoginState
+where
+    L: Fn() -> LF,
+    LF: Future<Output = Result<StoredTokensLookup, TokenStorageError>> + Send + 'static,
+    R: FnOnce(String) -> RF,
+    RF: Future<Output = Result<StoredTokens, SessionRenewalError>> + Send + 'static,
+{
+    let tokens = match load_session(deadline, lookup()).await {
+        Ok(tokens) => tokens,
+        Err(state) => return state,
+    };
+    if !tokens.access_token.trim().is_empty() {
+        match auth::is_stored_token_expired(&tokens) {
+            Ok(false) => return LoginState::LoggedIn,
+            Ok(true) => {}
+            Err(_) => return LoginState::Unavailable(LoginUnavailableReason::ClockError),
+        }
+    }
+    if tokens.refresh_token.trim().is_empty() {
+        return LoginState::NotLoggedIn;
+    }
+    // Refresh and save run as one unit: WorkOS rotates the refresh token, so a
+    // refresh whose result is not saved invalidates the stored session.
+    match run_with_deadline(deadline, renew(tokens.refresh_token.clone())).await {
+        Some(Ok(_)) => LoginState::LoggedIn,
+        Some(Err(SessionRenewalError::Auth(AuthError::Unauthorized(_)))) => {
+            if session_rotated_elsewhere(deadline, lookup(), &tokens.refresh_token).await {
+                LoginState::LoggedIn
+            } else {
+                LoginState::NotLoggedIn
+            }
+        }
+        Some(Err(SessionRenewalError::Auth(AuthError::MissingClientId))) => {
+            LoginState::Unavailable(LoginUnavailableReason::AuthConfigUnavailable)
+        }
+        Some(Err(SessionRenewalError::Storage(error))) => {
+            LoginState::Unavailable(storage_unavailable_reason(&error))
+        }
+        None | Some(Err(SessionRenewalError::Auth(_))) => unreachable_session_state(&tokens),
+    }
+}
+
+async fn load_session<Fut>(deadline: Duration, lookup: Fut) -> Result<StoredTokens, LoginState>
 where
     Fut: Future<Output = Result<StoredTokensLookup, TokenStorageError>> + Send + 'static,
 {
     match run_with_deadline(deadline, lookup).await {
-        None => LoginState::Unavailable(LoginUnavailableReason::LookupTimeout),
-        Some(Err(error)) => LoginState::Unavailable(match error {
-            TokenStorageError::CredentialAccessUnavailable => {
-                LoginUnavailableReason::CredentialInaccessible
-            }
-            TokenStorageError::DatabaseLocked(_) => LoginUnavailableReason::DatabaseLocked,
-            TokenStorageError::Database(_) => LoginUnavailableReason::DatabaseError,
-            TokenStorageError::PathResolution(_) => LoginUnavailableReason::PathResolutionError,
-        }),
-        Some(Ok(StoredTokensLookup::Missing)) => LoginState::NotLoggedIn,
-        Some(Ok(StoredTokensLookup::SchemaNotCurrent)) => {
-            LoginState::Unavailable(LoginUnavailableReason::SchemaNotCurrent)
+        None => Err(LoginState::Unavailable(
+            LoginUnavailableReason::LookupTimeout,
+        )),
+        Some(Err(error)) => Err(LoginState::Unavailable(storage_unavailable_reason(&error))),
+        Some(Ok(StoredTokensLookup::Missing)) => Err(LoginState::NotLoggedIn),
+        Some(Ok(StoredTokensLookup::SchemaNotCurrent)) => Err(LoginState::Unavailable(
+            LoginUnavailableReason::SchemaNotCurrent,
+        )),
+        Some(Ok(StoredTokensLookup::Found(tokens))) => Ok(tokens),
+    }
+}
+
+async fn session_rotated_elsewhere<Fut>(
+    deadline: Duration,
+    lookup: Fut,
+    rejected_refresh_token: &str,
+) -> bool
+where
+    Fut: Future<Output = Result<StoredTokensLookup, TokenStorageError>> + Send + 'static,
+{
+    load_session(deadline, lookup)
+        .await
+        .is_ok_and(|tokens| tokens.refresh_token != rejected_refresh_token)
+}
+
+fn unreachable_session_state(tokens: &StoredTokens) -> LoginState {
+    let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return LoginState::Unavailable(LoginUnavailableReason::ClockError);
+    };
+    let confirmed_ago = now.as_secs().saturating_sub(tokens.stored_at_unix_seconds);
+    if confirmed_ago < SESSION_CONFIRMATION_GRACE.as_secs() {
+        LoginState::LoggedIn
+    } else {
+        LoginState::Unavailable(LoginUnavailableReason::SessionUnreachable)
+    }
+}
+
+fn storage_unavailable_reason(error: &TokenStorageError) -> LoginUnavailableReason {
+    match error {
+        TokenStorageError::CredentialAccessUnavailable => {
+            LoginUnavailableReason::CredentialInaccessible
         }
-        Some(Ok(StoredTokensLookup::Found(tokens))) => {
-            if !tokens.refresh_token.trim().is_empty() {
-                return LoginState::LoggedIn;
-            }
-            if tokens.access_token.trim().is_empty() {
-                return LoginState::NotLoggedIn;
-            }
-            match crate::services::auth::is_stored_token_expired(&tokens) {
-                Ok(false) => LoginState::LoggedIn,
-                Ok(true) => LoginState::NotLoggedIn,
-                Err(_) => LoginState::Unavailable(LoginUnavailableReason::ClockError),
-            }
-        }
+        TokenStorageError::DatabaseLocked(_) => LoginUnavailableReason::DatabaseLocked,
+        TokenStorageError::Database(_) => LoginUnavailableReason::DatabaseError,
+        TokenStorageError::PathResolution(_) => LoginUnavailableReason::PathResolutionError,
     }
 }
 
