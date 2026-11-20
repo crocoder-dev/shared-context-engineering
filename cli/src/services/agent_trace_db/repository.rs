@@ -23,6 +23,8 @@ const SELECT_REPOSITORY_METADATA_SQL: &str =
     "SELECT repository_id, source_instance_id FROM repository_metadata WHERE id = 1";
 const SELECT_SQLITE_OBJECT_SQL: &str =
     "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2 LIMIT 1";
+const SELECT_APPLIED_MIGRATION_IDS_SQL: &str = "SELECT id FROM __sce_migrations";
+const HOOK_RUNTIME_OPTIONAL_MIGRATION_ID: &str = "008_claude_session_auth_state";
 const RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL: &str =
     "INSERT OR IGNORE INTO __sce_migrations (id) VALUES ('001_repository_schema')";
 const REQUIRED_REPOSITORY_SCHEMA_TABLES: &[&str] = &[
@@ -246,7 +248,56 @@ impl RepositoryAgentTraceDb {
             .await
     }
 
+    /// Hook-runtime readiness: strict parity, or strict parity minus exactly
+    /// [`HOOK_RUNTIME_OPTIONAL_MIGRATION_ID`], so hooks keep working until
+    /// `sce setup` applies that migration. Setup, repair, and doctor stay strict.
+    pub async fn ensure_schema_ready_for_hook_runtime(&self) -> Result<()> {
+        let strict = self.ensure_schema_ready_for_hooks().await;
+        if strict.is_err()
+            && self
+                .ledger_lacks_only_hook_runtime_optional_migration()
+                .await?
+        {
+            return Ok(());
+        }
+        strict
+    }
+
+    async fn ledger_lacks_only_hook_runtime_optional_migration(&self) -> Result<bool> {
+        if !self
+            .sqlite_object_exists("table", "__sce_migrations")
+            .await?
+        {
+            return Ok(false);
+        }
+        let mut applied_ids = self
+            .query_map(SELECT_APPLIED_MIGRATION_IDS_SQL, (), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .await?;
+        applied_ids.sort_unstable();
+        let mut expected_ids = generated_migrations::AGENT_TRACE_REPOSITORY_MIGRATIONS
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| *id != HOOK_RUNTIME_OPTIONAL_MIGRATION_ID)
+            .collect::<Vec<_>>();
+        expected_ids.sort_unstable();
+        Ok(applied_ids == expected_ids)
+    }
+
     pub async fn repair_missing_repository_schema_migration_metadata(&self) -> Result<()> {
+        self.record_repository_schema_migration_metadata().await?;
+        self.ensure_schema_ready_for_hooks().await
+    }
+
+    pub async fn repair_missing_repository_schema_migration_metadata_for_hook_runtime(
+        &self,
+    ) -> Result<()> {
+        self.record_repository_schema_migration_metadata().await?;
+        self.ensure_schema_ready_for_hook_runtime().await
+    }
+
+    async fn record_repository_schema_migration_metadata(&self) -> Result<()> {
         for table in REQUIRED_REPOSITORY_SCHEMA_TABLES {
             if !self.sqlite_object_exists("table", table).await? {
                 anyhow::bail!(
@@ -258,7 +309,7 @@ impl RepositoryAgentTraceDb {
 
         self.execute(RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL, ())
             .await?;
-        self.ensure_schema_ready_for_hooks().await
+        Ok(())
     }
 
     async fn sqlite_object_exists(&self, object_type: &str, name: &str) -> Result<bool> {

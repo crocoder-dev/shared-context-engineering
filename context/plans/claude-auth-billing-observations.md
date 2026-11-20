@@ -135,13 +135,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — new internal module with no runtime wiring; durable context for detection rules is owned by T05.
   - Context synchronization: synced
 
-- [ ] T02: `Add migration 008 with hook-runtime compatibility for pre-008 databases` (status:todo)
+- [x] T02: `Add migration 008 with hook-runtime compatibility for pre-008 databases` (status:done)
   - Task ID: T02
   - Scope: In — `008_claude_session_auth_state.sql` creating `claude_session_auth_state (session_id TEXT PRIMARY KEY, provider, billing_mode, auth_env_key NULLable, confidence, observed_at_ms INTEGER NOT NULL CHECK (>= 0))` with `CHECK` constraints on enum columns; a hook-runtime readiness method on `RepositoryAgentTraceDb` that accepts the full ledger or the full ledger minus exactly `008_claude_session_auth_state`; switching only `open_repository_db_for_hook_runtime` to it; updating tests that enumerate `AGENT_TRACE_REPOSITORY_MIGRATIONS`; tests on pre-`008` and current DBs proving hooks open, setup applies `008`, doctor reports not-ready before setup, and missing-other or unexpected IDs are still rejected. Out — auth read/write helpers, setup fast path, repair recheck, doctor readiness semantics, migrations 001–007.
   - Dependencies: none
   - Done when: existing hook paths open a pre-`008` DB, setup and doctor keep strict parity, unrelated migration gaps still fail readiness, and the targeted tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_repository_migrations`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_session_auth_schema_compat`; `git diff --exit-code -- cli/migrations/agent-trace-repository/00[1-7]_*.sql`
-  - Context synchronization: pending
+  - Completed: 2026-11-20
+  - Files changed: `cli/migrations/agent-trace-repository/008_claude_session_auth_state.sql` (new), `cli/src/services/agent_trace_db/repository.rs`, `cli/src/services/agent_trace_storage/mod.rs`
+  - Result: Added migration `008_claude_session_auth_state` creating `claude_session_auth_state` (`session_id TEXT PRIMARY KEY`, `CHECK`-constrained `provider`/`billing_mode`/`confidence`, nullable `CHECK`-constrained `auth_env_key`, `observed_at_ms INTEGER NOT NULL CHECK (>= 0)`). Added `HOOK_RUNTIME_OPTIONAL_MIGRATION_ID` and `RepositoryAgentTraceDb::ensure_schema_ready_for_hook_runtime` (strict parity, or applied set equal to expected set minus exactly `008`); split the legacy `001` metadata repair into a shared record step plus strict (`repair_missing_repository_schema_migration_metadata`) and hook-runtime (`..._for_hook_runtime`) rechecks; only `open_repository_db_for_hook_runtime` uses the hook-runtime variants. Setup fast path, repair recheck, and doctor (`open_existing_schema_ready_at`) keep strict parity. 8 new tests: migration list and table constraints (`agent_trace_repository_migrations_*`), and pre-`008` hook open with model-state and diff-trace writes, current-DB hook open, setup applying `008`, doctor rejecting pre-`008`, and hook rejection for other missing migrations and unexpected IDs (`claude_session_auth_schema_compat_*`).
+  - Verify outcome: `agent_trace_repository_migrations` passed (2 passed); `claude_session_auth_schema_compat` passed (6 passed); `git diff --exit-code` on migrations 001–007 passed; full CLI suite passed (871 passed, 0 failed); `clippy --all-targets` clean; `cargo fmt` applied.
+  - Deviations/assumptions: No pre-existing test hardcoded the migration list (the build script discovers migrations), so the enumeration test is new; existing pre-007 slicing fixtures work unchanged.
+  - Context impact: localized — new repository migration and a hook-runtime-only readiness variant; durable context (`agent-trace-db.md`, `agent-trace-db-schema.md`, new `claude-session-auth-state.md`) is owned by T05.
+  - Context synchronization: synced
 
 - [ ] T03: `Add Claude session auth state upsert and read interface` (status:todo)
   - Task ID: T03
