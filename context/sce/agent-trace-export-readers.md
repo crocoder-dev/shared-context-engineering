@@ -37,7 +37,7 @@ Three async methods, one per remote sync stream, sharing one shape: `(cursor: i6
 SELECT ... FROM <table> WHERE id > ?1 ORDER BY id ASC LIMIT ?2
 ```
 
-against `messages`, `parts`, and `agent_traces` respectively (`read_messages_after`, `read_parts_after`, `read_agent_traces_after`). `diff_traces` is a local-only capture stream with no reader method. `cursor` is the last server-accepted `id` for that stream; the reader makes no gap or contiguity assumption about IDs. `claude_model_state` is local attribution state outside these three reader methods and has no reader method or sync cursor. `agent_traces.trace_json` is returned raw and unmodified — no patch parsing, no JSON reparsing.
+against `messages`, `parts`, and `agent_traces` respectively (`read_messages_after`, `read_parts_after`, `read_agent_traces_after`). `diff_traces` is a local-only capture stream with no reader method. `cursor` is the last server-accepted `id` for that stream; the reader makes no gap or contiguity assumption about IDs. `claude_model_state` and `claude_session_auth_state` (see [claude-session-auth-state.md](claude-session-auth-state.md#local-only-status)) are local attribution state outside these three reader methods and have no reader method or sync cursor. `agent_traces.trace_json` is returned raw and unmodified — no patch parsing, no JSON reparsing.
 
 Every call validates, before executing any query:
 

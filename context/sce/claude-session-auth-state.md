@@ -128,3 +128,28 @@ added.
   silently.
 - Stdout stays empty on every path. Credential values are never stored, logged,
   or printed, because only presence reaches the detector.
+
+## Migration-008 compatibility
+
+`008_claude_session_auth_state` is the only migration the hook runtime tolerates
+as missing (`HOOK_RUNTIME_OPTIONAL_MIGRATION_ID` in
+`cli/src/services/agent_trace_db/repository.rs`).
+
+- On a pre-`008` database, `ensure_schema_ready_for_hook_runtime` still passes,
+  so existing hooks (`claude-model-state` model writes, `diff-trace`,
+  `conversation-trace`) keep persisting, and the auth upsert returns
+  `SkippedMissingMigration`.
+- `sce setup` applies `008` through the strict setup path. `sce doctor` and the
+  concurrent-first-open repair recheck keep strict ledger parity, so doctor
+  reports `AgentTraceDbSchemaNotReady` until setup reruns.
+- A ledger missing any other migration, or carrying an unexpected ID, is still
+  rejected by the hook runtime.
+
+See [agent-trace-db.md](agent-trace-db.md#migration-008-compatibility-note).
+
+## Local-only status
+
+The table is local attribution state. `AgentTraceExportReader` has no method
+for it, `sce sync` does not send it, and no control-plane or warehouse code
+reads it. Exporting it is unplanned follow-up work for a future `sce sync` or
+warehouse change; this document does not define its route, cursor, or schema.

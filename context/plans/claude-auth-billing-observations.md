@@ -44,19 +44,19 @@ How this plan is proven complete. Each criterion is observable and names the
 check that proves it. `/validate` runs these checks; no task in the stack
 performs final validation.
 
-- [ ] AC1: The pure detector maps each documented signal to the expected provider, billing mode, typed env key, and `Inferred` confidence, and never returns a verified confidence or `Subscription` billing: Bedrock/Vertex/Foundry flags yield their provider with `CloudProvider` billing and take precedence over Anthropic credentials; `ANTHROPIC_AUTH_TOKEN` takes precedence over `ANTHROPIC_API_KEY` and yields `Unknown` billing (never `ApiKey`); `ANTHROPIC_API_KEY` without a custom base URL yields `Anthropic` with `ApiKey` billing; a custom `ANTHROPIC_BASE_URL` with either credential yields `CustomGateway` with `Unknown` billing; `CLAUDE_CODE_OAUTH_TOKEN` alone yields `Anthropic` with `Unknown` billing; more than one cloud flag, or no signal, yields `Unknown` provider, billing, and confidence with no env key.
+- [x] AC1: The pure detector maps each documented signal to the expected provider, billing mode, typed env key, and `Inferred` confidence, and never returns a verified confidence or `Subscription` billing: Bedrock/Vertex/Foundry flags yield their provider with `CloudProvider` billing and take precedence over Anthropic credentials; `ANTHROPIC_AUTH_TOKEN` takes precedence over `ANTHROPIC_API_KEY` and yields `Unknown` billing (never `ApiKey`); `ANTHROPIC_API_KEY` without a custom base URL yields `Anthropic` with `ApiKey` billing; a custom `ANTHROPIC_BASE_URL` with either credential yields `CustomGateway` with `Unknown` billing; `CLAUDE_CODE_OAUTH_TOKEN` alone yields `Anthropic` with `Unknown` billing; more than one cloud flag, or no signal, yields `Unknown` provider, billing, and confidence with no env key.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_auth_detection`
-- [ ] AC2: Migration `008_claude_session_auth_state` creates `claude_session_auth_state` keyed by `session_id` with `CHECK`-constrained enum columns and non-negative `observed_at_ms`, and has no column capable of holding a credential value or hash; migrations 001–007 are unchanged.
+- [x] AC2: Migration `008_claude_session_auth_state` creates `claude_session_auth_state` keyed by `session_id` with `CHECK`-constrained enum columns and non-negative `observed_at_ms`, and has no column capable of holding a credential value or hash; migrations 001–007 are unchanged.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_repository_migrations`; `git diff --exit-code -- cli/migrations/agent-trace-repository/00[1-7]_*.sql`
-- [ ] AC3: Repeated identical upserts leave one unchanged row (including `observed_at_ms`); a changed classification updates the row in place; the latest-state read returns the exact canonical session's row and never another session's.
+- [x] AC3: Repeated identical upserts leave one unchanged row (including `observed_at_ms`); a changed classification updates the row in place; the latest-state read returns the exact canonical session's row and never another session's.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_session_auth_state`
-- [ ] AC4: On a pre-`008` repository DB, existing hooks (including `claude-model-state` model writes, `diff-trace`, and `conversation-trace`) still persist and the auth write is skipped without error; setup applies `008` on that DB; doctor still reports the schema not ready before setup; a DB missing any other migration, or carrying an unexpected migration ID, is still rejected by the hook runtime.
+- [x] AC4: On a pre-`008` repository DB, existing hooks (including `claude-model-state` model writes, `diff-trace`, and `conversation-trace`) still persist and the auth write is skipped without error; setup applies `008` on that DB; doctor still reports the schema not ready before setup; a DB missing any other migration, or carrying an unexpected migration ID, is still rejected by the hook runtime.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_session_auth_schema_compat`
-- [ ] AC5: `sce hooks claude-model-state` on `SessionStart` (startup and resume, with and without `model`) stores the auth classification under `claude:<session_id>`, changes it only when the classification changes across resumes and duplicate executions, leaves `claude_model_state` writes identical to current behavior, ignores `PostModelSwitch` for auth, and returns empty stdout on every path including DB-open and write failures.
+- [x] AC5: `sce hooks claude-model-state` on `SessionStart` (startup and resume, with and without `model`) stores the auth classification under `claude:<session_id>`, changes it only when the classification changes across resumes and duplicate executions, leaves `claude_model_state` writes identical to current behavior, ignores `PostModelSwitch` for auth, and returns empty stdout on every path including DB-open and write failures.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`
-- [ ] AC6: Sentinel credential values supplied to the hook appear in no DB row, no captured log output, and no hook stdout.
+- [x] AC6: Sentinel credential values supplied to the hook appear in no DB row, no captured log output, and no hook stdout.
   - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_auth_state_no_secret`
-- [ ] AC7: Durable context documents detection rules and limitations, the table schema, hook integration, migration-008 compatibility, and that the data stays local until a future `sce sync`/warehouse export change, without specifying downstream routes, cursors, object layouts, or warehouse schemas.
+- [x] AC7: Durable context documents detection rules and limitations, the table schema, hook integration, migration-008 compatibility, and that the data stays local until a future `sce sync`/warehouse export change, without specifying downstream routes, cursors, object layouts, or warehouse schemas.
   - Validate: inspect `context/sce/claude-session-auth-state.md`, `context/sce/agent-trace-db.md`, `context/sce/agent-trace-db-schema.md`, and `context/context-map.md`.
 
 ### Full validation
@@ -177,15 +177,58 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — runtime wiring of the existing hook to the T03 persistence helpers, with a new fail-open log event; durable context is owned by T05.
   - Context synchronization: synced
 
-- [ ] T05: `Document Claude session auth state` (status:todo)
+- [x] T05: `Document Claude session auth state` (status:done)
   - Task ID: T05
   - Scope: In — new `context/sce/claude-session-auth-state.md` covering detection rules, precedence, the classification table, the distinction between authentication configuration and actual billing (environment signals are `Inferred` configuration evidence; neither `ANTHROPIC_AUTH_TOKEN` nor OAuth implies a billing mode), confidence semantics, limitations (`/login` and `apiKeyHelper` not observable), table schema, hook integration, migration-008 compatibility, and that the data is local-only until a future `sce sync`/warehouse export change; updates to `agent-trace-db.md`, `agent-trace-db-schema.md`, `agent-trace-export-readers.md`, `context-map.md`, and `glossary.md`. Out — code changes; any design of export routes, cursors, storage layouts, or warehouse schemas.
   - Dependencies: T04
   - Done when: context files accurately describe the implemented code and mention future export only as unplanned follow-up work.
   - Verify: inspect the listed context files against `claude_model_state.rs`, the migration, `repository.rs`, and `agent_trace_storage/mod.rs`.
-  - Context synchronization: pending
+  - Completed: 2026-11-20
+  - Files changed: `context/sce/claude-session-auth-state.md`, `context/sce/agent-trace-export-readers.md`, `context/glossary.md`
+  - Result: Earlier task syncs had already written the detector, configuration-versus-billing, limitations, persistence, and hook-integration sections plus the `agent-trace-db.md`, `agent-trace-db-schema.md`, and `context-map.md` entries. This task added `Migration-008 compatibility` and `Local-only status` sections to `claude-session-auth-state.md` (future export named only as unplanned follow-up, with no route, cursor, or schema), listed `claude_session_auth_state` as local-only with no reader method in `agent-trace-export-readers.md`, and added a `Claude session auth state` glossary term while updating the `agent trace DB adapter` and `sce hooks claude-model-state` entries.
+  - Verify outcome: Manual inspection passed: the documented table columns and `CHECK` sets match `008_claude_session_auth_state.sql`; `HOOK_RUNTIME_OPTIONAL_MIGRATION_ID`, `ensure_schema_ready_for_hook_runtime`, `upsert_claude_session_auth_state` (`SkippedMissingMigration`), and `claude_session_auth_state_by_session` match `repository.rs`/`mod.rs`; `open_repository_db_for_hook_runtime` matches `agent_trace_storage/mod.rs`; the `auth_state_agent_trace_db_write_failed` log event and the `std::env::var` lookup match `claude_model_state.rs`. No code changed.
+  - Deviations/assumptions: Context documents the canonical session ID as `cc_<session_id>` (per the T04 deviation) rather than the plan's `claude:<session_id>`.
+  - Context impact: localized — documentation only, in the context files T05 owns.
+  - Context synchronization: synced
 
 ## Open questions
 
 - With no env signals, interactive `/login` subscription users (credentials in the keychain or credential file) always classify as `Unknown`, because reading credential storage is not allowed. Is that coverage acceptable, or should the value of the data be confirmed before shipping?
 - Sessions using `apiKeyHelper` cannot be identified, because it lives in settings rather than the environment. Acceptable, or should settings inspection be approved?
+
+## Validation Report
+
+**Status:** validated  
+**Date:** 2026-11-20
+
+### Commands run
+
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_auth_detection` -> exit 0 (10 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml agent_trace_repository_migrations` -> exit 0 (2 passed, 0 failed)
+- `git diff --exit-code -- cli/migrations/agent-trace-repository/00[1-7]_*.sql` -> exit 0 (no changes; also exit 0 against `main`)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_session_auth_state` -> exit 0 (7 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_session_auth_schema_compat` -> exit 0 (6 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state` -> exit 0 (12 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_auth_state_no_secret` -> exit 0 (2 passed, 0 failed)
+- `nix run .#pkl-check-generated` -> exit 0 (ephemeral Pkl generation passed: 145 files)
+- `nix flake check` -> exit 0 (all 5 checks passed: build, clippy, fmt, tests, setup-schema-upgrade-check)
+
+### Success-criteria verification
+
+- [x] AC1: Pure detector maps every documented signal with `Inferred` confidence, never verified or `Subscription` -> `claude_auth_detection` 10 passed, covering every classification-table row and an exhaustive no-`Subscription` sweep
+- [x] AC2: Migration `008` creates the constrained `claude_session_auth_state` table with no credential column; 001–007 unchanged -> `agent_trace_repository_migrations` 2 passed; `git diff --exit-code` on 001–007 clean (working tree and vs `main`)
+- [x] AC3: Identical upserts are no-ops, changes update in place, reads are session-exact -> `claude_session_auth_state` 7 passed
+- [x] AC4: Pre-`008` DBs keep hooks working with auth skipped; setup applies `008`; doctor not ready; other gaps and unexpected IDs rejected -> `claude_session_auth_schema_compat` 6 passed
+- [x] AC5: `SessionStart` stores change-only auth state, model-state writes unchanged, `PostModelSwitch` ignored, empty stdout on every path -> `claude_model_state` 12 passed (10 new, 2 pre-existing unchanged)
+- [x] AC6: Sentinel credentials absent from rows, logs, and stdout -> `claude_auth_state_no_secret` 2 passed
+- [x] AC7: Durable context documents detection, schema, hook integration, migration-008 compatibility, and local-only status without export design -> inspected `context/sce/claude-session-auth-state.md` (Detector, Configuration is not billing, Limitations, Persistence, Hook integration, Migration-008 compatibility, Local-only status sections; export named only as unplanned follow-up with no route, cursor, or schema), `context/sce/agent-trace-db.md` (hook-runtime readiness variant and `HOOK_RUNTIME_OPTIONAL_MIGRATION_ID`), `context/sce/agent-trace-db-schema.md` (migration `008` table), and `context/context-map.md` (entries for all three)
+
+### Failed checks and follow-ups
+
+- None.
+
+### Residual risks
+
+- The canonical session key is `cc_<session_id>` (from `prefixed_diff_trace_session_id`), not the literal `claude:<session_id>` in the plan text; tests and context follow the implemented `cc_` form.
+- Interactive `/login` and `apiKeyHelper` users always classify as `Unknown` (see Open questions); the data's value for those sessions is unconfirmed.
+- T05 context edits (`context/glossary.md`, `context/sce/agent-trace-export-readers.md`, `context/sce/claude-session-auth-state.md`) are uncommitted in the working tree.
