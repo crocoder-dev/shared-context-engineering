@@ -121,13 +121,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Add pure Claude auth and billing detector` (status:todo)
+- [x] T01: `Add pure Claude auth and billing detector` (status:done)
   - Task ID: T01
   - Scope: In — `AuthProvider`, `BillingMode`, `AuthEnvKey`, `DetectionConfidence` (`Inferred`, `Unknown`) enums with stable snake_case string mapping; an explicit input struct of signal presence; a pure deterministic `detect_claude_auth` function implementing the documented precedence; a constructor building the input from an env-lookup closure without retaining values; unit tests covering every row of the classification table: each cloud flag and its precedence over Anthropic credentials, `ANTHROPIC_AUTH_TOKEN` precedence over `ANTHROPIC_API_KEY` and `Unknown` billing (not `ApiKey`), `ANTHROPIC_API_KEY` as inferred `ApiKey`, custom-gateway classification for both credentials, OAuth-only as `Unknown` billing (not `Subscription`), provider conflict, and missing configuration. Out — persistence, hook wiring.
   - Dependencies: none
   - Done when: the detector and enums compile with no `dyn`/`Box`/new deps, hold no credential value fields, never return a verified confidence or `Subscription` billing, and all unit tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_auth_detection`
-  - Context synchronization: pending
+  - Completed: 2026-11-20
+  - Files changed: `cli/src/services/hooks/claude_auth_detection.rs` (new), `cli/src/services/hooks/mod.rs`
+  - Result: Added private `hooks::claude_auth_detection` with `AuthProvider`, `BillingMode`, `AuthEnvKey`, `DetectionConfidence` (`Inferred`, `Unknown`) and `as_str`/`from_str` snake_case mapping; `ClaudeAuthSignals` (presence-only bools) built by `from_env_lookup` closure; `ClaudeAuthDetection` result; `detect_claude_auth` implementing the documented precedence and provider-conflict rule. 10 unit tests cover every classification-table row, falsy flags, empty credentials, an exhaustive no-`Subscription` sweep over all signal combinations, and string round-trips. No `dyn`/`Box`, no new dependencies, no value-holding fields.
+  - Verify outcome: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_auth_detection` passed (10 passed, 0 failed); `clippy --all-targets` passed; `cargo fmt --check` passed after formatting.
+  - Deviations/assumptions: A custom base URL means `ANTHROPIC_BASE_URL` is non-empty and not `https://api.anthropic.com` (trimmed, trailing `/` stripped, case-insensitive). Because the binary crate denies warnings and the module is unused until T03/T04, its `mod` declaration carries `#[cfg_attr(not(test), expect(dead_code, ...))]`, which must be removed when the module is wired in.
+  - Context impact: localized — new internal module with no runtime wiring; durable context for detection rules is owned by T05.
+  - Context synchronization: synced
 
 - [ ] T02: `Add migration 008 with hook-runtime compatibility for pre-008 databases` (status:todo)
   - Task ID: T02

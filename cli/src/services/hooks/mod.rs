@@ -1,5 +1,13 @@
 use anyhow::Context;
 
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "consumed once Claude session auth state persistence and hook wiring land"
+    )
+)]
+mod claude_auth_detection;
 mod claude_transforms;
 mod commit_hooks;
 mod commit_patch_id;
