@@ -1,5 +1,6 @@
 use anyhow::Context;
 
+pub(crate) mod claude_auth_detection;
 mod claude_transforms;
 mod commit_hooks;
 mod commit_patch_id;
