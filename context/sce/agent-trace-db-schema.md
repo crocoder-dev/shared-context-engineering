@@ -43,7 +43,7 @@ Migration `007_commit_patch_id` adds:
 
 Migration `008_claude_session_auth_state` creates `claude_session_auth_state`:
 
-- `session_id TEXT PRIMARY KEY` — canonical `claude:<session_id>`
+- `session_id TEXT PRIMARY KEY` — canonical `cc_<session_id>`
 - `provider TEXT NOT NULL CHECK (IN 'anthropic', 'aws_bedrock', 'google_vertex', 'microsoft_foundry', 'custom_gateway', 'unknown')`
 - `billing_mode TEXT NOT NULL CHECK (IN 'api_key', 'subscription', 'cloud_provider', 'unknown')`
 - `auth_env_key TEXT` (nullable) `CHECK (NULL OR IN 'claude_code_use_bedrock', 'claude_code_use_vertex', 'claude_code_use_foundry', 'anthropic_auth_token', 'anthropic_api_key', 'claude_code_oauth_token')` — names the selected variable, never its value

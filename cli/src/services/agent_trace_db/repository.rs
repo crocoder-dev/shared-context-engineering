@@ -425,13 +425,6 @@ impl RepositoryAgentTraceDb {
 
     /// Skips without writing when the hook-runtime-optional migration that
     /// creates `claude_session_auth_state` has not been applied yet.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "consumed once the claude-model-state hook stores session auth state"
-        )
-    )]
     pub async fn upsert_claude_session_auth_state(
         &self,
         input: ClaudeSessionAuthState,
@@ -450,7 +443,7 @@ impl RepositoryAgentTraceDb {
         not(test),
         expect(
             dead_code,
-            reason = "consumed once the claude-model-state hook stores session auth state"
+            reason = "latest-state read interface has no production reader until a future export change"
         )
     )]
     pub async fn claude_session_auth_state_by_session(

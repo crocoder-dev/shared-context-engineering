@@ -4,10 +4,13 @@
 
 The pure detector lives in `cli/src/services/hooks/claude_auth_detection.rs`
 (`pub(crate)`). Migration `008_claude_session_auth_state` and a typed
-persistence interface on `RepositoryAgentTraceDb` exist (see
-[Persistence](#persistence)), but no hook calls either one yet. Until a runtime
-caller exists, the detector module declaration and the two public adapter
-methods carry `#[cfg_attr(not(test), expect(dead_code, ...))]`.
+persistence interface on `RepositoryAgentTraceDb` back it (see
+[Persistence](#persistence)), and `sce hooks claude-model-state` writes the
+classification on every valid `SessionStart` (see
+[Hook integration](#hook-integration)). The latest-state read
+`claude_session_auth_state_by_session` has no production reader, so it keeps
+`#[cfg_attr(not(test), expect(dead_code, ...))]`. The data stays local; no
+export reader or `sce sync` path reads it.
 Plan: [`claude-auth-billing-observations`](../plans/claude-auth-billing-observations.md).
 
 ## Detector
@@ -76,7 +79,7 @@ prove that authentication succeeded or show what is actually billed.
 ## Persistence
 
 `cli/src/services/agent_trace_db/` stores one latest-state row per canonical
-`claude:<session_id>` in `claude_session_auth_state`. The columns are listed in
+`cc_<session_id>` in `claude_session_auth_state`. The columns are listed in
 [agent-trace-db-schema.md](agent-trace-db-schema.md).
 
 - `ClaudeSessionAuthState` holds the session ID, the four detector enums
@@ -99,3 +102,29 @@ prove that authentication succeeded or show what is actually billed.
 - `claude_session_auth_state_by_session(session_id)` returns the exact session's
   typed row or `None`. Parsing uses the detector `from_str` mappings, so an
   unknown stored value is an error, not a silent fallback.
+
+## Hook integration
+
+`cli/src/services/hooks/claude_model_state.rs` stores the classification from
+the existing `sce hooks claude-model-state` hook. No hook registration was
+added.
+
+- Every valid `SessionStart` (any `source`, with or without `model`) is an auth
+  candidate. The payload parse that already produces the model observation also
+  returns the canonical `cc_<session_id>` from `prefixed_diff_trace_session_id`.
+  A `SessionStart` missing `session_id` or `source` fails open with no writes.
+- `PostModelSwitch` and other events never produce an auth candidate.
+- The hook classifies the environment it inherits from Claude Code, through
+  `ClaudeAuthSignals::from_env_lookup(std::env::var)`. Tests inject a lookup
+  closure into `run_claude_model_state_from_payload_with`. The row's
+  `observed_at_ms` is the hook's observation time.
+- The hook opens the DB through the no-migration hook-runtime path when an auth
+  candidate, a model observation, or a bridge candidate exists, so a model-less
+  `SessionStart` now opens it.
+- Model-state persistence and the auth upsert run independently, so a failure in
+  one does not affect the other. An auth write failure logs
+  `sce.hooks.claude_model_state.auth_state_agent_trace_db_write_failed` with only
+  the canonical session ID and the error. On a pre-`008` ledger the upsert skips
+  silently.
+- Stdout stays empty on every path. Credential values are never stored, logged,
+  or printed, because only presence reaches the detector.
