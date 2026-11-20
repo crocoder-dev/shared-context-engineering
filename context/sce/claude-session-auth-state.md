@@ -2,10 +2,12 @@
 
 ## Status
 
-The pure detector exists in `cli/src/services/hooks/claude_auth_detection.rs`.
-Nothing calls it from runtime code yet: it has no persistence, migration, or hook
-wiring. Its module declaration in `cli/src/services/hooks/mod.rs` carries
-`#[cfg_attr(not(test), expect(dead_code, ...))]` until a runtime caller exists.
+The pure detector lives in `cli/src/services/hooks/claude_auth_detection.rs`
+(`pub(crate)`). Migration `008_claude_session_auth_state` and a typed
+persistence interface on `RepositoryAgentTraceDb` exist (see
+[Persistence](#persistence)), but no hook calls either one yet. Until a runtime
+caller exists, the detector module declaration and the two public adapter
+methods carry `#[cfg_attr(not(test), expect(dead_code, ...))]`.
 Plan: [`claude-auth-billing-observations`](../plans/claude-auth-billing-observations.md).
 
 ## Detector
@@ -70,3 +72,30 @@ prove that authentication succeeded or show what is actually billed.
   or settings.
 - `apiKeyHelper` is configured in settings rather than the environment, so the
   detector cannot see it.
+
+## Persistence
+
+`cli/src/services/agent_trace_db/` stores one latest-state row per canonical
+`claude:<session_id>` in `claude_session_auth_state`. The columns are listed in
+[agent-trace-db-schema.md](agent-trace-db-schema.md).
+
+- `ClaudeSessionAuthState` holds the session ID, the four detector enums
+  (`auth_env_key` optional), and `observed_at_ms`. It has no field that can
+  hold a credential value. Enums are mapped to strings only at the SQL boundary.
+- `RepositoryAgentTraceDb::upsert_claude_session_auth_state` first looks up
+  `008_claude_session_auth_state` in the `__sce_migrations` ledger. If it is
+  absent, it returns `ClaudeSessionAuthStateUpsertOutcome::SkippedMissingMigration`
+  without writing. This is the counterpart of the hook-runtime readiness that
+  tolerates a pre-`008` ledger (see
+  [agent-trace-db.md](agent-trace-db.md#migration-008-compatibility-note)).
+- Otherwise it runs one `INSERT ... ON CONFLICT (session_id) DO UPDATE ... WHERE`
+  statement that changes the row only when `provider`, `billing_mode`,
+  `confidence`, or `auth_env_key` (compared null-safely with `IS NOT`) differs.
+  There is no explicit transaction and no read of the row first. It returns
+  `Upserted { rows_changed }`, where `0` means an identical replay that left the
+  row untouched. So `observed_at_ms` is when the current classification was
+  first seen. A changed classification updates the row in place, and no history
+  is kept.
+- `claude_session_auth_state_by_session(session_id)` returns the exact session's
+  typed row or `None`. Parsing uses the detector `from_str` mappings, so an
+  unknown stored value is an error, not a silent fallback.

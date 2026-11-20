@@ -3,6 +3,7 @@ use turso::Value as TursoValue;
 
 use crate::services::{
     db::{DbSpec, TursoDb},
+    hooks::claude_auth_detection::{AuthEnvKey, AuthProvider, BillingMode, DetectionConfidence},
     patch::{parse_patch, ParseError, ParsedPatch},
     structured_patch::{derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult},
 };
@@ -132,6 +133,38 @@ FROM claude_model_state
 WHERE session_id = ?1 AND agent_id = ?2
 LIMIT 1";
 
+/// Change-only: an identical classification leaves the row, including
+/// `observed_at_ms`, untouched. `auth_env_key` is nullable, so it compares with `IS NOT`.
+pub const UPSERT_CLAUDE_SESSION_AUTH_STATE_SQL: &str = "INSERT INTO claude_session_auth_state (
+    session_id,
+    provider,
+    billing_mode,
+    auth_env_key,
+    confidence,
+    observed_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+ON CONFLICT (session_id) DO UPDATE SET
+    provider = excluded.provider,
+    billing_mode = excluded.billing_mode,
+    auth_env_key = excluded.auth_env_key,
+    confidence = excluded.confidence,
+    observed_at_ms = excluded.observed_at_ms
+WHERE excluded.provider <> claude_session_auth_state.provider
+   OR excluded.billing_mode <> claude_session_auth_state.billing_mode
+   OR excluded.auth_env_key IS NOT claude_session_auth_state.auth_env_key
+   OR excluded.confidence <> claude_session_auth_state.confidence";
+
+pub const SELECT_CLAUDE_SESSION_AUTH_STATE_SQL: &str = "SELECT
+    session_id,
+    provider,
+    billing_mode,
+    auth_env_key,
+    confidence,
+    observed_at_ms
+FROM claude_session_auth_state
+WHERE session_id = ?1
+LIMIT 1";
+
 const CONVERSATION_TEXT_EVENT_OPERATION_NAME: &str = "insert conversation text event";
 const CONVERSATION_TEXT_EVENT_RETRY_HINT: &str = "retry after the database lock clears; if the issue persists, stop other SCE processes using this database and rerun the command";
 
@@ -177,6 +210,22 @@ pub struct ClaudeModelStateObservation {
     pub observation_kind: ObservationKind,
     pub source: String,
     pub observed_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaudeSessionAuthState {
+    pub session_id: String,
+    pub provider: AuthProvider,
+    pub billing_mode: BillingMode,
+    pub auth_env_key: Option<AuthEnvKey>,
+    pub confidence: DetectionConfidence,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClaudeSessionAuthStateUpsertOutcome {
+    Upserted { rows_changed: u64 },
+    SkippedMissingMigration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -423,6 +472,71 @@ fn claude_model_state_observation_from_turso(
         observed_at_ms: row
             .get(5)
             .context("failed to read claude_model_state.observed_at_ms")?,
+    })
+}
+
+async fn upsert_claude_session_auth_state_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    input: ClaudeSessionAuthState,
+) -> Result<u64> {
+    db.execute(
+        UPSERT_CLAUDE_SESSION_AUTH_STATE_SQL,
+        (
+            input.session_id,
+            input.provider.as_str(),
+            input.billing_mode.as_str(),
+            input.auth_env_key.map(AuthEnvKey::as_str),
+            input.confidence.as_str(),
+            input.observed_at_ms,
+        ),
+    )
+    .await
+}
+
+async fn claude_session_auth_state_by_session_with<M: DbSpec>(
+    db: &TursoDb<M>,
+    session_id: &str,
+) -> Result<Option<ClaudeSessionAuthState>> {
+    let rows = db
+        .query_map(
+            SELECT_CLAUDE_SESSION_AUTH_STATE_SQL,
+            (session_id,),
+            claude_session_auth_state_from_turso,
+        )
+        .await?;
+
+    Ok(rows.into_iter().next())
+}
+
+fn claude_session_auth_state_from_turso(row: &turso::Row) -> Result<ClaudeSessionAuthState> {
+    Ok(ClaudeSessionAuthState {
+        session_id: row
+            .get(0)
+            .context("failed to read claude_session_auth_state.session_id")?,
+        provider: AuthProvider::from_str(
+            row.get::<String>(1)
+                .context("failed to read claude_session_auth_state.provider")?
+                .as_str(),
+        )?,
+        billing_mode: BillingMode::from_str(
+            row.get::<String>(2)
+                .context("failed to read claude_session_auth_state.billing_mode")?
+                .as_str(),
+        )?,
+        auth_env_key: row
+            .get::<Option<String>>(3)
+            .context("failed to read claude_session_auth_state.auth_env_key")?
+            .as_deref()
+            .map(AuthEnvKey::from_str)
+            .transpose()?,
+        confidence: DetectionConfidence::from_str(
+            row.get::<String>(4)
+                .context("failed to read claude_session_auth_state.confidence")?
+                .as_str(),
+        )?,
+        observed_at_ms: row
+            .get(5)
+            .context("failed to read claude_session_auth_state.observed_at_ms")?,
     })
 }
 

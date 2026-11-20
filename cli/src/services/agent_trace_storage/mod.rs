@@ -231,9 +231,13 @@ mod tests {
         ExistingRepositoryDbError, RepositoryAgentTraceDb,
     };
     use crate::services::agent_trace_db::{
-        AgentTraceInsert, ClaudeModelStateObservation, DiffTraceInsert, ObservationKind,
+        AgentTraceInsert, ClaudeModelStateObservation, ClaudeSessionAuthState,
+        ClaudeSessionAuthStateUpsertOutcome, DiffTraceInsert, ObservationKind,
     };
     use crate::services::db::{DatabaseKind, DbSpec, TursoDb};
+    use crate::services::hooks::claude_auth_detection::{
+        AuthEnvKey, AuthProvider, BillingMode, DetectionConfidence,
+    };
 
     const COMMIT_PATCH_ID_MIGRATION: &str = "007_commit_patch_id";
     const PRE_COMMIT_PATCH_ID_REPOSITORY_ID: &str = "commit-patch-id-repo";
@@ -824,5 +828,200 @@ mod tests {
 
             assert_hook_runtime_rejects(&path, "999_unexpected_future").await;
         }
+    }
+
+    fn bedrock_auth_state(session_id: &str, observed_at_ms: i64) -> ClaudeSessionAuthState {
+        ClaudeSessionAuthState {
+            session_id: String::from(session_id),
+            provider: AuthProvider::AwsBedrock,
+            billing_mode: BillingMode::CloudProvider,
+            auth_env_key: Some(AuthEnvKey::ClaudeCodeUseBedrock),
+            confidence: DetectionConfidence::Inferred,
+            observed_at_ms,
+        }
+    }
+
+    fn unknown_auth_state(session_id: &str, observed_at_ms: i64) -> ClaudeSessionAuthState {
+        ClaudeSessionAuthState {
+            session_id: String::from(session_id),
+            provider: AuthProvider::Unknown,
+            billing_mode: BillingMode::Unknown,
+            auth_env_key: None,
+            confidence: DetectionConfidence::Unknown,
+            observed_at_ms,
+        }
+    }
+
+    async fn claude_session_auth_state_row_count(db: &RepositoryAgentTraceDb) -> i64 {
+        db.query_map(
+            "SELECT COUNT(*) FROM claude_session_auth_state",
+            (),
+            |row| row.get::<i64>(0).map_err(Into::into),
+        )
+        .await
+        .expect("row count")[0]
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_session_auth_state_identical_replay_leaves_row_unchanged() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = create_current_db(&dir.path().join("agent-trace.db")).await;
+
+        for state in [
+            bedrock_auth_state("claude:replay", 10),
+            unknown_auth_state("claude:replay-unknown", 10),
+        ] {
+            let session_id = state.session_id.clone();
+            assert_eq!(
+                db.upsert_claude_session_auth_state(state.clone())
+                    .await
+                    .expect("first upsert"),
+                ClaudeSessionAuthStateUpsertOutcome::Upserted { rows_changed: 1 }
+            );
+
+            let mut replay = state.clone();
+            replay.observed_at_ms = 20;
+            assert_eq!(
+                db.upsert_claude_session_auth_state(replay)
+                    .await
+                    .expect("replay upsert"),
+                ClaudeSessionAuthStateUpsertOutcome::Upserted { rows_changed: 0 }
+            );
+
+            assert_eq!(
+                db.claude_session_auth_state_by_session(&session_id)
+                    .await
+                    .expect("read"),
+                Some(state)
+            );
+        }
+        assert_eq!(claude_session_auth_state_row_count(&db).await, 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_session_auth_state_changed_classification_updates_row_in_place() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = create_current_db(&dir.path().join("agent-trace.db")).await;
+
+        db.upsert_claude_session_auth_state(bedrock_auth_state("claude:change", 10))
+            .await
+            .expect("initial upsert");
+
+        let api_key = ClaudeSessionAuthState {
+            session_id: String::from("claude:change"),
+            provider: AuthProvider::Anthropic,
+            billing_mode: BillingMode::ApiKey,
+            auth_env_key: Some(AuthEnvKey::AnthropicApiKey),
+            confidence: DetectionConfidence::Inferred,
+            observed_at_ms: 20,
+        };
+        assert_eq!(
+            db.upsert_claude_session_auth_state(api_key.clone())
+                .await
+                .expect("changed upsert"),
+            ClaudeSessionAuthStateUpsertOutcome::Upserted { rows_changed: 1 }
+        );
+        assert_eq!(
+            db.claude_session_auth_state_by_session("claude:change")
+                .await
+                .expect("read after change"),
+            Some(api_key)
+        );
+
+        let unknown = unknown_auth_state("claude:change", 30);
+        assert_eq!(
+            db.upsert_claude_session_auth_state(unknown.clone())
+                .await
+                .expect("env key cleared upsert"),
+            ClaudeSessionAuthStateUpsertOutcome::Upserted { rows_changed: 1 }
+        );
+        assert_eq!(
+            db.claude_session_auth_state_by_session("claude:change")
+                .await
+                .expect("read after clearing env key"),
+            Some(unknown)
+        );
+        assert_eq!(claude_session_auth_state_row_count(&db).await, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_session_auth_state_read_returns_only_exact_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = create_current_db(&dir.path().join("agent-trace.db")).await;
+
+        let first = bedrock_auth_state("claude:session-a", 10);
+        let second = unknown_auth_state("claude:session-b", 11);
+        db.upsert_claude_session_auth_state(first.clone())
+            .await
+            .expect("first session upsert");
+        db.upsert_claude_session_auth_state(second.clone())
+            .await
+            .expect("second session upsert");
+
+        assert_eq!(
+            db.claude_session_auth_state_by_session("claude:session-a")
+                .await
+                .expect("read a"),
+            Some(first)
+        );
+        assert_eq!(
+            db.claude_session_auth_state_by_session("claude:session-b")
+                .await
+                .expect("read b"),
+            Some(second)
+        );
+        for absent in ["claude:session", "session-a", "claude:session-c"] {
+            assert_eq!(
+                db.claude_session_auth_state_by_session(absent)
+                    .await
+                    .expect("read absent"),
+                None
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_session_auth_state_read_rejects_unknown_stored_value() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = create_current_db(&dir.path().join("agent-trace.db")).await;
+        db.execute("DROP TABLE claude_session_auth_state", ())
+            .await
+            .expect("drop constrained table");
+        db.execute(
+            "CREATE TABLE claude_session_auth_state (session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, billing_mode TEXT NOT NULL, auth_env_key TEXT, confidence TEXT NOT NULL, observed_at_ms INTEGER NOT NULL)",
+            (),
+        )
+        .await
+        .expect("unconstrained table");
+        db.execute(
+            "INSERT INTO claude_session_auth_state VALUES ('claude:bad', 'openai', 'unknown', NULL, 'unknown', 1)",
+            (),
+        )
+        .await
+        .expect("insert unknown provider");
+
+        assert!(db
+            .claude_session_auth_state_by_session("claude:bad")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn claude_session_auth_state_upsert_skips_pre_008_database() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("agent-trace.db");
+        create_pre_claude_session_auth_db(&path).await;
+        let (db, _metadata) =
+            open_repository_db_for_hook_runtime(&path, PRE_CLAUDE_SESSION_AUTH_REPOSITORY_ID)
+                .await
+                .expect("hook runtime opens pre-008 database");
+
+        assert_eq!(
+            db.upsert_claude_session_auth_state(bedrock_auth_state("claude:pre-008", 10))
+                .await
+                .expect("skipped upsert is not an error"),
+            ClaudeSessionAuthStateUpsertOutcome::SkippedMissingMigration
+        );
+        assert!(!claude_session_auth_state_table_exists(&db).await);
     }
 }

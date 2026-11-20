@@ -12,7 +12,8 @@ use super::{
     diff_trace_patches_before_commit_with, insert_agent_trace_with,
     insert_conversation_text_event_with, insert_diff_trace_with, insert_messages_with,
     insert_parts_with, insert_post_commit_patch_intersection_with, recent_diff_trace_patches_with,
-    upsert_claude_model_state_with, AgentTraceInsert, ClaudeModelStateObservation,
+    upsert_claude_model_state_with, upsert_claude_session_auth_state_with, AgentTraceInsert,
+    ClaudeModelStateObservation, ClaudeSessionAuthState, ClaudeSessionAuthStateUpsertOutcome,
     CommitTimeCutoff, DiffTraceInsert, InsertMessageInsert, InsertPartInsert,
     PostCommitPatchIntersectionInsert, RecentDiffTracePatches,
 };
@@ -25,6 +26,7 @@ const SELECT_SQLITE_OBJECT_SQL: &str =
     "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2 LIMIT 1";
 const SELECT_APPLIED_MIGRATION_IDS_SQL: &str = "SELECT id FROM __sce_migrations";
 const HOOK_RUNTIME_OPTIONAL_MIGRATION_ID: &str = "008_claude_session_auth_state";
+const SELECT_MIGRATION_APPLIED_SQL: &str = "SELECT id FROM __sce_migrations WHERE id = ?1 LIMIT 1";
 const RECORD_REPOSITORY_SCHEMA_MIGRATION_SQL: &str =
     "INSERT OR IGNORE INTO __sce_migrations (id) VALUES ('001_repository_schema')";
 const REQUIRED_REPOSITORY_SCHEMA_TABLES: &[&str] = &[
@@ -419,6 +421,52 @@ impl RepositoryAgentTraceDb {
         agent_id: &str,
     ) -> Result<Option<ClaudeModelStateObservation>> {
         super::claude_model_state_by_session_and_agent_with(self, session_id, agent_id).await
+    }
+
+    /// Skips without writing when the hook-runtime-optional migration that
+    /// creates `claude_session_auth_state` has not been applied yet.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "consumed once the claude-model-state hook stores session auth state"
+        )
+    )]
+    pub async fn upsert_claude_session_auth_state(
+        &self,
+        input: ClaudeSessionAuthState,
+    ) -> Result<ClaudeSessionAuthStateUpsertOutcome> {
+        if !self
+            .migration_applied(HOOK_RUNTIME_OPTIONAL_MIGRATION_ID)
+            .await?
+        {
+            return Ok(ClaudeSessionAuthStateUpsertOutcome::SkippedMissingMigration);
+        }
+        let rows_changed = upsert_claude_session_auth_state_with(self, input).await?;
+        Ok(ClaudeSessionAuthStateUpsertOutcome::Upserted { rows_changed })
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "consumed once the claude-model-state hook stores session auth state"
+        )
+    )]
+    pub async fn claude_session_auth_state_by_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ClaudeSessionAuthState>> {
+        super::claude_session_auth_state_by_session_with(self, session_id).await
+    }
+
+    async fn migration_applied(&self, migration_id: &str) -> Result<bool> {
+        let rows = self
+            .query_map(SELECT_MIGRATION_APPLIED_SQL, (migration_id,), |row| {
+                row.get::<String>(0).map_err(Into::into)
+            })
+            .await?;
+        Ok(!rows.is_empty())
     }
 
     pub async fn recent_diff_trace_patches(

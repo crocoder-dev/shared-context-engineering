@@ -13,6 +13,7 @@
 - `ObservationKind`: the two persisted lifecycle values `SessionStart` (`session_start`) and `PostModelSwitch` (`post_model_switch`).
 - `upsert_claude_model_state()`: guarded latest-locally-observed register write. Strictly older observations are ignored; equal timestamps prefer `PostModelSwitch`, then use deterministic model/source lexical tie-breaks for same-kind observations, making identical replays no-ops.
 - `claude_model_state_by_session_and_agent()`: exact `(session_id, agent_id)` lookup returning the typed observation or no row; it does not broaden the scope to another agent.
+- `ClaudeSessionAuthState` / `upsert_claude_session_auth_state()` / `claude_session_auth_state_by_session()`: latest-state Claude session auth classification register keyed by canonical `session_id`. The upsert returns `ClaudeSessionAuthStateUpsertOutcome::SkippedMissingMigration` without writing on a pre-`008` ledger. Otherwise it is a single change-only statement, so identical replays are no-ops. See [claude-session-auth-state.md](claude-session-auth-state.md#persistence).
 - `insert_diff_trace()`: domain-specific insert helper using parameterized SQL.
 - `RecentDiffTracePatches`: parsed recent `diff_traces` query result containing valid parsed patches plus skipped-row reports.
 - `recent_diff_trace_patches(cutoff_time_ms, end_time_ms)`: chronological `diff_traces` read helper for rows in the inclusive window `time_ms >= cutoff_time_ms AND time_ms <= end_time_ms`; parses raw patch text through `parse_patch` and skips malformed rows without failing the query.

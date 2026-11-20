@@ -149,13 +149,19 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Context impact: localized — new repository migration and a hook-runtime-only readiness variant; durable context (`agent-trace-db.md`, `agent-trace-db-schema.md`, new `claude-session-auth-state.md`) is owned by T05.
   - Context synchronization: synced
 
-- [ ] T03: `Add Claude session auth state upsert and read interface` (status:todo)
+- [x] T03: `Add Claude session auth state upsert and read interface` (status:done)
   - Task ID: T03
   - Scope: In — typed `ClaudeSessionAuthState` payload using the T01 enums; parameterized atomic change-only upsert SQL; `RepositoryAgentTraceDb::upsert_claude_session_auth_state` that returns a skipped outcome when `008` is not in the ledger; `claude_session_auth_state_by_session(session_id)` returning the typed row or none; row-to-enum parsing that rejects unknown stored values; tests for identical replay no-op, change update, session isolation, read, and pre-`008` skip. Out — hook wiring, export reader, history.
   - Dependencies: T01, T02
   - Done when: helpers follow the existing `claude_model_state` delegation pattern, the write is a single statement without explicit transaction or prior read of the row, and targeted tests pass.
   - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_session_auth_state`
-  - Context synchronization: pending
+  - Completed: 2026-11-20
+  - Files changed: `cli/src/services/agent_trace_db/mod.rs`, `cli/src/services/agent_trace_db/repository.rs`, `cli/src/services/agent_trace_storage/mod.rs`, `cli/src/services/hooks/mod.rs`
+  - Result: Added `ClaudeSessionAuthState` (T01 enums, nullable `auth_env_key`) and `ClaudeSessionAuthStateUpsertOutcome` (`Upserted { rows_changed }`, `SkippedMissingMigration`); `UPSERT_CLAUDE_SESSION_AUTH_STATE_SQL` (`INSERT ... ON CONFLICT (session_id) DO UPDATE ... WHERE` provider/billing_mode/confidence `<>` or `auth_env_key IS NOT` the stored value) and `SELECT_CLAUDE_SESSION_AUTH_STATE_SQL`; `upsert_claude_session_auth_state_with` / `claude_session_auth_state_by_session_with` / row parser using the T01 `from_str` mappings (unknown stored values error). `RepositoryAgentTraceDb::upsert_claude_session_auth_state` checks the `__sce_migrations` ledger for `HOOK_RUNTIME_OPTIONAL_MIGRATION_ID` and returns `SkippedMissingMigration` when absent, otherwise runs the single upsert statement (no transaction, no prior row read); `claude_session_auth_state_by_session` delegates to the read helper. `hooks::claude_auth_detection` is now `pub(crate)`. 5 new tests: identical replay no-op (including `observed_at_ms`, for both a keyed and a null-key row), in-place change including clearing `auth_env_key`, exact-session isolation, unknown stored value rejection, and pre-`008` skip.
+  - Verify outcome: `claude_session_auth_state` passed (7 passed, including 2 T02 migration tests matching the filter); full CLI suite passed (876 passed, 0 failed); `clippy --all-targets` clean; `cargo fmt --check` passed.
+  - Deviations/assumptions: Tests live in the `agent_trace_storage` test module to reuse the current and pre-`008` DB fixtures. The two public adapter methods carry `#[cfg_attr(not(test), expect(dead_code, ...))]` until T04 wires the hook; remove those attributes (and the T01 module-level one) in T04. `expect` seeds liveness, so the helpers they call need no attribute.
+  - Context impact: localized — new typed persistence helpers for the T02 table with no runtime wiring; durable context is owned by T05.
+  - Context synchronization: synced
 
 - [ ] T04: `Store auth state from every claude-model-state SessionStart` (status:todo)
   - Task ID: T04
