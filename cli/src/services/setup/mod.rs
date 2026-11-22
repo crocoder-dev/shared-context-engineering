@@ -601,7 +601,11 @@ pub fn bootstrap_repo_local_config<F: FsOps>(fs: &F, repository_root: &Path) -> 
         )
     })?;
 
-    fs.write(&config_file, repo_local_config_bootstrap_payload().as_bytes()).with_context(|| {
+    fs.write(
+        &config_file,
+        repo_local_config_bootstrap_payload().as_bytes(),
+    )
+    .with_context(|| {
         format!(
             "Failed to write repo-local config file '{}'",
             config_file.display()
@@ -644,24 +648,29 @@ pub fn bootstrap_context_baseline<F: FsOps>(fs: &F, repository_root: &Path) -> R
     ensure_context_directory(fs, &repo_paths.context_decisions_dir())?;
     ensure_context_directory(fs, &repo_paths.context_tmp_dir())?;
 
-    ensure_context_file(fs, 
+    ensure_context_file(
+        fs,
         &repo_paths.context_overview_file(),
         CONTEXT_OVERVIEW_TEMPLATE,
     )?;
-    ensure_context_file(fs, 
+    ensure_context_file(
+        fs,
         &repo_paths.context_architecture_file(),
         CONTEXT_ARCHITECTURE_TEMPLATE,
     )?;
-    ensure_context_file(fs, 
+    ensure_context_file(
+        fs,
         &repo_paths.context_patterns_file(),
         CONTEXT_PATTERNS_TEMPLATE,
     )?;
-    ensure_context_file(fs, 
+    ensure_context_file(
+        fs,
         &repo_paths.context_glossary_file(),
         CONTEXT_GLOSSARY_TEMPLATE,
     )?;
     ensure_context_file(fs, &repo_paths.context_map_file(), CONTEXT_MAP_TEMPLATE)?;
-    ensure_context_file(fs, 
+    ensure_context_file(
+        fs,
         &repo_paths.context_tmp_gitignore_file(),
         CONTEXT_TMP_GITIGNORE_CONTENT,
     )?;
@@ -914,25 +923,20 @@ pub fn persist_integration_targets<F: FsOps>(
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
 
-    if fs.exists(&config_file)
-        && !fs
-            .read_to_string(&config_file)
-            .map(|raw| {
-                crate::services::config::schema::parse_file_config(
-                    &raw,
-                    &config_file,
-                    ConfigPathSource::Flag,
-                )
-                .is_ok()
-            })
-            .unwrap_or(false)
-    {
-        return Ok(());
-    }
-
     let raw = if fs.exists(&config_file) {
-        fs.read_to_string(&config_file)
-            .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
+        let Ok(raw) = fs.read_to_string(&config_file) else {
+            return Ok(());
+        };
+        if crate::services::config::schema::parse_file_config(
+            &raw,
+            &config_file,
+            ConfigPathSource::Flag,
+        )
+        .is_err()
+        {
+            return Ok(());
+        }
+        raw
     } else {
         bootstrap_repo_local_config(fs, repository_root)?;
         fs.read_to_string(&config_file)
@@ -1400,6 +1404,8 @@ mod fs_injection_tests {
         let error = bootstrap_context_baseline(&DeniedFilesystem, Path::new("/virtual/repo"))
             .expect_err("injected mkdir failure must propagate");
 
-        assert!(error.to_string().contains("Failed to create context directory"));
+        assert!(error
+            .to_string()
+            .contains("Failed to create context directory"));
     }
 }
