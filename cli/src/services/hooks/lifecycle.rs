@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-use crate::app::HasRepoRoot;
+use crate::app::{HasFs, HasRepoRoot};
 use crate::services::lifecycle::{
     FixOutcome, FixResultRecord, HealthCategory, HealthFixability, HealthProblem,
     HealthProblemKind, HealthSeverity, RequiredHookInstallStatus, RequiredHooksInstallOutcome,
@@ -97,7 +97,7 @@ impl ServiceLifecycle for HooksLifecycle {
         }
     }
 
-    async fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot + HasFs>(&self, ctx: &C) -> Result<SetupOutcome> {
         let repository_root = ctx
             .repo_root()
             .context("Hooks lifecycle setup requires a resolved repository root")?;

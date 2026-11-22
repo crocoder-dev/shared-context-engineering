@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::app::HasRepoRoot;
+use crate::app::{HasFs, HasRepoRoot};
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::auth_db_path;
 use crate::services::lifecycle::{
@@ -48,7 +48,7 @@ impl ServiceLifecycle for AuthDbLifecycle {
         }
     }
 
-    async fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot + HasFs>(&self, _ctx: &C) -> Result<SetupOutcome> {
         bootstrap_auth_db_parent()
             .context("Auth DB lifecycle setup failed while preparing the auth DB directory")?;
         Ok(SetupOutcome::default())

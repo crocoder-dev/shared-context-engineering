@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::services::capabilities::FsOps;
 use crate::services::config::{AuthMode, ConfigPathSource, ResolvedAccessPolicy, ValueSource};
 use crate::services::error::AuthPolicyConfigFile;
 use crate::services::style::{label, success, value};
@@ -400,7 +401,8 @@ fn available_optional_workflow_slugs() -> String {
         .join(", ")
 }
 
-pub fn run_setup_for_targets(
+pub fn run_setup_for_targets<F: FsOps>(
+    fs: &F,
     repository_root: &Path,
     targets: &[ConcreteSetupTarget],
     target_persistence: TargetPersistence,
@@ -423,6 +425,7 @@ pub fn run_setup_for_targets(
             })?;
 
     persist_integration_targets(
+        fs,
         repository_root,
         targets,
         target_persistence,
@@ -582,23 +585,23 @@ pub fn ensure_git_remote(repository_root: &Path, remote_name: &str) -> Result<()
     }))
 }
 
-pub fn bootstrap_repo_local_config(repository_root: &Path) -> Result<()> {
+pub fn bootstrap_repo_local_config<F: FsOps>(fs: &F, repository_root: &Path) -> Result<()> {
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
 
-    if config_file.exists() {
+    if fs.exists(&config_file) {
         return Ok(());
     }
 
     let sce_dir = repo_paths.sce_dir();
-    fs::create_dir_all(&sce_dir).with_context(|| {
+    fs.create_dir_all(&sce_dir).with_context(|| {
         format!(
             "Failed to create repo-local config directory '{}'",
             sce_dir.display()
         )
     })?;
 
-    fs::write(&config_file, repo_local_config_bootstrap_payload()).with_context(|| {
+    fs.write(&config_file, repo_local_config_bootstrap_payload().as_bytes()).with_context(|| {
         format!(
             "Failed to write repo-local config file '{}'",
             config_file.display()
@@ -632,33 +635,33 @@ Working areas:
 - `context/tmp/`
 ";
 
-pub fn bootstrap_context_baseline(repository_root: &Path) -> Result<String> {
+pub fn bootstrap_context_baseline<F: FsOps>(fs: &F, repository_root: &Path) -> Result<String> {
     let repo_paths = RepoPaths::new(repository_root);
 
-    ensure_context_directory(&repo_paths.context_dir())?;
-    ensure_context_directory(&repo_paths.context_plans_dir())?;
-    ensure_context_directory(&repo_paths.context_handovers_dir())?;
-    ensure_context_directory(&repo_paths.context_decisions_dir())?;
-    ensure_context_directory(&repo_paths.context_tmp_dir())?;
+    ensure_context_directory(fs, &repo_paths.context_dir())?;
+    ensure_context_directory(fs, &repo_paths.context_plans_dir())?;
+    ensure_context_directory(fs, &repo_paths.context_handovers_dir())?;
+    ensure_context_directory(fs, &repo_paths.context_decisions_dir())?;
+    ensure_context_directory(fs, &repo_paths.context_tmp_dir())?;
 
-    ensure_context_file(
+    ensure_context_file(fs, 
         &repo_paths.context_overview_file(),
         CONTEXT_OVERVIEW_TEMPLATE,
     )?;
-    ensure_context_file(
+    ensure_context_file(fs, 
         &repo_paths.context_architecture_file(),
         CONTEXT_ARCHITECTURE_TEMPLATE,
     )?;
-    ensure_context_file(
+    ensure_context_file(fs, 
         &repo_paths.context_patterns_file(),
         CONTEXT_PATTERNS_TEMPLATE,
     )?;
-    ensure_context_file(
+    ensure_context_file(fs, 
         &repo_paths.context_glossary_file(),
         CONTEXT_GLOSSARY_TEMPLATE,
     )?;
-    ensure_context_file(&repo_paths.context_map_file(), CONTEXT_MAP_TEMPLATE)?;
-    ensure_context_file(
+    ensure_context_file(fs, &repo_paths.context_map_file(), CONTEXT_MAP_TEMPLATE)?;
+    ensure_context_file(fs, 
         &repo_paths.context_tmp_gitignore_file(),
         CONTEXT_TMP_GITIGNORE_CONTENT,
     )?;
@@ -666,21 +669,21 @@ pub fn bootstrap_context_baseline(repository_root: &Path) -> Result<String> {
     Ok(success("Context baseline ensured."))
 }
 
-fn ensure_context_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
+fn ensure_context_directory<F: FsOps>(fs: &F, path: &Path) -> Result<()> {
+    fs.create_dir_all(path)
         .with_context(|| format!("Failed to create context directory '{}'", path.display()))
 }
 
-fn ensure_context_file(path: &Path, content: &str) -> Result<()> {
-    if path.exists() {
+fn ensure_context_file<F: FsOps>(fs: &F, path: &Path, content: &str) -> Result<()> {
+    if fs.exists(path) {
         return Ok(());
     }
 
     if let Some(parent) = path.parent() {
-        ensure_context_directory(parent)?;
+        ensure_context_directory(fs, parent)?;
     }
 
-    fs::write(path, content)
+    fs.write(path, content.as_bytes())
         .with_context(|| format!("Failed to write context baseline file '{}'", path.display()))
 }
 
@@ -899,7 +902,8 @@ fn integration_target_id_str(target: ConcreteSetupTarget) -> &'static str {
     }
 }
 
-pub fn persist_integration_targets(
+pub fn persist_integration_targets<F: FsOps>(
+    fs: &F,
     repository_root: &Path,
     targets: &[ConcreteSetupTarget],
     target_persistence: TargetPersistence,
@@ -910,17 +914,28 @@ pub fn persist_integration_targets(
     let repo_paths = RepoPaths::new(repository_root);
     let config_file = repo_paths.sce_config_file();
 
-    if config_file.exists() && crate::services::config::validate_config_file(&config_file).is_err()
+    if fs.exists(&config_file)
+        && !fs
+            .read_to_string(&config_file)
+            .map(|raw| {
+                crate::services::config::schema::parse_file_config(
+                    &raw,
+                    &config_file,
+                    ConfigPathSource::Flag,
+                )
+                .is_ok()
+            })
+            .unwrap_or(false)
     {
         return Ok(());
     }
 
-    let raw = if config_file.exists() {
-        fs::read_to_string(&config_file)
+    let raw = if fs.exists(&config_file) {
+        fs.read_to_string(&config_file)
             .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
     } else {
-        bootstrap_repo_local_config(repository_root)?;
-        fs::read_to_string(&config_file)
+        bootstrap_repo_local_config(fs, repository_root)?;
+        fs.read_to_string(&config_file)
             .with_context(|| format!("Failed to read config file '{}'", config_file.display()))?
     };
 
@@ -1006,7 +1021,7 @@ pub fn persist_integration_targets(
         )
     })? + "\n";
 
-    fs::write(&config_file, updated)
+    fs.write(&config_file, updated.as_bytes())
         .with_context(|| format!("Failed to write config file '{}'", config_file.display()))?;
 
     Ok(())
@@ -1353,5 +1368,38 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod fs_injection_tests {
+    use super::*;
+
+    struct DeniedFilesystem;
+
+    impl FsOps for DeniedFilesystem {
+        fn exists(&self, _: &Path) -> bool {
+            false
+        }
+
+        fn create_dir_all(&self, _: &Path) -> std::io::Result<()> {
+            Err(std::io::ErrorKind::PermissionDenied.into())
+        }
+
+        fn read_to_string(&self, _: &Path) -> std::io::Result<String> {
+            unreachable!()
+        }
+
+        fn write(&self, _: &Path, _: &[u8]) -> std::io::Result<()> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn context_bootstrap_uses_injected_filesystem() {
+        let error = bootstrap_context_baseline(&DeniedFilesystem, Path::new("/virtual/repo"))
+            .expect_err("injected mkdir failure must propagate");
+
+        assert!(error.to_string().contains("Failed to create context directory"));
     }
 }

@@ -71,6 +71,8 @@ pub(crate) trait HasTelemetry {
 
 pub(crate) trait HasFs {
     type Fs: services::capabilities::FsOps;
+
+    fn fs(&self) -> &Self::Fs;
 }
 
 pub(crate) trait HasGit {
@@ -165,6 +167,10 @@ where
     G: services::capabilities::GitOps,
 {
     type Fs = F;
+
+    fn fs(&self) -> &Self::Fs {
+        self.fs
+    }
 }
 
 impl<L, T, F, G> HasGit for AppContext<'_, L, T, F, G>

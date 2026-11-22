@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::app::HasRepoRoot;
+use crate::app::{HasFs, HasRepoRoot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LifecycleProviderId {
@@ -147,7 +147,7 @@ pub(crate) trait ServiceLifecycle: Send + Sync {
         Vec::new()
     }
 
-    async fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot + HasFs>(&self, _ctx: &C) -> Result<SetupOutcome> {
         Ok(SetupOutcome::default())
     }
 }
@@ -236,7 +236,7 @@ impl LifecycleProvider {
         }
     }
 
-    pub async fn setup<C: HasRepoRoot>(self, ctx: &C) -> Result<SetupOutcome> {
+    pub async fn setup<C: HasRepoRoot + HasFs>(self, ctx: &C) -> Result<SetupOutcome> {
         match self {
             Self::Config => {
                 crate::services::config::lifecycle::ConfigLifecycle
