@@ -1,5 +1,7 @@
 import "workflow-content.pkl" as model
 import "workflow-context-sync.pkl" as contextSync
+import "controlled-english.pkl" as controlledEnglish
+import "test-design.pkl" as testDesign
 
 local planReview = model.semanticReference.apply("`sce-plan-review`", "the **Plan review phase**")
 local planReviewName = model.semanticReference.apply("sce-plan-review", "Plan review phase")
@@ -227,6 +229,7 @@ local taskExecutionPackage = new model.SkillPackage {
     model.makeDocument.apply("SKILL.md", EXECUTION_SKILL)
     model.makeDocument.apply("references/execution-contract.yaml", EXECUTION_CONTRACT)
     model.makeDocument.apply("references/implementation-gate.md", IMPLEMENTATION_GATE)
+    model.makeDocument.apply("references/test-design.md", testDesign.reference)
   })
 }
 
@@ -920,26 +923,14 @@ local renderExecutionSkillBody = (mode: model.WorkflowRenderMode) -> """
     
     \(taskExecutionHeadings.stepHeading.apply(mode, 5, "Implement one task"))
     
+    When the task writes or modifies tests, read `references/test-design.md`
+    before making changes, and apply it.
+    
     Make the minimum coherent changes required to satisfy the task goal and done
     checks.
     
     Use judgment for ordinary, reversible local implementation choices.
-
-    When writing or modifying tests:
-
-    1. Before implementing, identify likely subtle bugs, mistakes, and
-       alternative interpretations. Design tests that distinguish them,
-       preferring asymmetric examples and boundary cases on both sides.
-
-    2. After implementing, independently derive expected results for high-risk
-       cases from the requirements, without using production code or helpers.
-       Compare these expectations with actual results, using fresh context when
-       available.
-
-    3. When feasible, use property-based tests or structured random inputs to
-       explore meaningful states and code paths. Avoid random tests that only
-       check for crashes or repeatedly exercise the same error path.
-
+    
     Stop when implementation requires:
     
     - Material scope expansion.
@@ -1723,25 +1714,13 @@ Do not broaden the reviewed task.
 
 ## 2.5 Implement one task
 
+When the task writes or modifies tests, read `references/test-design.md` before
+making changes, and apply it.
+
 Make the minimum coherent changes required to satisfy the task goal and done
 checks.
 
 Use judgment for ordinary, reversible local implementation choices.
-
-When writing or modifying tests:
-
-1. Before implementing, identify likely subtle bugs, mistakes, and
-   alternative interpretations. Design tests that distinguish them,
-   preferring asymmetric examples and boundary cases on both sides.
-
-2. After implementing, independently derive expected results for high-risk
-   cases from the requirements, without using production code or helpers.
-   Compare these expectations with actual results, using fresh context when
-   available.
-
-3. When feasible, use property-based tests or structured random inputs to
-   explore meaningful states and code paths. Avoid random tests that only
-   check for crashes or repeatedly exercise the same error path.
 
 Stop when implementation requires:
 
@@ -1992,6 +1971,8 @@ structuredComposite = new model.StructuredCompositeSource {
     model.makeDocument.apply("references/context-sync.md", contextSync.taskReference)
     model.makeDocument.apply("references/sync-report.md", contextSync.taskOutputReport)
     model.makeDocument.apply("references/output.md", nextTaskOutputReference)
+    model.makeDocument.apply("references/test-design.md", testDesign.reference)
+    model.makeDocument.apply("references/controlled-english.md", controlledEnglish.reference)
   }
   phases = new Listing {}
   internalDocuments = new Listing {}

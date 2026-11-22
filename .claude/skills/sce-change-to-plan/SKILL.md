@@ -34,6 +34,9 @@ receives, and how its result branches — and each reference holds the phase its
 authoring phase points to it at the moment a plan is actually written, which never
 happens on a `needs_clarification` or `blocked` result.
 
+`references/controlled-english.md` defines the writing rules for plan prose. The
+plan authoring phase directs you to read it before authoring or revising a plan.
+
 Read a step's reference before taking any action for that step, not after. Read
 only the reference for the step you have reached: a run that stops at the
 bootstrap gate never authors a plan, which is why they are separate files.

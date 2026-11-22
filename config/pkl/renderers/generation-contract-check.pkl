@@ -498,7 +498,7 @@ local forbiddenWorkflowReferenceTokens = new Listing {
   "references/validation-result.md"
 }
 
-local expectedArtifactPathCount = 145
+local expectedArtifactPathCount = 157
 
 local assertExactArtifactPaths = (actual: Mapping) ->
   if (
