@@ -49,7 +49,10 @@ pub struct SetupCommand {
 
 impl SetupCommand {
     #[allow(clippy::too_many_lines)]
-    pub async fn execute<C: ContextWithRepoRoot + HasFs>(&self, context: &C) -> Result<String, CliError> {
+    pub async fn execute<C: ContextWithRepoRoot + HasFs>(
+        &self,
+        context: &C,
+    ) -> Result<String, CliError> {
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
             None => std::env::current_dir()
@@ -76,8 +79,8 @@ impl SetupCommand {
         let claude_telemetry_selected = dispatch_targets_claude(setup_dispatch.as_ref());
         let authorization_check = RepositoryAuthorizationCheck::for_mode(self.request.config_mode);
 
-        let context_message =
-            setup::bootstrap_context_baseline(context.fs(), &repository_root).map_err(unexpected_failure)?;
+        let context_message = setup::bootstrap_context_baseline(context.fs(), &repository_root)
+            .map_err(unexpected_failure)?;
         sections.push(context_message);
 
         if self.request.context_only {
