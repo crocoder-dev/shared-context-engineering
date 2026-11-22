@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::app::HasRepoRoot;
+use crate::app::{HasFs, HasRepoRoot};
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
 use crate::services::default_paths::local_db_path;
 use crate::services::lifecycle::{
@@ -48,7 +48,7 @@ impl ServiceLifecycle for LocalDbLifecycle {
         }
     }
 
-    async fn setup<C: HasRepoRoot>(&self, _ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot + HasFs>(&self, _ctx: &C) -> Result<SetupOutcome> {
         LocalDb::new()
             .await
             .context("Local DB lifecycle setup failed while initializing local DB")?;

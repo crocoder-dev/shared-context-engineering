@@ -3,12 +3,33 @@ use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
 
-pub trait FsOps: Send + Sync {}
+pub trait FsOps: Send + Sync {
+    fn exists(&self, path: &Path) -> bool;
+    fn create_dir_all(&self, path: &Path) -> std::io::Result<()>;
+    fn read_to_string(&self, path: &Path) -> std::io::Result<String>;
+    fn write(&self, path: &Path, contents: &[u8]) -> std::io::Result<()>;
+}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StdFsOps;
 
-impl FsOps for StdFsOps {}
+impl FsOps for StdFsOps {
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn create_dir_all(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(path)
+    }
+
+    fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+        std::fs::read_to_string(path)
+    }
+
+    fn write(&self, path: &Path, contents: &[u8]) -> std::io::Result<()> {
+        std::fs::write(path, contents)
+    }
+}
 
 pub trait GitOps: Send + Sync {
     fn run_command(&self, repo: &Path, args: &[&str]) -> Result<String>;

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::app::HasRepoRoot;
+use crate::app::{HasFs, HasRepoRoot};
 use crate::services::agent_trace_storage::{resolve_agent_trace_storage, AgentTraceStorageContext};
 use crate::services::config;
 use crate::services::db::{bootstrap_db_parent, collect_db_path_health, DbSpec};
@@ -58,7 +58,7 @@ impl ServiceLifecycle for AgentTraceDbLifecycle {
         }
     }
 
-    async fn setup<C: HasRepoRoot>(&self, ctx: &C) -> Result<SetupOutcome> {
+    async fn setup<C: HasRepoRoot + HasFs>(&self, ctx: &C) -> Result<SetupOutcome> {
         let repository_setup = match ctx.repo_root() {
             Some(repo_root) => Some(
                 initialize_repository_agent_trace_db(repo_root)

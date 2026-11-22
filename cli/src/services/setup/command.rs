@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::app::ContextWithRepoRoot;
+use crate::app::{ContextWithRepoRoot, HasFs};
 use crate::services::agent_trace::sce_config_schema_url;
 use crate::services::auth_command::{self, AuthFormat, LoginReport};
 use crate::services::config::schema_declaration::current_schema_version;
@@ -49,7 +49,7 @@ pub struct SetupCommand {
 
 impl SetupCommand {
     #[allow(clippy::too_many_lines)]
-    pub async fn execute<C: ContextWithRepoRoot>(&self, context: &C) -> Result<String, CliError> {
+    pub async fn execute<C: ContextWithRepoRoot + HasFs>(&self, context: &C) -> Result<String, CliError> {
         let setup_start_path = match &self.request.hooks_repo_path {
             Some(path) => path.clone(),
             None => std::env::current_dir()
@@ -77,7 +77,7 @@ impl SetupCommand {
         let authorization_check = RepositoryAuthorizationCheck::for_mode(self.request.config_mode);
 
         let context_message =
-            setup::bootstrap_context_baseline(&repository_root).map_err(unexpected_failure)?;
+            setup::bootstrap_context_baseline(context.fs(), &repository_root).map_err(unexpected_failure)?;
         sections.push(context_message);
 
         if self.request.context_only {
@@ -115,6 +115,7 @@ impl SetupCommand {
                 .or(self.request.optional_workflows.as_deref());
 
             let setup_message = setup::run_setup_for_targets(
+                context.fs(),
                 &repository_root,
                 &targets,
                 target_persistence,
