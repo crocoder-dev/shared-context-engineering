@@ -33,6 +33,11 @@ itself.
 | 2 | `references/task-execution.md` |
 | 3 | `references/context-sync.md` |
 
+`references/test-design.md` defines test-design rules for step 2, and
+`references/controlled-english.md` defines writing rules for context prose in
+step 3. Each step's reference directs you to read them before the affected
+operation.
+
 Read a step's reference before taking any action for that step, not after. The
 references carry gates that must fire before their phase's first side effect, so a
 phase begun from this summary alone will already have skipped them. Read only the

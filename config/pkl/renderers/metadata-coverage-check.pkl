@@ -27,6 +27,7 @@ local phaseReferencePathsByWorkflow = new Mapping {
     "references/plan-authoring.md"
     "references/plan-template.md"
     "references/output.md"
+    "references/controlled-english.md"
   }
   ["next-task"] = new Listing {
     "references/plan-review.md"
@@ -34,6 +35,8 @@ local phaseReferencePathsByWorkflow = new Mapping {
     "references/context-sync.md"
     "references/sync-report.md"
     "references/output.md"
+    "references/test-design.md"
+    "references/controlled-english.md"
   }
   ["validate"] = new Listing {
     "references/validation.md"
