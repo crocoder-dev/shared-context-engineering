@@ -1473,7 +1473,10 @@ mod access_render_tests {
         let report = report(&access);
 
         assert_eq!(report.problems.len(), 1);
-        assert_eq!(report.problems[0].health.kind, ProblemKind::SceLoginRequired);
+        assert_eq!(
+            report.problems[0].health.kind,
+            ProblemKind::SceLoginRequired
+        );
         assert_eq!(report.problems[0].health.severity, ProblemSeverity::Error);
         assert_eq!(report.problems[0].health.next_action, "auth_login");
         assert_eq!(
@@ -1530,7 +1533,10 @@ mod access_render_tests {
             || async { LoginState::Unavailable(LoginUnavailableReason::DatabaseLocked) },
         );
         let report = report(&access);
-        assert_eq!(report.problems[0].health.kind, ProblemKind::SceLoginUnavailable);
+        assert_eq!(
+            report.problems[0].health.kind,
+            ProblemKind::SceLoginUnavailable
+        );
         assert_eq!(report.problems[0].health.severity, ProblemSeverity::Warning);
         assert_eq!(report.problems[0].health.next_action, "manual_steps");
         assert_eq!(
@@ -1560,7 +1566,10 @@ mod access_render_tests {
         );
         let report = report(&access);
         assert_eq!(report.problems.len(), 1);
-        assert_eq!(report.problems[0].health.kind, ProblemKind::SceLoginUnavailable);
+        assert_eq!(
+            report.problems[0].health.kind,
+            ProblemKind::SceLoginUnavailable
+        );
         assert_eq!(report.problems[0].health.severity, ProblemSeverity::Warning);
         assert_eq!(report.problems[0].health.next_action, "manual_steps");
         assert_eq!(
@@ -1728,11 +1737,11 @@ mod access_render_tests {
 #[cfg(test)]
 mod problem_json_tests {
     use super::{problem_kind, problem_target};
-    use crate::services::lifecycle::HealthProblem;
     use crate::services::doctor::types::{
         DoctorProblem, IntegrationArea, IntegrationGroupKey, IntegrationTarget, ProblemCategory,
         ProblemFixability, ProblemKind, ProblemSeverity,
     };
+    use crate::services::lifecycle::HealthProblem;
 
     fn problem(
         kind: ProblemKind,
@@ -1783,7 +1792,10 @@ mod problem_json_tests {
             Some(IntegrationTarget::ClaudeCode),
         );
 
-        assert_eq!(problem_kind(blocked.health.kind), "mutation_scope_health_blocked");
+        assert_eq!(
+            problem_kind(blocked.health.kind),
+            "mutation_scope_health_blocked"
+        );
         assert_eq!(problem_target(&blocked), Some("claude"));
     }
 
@@ -1796,7 +1808,7 @@ mod problem_json_tests {
             None,
         );
 
-        assert_eq!(problem_kind(hook.kind), "required_hook_missing");
+        assert_eq!(problem_kind(hook.health.kind), "required_hook_missing");
         assert_eq!(problem_target(&hook), None);
     }
 }
