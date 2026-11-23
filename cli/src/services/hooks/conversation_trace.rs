@@ -3,13 +3,16 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{to_string as serialize_to_json, Value};
 
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
     InsertMessageInsert, InsertPartInsert, MessageRole, PartType,
 };
 use crate::services::patch::{load_patch_from_json, parse_patch as parse_patch_from_text};
 
+use super::claude_model_resolver;
 use super::claude_transforms::{
-    transform_claude_post_tool_use, transform_claude_stop, transform_claude_user_prompt_submit,
+    claude_patch_evidence, transform_claude_post_tool_use, transform_claude_stop,
+    transform_claude_user_prompt_submit, ClaudePatchEnrichment, ClaudePatchEvidence,
 };
 use super::runtime::{
     open_agent_trace_db_for_hook_runtime, prefixed_conversation_trace_session_id, read_hook_stdin,
@@ -101,14 +104,83 @@ pub(crate) async fn run_conversation_trace_subcommand_from_payload<
     logger: Option<&L>,
     session_id: Option<&str>,
 ) -> Result<String> {
-    let payload = parse_conversation_trace_payload(stdin_payload)?;
-    Ok(persist_conversation_trace_payload_to_agent_trace_db(
+    let request = parse_conversation_trace_request(stdin_payload)?;
+    let db = match open_agent_trace_db_for_hook_runtime(
         repository_root,
+        "Failed to open Agent Trace DB for conversation-trace persistence.",
+    )
+    .await
+    {
+        Ok(db) => db,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.error(
+                    "sce.hooks.conversation_trace.agent_trace_db_open_failed",
+                    &error.to_string(),
+                    &[],
+                    session_id,
+                );
+            }
+
+            return Ok(String::from(
+                "conversation-trace hook intake failed open; error logged.",
+            ));
+        }
+    };
+
+    let payload = conversation_trace_payload_with_db(&db, &request, logger).await?;
+    let summary = persist_conversation_trace_payload_to_agent_trace_db_with(
         payload,
         logger,
-        session_id,
+        async |inserts| db.insert_messages(inserts).await,
+        async |inserts| db.insert_parts(inserts).await,
     )
-    .await)
+    .await;
+
+    Ok(summary.render())
+}
+
+pub(crate) async fn conversation_trace_payload_with_db<
+    L: crate::services::observability::traits::Logger,
+>(
+    db: &RepositoryAgentTraceDb,
+    request: &serde_json::Map<String, Value>,
+    logger: Option<&L>,
+) -> Result<ConversationTracePayload> {
+    let claude_patch_enrichment = match claude_patch_evidence(request) {
+        Some(evidence) => Some(resolve_claude_patch_enrichment(db, &evidence, logger).await),
+        None => None,
+    };
+    conversation_trace_payload_from_request(request, claude_patch_enrichment)
+}
+
+async fn resolve_claude_patch_enrichment<L: crate::services::observability::traits::Logger>(
+    db: &RepositoryAgentTraceDb,
+    evidence: &ClaudePatchEvidence,
+    logger: Option<&L>,
+) -> ClaudePatchEnrichment {
+    let model_id = match claude_model_resolver::resolve_claude_model(db, &evidence.model).await {
+        Ok(model_id) => model_id,
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    "sce.hooks.conversation_trace.claude_model_resolution_failed",
+                    &error.to_string(),
+                    &[],
+                    Some(&evidence.model.session_id),
+                );
+            }
+            None
+        }
+    };
+
+    ClaudePatchEnrichment {
+        model_id,
+        attribution: claude_model_resolver::resolve_claude_patch_attribution(
+            &evidence.model,
+            evidence.agent_type.as_deref(),
+        ),
+    }
 }
 
 pub(crate) fn log_conversation_trace_fail_open<
@@ -130,45 +202,6 @@ pub(crate) fn log_conversation_trace_fail_open<
     String::from("conversation-trace hook intake failed open; error logged.")
 }
 
-pub(crate) async fn persist_conversation_trace_payload_to_agent_trace_db<
-    L: crate::services::observability::traits::Logger,
->(
-    repository_root: &Path,
-    payload: ConversationTracePayload,
-    logger: Option<&L>,
-    session_id: Option<&str>,
-) -> String {
-    let db = match open_agent_trace_db_for_hook_runtime(
-        repository_root,
-        "Failed to open Agent Trace DB for conversation-trace persistence.",
-    )
-    .await
-    {
-        Ok(db) => db,
-        Err(error) => {
-            if let Some(log) = logger {
-                log.error(
-                    "sce.hooks.conversation_trace.agent_trace_db_open_failed",
-                    &error.to_string(),
-                    &[],
-                    session_id,
-                );
-            }
-
-            return String::from("conversation-trace hook intake failed open; error logged.");
-        }
-    };
-
-    let summary = persist_conversation_trace_payload_to_agent_trace_db_with(
-        payload,
-        logger,
-        async |inserts| db.insert_messages(inserts).await,
-        async |inserts| db.insert_parts(inserts).await,
-    )
-    .await;
-
-    summary.render()
-}
 pub(crate) async fn persist_conversation_trace_payload_to_agent_trace_db_with<
     L: crate::services::observability::traits::Logger,
     IM,
@@ -342,15 +375,23 @@ pub(crate) fn log_conversation_trace_batch_insert_failure<
     }
 }
 
-pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<ConversationTracePayload> {
+pub(crate) fn parse_conversation_trace_request(
+    stdin_payload: &str,
+) -> Result<serde_json::Map<String, Value>> {
     let parsed: Value = serde_json::from_str(stdin_payload)
         .context("Invalid conversation-trace payload from STDIN: expected valid JSON.")?;
-    let payload = parsed.as_object().ok_or_else(|| {
-        anyhow!(conversation_trace_validation_error(
+    match parsed {
+        Value::Object(payload) => Ok(payload),
+        _ => bail!(conversation_trace_validation_error(
             "expected a JSON object"
-        ))
-    })?;
+        )),
+    }
+}
 
+pub(crate) fn conversation_trace_payload_from_request(
+    payload: &serde_json::Map<String, Value>,
+    claude_patch_enrichment: Option<ClaudePatchEnrichment>,
+) -> Result<ConversationTracePayload> {
     if payload.contains_key("hook_event_name") {
         let event_name = required_non_empty_string_field(
             payload,
@@ -361,7 +402,9 @@ pub fn parse_conversation_trace_payload(stdin_payload: &str) -> Result<Conversat
         let items = match event_name.as_str() {
             "UserPromptSubmit" => transform_claude_user_prompt_submit(payload)?,
             "Stop" => transform_claude_stop(payload)?,
-            "PostToolUse" => transform_claude_post_tool_use(payload)?,
+            "PostToolUse" => {
+                transform_claude_post_tool_use(payload, claude_patch_enrichment.unwrap_or_default())?
+            },
             _ => bail!(conversation_trace_validation_error(&format!(
                 "unsupported Claude hook event '{event_name}': supported events are 'UserPromptSubmit', 'Stop' and 'PostToolUse'"
             ))),
@@ -742,4 +785,280 @@ pub(crate) fn required_field<'a>(
             "missing required field '{field_name}'"
         )))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use serde_json::Value;
+
+    use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+    use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
+    use crate::services::observability::traits::NoopLogger;
+
+    use super::{
+        conversation_trace_payload_with_db, parse_conversation_trace_request,
+        persist_conversation_trace_payload_to_agent_trace_db_with,
+    };
+
+    const SESSION: &str = "3c9d7e1f-1111-4222-8333-944445555666";
+    const CANONICAL_SESSION: &str = "cc_3c9d7e1f-1111-4222-8333-944445555666";
+    const AGENT: &str = "a7f3c2e1b9d8";
+    const TOOL_USE: &str = "toolu_write_7";
+    const PARENT_TOOL_USE: &str = "toolu_agent_parent";
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        project_dir: PathBuf,
+        db: RepositoryAgentTraceDb,
+    }
+
+    impl Fixture {
+        async fn new() -> Self {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let project_dir = dir.path().join("project");
+            std::fs::create_dir_all(project_dir.join(SESSION).join("subagents"))
+                .expect("subagent dir");
+            let db = RepositoryAgentTraceDb::new_at(dir.path().join("agent-trace.db"))
+                .await
+                .expect("db");
+            Self {
+                _dir: dir,
+                project_dir,
+                db,
+            }
+        }
+
+        fn main_transcript(&self) -> PathBuf {
+            self.project_dir.join(format!("{SESSION}.jsonl"))
+        }
+
+        fn subagent_file(&self, extension: &str) -> PathBuf {
+            self.project_dir
+                .join(SESSION)
+                .join("subagents")
+                .join(format!("agent-{AGENT}.{extension}"))
+        }
+
+        async fn seed_main_agent_state(&self, model_id: &str) {
+            self.db
+                .upsert_claude_model_state(ClaudeModelStateObservation {
+                    session_id: CANONICAL_SESSION.to_string(),
+                    agent_id: String::new(),
+                    model_id: model_id.to_string(),
+                    observation_kind: ObservationKind::SessionStart,
+                    source: String::from("startup"),
+                    observed_at_ms: 1_000,
+                })
+                .await
+                .expect("seed state");
+        }
+
+        async fn patch_part(&self, overrides: &[(&str, &str)]) -> Value {
+            let mut payload: Value = serde_json::from_str(include_str!(
+                "../structured_patch/fixtures/write_create_simple/claude-post-tool-use.json"
+            ))
+            .expect("fixture JSON");
+            let object = payload.as_object_mut().expect("fixture object");
+            object.insert("session_id".into(), SESSION.into());
+            object.insert("tool_use_id".into(), TOOL_USE.into());
+            object.insert(
+                "transcript_path".into(),
+                self.main_transcript().display().to_string().into(),
+            );
+            for (key, value) in overrides {
+                object.insert((*key).into(), (*value).into());
+            }
+
+            let request = parse_conversation_trace_request(&payload.to_string()).unwrap();
+            let trace = conversation_trace_payload_with_db(&self.db, &request, None::<&NoopLogger>)
+                .await
+                .expect("Claude PostToolUse builds a conversation trace");
+            let parts = trace.message_part_updated.inserts.clone();
+            assert_eq!(parts.len(), 1, "one patch part per Write");
+            assert_eq!(parts[0].session_id, CANONICAL_SESSION);
+
+            let summary = persist_conversation_trace_payload_to_agent_trace_db_with(
+                trace,
+                None::<&NoopLogger>,
+                async |inserts| self.db.insert_messages(inserts).await,
+                async |inserts| self.db.insert_parts(inserts).await,
+            )
+            .await;
+            assert!(
+                summary.render().contains("persisted_parts=1"),
+                "patch part must persist: {}",
+                summary.render()
+            );
+
+            serde_json::from_str(&parts[0].text).expect("patch part text is JSON")
+        }
+    }
+
+    fn write(path: &Path, contents: &str) {
+        std::fs::write(path, contents).expect("write fixture file");
+    }
+
+    fn tool_use_record(tool_use_id: &str, model: &str) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": model,
+                    "content": [{"type": "tool_use", "id": tool_use_id, "name": "Write"}]
+                }
+            })
+        )
+    }
+
+    fn meta(agent_type: &str, parent_tool_use_id: &str) -> String {
+        serde_json::json!({"agentType": agent_type, "toolUseId": parent_tool_use_id}).to_string()
+    }
+
+    fn hunk_models(patch: &Value) -> Vec<Value> {
+        patch["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|file| file["hunks"].as_array().unwrap().iter())
+            .map(|hunk| hunk["model_id"].clone())
+            .collect()
+    }
+
+    fn line_sessions(patch: &Value) -> Vec<Value> {
+        patch["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|file| file["hunks"].as_array().unwrap().iter())
+            .flat_map(|hunk| hunk["lines"].as_array().unwrap().iter())
+            .map(|line| line["session_id"].clone())
+            .collect()
+    }
+
+    fn assert_no_agent_fields_below_patch(patch: &Value) {
+        for file in patch["files"].as_array().unwrap() {
+            for hunk in file["hunks"].as_array().unwrap() {
+                assert!(hunk.get("agent_id").is_none() && hunk.get("attribution").is_none());
+                for line in hunk["lines"].as_array().unwrap() {
+                    assert!(line.get("agent_id").is_none() && line.get("attribution").is_none());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn conversation_trace_claude_main_agent_patch_carries_session_model_and_null_agent() {
+        let fixture = Fixture::new().await;
+        fixture
+            .seed_main_agent_state("claude/claude-opus-5-5")
+            .await;
+        write(
+            &fixture.main_transcript(),
+            &tool_use_record(TOOL_USE, "claude-haiku-5-5"),
+        );
+
+        let patch = fixture.patch_part(&[]).await;
+
+        let sessions = line_sessions(&patch);
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().all(|session| session == CANONICAL_SESSION));
+        assert_eq!(
+            hunk_models(&patch),
+            vec![Value::from("claude/claude-haiku-5-5")]
+        );
+        assert_eq!(
+            patch["attribution"],
+            serde_json::json!({
+                "agent_id": null,
+                "agent_type": null,
+                "tool_use_id": TOOL_USE,
+                "parent_tool_use_id": null
+            })
+        );
+        assert_no_agent_fields_below_patch(&patch);
+    }
+
+    #[tokio::test]
+    async fn conversation_trace_claude_subagent_patch_uses_subagent_record_and_meta() {
+        let fixture = Fixture::new().await;
+        fixture
+            .seed_main_agent_state("claude/claude-opus-5-5")
+            .await;
+        write(
+            &fixture.main_transcript(),
+            &tool_use_record(TOOL_USE, "claude-opus-5-5"),
+        );
+        write(
+            &fixture.subagent_file("jsonl"),
+            &tool_use_record(TOOL_USE, "claude-sonnet-5-5"),
+        );
+        write(
+            &fixture.subagent_file("meta.json"),
+            &meta("general-purpose", PARENT_TOOL_USE),
+        );
+
+        let patch = fixture.patch_part(&[("agent_id", AGENT)]).await;
+
+        assert!(line_sessions(&patch)
+            .iter()
+            .all(|session| session == CANONICAL_SESSION));
+        assert_eq!(
+            hunk_models(&patch),
+            vec![Value::from("claude/claude-sonnet-5-5")]
+        );
+        assert_eq!(
+            patch["attribution"],
+            serde_json::json!({
+                "agent_id": AGENT,
+                "agent_type": "general-purpose",
+                "tool_use_id": TOOL_USE,
+                "parent_tool_use_id": PARENT_TOOL_USE
+            })
+        );
+        assert_no_agent_fields_below_patch(&patch);
+    }
+
+    #[tokio::test]
+    async fn conversation_trace_claude_subagent_event_agent_type_wins_over_meta() {
+        let fixture = Fixture::new().await;
+        write(
+            &fixture.subagent_file("meta.json"),
+            &meta("general-purpose", PARENT_TOOL_USE),
+        );
+
+        let patch = fixture
+            .patch_part(&[("agent_id", AGENT), ("agent_type", "Explore")])
+            .await;
+
+        assert_eq!(patch["attribution"]["agent_type"], "Explore");
+        assert_eq!(patch["attribution"]["parent_tool_use_id"], PARENT_TOOL_USE);
+    }
+
+    #[tokio::test]
+    async fn conversation_trace_claude_subagent_missing_files_yield_nulls_and_still_persist() {
+        let fixture = Fixture::new().await;
+        fixture
+            .seed_main_agent_state("claude/claude-opus-5-5")
+            .await;
+
+        let patch = fixture.patch_part(&[("agent_id", AGENT)]).await;
+
+        assert_eq!(hunk_models(&patch), vec![Value::Null]);
+        assert!(line_sessions(&patch)
+            .iter()
+            .all(|session| session == CANONICAL_SESSION));
+        assert_eq!(
+            patch["attribution"],
+            serde_json::json!({
+                "agent_id": AGENT,
+                "agent_type": null,
+                "tool_use_id": TOOL_USE,
+                "parent_tool_use_id": null
+            })
+        );
+    }
 }

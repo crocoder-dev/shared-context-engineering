@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use super::{parse_patch, FileChangeKind, PatchFileChange};
+use super::{load_patch_from_json, parse_patch, FileChangeKind, PatchFileChange};
 
 fn quote(path: &str) -> String {
     let mut quoted = String::from("\"");
@@ -164,4 +164,18 @@ fn index_style_patches_still_parse() {
         ("src/lib.rs", "src/lib.rs")
     );
     assert_eq!(file.kind, FileChangeKind::Modified);
+}
+
+const HISTORICAL_PATCH_JSON: &str = r#"{"files":[{"old_path":"a.txt","new_path":"a.txt","kind":"modified","hunks":[{"old_start":1,"old_count":1,"new_start":1,"new_count":1,"model_id":null,"lines":[{"kind":"removed","line_number":1,"content":"old","session_id":null},{"kind":"added","line_number":1,"content":"new","session_id":null}]}]}]}"#;
+
+#[test]
+fn patch_json_without_attribution_still_loads_and_reserializes_unchanged() {
+    let patch = load_patch_from_json(HISTORICAL_PATCH_JSON).expect("historical patch JSON loads");
+
+    assert_eq!(patch.attribution, None);
+    assert_eq!(patch.files[0].hunks[0].lines.len(), 2);
+    assert_eq!(
+        serde_json::to_string(&patch).unwrap(),
+        HISTORICAL_PATCH_JSON
+    );
 }

@@ -321,7 +321,7 @@ fn build_entry_trace(
         build_agent_trace_from_evidence, AgentTraceEvidence, AgentTraceMetadataInput,
         RepositoryRoot,
     };
-    let empty = crate::services::patch::ParsedPatch { files: Vec::new() };
+    let empty = crate::services::patch::ParsedPatch::default();
     build_agent_trace_from_evidence(
         AgentTraceEvidence {
             repository_root: &RepositoryRoot::new(Path::new("/workspace/project")),

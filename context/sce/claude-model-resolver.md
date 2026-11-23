@@ -87,6 +87,29 @@ more than 4 MiB from the end, or longer than 1 MiB, resolves to `NULL` at the
 transcript step. A main-agent event then continues to the state and bridge
 steps.
 
+## Patch-part attribution
+
+`resolve_claude_patch_attribution(evidence, event_agent_type)` builds the
+`attribution` object of a Claude conversation-trace patch part. It has no
+database access.
+
+- A main-agent event gets `tool_use_id` from the event. `agent_id`,
+  `agent_type`, and `parent_tool_use_id` are `null`.
+- A subagent event gets `agent_id` and `tool_use_id` from the event.
+  `agent_type` comes from the event `agent_type`, or else from `agentType` in
+  the subagent meta file. `parent_tool_use_id` comes from `toolUseId` in the
+  meta file. That value is the `tool_use_id` of the parent `Agent` call that
+  spawned the subagent.
+
+The subagent meta file is
+`<session_id>/subagents/agent-<agent_id>.meta.json`, next to the subagent
+transcript. `claude_subagent_meta_path` derives it from
+`claude_subagent_transcript_path`, so the same path-component rules apply.
+`claude_transcript::read_claude_subagent_meta` reads at most 1 MiB
+(`CLAUDE_SUBAGENT_META_MAX_BYTES`). It reports an open failure, a read failure,
+an oversized file, or a non-object file as `ClaudeSubagentMetaReadError`. The
+resolver maps every meta error to `null` meta fields.
+
 ## Consumers
 
 - Structured Claude `diff-trace` keeps only the direct model at parse time. At
@@ -97,3 +120,6 @@ steps.
   calls `resolve_claude_model_from_exact_evidence` only when the stored model is
   `NULL`. See
   [claude-mutation-scope-integration.md](../cli/claude-mutation-scope-integration.md).
+- Claude `conversation-trace` `PostToolUse` `Write` / `Edit` patch parts call
+  `resolve_claude_model` and `resolve_claude_patch_attribution` once per event.
+  See [agent-trace-hooks-command-routing.md](./agent-trace-hooks-command-routing.md).

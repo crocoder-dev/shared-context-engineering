@@ -415,7 +415,7 @@ async fn mutation_attribution(
 }
 
 fn no_mutation() -> MutationAttributionResult {
-    let empty = ParsedPatch { files: Vec::new() };
+    let empty = ParsedPatch::default();
     MutationAttributionResult {
         mutation_ai_patch: empty.clone(),
         resolved_non_ai_patch: empty.clone(),
@@ -699,8 +699,8 @@ fn one_direct_source_line_covers_only_its_own_duplicate_occurrence() {
         crate::services::agent_trace::AgentTraceEvidence {
             repository_root: &RepositoryRoot::new(Path::new("/workspace/project")),
             direct_sources: &[DirectEvidenceSource::repository_relative(&direct)],
-            mutation_ai_patch: &ParsedPatch { files: Vec::new() },
-            mutation_non_ai_patch: &ParsedPatch { files: Vec::new() },
+            mutation_ai_patch: &ParsedPatch::default(),
+            mutation_non_ai_patch: &ParsedPatch::default(),
         },
         &committed,
         crate::services::agent_trace::AgentTraceMetadataInput {

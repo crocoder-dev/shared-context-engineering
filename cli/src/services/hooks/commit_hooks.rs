@@ -555,7 +555,7 @@ pub(crate) fn capture_staged_patch_from_git(repository_root: &Path) -> Result<Pa
     let patch_text = capture_staged_diff_from_git(repository_root)?;
 
     if patch_text.trim().is_empty() {
-        return Ok(ParsedPatch { files: Vec::new() });
+        return Ok(ParsedPatch::default());
     }
 
     parse_patch_from_text(&patch_text, None).map_err(|error| {
@@ -981,7 +981,7 @@ mod tests {
     }
 
     fn empty_patch() -> ParsedPatch {
-        ParsedPatch { files: Vec::new() }
+        ParsedPatch::default()
     }
 
     fn empty_mutation() -> MutationAttributionResult {

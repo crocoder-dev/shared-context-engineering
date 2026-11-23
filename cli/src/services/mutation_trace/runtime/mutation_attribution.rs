@@ -139,7 +139,7 @@ impl BoundedMutationAttribution {
 }
 
 fn empty_patch() -> ParsedPatch {
-    ParsedPatch { files: Vec::new() }
+    ParsedPatch::default()
 }
 
 fn empty_attribution() -> MutationAttributionResult {

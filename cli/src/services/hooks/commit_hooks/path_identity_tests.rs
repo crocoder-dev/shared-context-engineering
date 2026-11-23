@@ -221,7 +221,7 @@ async fn intersection_flow(
 }
 
 fn no_mutation() -> MutationAttributionResult {
-    let empty = ParsedPatch { files: Vec::new() };
+    let empty = ParsedPatch::default();
     MutationAttributionResult {
         mutation_ai_patch: empty.clone(),
         resolved_non_ai_patch: empty.clone(),

@@ -61,6 +61,10 @@ Each `agent_traces` batch row carries an optional `commitPatchId` (lowercase hex
 - **No backfill:** rows the server acknowledged before the upgrade are not replayed, because sync resumes from the authoritative server cursor. Rows captured before migration `007` export `commitPatchId: null`. Re-sending historical fingerprints would require an explicit later backfill or change stream, not cursor rewinding.
 - **Upgrade/downgrade:** the column arrives through migration `007_commit_patch_id`, which only `sce setup` applies; until it reruns, repository hooks fail open and capture nothing, and an older CLI binary may reject the newer migration ledger (see [agent-trace-db.md](../sce/agent-trace-db.md)).
 
+### Patch part attribution
+
+Claude `patch` parts carry filled line `session_id`, hunk `model_id`, and an optional patch-level `attribution` object inside the part `text` JSON. The `parts` stream sends that text unchanged in the existing `text` field. There is no new stream, cursor, column, migration, or `/state` field. The Control Plane stores and passes `text` through as an opaque string and decodes no patch JSON shape, so no Control Plane change or release ordering is required. Querying the new fields in the warehouse needs JSON extraction from the part text. A warehouse join against Claude OpenTelemetry metrics must strip the `cc_` prefix from SCE session IDs.
+
 ## No-local-persistence invariants
 
 Sync creates no local sync state anywhere on disk:

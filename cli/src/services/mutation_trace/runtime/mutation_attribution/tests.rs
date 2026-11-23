@@ -476,6 +476,7 @@ fn removed_in(patch: &ParsedPatch, old_path: &str) -> Vec<u64> {
             .filter(|file| file.old_path == old_path)
             .cloned()
             .collect(),
+        attribution: None,
     })
 }
 

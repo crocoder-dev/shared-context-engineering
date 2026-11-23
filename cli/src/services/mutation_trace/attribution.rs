@@ -72,7 +72,10 @@ pub fn patch_for_locations(
         })
         .collect();
 
-    ParsedPatch { files }
+    ParsedPatch {
+        files,
+        attribution: None,
+    }
 }
 
 pub fn patch_for_locations_with_provenance(
@@ -119,7 +122,10 @@ pub fn patch_for_locations_with_provenance(
         })
         .collect();
 
-    ParsedPatch { files }
+    ParsedPatch {
+        files,
+        attribution: None,
+    }
 }
 
 fn agreed_model(
