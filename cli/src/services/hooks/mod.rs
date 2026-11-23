@@ -1,5 +1,6 @@
 use anyhow::Context;
 
+mod claude_model_resolver;
 mod claude_transforms;
 mod commit_hooks;
 mod commit_patch_id;

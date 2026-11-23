@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -7,22 +7,20 @@ use serde_json::Value;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{
-    ClaudeModelStateObservation, DiffTraceInsert, ObservationKind, PAYLOAD_TYPE_PATCH,
-    PAYLOAD_TYPE_STRUCTURED,
+    DiffTraceInsert, PAYLOAD_TYPE_PATCH, PAYLOAD_TYPE_STRUCTURED,
 };
 use crate::services::structured_patch::{
     derive_claude_structured_patch, ClaudeStructuredPatchDerivationResult,
 };
 
-use super::claude_model_state;
-use super::claude_transcript;
+use super::claude_model_resolver::{self, ClaudeModelEvidence};
 use super::conversation_trace::{
     diff_trace_fail_open_session_id, non_empty_string, required_field,
     required_non_empty_string_field,
 };
 use super::runtime::{
-    current_unix_time_ms, open_agent_trace_db_for_hook_runtime, prefixed_diff_trace_session_id,
-    read_hook_stdin, CLAUDE_MODEL_ID_PREFIX, CLAUDE_TOOL_NAME,
+    open_agent_trace_db_for_hook_runtime, prefixed_diff_trace_session_id, read_hook_stdin,
+    CLAUDE_MODEL_ID_PREFIX, CLAUDE_TOOL_NAME,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -36,6 +34,8 @@ pub(crate) struct DiffTracePayload {
     pub(crate) agent_id: Option<String>,
     #[serde(skip)]
     pub(crate) transcript_path: Option<String>,
+    #[serde(skip)]
+    pub(crate) tool_use_id: Option<String>,
     pub(crate) tool_name: String,
     pub(crate) tool_version: Option<String>,
     pub(crate) payload_type: String,
@@ -192,6 +192,7 @@ pub(crate) fn parse_diff_trace_payload(stdin_payload: &str) -> Result<DiffTraceP
         model_id,
         agent_id: None,
         transcript_path: None,
+        tool_use_id: None,
         tool_name,
         tool_version,
         payload_type: PAYLOAD_TYPE_PATCH.to_string(),
@@ -221,10 +222,11 @@ pub(crate) fn parse_claude_diff_trace_payload(
                 session_id: patch.session_id,
                 diff: stdin_payload.to_string(),
                 time: patch.time,
-                model_id: resolve_claude_model_id(payload),
+                model_id: extract_direct_claude_model_id(payload),
                 agent_id: extract_claude_agent_id(payload)?,
                 transcript_path: non_empty_string(payload.get("transcript_path"))
                     .map(str::to_string),
+                tool_use_id: non_empty_string(payload.get("tool_use_id")).map(str::to_string),
                 tool_name: patch.tool_name,
                 tool_version: patch.tool_version,
                 payload_type: PAYLOAD_TYPE_STRUCTURED.to_string(),
@@ -259,26 +261,6 @@ pub(crate) fn extract_claude_agent_id(
     }
 
     Ok(Some(value.to_string()))
-}
-
-pub(crate) fn resolve_claude_model_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
-    resolve_claude_model_id_with(payload, claude_transcript::extract_claude_transcript_model)
-}
-
-pub(crate) fn resolve_claude_model_id_with<F>(
-    payload: &serde_json::Map<String, Value>,
-    transcript_lookup: F,
-) -> Option<String>
-where
-    F: FnOnce(&Path, &str) -> Option<String>,
-{
-    extract_direct_claude_model_id(payload).or_else(|| {
-        let transcript_path = non_empty_string(payload.get("transcript_path"))?;
-        let tool_use_id = non_empty_string(payload.get("tool_use_id"))?;
-
-        transcript_lookup(Path::new(transcript_path), tool_use_id)
-            .and_then(|model| normalize_claude_model_id(&model))
-    })
 }
 
 pub(crate) fn extract_direct_claude_model_id(
@@ -537,54 +519,18 @@ pub(crate) async fn resolve_diff_trace_model_id(
     db: &RepositoryAgentTraceDb,
     payload: &DiffTracePayload,
 ) -> Result<Option<String>> {
-    if payload.model_id.is_some()
-        || payload.tool_name != CLAUDE_TOOL_NAME
-        || payload.payload_type != PAYLOAD_TYPE_STRUCTURED
-    {
+    if payload.tool_name != CLAUDE_TOOL_NAME || payload.payload_type != PAYLOAD_TYPE_STRUCTURED {
         return Ok(payload.model_id.clone());
     }
 
-    let session_id = prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &payload.session_id);
-    let agent_id = payload.agent_id.as_deref().unwrap_or("");
-    if let Some(state) = db
-        .claude_model_state_by_session_and_agent(&session_id, agent_id)
-        .await?
-    {
-        return Ok(Some(state.model_id));
-    }
-
-    Ok(seed_diff_trace_model_from_bridge_chain(db, payload, &session_id, agent_id).await)
-}
-
-pub(crate) async fn seed_diff_trace_model_from_bridge_chain(
-    db: &RepositoryAgentTraceDb,
-    payload: &DiffTracePayload,
-    session_id: &str,
-    agent_id: &str,
-) -> Option<String> {
-    if !agent_id.is_empty() {
-        return None;
-    }
-
-    let transcript_path = payload.transcript_path.as_deref()?;
-    let model_id =
-        claude_model_state::newest_bridge_chain_model(db, Path::new(transcript_path)).await?;
-
-    let observed_at_ms = current_unix_time_ms().ok()?;
-    match db
-        .upsert_claude_model_state(ClaudeModelStateObservation {
-            session_id: session_id.to_string(),
-            agent_id: String::new(),
-            model_id: model_id.clone(),
-            observation_kind: ObservationKind::SessionStart,
-            source: String::from("bridge_inherited"),
-            observed_at_ms,
-        })
-        .await
-    {
-        Ok(_) => Some(model_id),
-        Err(_) => None,
-    }
+    let evidence = ClaudeModelEvidence {
+        session_id: prefixed_diff_trace_session_id(CLAUDE_TOOL_NAME, &payload.session_id),
+        agent_id: payload.agent_id.clone(),
+        tool_use_id: payload.tool_use_id.clone(),
+        transcript_path: payload.transcript_path.as_deref().map(PathBuf::from),
+        direct_model_id: payload.model_id.clone(),
+    };
+    claude_model_resolver::resolve_claude_model(db, &evidence).await
 }
 
 pub(crate) fn diff_trace_db_time_ms(time: u64) -> Result<i64> {
@@ -593,4 +539,104 @@ pub(crate) fn diff_trace_db_time_ms(time: u64) -> Result<i64> {
             "field 'time' must fit in a signed 64-bit Unix epoch millisecond value for Agent Trace DB storage"
         ))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use serde_json::Value;
+
+    use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+
+    use super::{
+        parse_diff_trace_payload, persist_diff_trace_payload_to_agent_trace_db_with_db,
+        DiffTraceParseResult,
+    };
+
+    const SESSION: &str = "7d1e3b8f-1111-4222-8333-944445555666";
+    const AGENT: &str = "f00dfeed";
+    const TOOL_USE_ID: &str = "toolu_write_1";
+
+    fn tool_use_record(model: &str) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": model,
+                    "content": [{"type": "tool_use", "id": TOOL_USE_ID, "name": "Write"}]
+                }
+            })
+        )
+    }
+
+    fn post_tool_use_payload(transcript_path: &Path, agent_id: Option<&str>) -> String {
+        let mut payload: Value = serde_json::from_str(include_str!(
+            "../structured_patch/fixtures/write_create_simple/claude-post-tool-use.json"
+        ))
+        .expect("fixture JSON");
+        let object = payload.as_object_mut().expect("fixture object");
+        object.insert("session_id".into(), SESSION.into());
+        object.insert("tool_use_id".into(), TOOL_USE_ID.into());
+        object.insert(
+            "transcript_path".into(),
+            transcript_path.display().to_string().into(),
+        );
+        if let Some(agent_id) = agent_id {
+            object.insert("agent_id".into(), agent_id.into());
+        }
+        payload.to_string()
+    }
+
+    async fn persisted_model_id(agent_id: Option<&str>) -> Option<String> {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let main_transcript = dir.path().join(format!("{SESSION}.jsonl"));
+        std::fs::write(&main_transcript, tool_use_record("claude-opus-5-5")).expect("main");
+        let subagent_dir = dir.path().join(SESSION).join("subagents");
+        std::fs::create_dir_all(&subagent_dir).expect("subagent dir");
+        std::fs::write(
+            subagent_dir.join(format!("agent-{AGENT}.jsonl")),
+            tool_use_record("claude-haiku-5-5"),
+        )
+        .expect("subagent");
+        let db = RepositoryAgentTraceDb::new_at(dir.path().join("agent-trace.db"))
+            .await
+            .expect("db");
+
+        let DiffTraceParseResult::Persist(payload) =
+            parse_diff_trace_payload(&post_tool_use_payload(&main_transcript, agent_id))
+                .expect("payload parses")
+        else {
+            panic!("fixture must produce a diff trace");
+        };
+        persist_diff_trace_payload_to_agent_trace_db_with_db(&db, &payload)
+            .await
+            .expect("persist");
+
+        db.query_map("SELECT model_id FROM diff_traces", (), |row| {
+            row.get::<Option<String>>(0).map_err(Into::into)
+        })
+        .await
+        .expect("read diff traces")
+        .pop()
+        .expect("one diff trace")
+    }
+
+    #[tokio::test]
+    async fn claude_subagent_model_diff_trace_resolves_from_subagent_transcript() {
+        assert_eq!(
+            persisted_model_id(Some(AGENT)).await.as_deref(),
+            Some("claude/claude-haiku-5-5")
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_model_attribution_diff_trace_main_agent_resolves_from_main_transcript() {
+        assert_eq!(
+            persisted_model_id(None).await.as_deref(),
+            Some("claude/claude-opus-5-5")
+        );
+    }
 }

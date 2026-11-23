@@ -2,11 +2,11 @@
 
 ## Removal summary
 
-The `sce hooks claude-capture <event-name>` CLI route, `ClaudeCaptureEvent`, `HookSubcommand::ClaudeCapture`, the `claude_transcript.rs` enrichment module, and `RepoPaths::claude_capture_tmp_dir()` were removed in T05 of the `claude-typescript-model-cache-remove-rust-capture` plan.
+The `sce hooks claude-capture <event-name>` CLI route, `ClaudeCaptureEvent`, `HookSubcommand::ClaudeCapture`, the former `claude_transcript.rs` enrichment module (the current `claude_transcript.rs` is the bounded transcript reader used by the Claude model resolver), and `RepoPaths::claude_capture_tmp_dir()` were removed in T05 of the `claude-typescript-model-cache-remove-rust-capture` plan.
 
 Rust now exposes these active intakes for Claude/OpenCode editor runtimes:
 
-- `sce hooks diff-trace` — STDIN JSON intake for OpenCode normalized or Claude structured diff-trace payloads with optional/nullable direct attribution. Rust persists direct payload-derived `model_id` and `tool_version` values as-is; Claude model metadata is extracted best-effort from the raw `PostToolUse` event and falls back to exact transcript and Claude lifecycle state when available. The state fallback is Claude-specific and does not restore the generic session-level abstraction.
+- `sce hooks diff-trace` — STDIN JSON intake for OpenCode normalized or Claude structured diff-trace payloads with optional/nullable direct attribution. Rust persists direct payload-derived `model_id` and `tool_version` values as-is; Claude model metadata is resolved by the [Claude model resolver](./claude-model-resolver.md), which does not restore the generic session-level abstraction.
 - `sce hooks conversation-trace` — STDIN JSON intake for normalized mixed-batch message/part payloads and supported raw Claude `UserPromptSubmit`, `Stop`, and `PostToolUse` events. Runtime intake failures log `sce.hooks.conversation_trace.error` and fail open to the hook producer.
 
 `sce hooks session-model` is no longer supported. Generated Claude settings register `SessionStart` for local model-state attribution only and newly register `PostModelSwitch`; neither event is part of the removed raw-capture route.
@@ -29,7 +29,7 @@ The generated Claude TypeScript runtime at `config/.claude/plugins/sce-agent-tra
 - Generated `.claude/settings.json` also registers the hidden `sce hooks claude-mutation-scope` mutation-scope adapter through the same Bash helper, with **no** `matcher`, on `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionDenied`, `UserPromptSubmit`, `Stop`, `StopFailure`, `SubagentStop`, `SessionEnd`, and `WorktreeRemove`. These are additional entries alongside the model-state, bash-policy, `diff-trace`, and `conversation-trace` registrations, not replacements, and still do not restore raw event capture (the adapter drives the mutation-cursor runtime, writing `mutation_trace_*` rows only). Full contract in [../cli/claude-mutation-scope-integration.md](../cli/claude-mutation-scope-integration.md).
 - The former Claude TypeScript runtime at `config/.claude/plugins/sce-agent-trace.ts` was removed in T07 of the `claude-rust-diff-trace` plan.
 - Rust owns normalized persistence: `diff-trace` inserts into `diff_traces` with `payload_type` classification (`"patch"` for OpenCode, `"structured"` for Claude), while `conversation-trace` inserts normalized messages/parts.
-- Claude `diff-trace` attempts best-effort direct `model_id` extraction from the raw `PostToolUse` payload, then exact transcript lookup and exact Claude lifecycle-state lookup, storing the resulting nullable attribution in `diff_traces`; OpenCode sends `model_id` directly and may send nullable `tool_version`. Missing metadata is persisted as `NULL`; Claude lifecycle state is local-only and is not a generic session cache.
+- Claude `diff-trace` stores the nullable model from the [Claude model resolver](./claude-model-resolver.md) in `diff_traces`; OpenCode sends `model_id` directly and may send nullable `tool_version`. Missing metadata is persisted as `NULL`; Claude lifecycle state is local-only and is not a generic session cache.
 - No raw Claude hook payload artifacts are written by TypeScript or Rust.
 
 See also: [agent-trace-hooks-command-routing.md](./agent-trace-hooks-command-routing.md), [../context-map.md](../context-map.md)
