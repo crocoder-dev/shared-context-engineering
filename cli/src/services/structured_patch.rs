@@ -18,6 +18,7 @@ pub struct ClaudeStructuredPatch {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum ClaudeStructuredPatchDerivationResult {
     Derived(ClaudeStructuredPatch),
     Skipped(ClaudeStructuredPatchSkipReason),

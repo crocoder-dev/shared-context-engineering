@@ -80,20 +80,17 @@ pub(crate) fn claude_subagent_transcript_path(
     }
 
     let file_name = format!("agent-{agent_id}.jsonl");
-    let names_subagent_transcript = transcript_path
-        .file_name()
-        .is_some_and(|name| name == file_name.as_str())
-        && transcript_path
+    let parent = transcript_path.parent()?;
+    if parent.file_name().is_some_and(|name| name == "subagents") {
+        let names_session_dir = parent
             .parent()
             .and_then(Path::file_name)
-            .is_some_and(|name| name == "subagents");
-    if names_subagent_transcript {
-        return Some(transcript_path.to_path_buf());
+            .is_some_and(|name| name == raw_session_id);
+        return names_session_dir.then(|| parent.join(file_name));
     }
 
     Some(
-        transcript_path
-            .parent()?
+        parent
             .join(raw_session_id)
             .join("subagents")
             .join(file_name),
@@ -172,7 +169,10 @@ mod tests {
     use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
     use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
 
-    use super::{claude_subagent_transcript_path, resolve_claude_model, ClaudeModelEvidence};
+    use super::{
+        claude_subagent_meta_path, claude_subagent_transcript_path, resolve_claude_model,
+        ClaudeModelEvidence,
+    };
 
     const SESSION: &str = "5f0c2a7e-1111-4222-8333-944445555666";
     const CANONICAL_SESSION: &str = "cc_5f0c2a7e-1111-4222-8333-944445555666";
@@ -384,8 +384,15 @@ mod tests {
         assert_eq!(
             claude_subagent_transcript_path(other_subagent, "cc_5f0c2a7e", "abc123"),
             Some(PathBuf::from(
-                "/projects/repo/5f0c2a7e/subagents/5f0c2a7e/subagents/agent-abc123.jsonl"
+                "/projects/repo/5f0c2a7e/subagents/agent-abc123.jsonl"
             ))
+        );
+
+        let foreign_session_subagent =
+            Path::new("/projects/repo/0badc0de/subagents/agent-zzz999.jsonl");
+        assert_eq!(
+            claude_subagent_transcript_path(foreign_session_subagent, "cc_5f0c2a7e", "abc123"),
+            None
         );
 
         assert_eq!(
@@ -394,6 +401,40 @@ mod tests {
         );
         assert_eq!(
             claude_subagent_transcript_path(main, "cc_../x", "abc123"),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_subagent_meta_path_derivation() {
+        let expected = Some(PathBuf::from(
+            "/projects/repo/5f0c2a7e/subagents/agent-abc123.meta.json",
+        ));
+        for transcript in [
+            "/projects/repo/5f0c2a7e.jsonl",
+            "/projects/repo/5f0c2a7e/subagents/agent-abc123.jsonl",
+            "/projects/repo/5f0c2a7e/subagents/agent-zzz999.jsonl",
+        ] {
+            assert_eq!(
+                claude_subagent_meta_path(Path::new(transcript), "cc_5f0c2a7e", "abc123"),
+                expected
+            );
+        }
+
+        assert_eq!(
+            claude_subagent_meta_path(
+                Path::new("/projects/repo/0badc0de/subagents/agent-zzz999.jsonl"),
+                "cc_5f0c2a7e",
+                "abc123"
+            ),
+            None
+        );
+        assert_eq!(
+            claude_subagent_meta_path(
+                Path::new("/projects/repo/5f0c2a7e.jsonl"),
+                "cc_5f0c2a7e",
+                "../escape"
+            ),
             None
         );
     }

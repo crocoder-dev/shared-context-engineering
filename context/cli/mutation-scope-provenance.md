@@ -144,9 +144,12 @@ transcript scan. Otherwise the fill resolves the model from exact evidence only
 never uses `claude_model_state` or the bridge-session chain. A found model is
 written through `fill_null_scope_provenance_model`, so a concurrent fill can
 never overwrite a stored model. The fill changes no field other than `model_id`.
-A fill failure is logged and never fails the hook or the close. Provenance is
-read at commit time, so a fill at `PostToolUse` is visible to the commit of that
-mutation. See
+A fill failure is logged and never fails the hook or the close. The fill is not
+ordered against commits: commit-time attribution reads the provenance stored at
+that moment, so a commit made before the fill (concurrently, or outside Claude's
+tool lifecycle) observes `model_id = NULL`. The fill never rewrites an Agent
+Trace that was already generated, and no synchronization or retry orders it
+before commits. See
 [Claude subagent attribution](../decisions/2026-11-23-claude-subagent-attribution.md).
 
 ## Durable `Start` ordering

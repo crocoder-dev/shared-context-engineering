@@ -4,7 +4,7 @@ Standalone patch domain model and parser in `cli/src/services/patch.rs` for in-m
 
 ## Domain model
 
-- `ParsedPatch` — top-level container holding one or more `PatchFileChange` entries and an optional `attribution: Option<Box<PatchAttribution>>`. The field uses `#[serde(default)]` and is omitted from JSON when absent, so patch JSON without an `attribution` key loads and reserializes unchanged. `ParsedPatch` derives `Default` (an empty patch).
+- `ParsedPatch` — top-level container holding one or more `PatchFileChange` entries and an optional `attribution: Option<PatchAttribution>`. The field uses `#[serde(default)]` and is omitted from JSON when absent, so patch JSON without an `attribution` key loads and reserializes unchanged. `ParsedPatch` derives `Default` (an empty patch).
 - `PatchAttribution` — patch-level writer identity with nullable `agent_id`, `agent_type`, `tool_use_id`, and `parent_tool_use_id`, serialized with explicit `null`s. Only Claude conversation-trace patch parts set it; see [claude-model-resolver.md](../sce/claude-model-resolver.md#patch-part-attribution). Lines and hunks carry no agent fields. Patches rebuilt by `patch_for_locations*` and parsed by `parse_patch` have no attribution.
 - `PatchFileChange` — per-file change with `old_path`, `new_path`, `FileChangeKind`, and hunks
 - `FileChangeKind` — enum: `Added`, `Modified`, `Deleted`, `Renamed` (serialized as `snake_case`)
