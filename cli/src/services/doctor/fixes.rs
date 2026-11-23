@@ -11,12 +11,12 @@ pub(super) fn build_manual_fix_results(
     report
         .problems
         .iter()
-        .filter(|problem| problem.fixability == ProblemFixability::ManualOnly)
+        .filter(|problem| problem.health.fixability == ProblemFixability::ManualOnly)
         .filter(|problem| {
             !owned_by_attempted_mutation_scope_repair(problem, attempted_mutation_scope_targets)
         })
         .map(|problem| DoctorFixResultRecord {
-            category: problem.category,
+            category: problem.health.category,
             outcome: FixResult::Manual,
             detail: manual_fix_detail(problem),
         })
@@ -27,16 +27,16 @@ fn owned_by_attempted_mutation_scope_repair(
     problem: &DoctorProblem,
     attempted_mutation_scope_targets: &[IntegrationTarget],
 ) -> bool {
-    problem.category == ProblemCategory::MutationScopeHealth
+    problem.health.category == ProblemCategory::MutationScopeHealth
         && problem
             .mutation_scope_target
             .is_some_and(|target| attempted_mutation_scope_targets.contains(&target))
 }
 
 fn manual_fix_detail(problem: &DoctorProblem) -> String {
-    if problem.category == ProblemCategory::MutationScopeHealth {
-        problem.remediation.clone()
+    if problem.health.category == ProblemCategory::MutationScopeHealth {
+        problem.health.remediation.clone()
     } else {
-        format!("{} Manual remediation is still required.", problem.summary)
+        format!("{} Manual remediation is still required.", problem.health.summary)
     }
 }

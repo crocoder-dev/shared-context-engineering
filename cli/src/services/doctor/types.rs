@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::services::hooks::mutation_scope_health::MutationScopeHealthStatus;
+use crate::services::lifecycle::HealthProblem;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Readiness {
@@ -386,73 +387,10 @@ impl IntegrationChildHealth {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProblemCategory {
-    GlobalState,
-    RepositoryTargeting,
-    HookRollout,
-    RepoAssets,
-    FilesystemPermissions,
-    MutationScopeHealth,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProblemSeverity {
-    Error,
-    Warning,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProblemFixability {
-    AutoFixable,
-    ManualOnly,
-    NoActionRequired,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ProblemKind {
-    GitUnavailable,
-    BareRepository,
-    NotInsideGitRepository,
-    UnableToResolveGitHooksDirectory,
-    UnableToResolveStateRoot,
-    GlobalConfigValidationFailed,
-    UnableToResolveGlobalConfigPath,
-    LocalConfigValidationFailed,
-    HooksDirectoryMissing,
-    HooksPathNotDirectory,
-    RequiredHookMissing,
-    HookNotExecutable,
-    HookContentStale,
-    NoIntegrationsInstalled,
-    OpenCodeIntegrationFilesMissing,
-    OpenCodeIntegrationContentMismatch,
-    ClaudeIntegrationFilesMissing,
-    ClaudeIntegrationContentMismatch,
-    PiIntegrationFilesMissing,
-    PiIntegrationContentMismatch,
-    CodexIntegrationFilesMissing,
-    CodexIntegrationContentMismatch,
-    OpenCodePluginRegistryInvalid,
-    OpenCodeAssetMissingOrInvalid,
-    HookReadFailed,
-    OpenCodeAssetReadFailed,
-    ClaudeAssetReadFailed,
-    PiAssetReadFailed,
-    CodexAssetReadFailed,
-    CodexHookRegistrationMalformed,
-    CodexHookRegistrationNotTrusted,
-    CodexHookRegistrationPolicyBlocked,
-    CodexHookRegistrationPolicyUnknown,
-    AgentTraceDbConnectionFailed,
-    AgentTraceDbSchemaNotReady,
-    MutationScopeHealthRecovering,
-    MutationScopeHealthBlocked,
-    MutationScopeHealthInvalid,
-    ManagedTelemetryUnavailable,
-    SceLoginRequired,
-    SceLoginUnavailable,
-}
+pub(crate) use crate::services::lifecycle::{
+    HealthCategory as ProblemCategory, HealthFixability as ProblemFixability,
+    HealthProblemKind as ProblemKind, HealthSeverity as ProblemSeverity,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FixResult {
@@ -464,15 +402,19 @@ pub(crate) enum FixResult {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DoctorProblem {
-    pub(crate) kind: ProblemKind,
-    pub(crate) category: ProblemCategory,
-    pub(crate) severity: ProblemSeverity,
-    pub(crate) fixability: ProblemFixability,
-    pub(crate) summary: String,
-    pub(crate) remediation: String,
-    pub(crate) next_action: &'static str,
+    pub(crate) health: HealthProblem,
     pub(super) scope: Option<IntegrationGroupKey>,
     pub(super) mutation_scope_target: Option<IntegrationTarget>,
+}
+
+impl From<HealthProblem> for DoctorProblem {
+    fn from(health: HealthProblem) -> Self {
+        Self {
+            health,
+            scope: None,
+            mutation_scope_target: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -568,7 +510,7 @@ pub(super) fn problem_target(problem: &DoctorProblem) -> Option<&'static str> {
 pub(super) fn compute_readiness(problems: &[DoctorProblem]) -> Readiness {
     if problems
         .iter()
-        .any(|problem| problem.severity == ProblemSeverity::Error)
+        .any(|problem| problem.health.severity == ProblemSeverity::Error)
     {
         Readiness::NotReady
     } else {

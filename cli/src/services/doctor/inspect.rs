@@ -10,6 +10,7 @@ use crate::services::codex_hook_policy::CodexHookPolicyReadiness;
 use crate::services::codex_hook_trust;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{self, ConfigPathSource, IntegrationTargetId};
+use crate::services::lifecycle::HealthProblem;
 use crate::services::default_paths::{
     agent_trace_db_path_for_repository, claude_asset, codex_asset, opencode_asset, pi_asset,
     repo_dir, InstallTargetPaths, RepoPaths,
@@ -494,13 +495,15 @@ async fn push_mutation_scope_health_problem(
     );
 
     problems.push(DoctorProblem {
-        kind,
-        category: ProblemCategory::MutationScopeHealth,
-        severity,
-        fixability,
-        summary,
-        remediation: remediation.clone(),
-        next_action,
+        health: HealthProblem {
+            kind,
+            category: ProblemCategory::MutationScopeHealth,
+            severity,
+            fixability,
+            summary,
+            remediation: remediation.clone(),
+            next_action,
+        },
         scope: None,
         mutation_scope_target: Some(target),
     });
@@ -622,17 +625,7 @@ async fn collect_agent_trace_db_health(
             problem.kind,
             crate::services::lifecycle::HealthProblemKind::UnableToResolveStateRoot
         ) {
-            problems.push(DoctorProblem {
-                kind: ProblemKind::UnableToResolveStateRoot,
-                category: ProblemCategory::GlobalState,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: problem.summary.clone(),
-                remediation: problem.remediation.clone(),
-                next_action: problem.next_action,
-                scope: None,
-                mutation_scope_target: None,
-            });
+            problems.push(DoctorProblem::from(problem.clone()));
             continue;
         }
 
@@ -802,17 +795,19 @@ fn inspect_repository_integrations(
     let targets = resolve_doctor_integration_targets(resolved_root);
     if targets.is_empty() {
         problems.push(DoctorProblem {
-            kind: ProblemKind::NoIntegrationsInstalled,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: String::from(
-                "No integrations are installed. Run 'sce setup' to install OpenCode, Claude, Pi, and/or Codex integration assets.",
-            ),
-            remediation: String::from(
-                "Run 'sce setup --opencode', 'sce setup --claude', 'sce setup --pi', 'sce setup --codex', or 'sce setup --all' to install integration assets.",
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::NoIntegrationsInstalled,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: String::from(
+                    "No integrations are installed. Run 'sce setup' to install OpenCode, Claude, Pi, and/or Codex integration assets.",
+                ),
+                remediation: String::from(
+                    "Run 'sce setup --opencode', 'sce setup --claude', 'sce setup --pi', 'sce setup --codex', or 'sce setup --all' to install integration assets.",
+                ),
+                next_action: "manual_steps",
+            },
             scope: None,
             mutation_scope_target: None,
         });
@@ -1058,19 +1053,21 @@ fn push_codex_hook_malformed_problems(
         };
 
         problems.push(DoctorProblem {
-            kind: ProblemKind::CodexHookRegistrationMalformed,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "'.codex/hooks.json' cannot be structurally validated, so its required \
-                 registrations cannot be verified: {error}"
-            ),
-            remediation: "Fix or remove the invalid '.codex/hooks.json' by hand, then rerun \
-                           'sce setup --codex' or 'sce doctor' to reinstall it; SCE will not \
-                           overwrite content it cannot safely merge."
-                .to_string(),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::CodexHookRegistrationMalformed,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "'.codex/hooks.json' cannot be structurally validated, so its required \
+                     registrations cannot be verified: {error}"
+                ),
+                remediation: "Fix or remove the invalid '.codex/hooks.json' by hand, then rerun \
+                               'sce setup --codex' or 'sce doctor' to reinstall it; SCE will not \
+                               overwrite content it cannot safely merge."
+                    .to_string(),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1104,17 +1101,19 @@ fn push_codex_hook_policy_blocked_problems(
 
         let details = blocked_children.join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::CodexHookRegistrationPolicyBlocked,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Codex project hooks are disabled by the effective allow_managed_hooks_only \
-                 policy. SCE registrations in '.codex/hooks.json' will not be loaded by Codex: \
-                 {details}."
-            ),
-            remediation: CODEX_HOOK_POLICY_BLOCKED_REMEDIATION.to_string(),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::CodexHookRegistrationPolicyBlocked,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Codex project hooks are disabled by the effective allow_managed_hooks_only \
+                     policy. SCE registrations in '.codex/hooks.json' will not be loaded by Codex: \
+                     {details}."
+                ),
+                remediation: CODEX_HOOK_POLICY_BLOCKED_REMEDIATION.to_string(),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1146,19 +1145,21 @@ fn push_codex_hook_policy_unknown_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::CodexHookRegistrationPolicyUnknown,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Warning,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Unable to determine whether Codex policy permits project hooks: {reason}. \
-                 These current SCE registrations cannot be confirmed healthy: {details}."
-            ),
-            remediation: "Ensure the 'codex' CLI is installed and reachable on PATH, then rerun \
-                           'sce doctor' so it can re-probe Codex's effective hook-discovery \
-                           policy; 'sce doctor --fix' cannot repair this."
-                .to_string(),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::CodexHookRegistrationPolicyUnknown,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Warning,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Unable to determine whether Codex policy permits project hooks: {reason}. \
+                     These current SCE registrations cannot be confirmed healthy: {details}."
+                ),
+                remediation: "Ensure the 'codex' CLI is installed and reachable on PATH, then rerun \
+                               'sce doctor' so it can re-probe Codex's effective hook-discovery \
+                               policy; 'sce doctor --fix' cannot repair this."
+                    .to_string(),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1190,16 +1191,18 @@ fn push_codex_hook_trust_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::CodexHookRegistrationNotTrusted,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Warning,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "Codex has not yet marked these current SCE hook registrations as trusted and \
-                 will not execute them: {details}."
-            ),
-            remediation: CODEX_HOOK_TRUST_GUIDANCE.to_string(),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::CodexHookRegistrationNotTrusted,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Warning,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "Codex has not yet marked these current SCE hook registrations as trusted and \
+                     will not execute them: {details}."
+                ),
+                remediation: CODEX_HOOK_TRUST_GUIDANCE.to_string(),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1226,19 +1229,21 @@ fn push_opencode_integration_missing_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::OpenCodeIntegrationFilesMissing,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} required file(s) are missing: {}.",
-                group.display_label(), missing_paths
-            ),
-            remediation: format!(
-                "Reinstall repo-root OpenCode assets to restore the missing {} file(s), then rerun 'sce doctor'.",
-                group.display_label().to_ascii_lowercase()
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::OpenCodeIntegrationFilesMissing,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} required file(s) are missing: {}.",
+                    group.display_label(), missing_paths
+                ),
+                remediation: format!(
+                    "Reinstall repo-root OpenCode assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+                    group.display_label().to_ascii_lowercase()
+                ),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1265,19 +1270,21 @@ fn push_opencode_integration_mismatch_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::OpenCodeIntegrationContentMismatch,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} file(s) differ from the canonical embedded content: {}.",
-                group.display_label(), mismatched_paths
-            ),
-            remediation: format!(
-                "Reinstall repo-root OpenCode assets to restore the canonical {} content, then rerun 'sce doctor'.",
-                group.display_label().to_ascii_lowercase()
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::OpenCodeIntegrationContentMismatch,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} file(s) differ from the canonical embedded content: {}.",
+                    group.display_label(), mismatched_paths
+                ),
+                remediation: format!(
+                    "Reinstall repo-root OpenCode assets to restore the canonical {} content, then rerun 'sce doctor'.",
+                    group.display_label().to_ascii_lowercase()
+                ),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1294,20 +1301,22 @@ fn push_opencode_integration_read_fail_problems(
                 continue;
             };
             problems.push(DoctorProblem {
-                kind: ProblemKind::OpenCodeAssetReadFailed,
-                category: ProblemCategory::FilesystemPermissions,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Unable to read OpenCode asset '{}' at '{}': {error}",
-                    child.relative_path,
-                    child.path.display()
-                ),
-                remediation: format!(
-                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
-                    child.path.display()
-                ),
-                next_action: "manual_steps",
+                health: HealthProblem {
+                    kind: ProblemKind::OpenCodeAssetReadFailed,
+                    category: ProblemCategory::FilesystemPermissions,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: format!(
+                        "Unable to read OpenCode asset '{}' at '{}': {error}",
+                        child.relative_path,
+                        child.path.display()
+                    ),
+                    remediation: format!(
+                        "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                        child.path.display()
+                    ),
+                    next_action: "manual_steps",
+                },
                 scope: Some(group.key),
                 mutation_scope_target: None,
             });
@@ -1335,19 +1344,21 @@ fn push_claude_integration_missing_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::ClaudeIntegrationFilesMissing,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} required file(s) are missing: {}.",
-                group.display_label(), missing_paths
-            ),
-            remediation: format!(
-                "Reinstall repo-root Claude assets to restore the missing {} file(s), then rerun 'sce doctor'.",
-                group.display_label().to_ascii_lowercase()
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::ClaudeIntegrationFilesMissing,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} required file(s) are missing: {}.",
+                    group.display_label(), missing_paths
+                ),
+                remediation: format!(
+                    "Reinstall repo-root Claude assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+                    group.display_label().to_ascii_lowercase()
+                ),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1374,19 +1385,21 @@ fn push_claude_integration_mismatch_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::ClaudeIntegrationContentMismatch,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} file(s) differ from the canonical embedded content: {}.",
-                group.display_label(), mismatched_paths
-            ),
-            remediation: format!(
-                "Reinstall repo-root Claude assets to restore the canonical {} content, then rerun 'sce doctor'.",
-                group.display_label().to_ascii_lowercase()
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::ClaudeIntegrationContentMismatch,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} file(s) differ from the canonical embedded content: {}.",
+                    group.display_label(), mismatched_paths
+                ),
+                remediation: format!(
+                    "Reinstall repo-root Claude assets to restore the canonical {} content, then rerun 'sce doctor'.",
+                    group.display_label().to_ascii_lowercase()
+                ),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1403,20 +1416,22 @@ fn push_claude_integration_read_fail_problems(
                 continue;
             };
             problems.push(DoctorProblem {
-                kind: ProblemKind::ClaudeAssetReadFailed,
-                category: ProblemCategory::FilesystemPermissions,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Unable to read Claude asset '{}' at '{}': {error}",
-                    child.relative_path,
-                    child.path.display()
-                ),
-                remediation: format!(
-                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
-                    child.path.display()
-                ),
-                next_action: "manual_steps",
+                health: HealthProblem {
+                    kind: ProblemKind::ClaudeAssetReadFailed,
+                    category: ProblemCategory::FilesystemPermissions,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: format!(
+                        "Unable to read Claude asset '{}' at '{}': {error}",
+                        child.relative_path,
+                        child.path.display()
+                    ),
+                    remediation: format!(
+                        "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                        child.path.display()
+                    ),
+                    next_action: "manual_steps",
+                },
                 scope: Some(group.key),
                 mutation_scope_target: None,
             });
@@ -1444,19 +1459,21 @@ fn push_pi_integration_missing_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::PiIntegrationFilesMissing,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} required file(s) are missing: {}.",
-                group.display_label(), missing_paths
-            ),
-            remediation: format!(
-                "Reinstall repo-root Pi assets to restore the missing {} file(s), then rerun 'sce doctor'.",
-                group.display_label().to_ascii_lowercase()
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::PiIntegrationFilesMissing,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} required file(s) are missing: {}.",
+                    group.display_label(), missing_paths
+                ),
+                remediation: format!(
+                    "Reinstall repo-root Pi assets to restore the missing {} file(s), then rerun 'sce doctor'.",
+                    group.display_label().to_ascii_lowercase()
+                ),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1483,19 +1500,21 @@ fn push_pi_integration_mismatch_problems(
             .collect::<Vec<_>>()
             .join(", ");
         problems.push(DoctorProblem {
-            kind: ProblemKind::PiIntegrationContentMismatch,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} file(s) differ from the canonical embedded content: {}.",
-                group.display_label(), mismatched_paths
-            ),
-            remediation: format!(
-                "Reinstall repo-root Pi assets to restore the canonical {} content, then rerun 'sce doctor'.",
-                group.display_label().to_ascii_lowercase()
-            ),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::PiIntegrationContentMismatch,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} file(s) differ from the canonical embedded content: {}.",
+                    group.display_label(), mismatched_paths
+                ),
+                remediation: format!(
+                    "Reinstall repo-root Pi assets to restore the canonical {} content, then rerun 'sce doctor'.",
+                    group.display_label().to_ascii_lowercase()
+                ),
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1512,20 +1531,22 @@ fn push_pi_integration_read_fail_problems(
                 continue;
             };
             problems.push(DoctorProblem {
-                kind: ProblemKind::PiAssetReadFailed,
-                category: ProblemCategory::FilesystemPermissions,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Unable to read Pi asset '{}' at '{}': {error}",
-                    child.relative_path,
-                    child.path.display()
-                ),
-                remediation: format!(
-                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
-                    child.path.display()
-                ),
-                next_action: "manual_steps",
+                health: HealthProblem {
+                    kind: ProblemKind::PiAssetReadFailed,
+                    category: ProblemCategory::FilesystemPermissions,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: format!(
+                        "Unable to read Pi asset '{}' at '{}': {error}",
+                        child.relative_path,
+                        child.path.display()
+                    ),
+                    remediation: format!(
+                        "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                        child.path.display()
+                    ),
+                    next_action: "manual_steps",
+                },
                 scope: Some(group.key),
                 mutation_scope_target: None,
             });
@@ -1563,17 +1584,19 @@ fn push_codex_integration_missing_problems(
             remediation.push_str(CODEX_HOOK_TRUST_GUIDANCE);
         }
         problems.push(DoctorProblem {
-            kind: ProblemKind::CodexIntegrationFilesMissing,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} required file(s) are missing: {}.",
-                group.display_label(),
-                missing_paths
-            ),
-            remediation,
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::CodexIntegrationFilesMissing,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} required file(s) are missing: {}.",
+                    group.display_label(),
+                    missing_paths
+                ),
+                remediation,
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1613,17 +1636,19 @@ fn push_codex_integration_mismatch_problems(
             remediation.push_str(CODEX_HOOK_TRUST_GUIDANCE);
         }
         problems.push(DoctorProblem {
-            kind: ProblemKind::CodexIntegrationContentMismatch,
-            category: ProblemCategory::RepoAssets,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: format!(
-                "{} file(s) differ from the canonical embedded content: {}.",
-                group.display_label(),
-                mismatched_paths
-            ),
-            remediation,
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind: ProblemKind::CodexIntegrationContentMismatch,
+                category: ProblemCategory::RepoAssets,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: format!(
+                    "{} file(s) differ from the canonical embedded content: {}.",
+                    group.display_label(),
+                    mismatched_paths
+                ),
+                remediation,
+                next_action: "manual_steps",
+            },
             scope: Some(group.key),
             mutation_scope_target: None,
         });
@@ -1640,20 +1665,22 @@ fn push_codex_integration_read_fail_problems(
                 continue;
             };
             problems.push(DoctorProblem {
-                kind: ProblemKind::CodexAssetReadFailed,
-                category: ProblemCategory::FilesystemPermissions,
-                severity: ProblemSeverity::Error,
-                fixability: ProblemFixability::ManualOnly,
-                summary: format!(
-                    "Unable to read Codex asset '{}' at '{}': {error}",
-                    child.relative_path,
-                    child.path.display()
-                ),
-                remediation: format!(
-                    "Verify that '{}' is readable before rerunning 'sce doctor'.",
-                    child.path.display()
-                ),
-                next_action: "manual_steps",
+                health: HealthProblem {
+                    kind: ProblemKind::CodexAssetReadFailed,
+                    category: ProblemCategory::FilesystemPermissions,
+                    severity: ProblemSeverity::Error,
+                    fixability: ProblemFixability::ManualOnly,
+                    summary: format!(
+                        "Unable to read Codex asset '{}' at '{}': {error}",
+                        child.relative_path,
+                        child.path.display()
+                    ),
+                    remediation: format!(
+                        "Verify that '{}' is readable before rerunning 'sce doctor'.",
+                        child.path.display()
+                    ),
+                    next_action: "manual_steps",
+                },
                 scope: Some(group.key),
                 mutation_scope_target: None,
             });
@@ -1694,19 +1721,21 @@ fn inspect_opencode_plugin_ordering_health(
 
     let trailing = entries[position + 1..].join(", ");
     problems.push(DoctorProblem {
-        kind: ProblemKind::OpenCodePluginRegistryInvalid,
-        category: ProblemCategory::RepoAssets,
-        severity: ProblemSeverity::Error,
-        fixability: ProblemFixability::ManualOnly,
-        summary: format!(
-            "OpenCode plugin registry '{}' lists '{OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY}' before other plugins ({trailing}); it must be the final plugin so an earlier plugin can reject a tool before the mutation-scope Start is established.",
-            manifest_path.display()
-        ),
-        remediation: format!(
-            "Move '{OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY}' to the end of the 'plugin' array in '{}', or reinstall OpenCode assets, then rerun 'sce doctor'.",
-            manifest_path.display()
-        ),
-        next_action: "manual_steps",
+        health: HealthProblem {
+            kind: ProblemKind::OpenCodePluginRegistryInvalid,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!(
+                "OpenCode plugin registry '{}' lists '{OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY}' before other plugins ({trailing}); it must be the final plugin so an earlier plugin can reject a tool before the mutation-scope Start is established.",
+                manifest_path.display()
+            ),
+            remediation: format!(
+                "Move '{OPENCODE_MUTATION_SCOPE_PLUGIN_ENTRY}' to the end of the 'plugin' array in '{}', or reinstall OpenCode assets, then rerun 'sce doctor'.",
+                manifest_path.display()
+            ),
+            next_action: "manual_steps",
+        },
         scope: Some(IntegrationGroupKey::new(
             IntegrationTarget::OpenCode,
             IntegrationArea::Plugins,
@@ -1741,16 +1770,18 @@ fn inspect_opencode_plugin_registry_health(
         )
     };
     problems.push(DoctorProblem {
-        kind: ProblemKind::OpenCodePluginRegistryInvalid,
-        category: ProblemCategory::RepoAssets,
-        severity: ProblemSeverity::Error,
-        fixability: ProblemFixability::ManualOnly,
-        summary,
-        remediation: format!(
-            "Reinstall OpenCode assets to restore the canonical plugin registry at '{}', then rerun 'sce doctor'.",
-            manifest_path.display()
-        ),
-        next_action: "manual_steps",
+        health: HealthProblem {
+            kind: ProblemKind::OpenCodePluginRegistryInvalid,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Error,
+            fixability: ProblemFixability::ManualOnly,
+            summary,
+            remediation: format!(
+                "Reinstall OpenCode assets to restore the canonical plugin registry at '{}', then rerun 'sce doctor'.",
+                manifest_path.display()
+            ),
+            next_action: "manual_steps",
+        },
         scope: Some(IntegrationGroupKey::new(
             IntegrationTarget::OpenCode,
             IntegrationArea::Plugins,
@@ -1796,16 +1827,18 @@ fn inspect_opencode_asset_presence(
         )
     };
     problems.push(DoctorProblem {
-        kind: ProblemKind::OpenCodeAssetMissingOrInvalid,
-        category: ProblemCategory::RepoAssets,
-        severity: ProblemSeverity::Warning,
-        fixability: ProblemFixability::ManualOnly,
-        summary,
-        remediation: format!(
-            "Reinstall OpenCode assets to restore the canonical {remediation_label} at '{}', then rerun 'sce doctor'.",
-            asset_path.display()
-        ),
-        next_action: "manual_steps",
+        health: HealthProblem {
+            kind: ProblemKind::OpenCodeAssetMissingOrInvalid,
+            category: ProblemCategory::RepoAssets,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary,
+            remediation: format!(
+                "Reinstall OpenCode assets to restore the canonical {remediation_label} at '{}', then rerun 'sce doctor'.",
+                asset_path.display()
+            ),
+            next_action: "manual_steps",
+        },
         scope: Some(IntegrationGroupKey::new(
             IntegrationTarget::OpenCode,
             IntegrationArea::Plugins,

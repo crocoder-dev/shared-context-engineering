@@ -121,12 +121,12 @@ fn format_report_with_color_policy(
     let blocking_problem_count = report
         .problems
         .iter()
-        .filter(|problem| problem.severity == ProblemSeverity::Error)
+        .filter(|problem| problem.health.severity == ProblemSeverity::Error)
         .count();
     let warning_problem_count = report
         .problems
         .iter()
-        .filter(|problem| problem.severity == ProblemSeverity::Warning)
+        .filter(|problem| problem.health.severity == ProblemSeverity::Warning)
         .count();
     let mut lines = Vec::new();
     lines.push(match report.mode {
@@ -383,10 +383,10 @@ where
     report
         .problems
         .iter()
-        .filter(|problem| problem.scope.is_none() && matches(problem.kind))
+        .filter(|problem| problem.scope.is_none() && matches(problem.health.kind))
         .map(|problem| DoctorDisplayDetail::Problem {
-            summary: problem.summary.clone(),
-            remediation: problem.remediation.clone(),
+            summary: problem.health.summary.clone(),
+            remediation: problem.health.remediation.clone(),
         })
         .collect()
 }
@@ -400,8 +400,8 @@ fn scoped_problem_details(
         .iter()
         .filter(|problem| problem.scope == Some(scope))
         .map(|problem| DoctorDisplayDetail::Problem {
-            summary: problem.summary.clone(),
-            remediation: problem.remediation.clone(),
+            summary: problem.health.summary.clone(),
+            remediation: problem.health.remediation.clone(),
         })
         .collect()
 }
@@ -449,9 +449,9 @@ where
     report
         .problems
         .iter()
-        .filter(|problem| matches(problem.kind))
+        .filter(|problem| matches(problem.health.kind))
         .fold(DoctorDisplayStatus::Pass, |status, problem| {
-            status.worst(match problem.severity {
+            status.worst(match problem.health.severity {
                 ProblemSeverity::Error => DoctorDisplayStatus::Fail,
                 ProblemSeverity::Warning => DoctorDisplayStatus::Warn,
             })
@@ -502,7 +502,7 @@ fn repository_identity_status(report: &HookDoctorReport) -> DoctorDisplayStatus 
 fn repository_root_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
     if report.problems.iter().any(|problem| {
         matches!(
-            problem.kind,
+            problem.health.kind,
             ProblemKind::BareRepository | ProblemKind::NotInsideGitRepository
         )
     }) {
@@ -517,7 +517,7 @@ fn repository_root_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
 fn git_hooks_status(report: &HookDoctorReport) -> DoctorDisplayStatus {
     if report.problems.iter().any(|problem| {
         matches!(
-            problem.kind,
+            problem.health.kind,
             ProblemKind::HooksDirectoryMissing
                 | ProblemKind::HooksPathNotDirectory
                 | ProblemKind::UnableToResolveGitHooksDirectory
@@ -581,7 +581,7 @@ fn integration_group_status(
         .iter()
         .filter(|problem| problem.scope == Some(group.key))
         .fold(DoctorDisplayStatus::Pass, |status, problem| {
-            status.worst(match problem.severity {
+            status.worst(match problem.health.severity {
                 ProblemSeverity::Error => DoctorDisplayStatus::Fail,
                 ProblemSeverity::Warning => DoctorDisplayStatus::Warn,
             })
@@ -1006,15 +1006,15 @@ fn render_report_json(execution: &DoctorExecution) -> Result<String> {
         "sce_login": execution.access.login_json(),
         "managed_telemetry": managed_telemetry::json(execution.managed_telemetry, &execution.access),
         "problems": report.problems.iter().map(|problem| json!({
-            "kind": problem_kind(problem.kind),
+            "kind": problem_kind(problem.health.kind),
             "target": problem_target(problem),
-            "category": problem_category(problem.category),
-            "severity": problem_severity(problem.severity),
-            "fixability": problem_fixability(problem.fixability),
-            "summary": problem.summary,
+            "category": problem_category(problem.health.category),
+            "severity": problem_severity(problem.health.severity),
+            "fixability": problem_fixability(problem.health.fixability),
+            "summary": problem.health.summary,
             "remediation": {
-                "next_action": problem.next_action,
-                "text": problem.remediation,
+                "next_action": problem.health.next_action,
+                "text": problem.health.remediation,
             },
         })).collect::<Vec<_>>(),
         "fix_results": if report.mode == DoctorMode::Fix {
@@ -1434,7 +1434,7 @@ mod access_render_tests {
 
         assert_eq!(access.login, LoginState::NotLoggedIn);
         assert_eq!(report.problems.len(), 1);
-        assert_eq!(report.problems[0].severity, ProblemSeverity::Error);
+        assert_eq!(report.problems[0].health.severity, ProblemSeverity::Error);
         assert_eq!(
             render(&sce_login_node(&report, &access)),
             vec![
@@ -1473,9 +1473,9 @@ mod access_render_tests {
         let report = report(&access);
 
         assert_eq!(report.problems.len(), 1);
-        assert_eq!(report.problems[0].kind, ProblemKind::SceLoginRequired);
-        assert_eq!(report.problems[0].severity, ProblemSeverity::Error);
-        assert_eq!(report.problems[0].next_action, "auth_login");
+        assert_eq!(report.problems[0].health.kind, ProblemKind::SceLoginRequired);
+        assert_eq!(report.problems[0].health.severity, ProblemSeverity::Error);
+        assert_eq!(report.problems[0].health.next_action, "auth_login");
         assert_eq!(
             render(&sce_login_node(&report, &access)),
             vec![
@@ -1530,9 +1530,9 @@ mod access_render_tests {
             || async { LoginState::Unavailable(LoginUnavailableReason::DatabaseLocked) },
         );
         let report = report(&access);
-        assert_eq!(report.problems[0].kind, ProblemKind::SceLoginUnavailable);
-        assert_eq!(report.problems[0].severity, ProblemSeverity::Warning);
-        assert_eq!(report.problems[0].next_action, "manual_steps");
+        assert_eq!(report.problems[0].health.kind, ProblemKind::SceLoginUnavailable);
+        assert_eq!(report.problems[0].health.severity, ProblemSeverity::Warning);
+        assert_eq!(report.problems[0].health.next_action, "manual_steps");
         assert_eq!(
             render(&sce_login_node(&report, &access)),
             vec![
@@ -1560,9 +1560,9 @@ mod access_render_tests {
         );
         let report = report(&access);
         assert_eq!(report.problems.len(), 1);
-        assert_eq!(report.problems[0].kind, ProblemKind::SceLoginUnavailable);
-        assert_eq!(report.problems[0].severity, ProblemSeverity::Warning);
-        assert_eq!(report.problems[0].next_action, "manual_steps");
+        assert_eq!(report.problems[0].health.kind, ProblemKind::SceLoginUnavailable);
+        assert_eq!(report.problems[0].health.severity, ProblemSeverity::Warning);
+        assert_eq!(report.problems[0].health.next_action, "manual_steps");
         assert_eq!(
             render(&sce_login_node(&report, &access)),
             vec![
@@ -1728,6 +1728,7 @@ mod access_render_tests {
 #[cfg(test)]
 mod problem_json_tests {
     use super::{problem_kind, problem_target};
+    use crate::services::lifecycle::HealthProblem;
     use crate::services::doctor::types::{
         DoctorProblem, IntegrationArea, IntegrationGroupKey, IntegrationTarget, ProblemCategory,
         ProblemFixability, ProblemKind, ProblemSeverity,
@@ -1740,13 +1741,15 @@ mod problem_json_tests {
         mutation_scope_target: Option<IntegrationTarget>,
     ) -> DoctorProblem {
         DoctorProblem {
-            kind,
-            category,
-            severity: ProblemSeverity::Error,
-            fixability: ProblemFixability::ManualOnly,
-            summary: String::new(),
-            remediation: String::new(),
-            next_action: "manual_steps",
+            health: HealthProblem {
+                kind,
+                category,
+                severity: ProblemSeverity::Error,
+                fixability: ProblemFixability::ManualOnly,
+                summary: String::new(),
+                remediation: String::new(),
+                next_action: "manual_steps",
+            },
             scope,
             mutation_scope_target,
         }
@@ -1765,7 +1768,7 @@ mod problem_json_tests {
         );
 
         assert_eq!(
-            problem_kind(missing.kind),
+            problem_kind(missing.health.kind),
             "claude_integration_files_missing"
         );
         assert_eq!(problem_target(&missing), Some("claude"));
@@ -1780,7 +1783,7 @@ mod problem_json_tests {
             Some(IntegrationTarget::ClaudeCode),
         );
 
-        assert_eq!(problem_kind(blocked.kind), "mutation_scope_health_blocked");
+        assert_eq!(problem_kind(blocked.health.kind), "mutation_scope_health_blocked");
         assert_eq!(problem_target(&blocked), Some("claude"));
     }
 

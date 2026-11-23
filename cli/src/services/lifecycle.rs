@@ -5,15 +5,6 @@ use anyhow::Result;
 use crate::app::{HasFs, HasRepoRoot};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LifecycleProviderId {
-    Config,
-    LocalDb,
-    AuthDb,
-    AgentTraceDb,
-    Hooks,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HealthCategory {
     GlobalState,
     RepositoryTargeting,
@@ -162,16 +153,6 @@ pub enum LifecycleProvider {
 }
 
 impl LifecycleProvider {
-    pub fn id(self) -> LifecycleProviderId {
-        match self {
-            Self::Config => LifecycleProviderId::Config,
-            Self::LocalDb => LifecycleProviderId::LocalDb,
-            Self::AuthDb => LifecycleProviderId::AuthDb,
-            Self::AgentTraceDb => LifecycleProviderId::AgentTraceDb,
-            Self::Hooks => LifecycleProviderId::Hooks,
-        }
-    }
-
     pub async fn diagnose<C: HasRepoRoot>(self, ctx: &C) -> Vec<HealthProblem> {
         match self {
             Self::Config => {

@@ -6,6 +6,8 @@ use crate::services::managed_telemetry::{
 };
 
 use super::access::DoctorAccess;
+use crate::services::lifecycle::HealthProblem;
+
 use super::types::{
     DoctorProblem, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
 };
@@ -150,13 +152,15 @@ fn inaccessible_guidance(platform: CredentialStorePlatform) -> (String, String) 
 
 pub(super) fn problem(health: ManagedTelemetryHealth) -> Option<DoctorProblem> {
     diagnostic(health).map(|diagnostic| DoctorProblem {
-        kind: ProblemKind::ManagedTelemetryUnavailable,
-        category: ProblemCategory::GlobalState,
-        severity: ProblemSeverity::Warning,
-        fixability: ProblemFixability::ManualOnly,
-        summary: format!("{} {HOOK_IMPACT}", diagnostic.summary),
-        remediation: diagnostic.remediation,
-        next_action: diagnostic.next_action,
+        health: HealthProblem {
+            kind: ProblemKind::ManagedTelemetryUnavailable,
+            category: ProblemCategory::GlobalState,
+            severity: ProblemSeverity::Warning,
+            fixability: ProblemFixability::ManualOnly,
+            summary: format!("{} {HOOK_IMPACT}", diagnostic.summary),
+            remediation: diagnostic.remediation,
+            next_action: diagnostic.next_action,
+        },
         scope: None,
         mutation_scope_target: None,
     })
