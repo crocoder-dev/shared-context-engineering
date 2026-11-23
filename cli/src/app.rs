@@ -31,7 +31,6 @@ struct AppRuntime {
     telemetry_enabled: bool,
     fs: services::capabilities::StdFsOps,
     git: services::capabilities::ProcessGitOps,
-    registry: services::command_registry::CommandRegistry,
     startup_diagnostic: Option<String>,
 }
 
@@ -377,7 +376,6 @@ fn initialize_runtime(startup: StartupContext) -> Result<AppRuntime, CliError> {
             .telemetry_enabled(),
         fs: services::capabilities::StdFsOps,
         git: services::capabilities::ProcessGitOps,
-        registry: services::command_registry::build_default_registry(),
         startup_diagnostic: startup.startup_diagnostic,
     })
 }
@@ -396,7 +394,6 @@ where
     let context = runtime.context();
     run_command_lifecycle_with_context(
         args,
-        &runtime.registry,
         &context,
         runtime.startup_diagnostic.as_deref(),
         stdout,
@@ -407,7 +404,6 @@ where
 
 async fn run_command_lifecycle_with_context<I, L, T, StdoutW, StderrW>(
     args: I,
-    registry: &services::command_registry::CommandRegistry,
     context: &AppContext<'_, L, T>,
     startup_diagnostic: Option<&str>,
     stdout: &mut StdoutW,
@@ -436,7 +432,7 @@ where
                 let Some((command_args, (stdout, stderr))) = command_inputs else {
                     return Err(repeated_dispatch_error());
                 };
-                let result = dispatch_command(command_args, registry, context, stderr).await;
+                let result = dispatch_command(command_args, context, stderr).await;
                 app_support::render_command_result(
                     result,
                     Some(context.logger()),
@@ -456,7 +452,6 @@ fn repeated_dispatch_error() -> CliError {
 
 async fn dispatch_command<L, T, StderrW>(
     args: Vec<String>,
-    registry: &services::command_registry::CommandRegistry,
     context: &AppContext<'_, L, T>,
     stderr: &mut StderrW,
 ) -> Result<String, CliError>
@@ -465,22 +460,20 @@ where
     T: TelemetryTrait,
     StderrW: Write,
 {
-    let command = parse_command_phase(args, registry, context)?;
+    let command = parse_command_phase(args, context)?;
     services::managed_telemetry::trace_export::record_command_name(&command.name());
     app_support::execute_command_phase(&command, context, stderr).await
 }
 
 fn parse_command_phase<I>(
     args: I,
-    registry: &services::command_registry::CommandRegistry,
     context: &impl HasLogger,
 ) -> Result<services::command_registry::RuntimeCommand, CliError>
 where
     I: IntoIterator<Item = String>,
 {
     let logger = context.logger();
-    let command =
-        services::parse::command_runtime::parse_runtime_command(args, registry, Some(logger))?;
+    let command = services::parse::command_runtime::parse_runtime_command(args, Some(logger))?;
     logger.info(
         "sce.command.parsed",
         "Command parsed",
@@ -679,7 +672,6 @@ pub(crate) mod tests {
             let mut stdout = Vec::new();
             let result = Box::pin(run_command_lifecycle_with_context(
                 args.into_iter().map(String::from),
-                &services::command_registry::CommandRegistry::default(),
                 &context,
                 None,
                 &mut stdout,
@@ -739,7 +731,6 @@ pub(crate) mod tests {
         let context = AppContext::new(&logger, &telemetry, &fs, &git, None);
         let result = Box::pin(run_command_lifecycle_with_context(
             args.iter().map(|arg| (*arg).to_string()),
-            &services::command_registry::CommandRegistry::default(),
             &context,
             None,
             stdout,
@@ -849,7 +840,6 @@ pub(crate) mod tests {
 
         let result = Box::pin(run_command_lifecycle_with_context(
             ["sce", "help"].map(String::from),
-            &services::command_registry::CommandRegistry::default(),
             &context,
             None,
             &mut FailingWriter,

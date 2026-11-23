@@ -19,12 +19,6 @@ const SCE_BANNER_VISIT_SUFFIX: &str = " to learn more.";
 const HELP_COMMAND_NAME: &str = "help";
 const HELP_COMMAND_PURPOSE: &str = "Show help for the current CLI surface";
 
-pub fn is_known_command(name: &str) -> bool {
-    name == HELP_COMMAND_NAME
-        || cli_schema::TOP_LEVEL_COMMANDS
-            .iter()
-            .any(|command| command.name == name)
-}
 enum HelpSectionBodyLine {
     Text(&'static str),
     Command {

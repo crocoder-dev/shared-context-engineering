@@ -5,19 +5,6 @@ use crate::app::{ContextWithRepoRoot, HasLogger};
 use crate::services;
 use crate::services::error::CliError;
 
-const DEFAULT_COMMAND_NAMES: &[&str] = &[
-    services::auth_command::NAME,
-    services::completion::NAME,
-    services::config::NAME,
-    services::doctor::NAME,
-    services::help::NAME,
-    services::hooks::NAME,
-    services::bash_policy::NAME,
-    services::setup::NAME,
-    services::sync::NAME,
-    services::version::NAME,
-];
-
 pub enum RuntimeCommand {
     Help(services::help::command::HelpCommand),
     HelpText(services::help::command::HelpTextCommand),
@@ -71,106 +58,5 @@ impl RuntimeCommand {
             Self::Completion(command) => Ok(command.execute(context)),
             Self::Sync(command) => command.execute_with_stderr(context, stderr).await,
         }
-    }
-}
-
-pub struct CommandRegistry {
-    names: &'static [&'static str],
-}
-
-impl CommandRegistry {
-    pub fn contains(&self, name: &str) -> bool {
-        self.names.contains(&name)
-    }
-}
-
-impl Default for CommandRegistry {
-    fn default() -> Self {
-        build_default_registry()
-    }
-}
-
-pub fn build_default_registry() -> CommandRegistry {
-    CommandRegistry {
-        names: DEFAULT_COMMAND_NAMES,
-    }
-}
-
-pub fn default_runtime_command(name: &str) -> Option<RuntimeCommand> {
-    match name {
-        services::help::NAME => Some(RuntimeCommand::Help(services::help::command::HelpCommand)),
-        services::auth_command::NAME => Some(RuntimeCommand::Auth(
-            services::auth_command::command::AuthCommand {
-                request: services::auth_command::AuthRequest {
-                    subcommand: services::auth_command::AuthSubcommand::Whoami {
-                        format: services::auth_command::AuthFormat::Text,
-                    },
-                },
-            },
-        )),
-        services::config::NAME => Some(RuntimeCommand::Config(
-            services::config::command::ConfigCommand {
-                subcommand: services::config::ConfigSubcommand::Show(
-                    services::config::ConfigRequest {
-                        report_format: services::config::ReportFormat::Text,
-                        config_path: None,
-                        log_level: None,
-                    },
-                ),
-            },
-        )),
-        services::setup::NAME => Some(RuntimeCommand::Setup(
-            services::setup::command::SetupCommand {
-                request: services::setup::SetupRequest {
-                    config_mode: Some(services::setup::SetupMode::Interactive),
-                    install_hooks: true,
-                    hooks_repo_path: None,
-                    context_only: false,
-                    optional_workflows: None,
-                    reconfigure: false,
-                },
-            },
-        )),
-        services::doctor::NAME => Some(RuntimeCommand::Doctor(
-            services::doctor::command::DoctorCommand {
-                request: services::doctor::DoctorRequest {
-                    mode: services::doctor::DoctorMode::Diagnose,
-                    format: services::doctor::DoctorFormat::Text,
-                },
-            },
-        )),
-        services::hooks::NAME => Some(RuntimeCommand::Hooks(
-            services::hooks::command::HooksCommand {
-                subcommand: services::hooks::HookSubcommand::PreCommit,
-            },
-        )),
-        services::bash_policy::NAME => Some(RuntimeCommand::Policy(
-            services::bash_policy::command::PolicyCommand {
-                request: services::bash_policy::BashPolicyRequest {
-                    input: services::bash_policy::PolicyInputMode::ClaudePreToolUse,
-                    output: services::bash_policy::PolicyOutputMode::ClaudeHook,
-                },
-            },
-        )),
-        services::version::NAME => Some(RuntimeCommand::Version(
-            services::version::command::VersionCommand {
-                request: services::version::VersionRequest {
-                    format: services::version::VersionFormat::Text,
-                },
-            },
-        )),
-        services::completion::NAME => Some(RuntimeCommand::Completion(
-            services::completion::command::CompletionCommand {
-                request: services::completion::CompletionRequest {
-                    shell: services::completion::CompletionShell::Bash,
-                },
-            },
-        )),
-        services::sync::NAME => Some(RuntimeCommand::Sync(services::sync::command::SyncCommand {
-            request: services::sync::SyncRequest {
-                format: services::output_format::OutputFormat::Text,
-            },
-        })),
-        _ => None,
     }
 }
