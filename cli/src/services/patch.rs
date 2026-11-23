@@ -8,9 +8,19 @@ const GIT_SOURCE_PREFIX: &str = "a/";
 const GIT_DESTINATION_PREFIX: &str = "b/";
 const DEV_NULL: &str = "/dev/null";
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ParsedPatch {
     pub files: Vec<PatchFileChange>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<Box<PatchAttribution>>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PatchAttribution {
+    pub agent_id: Option<String>,
+    pub agent_type: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub parent_tool_use_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -183,7 +193,10 @@ pub fn parse_patch(input: &str, session_id: Option<&str>) -> Result<ParsedPatch,
         files.push(fb.build()?);
     }
 
-    Ok(ParsedPatch { files })
+    Ok(ParsedPatch {
+        files,
+        attribution: None,
+    })
 }
 
 struct FileBuilder {

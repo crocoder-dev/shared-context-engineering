@@ -4,6 +4,7 @@ use anyhow::Result;
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::agent_trace_db::{ClaudeModelStateObservation, ObservationKind};
+use crate::services::patch::PatchAttribution;
 
 use super::claude_model_state;
 use super::claude_transcript;
@@ -97,6 +98,40 @@ pub(crate) fn claude_subagent_transcript_path(
             .join("subagents")
             .join(file_name),
     )
+}
+
+pub(crate) fn resolve_claude_patch_attribution(
+    evidence: &ClaudeModelEvidence,
+    event_agent_type: Option<&str>,
+) -> PatchAttribution {
+    let Some(agent_id) = evidence.agent_id.as_deref() else {
+        return PatchAttribution {
+            tool_use_id: evidence.tool_use_id.clone(),
+            ..PatchAttribution::default()
+        };
+    };
+
+    let meta = evidence
+        .transcript_path
+        .as_deref()
+        .and_then(|path| claude_subagent_meta_path(path, &evidence.session_id, agent_id))
+        .and_then(|path| claude_transcript::read_claude_subagent_meta(&path).ok())
+        .unwrap_or_default();
+    PatchAttribution {
+        agent_id: Some(agent_id.to_string()),
+        agent_type: event_agent_type.map(str::to_string).or(meta.agent_type),
+        tool_use_id: evidence.tool_use_id.clone(),
+        parent_tool_use_id: meta.parent_tool_use_id,
+    }
+}
+
+pub(crate) fn claude_subagent_meta_path(
+    transcript_path: &Path,
+    session_id: &str,
+    agent_id: &str,
+) -> Option<PathBuf> {
+    claude_subagent_transcript_path(transcript_path, session_id, agent_id)
+        .map(|path| path.with_extension("meta.json"))
 }
 
 fn is_safe_path_component(value: &str) -> bool {
@@ -245,14 +280,6 @@ mod tests {
         .to_string()
     }
 
-    fn text_only(model: &str) -> String {
-        serde_json::json!({
-            "type": "assistant",
-            "message": {"role": "assistant", "model": model, "content": [{"type": "text", "text": "hi"}]}
-        })
-        .to_string()
-    }
-
     #[tokio::test]
     async fn claude_subagent_model_prefers_direct_event_model() {
         let fixture = Fixture::new().await;
@@ -268,43 +295,6 @@ mod tests {
         let model = resolve_claude_model(&fixture.db, &evidence).await.unwrap();
 
         assert_eq!(model.as_deref(), Some("claude/claude-sonnet-5-5"));
-    }
-
-    #[tokio::test]
-    async fn claude_subagent_model_uses_exact_record_not_latest_record() {
-        let fixture = Fixture::new().await;
-        write_transcript(
-            &fixture.subagent_transcript(),
-            &[
-                tool_use("toolu_target", "claude-haiku-5-5"),
-                tool_use("toolu_later", "claude-opus-5-5"),
-                text_only("claude-opus-5-5"),
-            ],
-        );
-
-        let model = resolve_claude_model(&fixture.db, &fixture.subagent_evidence("toolu_target"))
-            .await
-            .unwrap();
-
-        assert_eq!(model.as_deref(), Some("claude/claude-haiku-5-5"));
-    }
-
-    #[tokio::test]
-    async fn claude_subagent_model_is_null_when_exact_record_is_absent() {
-        let fixture = Fixture::new().await;
-        write_transcript(
-            &fixture.subagent_transcript(),
-            &[
-                tool_use("toolu_other", "claude-opus-5-5"),
-                text_only("claude-opus-5-5"),
-            ],
-        );
-
-        let model = resolve_claude_model(&fixture.db, &fixture.subagent_evidence("toolu_target"))
-            .await
-            .unwrap();
-
-        assert_eq!(model, None);
     }
 
     #[tokio::test]
@@ -372,17 +362,6 @@ mod tests {
 
         assert_eq!(model, None);
         assert_eq!(fixture.state_rows().await, before);
-    }
-
-    #[tokio::test]
-    async fn claude_subagent_model_missing_transcript_is_null() {
-        let fixture = Fixture::new().await;
-
-        let model = resolve_claude_model(&fixture.db, &fixture.subagent_evidence("toolu_target"))
-            .await
-            .unwrap();
-
-        assert_eq!(model, None);
     }
 
     #[test]

@@ -7,7 +7,7 @@ The `sce hooks claude-capture <event-name>` CLI route, `ClaudeCaptureEvent`, `Ho
 Rust now exposes these active intakes for Claude/OpenCode editor runtimes:
 
 - `sce hooks diff-trace` — STDIN JSON intake for OpenCode normalized or Claude structured diff-trace payloads with optional/nullable direct attribution. Rust persists direct payload-derived `model_id` and `tool_version` values as-is; Claude model metadata is resolved by the [Claude model resolver](./claude-model-resolver.md), which does not restore the generic session-level abstraction.
-- `sce hooks conversation-trace` — STDIN JSON intake for normalized mixed-batch message/part payloads and supported raw Claude `UserPromptSubmit`, `Stop`, and `PostToolUse` events. Runtime intake failures log `sce.hooks.conversation_trace.error` and fail open to the hook producer.
+- `sce hooks conversation-trace` — STDIN JSON intake for normalized mixed-batch message/part payloads and supported raw Claude `UserPromptSubmit`, `Stop`, and `PostToolUse` events. Claude `PostToolUse` `Write` / `Edit` patch parts get their line `session_id`, hunk `model_id`, and `attribution` object from the [Claude model resolver](./claude-model-resolver.md#patch-part-attribution). Runtime intake failures log `sce.hooks.conversation_trace.error` and fail open to the hook producer.
 
 `sce hooks session-model` is no longer supported. Generated Claude settings register `SessionStart` for local model-state attribution only and newly register `PostModelSwitch`; neither event is part of the removed raw-capture route.
 

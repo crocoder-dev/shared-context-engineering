@@ -217,6 +217,7 @@ fn modified_patch_from_structured_hunks(
             kind: FileChangeKind::Modified,
             hunks,
         }],
+        attribution: None,
     })
 }
 
@@ -251,6 +252,7 @@ fn write_create_patch(file_path: String, content: &str) -> ParsedPatch {
                 .into_iter()
                 .collect(),
         }],
+        attribution: None,
     }
 }
 

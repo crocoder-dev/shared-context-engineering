@@ -203,7 +203,7 @@ fn assert_builds_expected_agent_trace(scenario: AgentTraceScenario) {
         parse_patch(scenario.post_commit, None).expect("fixture patch should parse");
     let golden: Value = serde_json::from_str(scenario.golden).expect("golden json should load");
     validate_agent_trace_value(&golden).expect("golden json should validate against schema");
-    let empty_mutation_patch = ParsedPatch { files: Vec::new() };
+    let empty_mutation_patch = ParsedPatch::default();
     let direct_sources: Vec<_> = direct_patches
         .iter()
         .map(DirectEvidenceSource::repository_relative)
@@ -403,7 +403,7 @@ fn assert_builds_expected_agent_trace_from_evidence(scenario: EvidenceScenario) 
             repository_root: &RepositoryRoot::new(Path::new(TEST_REPOSITORY_ROOT)),
             direct_sources: std::slice::from_ref(&direct_source),
             mutation_ai_patch: &mutation_ai_patch,
-            mutation_non_ai_patch: &ParsedPatch { files: Vec::new() },
+            mutation_non_ai_patch: &ParsedPatch::default(),
         },
         &post_commit_patch,
         AgentTraceMetadataInput {
@@ -608,7 +608,7 @@ fn build_with_sources(
         &committed_patch(),
         sources,
         mutation_ai_patch,
-        &ParsedPatch { files: Vec::new() },
+        &ParsedPatch::default(),
     )
 }
 
@@ -657,7 +657,7 @@ fn build_trace_with_content(
 }
 
 fn no_mutation() -> ParsedPatch {
-    ParsedPatch { files: Vec::new() }
+    ParsedPatch::default()
 }
 
 fn tool_of(trace: &super::AgentTrace) -> Option<(Option<&str>, Option<&str>)> {
@@ -2532,7 +2532,13 @@ fn partition(
             }
         })
         .collect();
-    (ParsedPatch { files: patch_files }, decisions)
+    (
+        ParsedPatch {
+            files: patch_files,
+            attribution: None,
+        },
+        decisions,
+    )
 }
 
 type ExpectedKey = (Option<String>, Option<String>, &'static str);

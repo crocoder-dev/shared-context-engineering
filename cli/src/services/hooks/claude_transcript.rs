@@ -89,6 +89,92 @@ pub(crate) fn find_tool_use_model_in<R: Read + Seek>(
     Ok(None)
 }
 
+pub const CLAUDE_SUBAGENT_META_MAX_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ClaudeSubagentMeta {
+    pub agent_type: Option<String>,
+    pub parent_tool_use_id: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum ClaudeSubagentMetaReadError {
+    Open { path: PathBuf, source: io::Error },
+    Read(io::Error),
+    Oversized,
+    Malformed(serde_json::Error),
+}
+
+impl fmt::Display for ClaudeSubagentMetaReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open { path, source } => write!(
+                f,
+                "failed to open Claude subagent meta file '{}': {source}",
+                path.display()
+            ),
+            Self::Read(source) => write!(f, "failed to read Claude subagent meta file: {source}"),
+            Self::Oversized => write!(
+                f,
+                "Claude subagent meta file exceeds {CLAUDE_SUBAGENT_META_MAX_BYTES} bytes"
+            ),
+            Self::Malformed(source) => {
+                write!(
+                    f,
+                    "Claude subagent meta file is not a JSON object: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ClaudeSubagentMetaReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Open { source, .. } | Self::Read(source) => Some(source),
+            Self::Malformed(source) => Some(source),
+            Self::Oversized => None,
+        }
+    }
+}
+
+pub fn read_claude_subagent_meta(
+    meta_path: &Path,
+) -> Result<ClaudeSubagentMeta, ClaudeSubagentMetaReadError> {
+    let file = File::open(meta_path).map_err(|source| ClaudeSubagentMetaReadError::Open {
+        path: meta_path.to_path_buf(),
+        source,
+    })?;
+    read_subagent_meta_from(file)
+}
+
+pub(crate) fn read_subagent_meta_from<R: Read>(
+    source: R,
+) -> Result<ClaudeSubagentMeta, ClaudeSubagentMetaReadError> {
+    let mut contents = Vec::new();
+    source
+        .take(CLAUDE_SUBAGENT_META_MAX_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(ClaudeSubagentMetaReadError::Read)?;
+    if contents.len() as u64 > CLAUDE_SUBAGENT_META_MAX_BYTES {
+        return Err(ClaudeSubagentMetaReadError::Oversized);
+    }
+
+    let meta = serde_json::from_slice::<serde_json::Map<String, Value>>(&contents)
+        .map_err(ClaudeSubagentMetaReadError::Malformed)?;
+    let string_field = |key: &str| {
+        meta.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    Ok(ClaudeSubagentMeta {
+        agent_type: string_field("agentType"),
+        parent_tool_use_id: string_field("toolUseId"),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecordRead {
     Complete,
@@ -190,7 +276,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        find_claude_transcript_tool_use_model, find_tool_use_model_in, ClaudeTranscriptReadError,
+        find_claude_transcript_tool_use_model, find_tool_use_model_in, read_claude_subagent_meta,
+        read_subagent_meta_from, ClaudeSubagentMeta, ClaudeSubagentMetaReadError,
+        ClaudeTranscriptReadError, CLAUDE_SUBAGENT_META_MAX_BYTES,
         CLAUDE_TRANSCRIPT_MAX_RECORD_BYTES, CLAUDE_TRANSCRIPT_TAIL_WINDOW_BYTES,
     };
 
@@ -401,6 +489,73 @@ mod tests {
 
         assert!(
             matches!(error, ClaudeTranscriptReadError::Read(_)),
+            "unexpected error: {error:?}"
+        );
+    }
+
+    fn meta_of_length(agent_type: &str, tool_use_id: &str, length: usize) -> Vec<u8> {
+        let empty =
+            serde_json::json!({"agentType": agent_type, "toolUseId": tool_use_id, "pad": ""})
+                .to_string();
+        let pad = "x".repeat(length - empty.len());
+        serde_json::json!({"agentType": agent_type, "toolUseId": tool_use_id, "pad": pad})
+            .to_string()
+            .into_bytes()
+    }
+
+    #[test]
+    fn claude_subagent_meta_reads_agent_type_and_parent_tool_use_id() {
+        let meta = read_subagent_meta_from(Cursor::new(
+            br#"{"agentType":"general-purpose","toolUseId":"toolu_parent","description":"x"}"#,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            meta,
+            ClaudeSubagentMeta {
+                agent_type: Some(String::from("general-purpose")),
+                parent_tool_use_id: Some(String::from("toolu_parent")),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_subagent_meta_missing_or_non_string_fields_are_none() {
+        let meta =
+            read_subagent_meta_from(Cursor::new(br#"{"agentType":7,"toolUseId":"  "}"#)).unwrap();
+
+        assert_eq!(meta, ClaudeSubagentMeta::default());
+    }
+
+    #[test]
+    fn claude_subagent_meta_at_cap_is_read_and_one_byte_over_is_rejected() {
+        let cap = usize::try_from(CLAUDE_SUBAGENT_META_MAX_BYTES).unwrap();
+
+        let at_cap =
+            read_subagent_meta_from(Cursor::new(meta_of_length("Explore", "toolu_p", cap)))
+                .expect("meta at the cap is read");
+        assert_eq!(at_cap.parent_tool_use_id.as_deref(), Some("toolu_p"));
+
+        let over_cap =
+            read_subagent_meta_from(Cursor::new(meta_of_length("Explore", "toolu_p", cap + 1)))
+                .expect_err("meta over the cap is rejected");
+        assert!(matches!(over_cap, ClaudeSubagentMetaReadError::Oversized));
+    }
+
+    #[test]
+    fn claude_subagent_meta_malformed_and_missing_files_are_typed_errors() {
+        let malformed = read_subagent_meta_from(Cursor::new(b"[\"not an object\"]"))
+            .expect_err("non-object meta is rejected");
+        assert!(matches!(
+            malformed,
+            ClaudeSubagentMetaReadError::Malformed(_)
+        ));
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("agent-a.meta.json");
+        let error = read_claude_subagent_meta(&missing).expect_err("missing meta fails to open");
+        assert!(
+            matches!(&error, ClaudeSubagentMetaReadError::Open { path, .. } if path == &missing),
             "unexpected error: {error:?}"
         );
     }
