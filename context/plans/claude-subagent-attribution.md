@@ -138,13 +138,18 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Task stack
 
-- [ ] T01: `Record the Claude subagent attribution decision` (status:todo)
+- [x] T01: `Record the Claude subagent attribution decision` (status:done)
   - Task ID: T01
   - Scope: In — one new decision record under `context/decisions/` covering the subagent precedence, the omitted ordering step and why, the no-seeding rule, the preserved no-inheritance rule, the single-resolver rule, the transcript bounds and their consequences, the Claude-only write-once provenance completion fill and its rejected generic alternative, and the synchronized `attribution` fields, with `Supersedes` lines for the `agent_id` export guardrail of `2026-09-01-claude-model-attribution-state` and the Claude no-backfill provenance rule. Out — code changes, and edits to the historical decision file.
   - Dependencies: none
   - Done when: the decision record exists with status Accepted, names this plan, and states each rule that AC2–AC12 rely on.
   - Verify: inspect the new record; `git diff --stat -- context/decisions/2026-09-01-claude-model-attribution-state.md` is empty.
-  - Context synchronization: pending
+  - Completed: 2026-11-23
+  - Files changed: `context/decisions/2026-11-23-claude-subagent-attribution.md`, `context/plans/claude-subagent-attribution.md`
+  - Result: Added the Accepted decision `2026-11-23-claude-subagent-attribution` naming this plan. It states the single Claude resolver with full and exact-evidence entry points, unchanged main-agent precedence, subagent precedence (direct model, exact `tool_use_id` record, `NULL`) and the omitted ordering step, preserved no-inheritance and no-seeding rules, subagent path derivation, the 4 MiB window and 1 MiB record transcript bounds with typed fail-open errors, the bounded meta reader, per-invocation single scan, the Claude-only write-once `NULL`-to-model completion fill with its typed outcome and rejected generic `close` alternative, and the patch-part `session_id`, `model_id`, and `attribution` fields. Two `Supersedes` lines name the `agent_id` export guardrail of `2026-09-01-claude-model-attribution-state` and the Claude no-backfill provenance rule.
+  - Verify outcomes: inspected the new record against AC2–AC12, and each rule is stated; `git diff --stat -- context/decisions/2026-09-01-claude-model-attribution-state.md` printed nothing.
+  - Context impact: localized — one new decision record; current-state context files change in later tasks when behavior lands.
+  - Context synchronization: synced
 
 - [ ] T02: `Add the shared Claude model resolver with bounded exact-record transcript lookup` (status:todo)
   - Task ID: T02
