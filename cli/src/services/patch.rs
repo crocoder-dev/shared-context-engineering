@@ -12,7 +12,7 @@ const DEV_NULL: &str = "/dev/null";
 pub struct ParsedPatch {
     pub files: Vec<PatchFileChange>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attribution: Option<Box<PatchAttribution>>,
+    pub attribution: Option<PatchAttribution>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]

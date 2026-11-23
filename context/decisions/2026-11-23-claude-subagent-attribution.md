@@ -108,8 +108,10 @@ overwrite a newer `PostModelSwitch`.
 The subagent transcript path is
 `<dirname(transcript_path)>/<session_id>/subagents/agent-<agent_id>.jsonl`,
 and the meta file has the same stem with `.meta.json`. When the event
-`transcript_path` already names `subagents/agent-<agent_id>.jsonl`, the
-resolver uses it directly. One function owns this derivation.
+`transcript_path` already names a file under `<session_id>/subagents/`, the
+resolver uses the sibling `agent-<agent_id>.jsonl` in that directory, which is
+the event path itself for the matching subagent. A `subagents/` path under a
+different session directory yields no path. One function owns this derivation.
 
 ### Transcript bounds
 
@@ -157,8 +159,14 @@ boundary:
 
 The fill applies to main-agent and subagent Claude scopes alike, because both
 use exact evidence only. Main-agent admission precedence is unchanged.
-Provenance is read at commit time, so a fill at `PostToolUse` is visible to the
-commit of that mutation. The fill does not apply to non-Claude scopes.
+The fill does not apply to non-Claude scopes.
+
+The fill is not ordered against commits. Commit-time attribution reads the
+provenance stored at that moment. A commit can run before the completion fill,
+for example when it is made concurrently or outside Claude's tool lifecycle.
+That commit observes `model_id = NULL`. The fill never rewrites an Agent Trace
+that was already generated. It stays best-effort, atomic, and write-once, and no
+synchronization or retry is added to order it before commits.
 
 ### Patch-part attribution
 

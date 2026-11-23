@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use super::{load_patch_from_json, parse_patch, FileChangeKind, PatchFileChange};
+use super::{load_patch_from_json, parse_patch, FileChangeKind, PatchAttribution, PatchFileChange};
 
 fn quote(path: &str) -> String {
     let mut quoted = String::from("\"");
@@ -178,4 +178,30 @@ fn patch_json_without_attribution_still_loads_and_reserializes_unchanged() {
         serde_json::to_string(&patch).unwrap(),
         HISTORICAL_PATCH_JSON
     );
+}
+
+#[test]
+fn patch_attribution_serializes_inline_and_round_trips() {
+    let mut patch =
+        load_patch_from_json(HISTORICAL_PATCH_JSON).expect("historical patch JSON loads");
+    patch.attribution = Some(PatchAttribution {
+        agent_id: Some(String::from("abc123")),
+        agent_type: Some(String::from("Explore")),
+        tool_use_id: Some(String::from("toolu_a")),
+        parent_tool_use_id: Some(String::from("toolu_parent")),
+    });
+
+    let json = serde_json::to_value(&patch).unwrap();
+    assert_eq!(
+        json["attribution"],
+        serde_json::json!({
+            "agent_id": "abc123",
+            "agent_type": "Explore",
+            "tool_use_id": "toolu_a",
+            "parent_tool_use_id": "toolu_parent",
+        })
+    );
+
+    let reloaded = load_patch_from_json(&json.to_string()).expect("attributed patch JSON loads");
+    assert_eq!(reloaded, patch);
 }

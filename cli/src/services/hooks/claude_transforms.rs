@@ -302,5 +302,5 @@ fn attribute_claude_patch(
             line.session_id = Some(canonical_session_id.to_string());
         }
     }
-    patch.attribution = Some(Box::new(enrichment.attribution));
+    patch.attribution = Some(enrichment.attribution);
 }

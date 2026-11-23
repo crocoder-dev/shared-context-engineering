@@ -63,8 +63,11 @@ yet written resolves to `NULL`.
 `claude_subagent_transcript_path` is the one function that derives the subagent
 transcript path:
 `<dirname(transcript_path)>/<session_id>/subagents/agent-<agent_id>.jsonl`.
-When the event `transcript_path` already names that file, the function returns
-it unchanged. The function returns no path when the session ID (without `cc_`)
+When the event `transcript_path` already names a file under
+`<session_id>/subagents/`, the function returns the sibling
+`agent-<agent_id>.jsonl` in that directory; this is the event path itself when
+it names the matching subagent. A `subagents/` path under a different session
+directory yields no path. The function returns no path when the session ID (without `cc_`)
 or the `agent_id` contains a character outside `[A-Za-z0-9_-]`.
 
 ## Transcript bounds
