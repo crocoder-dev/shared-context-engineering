@@ -37,6 +37,9 @@ fn manual_fix_detail(problem: &DoctorProblem) -> String {
     if problem.health.category == ProblemCategory::MutationScopeHealth {
         problem.health.remediation.clone()
     } else {
-        format!("{} Manual remediation is still required.", problem.health.summary)
+        format!(
+            "{} Manual remediation is still required.",
+            problem.health.summary
+        )
     }
 }

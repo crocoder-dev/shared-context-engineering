@@ -10,7 +10,6 @@ use crate::services::codex_hook_policy::CodexHookPolicyReadiness;
 use crate::services::codex_hook_trust;
 use crate::services::config::schema::parse_file_config;
 use crate::services::config::{self, ConfigPathSource, IntegrationTargetId};
-use crate::services::lifecycle::HealthProblem;
 use crate::services::default_paths::{
     agent_trace_db_path_for_repository, claude_asset, codex_asset, opencode_asset, pi_asset,
     repo_dir, InstallTargetPaths, RepoPaths,
@@ -22,6 +21,7 @@ use crate::services::hooks::{
     claude_mutation_scope, codex_mutation_scope, mutation_scope, opencode_mutation_scope,
     pi_mutation_scope,
 };
+use crate::services::lifecycle::HealthProblem;
 use crate::services::mutation_trace::runtime::resolve_git_dir;
 use crate::services::repository_identity::resolve::{
     resolve_repository_identity, RepositoryIdentitySource,
@@ -1154,10 +1154,11 @@ fn push_codex_hook_policy_unknown_problems(
                     "Unable to determine whether Codex policy permits project hooks: {reason}. \
                      These current SCE registrations cannot be confirmed healthy: {details}."
                 ),
-                remediation: "Ensure the 'codex' CLI is installed and reachable on PATH, then rerun \
+                remediation:
+                    "Ensure the 'codex' CLI is installed and reachable on PATH, then rerun \
                                'sce doctor' so it can re-probe Codex's effective hook-discovery \
                                policy; 'sce doctor --fix' cannot repair this."
-                    .to_string(),
+                        .to_string(),
                 next_action: "manual_steps",
             },
             scope: Some(group.key),
