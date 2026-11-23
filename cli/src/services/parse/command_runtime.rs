@@ -1,12 +1,11 @@
-use crate::{cli_schema, command_surface, services};
+use crate::{cli_schema, services};
 use clap::{ArgAction, CommandFactory};
-use services::command_registry::{CommandRegistry, RuntimeCommand};
+use services::command_registry::RuntimeCommand;
 use services::error::{CliError, FailureClass};
 use services::observability::traits::Logger as LoggerTrait;
 
 pub fn parse_runtime_command<I>(
     args: I,
-    registry: &CommandRegistry,
     logger: Option<&dyn LoggerTrait>,
 ) -> Result<RuntimeCommand, CliError>
 where
@@ -29,26 +28,22 @@ where
     }
 
     if args_vec.len() <= 1 {
-        return registry_command(registry, services::help::NAME);
+        return Ok(help_command());
     }
 
     let cli = match cli_schema::Cli::try_parse_from(&args_vec) {
         Ok(cli) => cli,
-        Err(error) => return handle_clap_error(&args_vec, registry, &error),
+        Err(error) => return handle_clap_error(&args_vec, &error),
     };
 
     let Some(command) = cli.command else {
-        return registry_command(registry, services::help::NAME);
+        return Ok(help_command());
     };
 
     convert_clap_command(command)
 }
 
-fn handle_clap_error(
-    args: &[String],
-    registry: &CommandRegistry,
-    error: &clap::Error,
-) -> Result<RuntimeCommand, CliError> {
+fn handle_clap_error(args: &[String], error: &clap::Error) -> Result<RuntimeCommand, CliError> {
     if error.kind() == clap::error::ErrorKind::DisplayHelp {
         if let Some((name, text)) = render_subcommand_help_from_args(args) {
             return Ok(RuntimeCommand::HelpText(
@@ -56,7 +51,7 @@ fn handle_clap_error(
             ));
         }
 
-        return registry_command(registry, services::help::NAME);
+        return Ok(help_command());
     }
 
     if error.kind() == clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand {
@@ -76,28 +71,20 @@ fn handle_clap_error(
             ));
         }
 
-        return registry_command(registry, services::help::NAME);
+        return Ok(help_command());
     }
 
     if error.kind() == clap::error::ErrorKind::DisplayVersion {
-        return registry_command(registry, services::version::NAME);
+        return convert_clap_command(cli_schema::Commands::Version {
+            format: services::output_format::OutputFormat::Text,
+        });
     }
 
     Err(classify_clap_error(error))
 }
 
-fn registry_command(registry: &CommandRegistry, name: &str) -> Result<RuntimeCommand, CliError> {
-    if !registry.contains(name) {
-        return Err(CliError::runtime(anyhow::Error::msg(format!(
-            "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
-        ))));
-    }
-
-    services::command_registry::default_runtime_command(name).ok_or_else(|| {
-        CliError::runtime(anyhow::Error::msg(format!(
-            "Command '{name}' is not registered. Try: run 'sce --help' to see available commands."
-        )))
-    })
+fn help_command() -> RuntimeCommand {
+    RuntimeCommand::Help(services::help::command::HelpCommand)
 }
 
 fn classify_clap_error(error: &clap::Error) -> CliError {
@@ -225,7 +212,11 @@ fn clean_clap_error_message(message: &str, kind: clap::error::ErrorKind) -> Stri
     match kind {
         ErrorKind::InvalidSubcommand => {
             if let Some(subcommand) = extract_quoted_value(message) {
-                if command_surface::is_known_command(&subcommand) {
+                if subcommand == services::help::NAME
+                    || cli_schema::Cli::command()
+                        .find_subcommand(&subcommand)
+                        .is_some()
+                {
                     format!(
                         "Command '{subcommand}' is currently unavailable in this build. Try: run 'sce --help' to see available commands in this build."
                     )
@@ -566,12 +557,8 @@ mod tests {
     use std::process::ExitCode;
 
     fn parse(args: &[&str]) -> RuntimeCommand {
-        parse_runtime_command(
-            args.iter().map(|arg| (*arg).to_string()),
-            &CommandRegistry::default(),
-            None,
-        )
-        .expect("command should parse")
+        parse_runtime_command(args.iter().map(|arg| (*arg).to_string()), None)
+            .expect("command should parse")
     }
 
     fn help_payload(command: RuntimeCommand) -> String {
@@ -580,6 +567,18 @@ mod tests {
             RuntimeCommand::HelpText(command) => command.text,
             _ => panic!("expected a help command"),
         }
+    }
+
+    #[test]
+    fn global_version_flag_uses_version_command() {
+        let RuntimeCommand::Version(command) = parse(&["sce", "--version"]) else {
+            panic!("expected version command");
+        };
+
+        assert_eq!(
+            command.request.format,
+            services::output_format::OutputFormat::Text
+        );
     }
 
     #[test]
@@ -818,7 +817,6 @@ mod tests {
 
         let Err(error) = parse_runtime_command(
             ["sce", "--not-an-option"].into_iter().map(String::from),
-            &CommandRegistry::default(),
             None,
         ) else {
             panic!("unknown option should remain an error");
