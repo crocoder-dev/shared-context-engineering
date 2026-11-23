@@ -13,6 +13,8 @@ use crate::services::db::encryption_key::CredentialAccess;
 use crate::services::managed_telemetry::{run_with_deadline, CREDENTIAL_LOOKUP_DEADLINE};
 use crate::services::token_storage::{self, StoredTokens, StoredTokensLookup, TokenStorageError};
 
+use crate::services::lifecycle::HealthProblem;
+
 use super::types::{
     DoctorProblem, ProblemCategory, ProblemFixability, ProblemKind, ProblemSeverity,
 };
@@ -360,13 +362,15 @@ impl DoctorAccess {
             }
         };
         Some(DoctorProblem {
-            kind,
-            category: ProblemCategory::GlobalState,
-            severity,
-            fixability: ProblemFixability::ManualOnly,
-            summary,
-            remediation: remediation.to_string(),
-            next_action,
+            health: HealthProblem {
+                kind,
+                category: ProblemCategory::GlobalState,
+                severity,
+                fixability: ProblemFixability::ManualOnly,
+                summary,
+                remediation: remediation.to_string(),
+                next_action,
+            },
             scope: None,
             mutation_scope_target: None,
         })

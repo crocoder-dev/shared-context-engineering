@@ -7,13 +7,13 @@
 - `ServiceLifecycle: Send + Sync` exposes three default no-op generic methods against any context implementing the narrow repo-root accessor:
   - `async diagnose<C: HasRepoRoot>(&self, ctx: &C) -> Vec<HealthProblem>`
   - `async fix<C: HasRepoRoot>(&self, ctx: &C, problems: &[HealthProblem]) -> Vec<FixResultRecord>`
-  - `async setup<C: HasRepoRoot>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
-- `HealthProblem`, `HealthCategory`, `HealthSeverity`, `HealthFixability`, and `HealthProblemKind` are lifecycle-owned types that mirror the current doctor taxonomy without making the trait depend on `doctor` module types.
+  - `async setup<C: HasRepoRoot + HasFs>(&self, ctx: &C) -> anyhow::Result<SetupOutcome>`
+- `HealthProblem`, `HealthCategory`, `HealthSeverity`, `HealthFixability`, and `HealthProblemKind` are the canonical health model shared by lifecycle providers and Doctor. Doctor adds only optional reporting metadata in `DoctorProblem { health, scope, mutation_scope_target }`, without duplicating its taxonomy.
 - `FixResultRecord` and `FixOutcome` are lifecycle-owned fix result types.
 - `SetupOutcome` is a minimal lifecycle-owned carrier for current setup result shapes:
   - generic setup `messages`
   - optional lifecycle-owned `RequiredHooksInstallOutcome`
-- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `id`, `diagnose`, `fix`, and `setup` dispatch methods; callers await the async lifecycle operations and does not allocate boxed provider trait objects or erase the lifecycle context to `&dyn HasRepoRoot`; provider dispatch remains compile-time typed over the narrow repo-root accessor.
+- `LifecycleProvider` is a static enum over the concrete provider implementations, and `lifecycle_providers(include_hooks)` is the shared provider catalog/factory used by command orchestrators. The enum owns inherent generic `diagnose`, `fix`, and `setup` dispatch methods; callers await the async lifecycle operations and does not allocate boxed provider trait objects or erase the lifecycle context to `&dyn HasRepoRoot`; provider dispatch remains compile-time typed over the narrow repo-root accessor.
 - Provider order is deterministic: `ConfigLifecycle` → `LocalDbLifecycle` → `AuthDbLifecycle` → `AgentTraceDbLifecycle` → `HooksLifecycle` when hooks are included.
 
 ## Current boundaries
@@ -39,8 +39,8 @@
   - `cli/src/services/doctor/command.rs` accepts any context implementing `ContextWithRepoRoot`.
   - `cli/src/services/doctor/mod.rs` resolves the repository root once, creates a repo-root-scoped borrowed context using `with_repo_root()`, and requests the full provider catalog with hooks included.
   - `ConfigLifecycle::diagnose` and `HooksLifecycle::diagnose`/`fix` now consume `ctx.repo_root()` instead of calling `std::env::current_dir()` independently.
-  - Diagnose mode collects `ServiceLifecycle::diagnose` health problems from each provider, adapts them into doctor-owned problem records, then `doctor/inspect.rs` builds the report facts and integration health around those service-owned problems.
-  - Fix mode adapts doctor problem records back into lifecycle health problems for provider repair decisions, adapts lifecycle fix records into doctor-owned fix records, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
+  - Diagnose mode collects canonical `HealthProblem` values keyed by the `LifecycleProvider` enum, wraps them only for Doctor-specific scope/target presentation, and `doctor/inspect.rs` builds the report facts and integration health.
+  - Fix mode passes original canonical `HealthProblem` values directly to their owning providers, maps lifecycle fix outcomes to Doctor's additional `manual` state, rebuilds the report after fixes, and keeps manual remediation reporting through `doctor/fixes.rs`.
 - `setup` runtime execution now aggregates lifecycle providers for setup:
   - `cli/src/services/setup/command.rs` accepts any context implementing `ContextWithRepoRoot`, resolves the repository root, derives a repo-root-scoped borrowed context with `with_repo_root()`, and requests the shared provider catalog with hooks included only when `SetupRequest.install_hooks` is true.
   - Setup lifecycle providers receive only a generic context implementing the narrow repo-root accessor they currently need instead of the full concrete production context type.
