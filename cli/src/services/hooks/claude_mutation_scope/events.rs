@@ -1,5 +1,10 @@
+use std::path::PathBuf;
+
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{Map, Value};
+
+use crate::services::hooks;
+use crate::services::hooks::claude_model_resolver::ClaudeModelEvidence;
 
 pub(super) const HOOK_EVENT_NAME_FIELD: &str = "hook_event_name";
 pub(super) const SESSION_ID_FIELD: &str = "session_id";
@@ -12,6 +17,7 @@ pub(super) const RUN_IN_BACKGROUND_FIELD: &str = "run_in_background";
 pub(super) const PROMPT_ID_FIELD: &str = "prompt_id";
 pub(super) const AGENT_TYPE_FIELD: &str = "agent_type";
 pub(super) const WORKTREE_PATH_FIELD: &str = "worktree_path";
+pub(super) const TRANSCRIPT_PATH_FIELD: &str = "transcript_path";
 
 pub(super) const HOOK_EVENT_PRE_TOOL_USE: &str = "PreToolUse";
 pub(super) const HOOK_EVENT_POST_TOOL_USE: &str = "PostToolUse";
@@ -49,6 +55,8 @@ pub(crate) struct ClaudeToolIdentity {
     pub agent_id: Option<String>,
     pub tool_name: String,
     pub tool_use_id: String,
+    pub transcript_path: Option<String>,
+    pub direct_model_id: Option<String>,
 }
 
 impl ClaudeToolIdentity {
@@ -57,6 +65,19 @@ impl ClaudeToolIdentity {
             session_id: self.session_id.clone(),
             agent_id: self.agent_id.clone(),
             tool_use_id: self.tool_use_id.clone(),
+        }
+    }
+
+    pub(crate) fn model_evidence(&self) -> ClaudeModelEvidence {
+        ClaudeModelEvidence {
+            session_id: hooks::prefixed_diff_trace_session_id(
+                hooks::CLAUDE_TOOL_NAME,
+                &self.session_id,
+            ),
+            agent_id: self.agent_id.clone(),
+            tool_use_id: Some(self.tool_use_id.clone()),
+            transcript_path: self.transcript_path.as_deref().map(PathBuf::from),
+            direct_model_id: self.direct_model_id.clone(),
         }
     }
 }
@@ -202,6 +223,8 @@ pub(super) fn parse_tool_identity(object: &Map<String, Value>) -> Result<ClaudeT
         tool_name: required_non_blank_str(object, TOOL_NAME_FIELD)?,
         tool_use_id: required_non_blank_str(object, TOOL_USE_ID_FIELD)?,
         agent_id: optional_non_blank_str(object, AGENT_ID_FIELD)?,
+        transcript_path: lenient_non_blank_str(object, TRANSCRIPT_PATH_FIELD),
+        direct_model_id: hooks::extract_direct_claude_model_id(object),
     })
 }
 
@@ -305,6 +328,14 @@ pub(super) fn optional_non_blank_str(
             "field '{field}' must be null, absent, or a non-blank string"
         ))),
     }
+}
+
+fn lenient_non_blank_str(object: &Map<String, Value>, field: &str) -> Option<String> {
+    object
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
 }
 
 pub(super) fn validation_error(detail: &str) -> String {

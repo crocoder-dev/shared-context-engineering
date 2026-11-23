@@ -259,6 +259,9 @@ const INSERT_SCOPE_PROVENANCE_IF_ABSENT_SQL: &str =
     "INSERT INTO mutation_trace_scope_provenance (scope_id, session_id, model_id)
      VALUES (?1, ?2, ?3)
      ON CONFLICT (scope_id) DO NOTHING";
+const FILL_NULL_SCOPE_PROVENANCE_MODEL_SQL: &str =
+    "UPDATE mutation_trace_scope_provenance SET model_id = ?1
+     WHERE scope_id = ?2 AND model_id IS NULL";
 const UPDATE_WORKTREE_CAS_SQL: &str = "UPDATE mutation_trace_worktrees
      SET cursor_tree = ?1, revision = ?2, tainted = ?3, failure_kind = ?4, needs_rebaseline = ?5,
          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -491,6 +494,13 @@ pub struct ScopeProvenance {
     pub scope_id: ScopeId,
     pub session_id: String,
     pub model_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScopeProvenanceModelFill {
+    Filled,
+    AlreadySet,
+    NoRow,
 }
 
 pub struct MutationTraceStore<'a> {
@@ -908,6 +918,28 @@ impl<'a> MutationTraceStore<'a> {
             .await?;
 
         Ok(rows.into_iter().next())
+    }
+
+    pub async fn fill_null_scope_provenance_model(
+        &self,
+        scope_id: &ScopeId,
+        model_id: &str,
+    ) -> Result<ScopeProvenanceModelFill> {
+        let updated = self
+            .db
+            .execute_idempotent_write(
+                FILL_NULL_SCOPE_PROVENANCE_MODEL_SQL,
+                (model_id, scope_id.0.as_str()),
+            )
+            .await?;
+        if updated > 0 {
+            return Ok(ScopeProvenanceModelFill::Filled);
+        }
+
+        Ok(match self.load_scope_provenance(scope_id).await? {
+            Some(_) => ScopeProvenanceModelFill::AlreadySet,
+            None => ScopeProvenanceModelFill::NoRow,
+        })
     }
 
     pub async fn load_worktree_state(
@@ -1373,6 +1405,79 @@ fn reconstruct_boundary(
                 BoundaryKind::Close => Boundary::Close { scope, event },
                 BoundaryKind::Flush => unreachable!("Flush handled above"),
             })
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MutationTraceStore, ScopeProvenance, ScopeProvenanceModelFill};
+    use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
+    use crate::services::mutation_trace::types::{ActorKind, ScopeId, TreeId, WorktreeId};
+
+    #[tokio::test]
+    async fn scope_provenance_model_fill_only_replaces_null() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut db = RepositoryAgentTraceDb::new_at(dir.path().join("agent-trace.db"))
+            .await
+            .expect("db");
+        let store = MutationTraceStore::new(&mut db);
+        let worktree = WorktreeId(String::from("main"));
+        store
+            .initialize_worktree(&worktree, &TreeId(String::from("tree-0")))
+            .await
+            .expect("worktree");
+        let null_scope = ScopeId(String::from("scope-null"));
+        let set_scope = ScopeId(String::from("scope-set"));
+        for (scope_id, model_id) in [(&null_scope, None), (&set_scope, Some("model-a"))] {
+            store
+                .register_scope(scope_id, &worktree, ActorKind::ClaudeCode)
+                .await
+                .expect("scope");
+            store
+                .register_scope_provenance(&ScopeProvenance {
+                    scope_id: scope_id.clone(),
+                    session_id: String::from("cc_session"),
+                    model_id: model_id.map(str::to_owned),
+                })
+                .await
+                .expect("provenance");
+        }
+
+        let filled = store
+            .fill_null_scope_provenance_model(&null_scope, "model-b")
+            .await
+            .expect("fill null");
+        let refill = store
+            .fill_null_scope_provenance_model(&null_scope, "model-c")
+            .await
+            .expect("refill");
+        let kept = store
+            .fill_null_scope_provenance_model(&set_scope, "model-b")
+            .await
+            .expect("fill set");
+        let missing = store
+            .fill_null_scope_provenance_model(&ScopeId(String::from("scope-missing")), "model-b")
+            .await
+            .expect("fill missing");
+
+        assert_eq!(
+            [filled, refill, kept, missing],
+            [
+                ScopeProvenanceModelFill::Filled,
+                ScopeProvenanceModelFill::AlreadySet,
+                ScopeProvenanceModelFill::AlreadySet,
+                ScopeProvenanceModelFill::NoRow,
+            ]
+        );
+        for (scope_id, expected) in [(&null_scope, "model-b"), (&set_scope, "model-a")] {
+            let stored = store
+                .load_scope_provenance(scope_id)
+                .await
+                .expect("load")
+                .expect("row");
+            assert_eq!(stored.model_id.as_deref(), Some(expected));
+            assert_eq!(stored.session_id, "cc_session");
         }
     }
 }

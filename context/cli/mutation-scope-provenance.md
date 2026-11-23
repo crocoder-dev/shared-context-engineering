@@ -36,6 +36,10 @@ whichever row is stored afterwards.
 `MutationTraceStore::load_scope_provenance(scope_id) ->
 Result<Option<ScopeProvenance>>` is the read seam; a scope with no provenance
 reads back `None`, which is an ordinary absence of metadata rather than an error.
+`MutationTraceStore::fill_null_scope_provenance_model(scope_id, model_id) ->
+Result<ScopeProvenanceModelFill>` is the one conditional update seam. It sets
+`model_id` only while the stored value is `NULL`, and returns `Filled`,
+`AlreadySet`, or `NoRow`. Only the Claude adapter calls it.
 
 ## Insert-once semantics
 
@@ -43,9 +47,12 @@ The first persisted row always wins:
 
 - `session_id` is immutable identity. A `scope_id` belongs to exactly one
   session, permanently.
-- `model_id` is immutable first-observed descriptive metadata. A stored `NULL`
-  is never backfilled by a later discovery, and a stored model is never cleared
-  by a later `None` or overwritten by a disagreeing one. No `UPDATE` path exists.
+- `model_id` is immutable first-observed descriptive metadata. A stored model is
+  never cleared by a later `None` or overwritten by a disagreeing one. A stored
+  `NULL` is never backfilled, with one exception: the
+  [Claude completion fill](#claude-completion-fill) may change a Claude scope's
+  `NULL` to a model once, from exact evidence only. No other `UPDATE` path
+  exists, and no path changes `session_id`.
 
 Every replay carrying the same `session_id` therefore succeeds and returns the
 stored row unchanged, whatever its model says. The **only** provenance condition
@@ -79,8 +86,8 @@ an explicit `null` both mean "no model". A blank or whitespace-only `model_id`
 is rejected rather than coerced: both shipped producers normalize an unknown
 model to an absent value, so a blank string is malformed input, not an
 expression of "unknown". `advance`, `close`, `flush`, and `abandon` reject the
-key outright, so provenance is only ever established at admission and never
-updated by a later boundary. Every rejection uses the ingress's existing
+key outright, so the ingress establishes provenance only at admission and never
+updates it at a later boundary. Every rejection uses the ingress's existing
 `Invalid mutation-scope payload from STDIN: <detail>.` diagnostic.
 
 The ingress stays harness-neutral: it forwards the already-canonical
@@ -114,17 +121,33 @@ A Codex session-identity conflict is unreachable in practice: the
 
 The [Claude adapter](claude-mutation-scope-integration.md) resolves provenance
 through an injectable `ClaudeModelStateResolver` with the shape
-`(repository_root, canonical_session_id, agent_id) -> Result<Option<String>>`.
-The production resolver uses the existing repository Agent Trace DB lookup for
-`claude_model_state_by_session_and_agent`, after canonicalizing the raw session
-to `cc_<session>`. It passes `agent_id = ""` for the main agent and the exact
-Claude `agent_id` for a subagent; a subagent never inherits the main-agent row.
-The lookup runs when the scope is admitted, before the generic `Start` ingress
-is called, and the returned Claude model is normalized before being sent as
-provenance. Missing state, `Ok(None)`, an unusable model, or a resolver error
-all produce `model_id = NULL` while retaining the canonical session and
-allowing `Start` to succeed. A later `PostModelSwitch` changes only current
-model state; insert-once scope provenance remains the original snapshot.
+`(repository_root, &ClaudeModelEvidence) -> Result<Option<String>>`. The
+production resolver calls the full chain of the
+[Claude model resolver](../sce/claude-model-resolver.md). The main agent uses
+the direct model, the exact transcript record, the `(cc_<session>, "")` state
+row, and then the bridge-session chain. A subagent uses only the direct model
+and the exact record in its subagent transcript, and never inherits the
+main-agent row. Resolution runs when the scope is admitted, before the generic
+`Start` ingress is called, and the returned model is normalized before being
+sent as provenance. A missing model or a resolver error produces
+`model_id = NULL`, keeps the canonical session, and allows `Start` to succeed.
+A later `PostModelSwitch` changes only current model state.
+
+### Claude completion fill
+
+A Claude scope admitted with `model_id = NULL` may gain its model once, at the
+`PostToolUse` or `PostToolUseFailure` boundary. The adapter runs the fill after
+durable `Close` success and before it removes its attempt. The fill reads the
+stored row first. A missing row or a non-`NULL` model ends the fill without a
+transcript scan. Otherwise the fill resolves the model from exact evidence only
+(the direct event model, then the exact `tool_use_id` transcript record). It
+never uses `claude_model_state` or the bridge-session chain. A found model is
+written through `fill_null_scope_provenance_model`, so a concurrent fill can
+never overwrite a stored model. The fill changes no field other than `model_id`.
+A fill failure is logged and never fails the hook or the close. Provenance is
+read at commit time, so a fill at `PostToolUse` is visible to the commit of that
+mutation. See
+[Claude subagent attribution](../decisions/2026-11-23-claude-subagent-attribution.md).
 
 ## Durable `Start` ordering
 

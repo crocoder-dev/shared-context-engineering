@@ -92,6 +92,8 @@ steps.
 - Structured Claude `diff-trace` keeps only the direct model at parse time. At
   persist time it calls `resolve_claude_model` once per event. See
   [agent-trace-hooks-command-routing.md](./agent-trace-hooks-command-routing.md).
-- Mutation-scope provenance admission does not use the resolver. It calls
-  `claude_model_state_by_session_and_agent` directly in
-  `claude_mutation_scope/lifecycle.rs`.
+- Claude mutation-scope provenance admission calls `resolve_claude_model` once
+  per admitted event. The `PostToolUse` / `PostToolUseFailure` completion fill
+  calls `resolve_claude_model_from_exact_evidence` only when the stored model is
+  `NULL`. See
+  [claude-mutation-scope-integration.md](../cli/claude-mutation-scope-integration.md).

@@ -2,9 +2,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::hooks;
+use crate::services::hooks::claude_model_resolver::{
+    resolve_claude_model, resolve_claude_model_from_exact_evidence, ClaudeModelEvidence,
+};
 use crate::services::managed_telemetry::trace_export::{in_child_span, ManagedChildSpan};
 use crate::services::mutation_trace::runtime::resolve_git_dir;
+use crate::services::mutation_trace::store::{MutationTraceStore, ScopeProvenanceModelFill};
+use crate::services::mutation_trace::types::ScopeId;
 
 use super::events::BASH_TOOL_NAME;
 use super::state;
@@ -26,6 +32,8 @@ pub(super) const PRE_TOOL_USE_FAIL_CLOSED_EVENT: &str =
     "sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed";
 pub(super) const MODEL_STATE_UNAVAILABLE_EVENT: &str =
     "sce.hooks.claude_mutation_scope.model_state_unavailable";
+pub(super) const PROVENANCE_MODEL_FILL_FAILED_EVENT: &str =
+    "sce.hooks.claude_mutation_scope.provenance_model_fill_failed";
 
 pub(super) fn log_pre_tool_use_fail_closed<L: crate::services::observability::traits::Logger>(
     logger: Option<&L>,
@@ -62,16 +70,13 @@ pub(crate) async fn run_claude_mutation_scope_from_payload<
     logger: Option<&L>,
 ) -> Result<String> {
     let resolve_git_dir_fn = async |cwd: &str| resolve_git_dir(Path::new(cwd)).await;
-    let model_state_resolver = async |repository_root: &Path, session_id: &str, agent_id: &str| {
+    let model_state_resolver = async |repository_root: &Path, evidence: &ClaudeModelEvidence| {
         let db = hooks::open_agent_trace_db_for_hook_runtime(
             repository_root,
             "Failed to open Agent Trace DB for Claude mutation-scope model resolution.",
         )
         .await?;
-        Ok(db
-            .claude_model_state_by_session_and_agent(session_id, agent_id)
-            .await?
-            .map(|state| state.model_id))
+        resolve_claude_model(&db, evidence).await
     };
     let seam_fn = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
         hooks::mutation_scope::run_mutation_scope_from_payload(repository_root, payload, logger)
@@ -94,7 +99,7 @@ pub(super) async fn run_claude_mutation_scope_from_payload_with_resolver<
     stdin_payload: &str,
     logger: Option<&L>,
     resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
-    model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
+    model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
     let event = parse_claude_hook_event(stdin_payload)?;
@@ -121,7 +126,7 @@ pub(super) async fn dispatch_claude_hook_event<
     event: ClaudeHookEvent,
     logger: Option<&L>,
     resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
-    model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
+    model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
     match event {
@@ -136,14 +141,7 @@ pub(super) async fn dispatch_claude_hook_event<
         ClaudeHookEvent::PostToolUse(identity) | ClaudeHookEvent::PostToolUseFailure(identity) => {
             let git_dir = resolve_git_dir(&identity.cwd).await?;
             let repository_root = Path::new(&identity.cwd);
-            handle_close(
-                &git_dir,
-                repository_root,
-                &identity.attempt_key(),
-                logger,
-                seam,
-            )
-            .await
+            handle_close(&git_dir, repository_root, &identity, logger, seam).await
         }
         ClaudeHookEvent::PermissionDenied(identity) => {
             let git_dir = resolve_git_dir(&identity.cwd).await?;
@@ -208,7 +206,7 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
     execution: &ClaudeToolExecution,
     logger: Option<&L>,
     resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
-    model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
+    model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> String {
     let identity = &execution.identity;
@@ -318,34 +316,31 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
     repository_root: &Path,
     identity: &ClaudeToolIdentity,
     logger: Option<&L>,
-    model_state_resolver: &impl std::ops::AsyncFn(&Path, &str, &str) -> Result<Option<String>>,
+    model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<()> {
     let allocated =
         state::allocate_attempt(git_dir, &identity.attempt_key(), &identity.tool_name).await?;
     let scope_id = &allocated.attempt.scope_id;
-    let canonical_session_id =
-        hooks::prefixed_diff_trace_session_id(hooks::CLAUDE_TOOL_NAME, &identity.session_id);
-    let agent_id = identity.agent_id.as_deref().unwrap_or("");
-    let model_id =
-        match model_state_resolver(repository_root, &canonical_session_id, agent_id).await {
-            Ok(model_id) => model_id.and_then(|model| hooks::normalize_claude_model_id(&model)),
-            Err(error) => {
-                if let Some(log) = logger {
-                    log.warn(
-                        MODEL_STATE_UNAVAILABLE_EVENT,
-                        &error.to_string(),
-                        &[("agent_id", agent_id)],
-                        Some(&canonical_session_id),
-                    );
-                }
-                None
+    let evidence = identity.model_evidence();
+    let model_id = match model_state_resolver(repository_root, &evidence).await {
+        Ok(model_id) => model_id.and_then(|model| hooks::normalize_claude_model_id(&model)),
+        Err(error) => {
+            if let Some(log) = logger {
+                log.warn(
+                    MODEL_STATE_UNAVAILABLE_EVENT,
+                    &error.to_string(),
+                    &[("agent_id", identity.agent_id.as_deref().unwrap_or(""))],
+                    Some(&evidence.session_id),
+                );
             }
-        };
+            None
+        }
+    };
     let start_payload = scope_start_payload(
         scope_id,
         &claude_scope_start_event_id(scope_id),
-        &canonical_session_id,
+        &evidence.session_id,
         model_id.as_deref(),
     );
 
@@ -357,15 +352,16 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
 pub(super) async fn handle_close<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
-    key: &AttemptKey,
+    identity: &ClaudeToolIdentity,
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
+    let key = identity.attempt_key();
     let current = state::read_state(git_dir).await?;
     let Some(attempt) = current
         .attempts
         .iter()
-        .find(|attempt| attempt_matches_key(attempt, key))
+        .find(|attempt| attempt_matches_key(attempt, &key))
         .cloned()
     else {
         return Ok(String::new());
@@ -383,11 +379,64 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     );
 
     if seam(repository_root, &close_payload, logger).await.is_ok() {
+        fill_provenance_model_after_close(repository_root, &attempt.scope_id, identity, logger)
+            .await;
         state::remove_attempt(git_dir, &attempt.scope_id).await?;
     } else {
         abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
     }
     Ok(String::new())
+}
+
+async fn fill_provenance_model_after_close<L: crate::services::observability::traits::Logger>(
+    repository_root: &Path,
+    scope_id: &str,
+    identity: &ClaudeToolIdentity,
+    logger: Option<&L>,
+) {
+    let evidence = identity.model_evidence();
+    let filled = async {
+        let mut db = hooks::open_agent_trace_db_for_hook_runtime(
+            repository_root,
+            "Failed to open Agent Trace DB for Claude mutation-scope provenance model fill.",
+        )
+        .await?;
+        fill_claude_scope_provenance_model(&mut db, scope_id, &evidence).await
+    }
+    .await;
+
+    if let (Err(error), Some(log)) = (filled, logger) {
+        log.warn(
+            PROVENANCE_MODEL_FILL_FAILED_EVENT,
+            &error.to_string(),
+            &[("scope_id", scope_id)],
+            Some(&evidence.session_id),
+        );
+    }
+}
+
+pub(super) async fn fill_claude_scope_provenance_model(
+    db: &mut RepositoryAgentTraceDb,
+    scope_id: &str,
+    evidence: &ClaudeModelEvidence,
+) -> Result<Option<ScopeProvenanceModelFill>> {
+    let scope_id = ScopeId(scope_id.to_owned());
+    let store = MutationTraceStore::new(db);
+    match store.load_scope_provenance(&scope_id).await? {
+        None => return Ok(Some(ScopeProvenanceModelFill::NoRow)),
+        Some(stored) if stored.model_id.is_some() => {
+            return Ok(Some(ScopeProvenanceModelFill::AlreadySet));
+        }
+        Some(_) => {}
+    }
+
+    let Some(model_id) = resolve_claude_model_from_exact_evidence(evidence) else {
+        return Ok(None);
+    };
+    store
+        .fill_null_scope_provenance_model(&scope_id, &model_id)
+        .await
+        .map(Some)
 }
 
 pub(super) async fn handle_permission_denied<L: crate::services::observability::traits::Logger>(

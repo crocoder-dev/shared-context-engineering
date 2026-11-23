@@ -111,14 +111,9 @@ can form. The adapter may call `checkout::resolve_git_dir` but not
 ## PreToolUse: write-ahead Start, fail-closed
 
 For a mutation-capable tool, `handle_pre_tool_use` runs: background-`Bash` untracked allow (empty success, nothing below runs) -> explicit-background-shell deny (`PowerShell`) -> resolve `git_dir` -> recovery barrier ->
-write-ahead `Start` — persist `phase=pending_start`, resolve the canonical
-`cc_<session>` and the exact model-state key (`agent_id = ""` for the main
-agent), call the seam with the optional provenance snapshot, persist
-`pending_start -> active`, return empty success. The resolver is injectable for tests; production reads `claude_model_state_by_session_and_agent` from the
-repository Agent Trace DB. Missing state or resolver errors become a null model
-and never deny the mutation-capable tool. The seam receives the raw `cwd` as its
-`repository_root` and SCE derives the `WorktreeId`, so durable generic-ingress
-`Start` is reached before the hook returns success to Claude.
+write-ahead `Start` — persist `phase=pending_start`, resolve the model from the event's `ClaudeModelEvidence` through the injectable resolver closure (production: the [Claude model resolver](../sce/claude-model-resolver.md) full chain), call the seam with the optional provenance snapshot, persist `pending_start -> active`, return empty success.
+`transcript_path` and the direct model are parsed leniently, so a malformed value is absent, not a rejected event. A missing model or resolver error becomes a null model and never denies the tool.
+The seam receives the raw `cwd` as its `repository_root` and SCE derives the `WorktreeId`, so durable generic-ingress `Start` is reached before the hook returns success to Claude.
 
 **Fail-closed via Claude's deny decision.** Claude treats ordinary non-2 hook failures as non-blocking, so a generic non-zero exit would let the tool run
 without its `Start`. Therefore **any** failure in the mutation-capable
@@ -143,8 +138,11 @@ For an `active` tracked attempt, both events map to a `close` operation
 `2.1.258` exactly one of the two fires per attempt, never both (T01, D10), and a
 failed tool that already changed files still gets its final tree captured. The
 attempt is removed from adapter state only after durable `Close` success; a
-duplicate `PostToolUse` after cleanup is a safe no-op. Two uncertain-boundary
-rules:
+duplicate `PostToolUse` after cleanup is a safe no-op. Between `Close` success
+and attempt removal, the adapter runs the fail-open
+[Claude completion fill](mutation-scope-provenance.md#claude-completion-fill)
+(failures log `sce.hooks.claude_mutation_scope.provenance_model_fill_failed`).
+Two uncertain-boundary rules:
 
 - **`pending_start` + terminal signal -> abandon, not late-Start (D11).** The
   adapter cannot prove `Start` committed, and a late `Start` after the tool ran
@@ -155,7 +153,7 @@ rules:
   observation time is lost, so the adapter must not retry that `Close` later as
   the original observation; it abandons and arms `recovery_pending`. The ingress
   carried-success variants (`MarkerClearAfterCommit` /
-  `MarkerClearAfterCompletion`) are durable success and do not enter this path. The admission snapshot is carried into the mutation-derived Agent Trace path: the real `Bash` regression persists the exact `(cc_<session>, "")` model state captured before the tool runs, then verifies the model and related session URL in `agent_traces.trace_json` after commit.
+  `MarkerClearAfterCompletion`) are durable success and do not enter this path. The admission snapshot is carried into the mutation-derived Agent Trace path: the real `Bash` regression persists the main-agent model resolved before the tool runs, then verifies the model and related session URL in `agent_traces.trace_json` after commit.
 
 ## Abandonment cleanup signals
 
