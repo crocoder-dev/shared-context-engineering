@@ -1,0 +1,175 @@
+# Plan: claude-subagent-attribution
+
+## Change summary
+
+A live run of five concurrent Claude `general-purpose` subagents (parent session
+`e51f92c1-4aad-4319-8b98-cae1f5d74c26`, 2026-11-23) showed that SCE captures
+subagent file mutations but loses most of the subagent identity on the way to
+the control plane:
+
+- All ten subagent mutation scopes stored `mutation_trace_scope_provenance.model_id = NULL`. Main-agent scopes in the same session stored `claude/claude-opus-5-5`.
+- `claude_model_state` held only the main-agent row (`agent_id = ""`). Claude sends no `SessionStart` for a subagent, and the accepted decision `2026-09-01-claude-model-attribution-state` forbids inheritance from the main agent. A subagent therefore always resolves to `NULL`.
+- Each subagent `Write` produced an assistant `patch` part under the main session. Its patch JSON carried `model_id: null` on every hunk and `session_id: null` on every line, and no agent or tool identity. The ClickHouse warehouse could attribute a patch to a subagent only by timing.
+
+Claude already writes the needed facts locally. Each subagent has its own
+transcript at `<project-dir>/<session_id>/subagents/agent-<agent_id>.jsonl`.
+Its assistant records carry `message.model`, `agentId`, and `isSidechain: true`,
+and each record that issues a tool call names that call's `tool_use_id`. A
+sibling `agent-<agent_id>.meta.json` carries `agentType` and `toolUseId`, which
+is the `tool_use_id` of the parent `Agent` call that spawned the subagent.
+
+This plan extends existing behavior. It moves the Claude model attribution
+chain into one Claude-specific resolver. Structured diff traces, mutation-scope
+provenance, and conversation-trace patch parts all call that resolver. For a
+subagent event, the resolver uses only exact evidence: the direct event model,
+then the exact `tool_use_id` record in the subagent transcript, then `NULL`. It
+never uses a transcript record that is not proven to belong to the event, it
+never reads the main-agent state row, and it seeds no `claude_model_state` row.
+Main-agent resolution keeps its existing precedence unchanged.
+
+Transcript lookup becomes bounded. The reader scans only a fixed tail window of
+the transcript, skips oversized records, and returns `NULL` when the exact
+record is not inside those bounds. Each hook invocation scans a given
+transcript for a given `tool_use_id` at most once.
+
+Mutation-scope provenance gains one narrow write-once transition. When a
+Claude scope was admitted with `model_id = NULL`, the `PostToolUse` or
+`PostToolUseFailure` completion boundary may set `model_id` once, from exact
+evidence only. A non-`NULL` model is never overwritten, and every other
+provenance field stays insert-once.
+
+Patch parts fill the existing hunk `model_id` and line `session_id` fields and
+add one optional `attribution` object. The plan supersedes one guardrail of
+`2026-09-01-claude-model-attribution-state`: Claude `agent_id` may now leave
+the machine inside synchronized patch parts. It also replaces the "a stored
+`NULL` is never backfilled" rule of `context/cli/mutation-scope-provenance.md`
+for Claude scopes with the exact-evidence completion fill.
+
+Missing attribution is preferred to incorrect attribution.
+
+## Acceptance criteria
+
+How this plan is proven complete. Each criterion is observable and names the
+check that proves it. `/validate` runs these checks; no task in the stack
+performs final validation.
+
+- [ ] AC1: An accepted decision record states the subagent precedence (direct event model, exact `tool_use_id` record in the subagent transcript, `NULL`), the preserved no-inheritance rule, the rule that transcript-derived models are never written to `claude_model_state`, the single-resolver rule, the transcript bounds and their rationale, the write-once completion fill of `mutation_trace_scope_provenance.model_id` from exact evidence, and the synchronized patch-part `attribution` fields. It names the superseded `agent_id` export guardrail of `2026-09-01-claude-model-attribution-state` and the replaced no-backfill rule for Claude provenance.
+  - Validate: inspect `context/decisions/` for the new record and its `Supersedes` lines; `git diff --stat -- context/decisions/2026-09-01-claude-model-attribution-state.md` is empty.
+- [ ] AC2: A subagent event (`agent_id` present) resolves its model from the direct event model when present. Otherwise it resolves from the assistant record in the subagent transcript whose content names the event's `tool_use_id`. When no such record exists inside the transcript bounds, the result is `NULL`, even when other assistant records in that transcript name a model.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_subagent_model`.
+- [ ] AC3: When a subagent switches models during its run, each event resolves to the model on its own tool-call record. With a fixture where tool call A is on model X and a later tool call B is on model Y, A resolves to X and B resolves to Y. A tool call C with no record yet resolves to `NULL`, not Y.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_subagent_model`.
+- [ ] AC4: A subagent event never resolves through the main-agent `(cc_<session_id>, "")` state row or the bridge-session chain, and subagent resolution writes no `claude_model_state` row. With a fixture that has a main-agent state row and no subagent transcript record, the subagent result is `NULL` and the state table is unchanged.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_subagent_model`.
+- [ ] AC5: One Claude resolver module owns the attribution chain. Structured diff traces, mutation-scope provenance admission, the mutation-scope completion fill, and conversation-trace patch parts call it. No consumer calls the transcript reader or the model-state lookup directly.
+  - Validate: `rg -n "claude_transcript::|claude_model_state_by_session_and_agent|seed_diff_trace_model_from_bridge_chain" cli/src/services --glob '!**/tests/**'` lists call sites only inside the resolver module and the definitions.
+- [ ] AC6: Main-agent events keep the existing precedence: direct event model, exact `tool_use_id` record in the main transcript, exact `(cc_<session_id>, "")` state row, bridge-session chain, then `NULL`. The existing main-agent attribution and model-state tests pass without change.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`.
+- [ ] AC7: The transcript reader scans at most the last 4 MiB of a transcript, starting at the first complete record inside that window. It skips any record longer than 1 MiB and any record that is not valid UTF-8 JSON, and it continues with the next record. It returns the model of the exact `tool_use_id` record, or no model when that record is outside the window, is oversized, is malformed, or is absent. An open or read failure is reported as a typed reader error, and the resolver maps every reader error to `NULL`.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_transcript_bounds`.
+- [ ] AC8: A lookup of a missing `tool_use_id` in a synthetic 32 MiB transcript reads no more than 5 MiB (the 4 MiB window plus one 1 MiB record) and returns no model. The test also asserts a loose wall-clock bound of 500 ms; the byte bound is the authoritative check.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_transcript_bounds`.
+- [ ] AC9: Within one hook invocation, each `(transcript path, tool_use_id)` pair is scanned at most once. The resolver result for an event is computed once and passed to every use in that invocation. No persistent cache, index, table, or cross-process coordination exists.
+  - Validate: inspect the diff-trace, conversation-trace, and mutation-scope invocation paths for one resolver call per event; `git diff --stat origin/main -- cli/migrations` is empty.
+- [ ] AC10: Claude mutation-scope provenance attribution is correct at both boundaries:
+  - (a) When the exact record exists at admission, the scope stores that model at admission, and completion leaves it unchanged.
+  - (b) When the exact record is missing at admission but present at `PostToolUse` or `PostToolUseFailure`, completion changes `model_id` from `NULL` to that model.
+  - (c) When the exact record is missing at both boundaries, `model_id` stays `NULL`.
+  - (d) A stored non-`NULL` `model_id` is never overwritten, including when completion resolves a different model.
+  - (e) A duplicate completion event leaves the row unchanged and succeeds.
+  - The completion fill uses only the direct event model and the exact `tool_use_id` record, never `claude_model_state` or the bridge-session chain. It changes no field other than `model_id`. A fill failure never fails the hook or the close.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_provenance_fill`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml scope_provenance`.
+- [ ] AC11: A Claude `PostToolUse` `Write` or `Edit` patch part sets every touched line's `session_id` to `cc_<session_id>` and every hunk's `model_id` to the resolver result or `null`. It carries one `attribution` object with `agent_id`, `agent_type`, `tool_use_id`, and `parent_tool_use_id`. A subagent patch has the event's `agent_id`; `agent_type` comes from the event, or from `agentType` in the meta file when the event has none; `parent_tool_use_id` comes from `toolUseId` in the meta file. A main-agent patch has `agent_id`, `agent_type`, and `parent_tool_use_id` set to `null`. No line or hunk carries agent fields.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_trace`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml patch`.
+- [ ] AC12: A missing, unreadable, or malformed subagent transcript or meta file yields `NULL` for each affected field. The hook still exits successfully, writes nothing to stdout, persists the patch part or scope, and never denies the tool.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_subagent_model`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_trace`.
+- [ ] AC13: Patch JSON serialized before this change, with no `attribution` key, still loads and still feeds the Agent Trace generator. The `parts` sync stream sends the enriched patch JSON unchanged in the existing `text` field, with no new remote stream, cursor, column, migration, or `/state` field.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml patch`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync`; `git diff --stat origin/main -- cli/src/services/sync cli/src/services/agent_trace_export cli/migrations` is empty.
+- [ ] AC14: A manual rerun of the concurrent-subagent experiment shows correct attribution in the local repository Agent Trace DB. Every non-`NULL` subagent scope `model_id` equals the model on that tool call's record in the subagent transcript. Every subagent patch part has the `agent_id` of the subagent that wrote the file and the `parent_tool_use_id` from that subagent's meta file. A `NULL` model is acceptable only when the exact record was in the transcript at neither boundary.
+  - Validate: manual. Rerun five concurrent `general-purpose` subagents that each `Write` one file. Query `mutation_trace_scope_provenance` and the session's `patch` parts with `turso --readonly --experimental-multiprocess-wal <repo agent-trace.db>`, and compare each value with `<session_id>/subagents/agent-<agent_id>.jsonl` and `.meta.json`.
+
+### Full validation
+
+Repository-wide checks `/validate` runs after the last task, regardless of
+which criterion they map to.
+
+- `nix flake check`
+- `nix run .#pkl-check-generated`
+
+### Context sync
+
+- `context/cli/mutation-scope-provenance.md`: the Claude producer obtains its model from the shared Claude resolver, and Claude scopes have one write-once `NULL`-to-model completion fill from exact evidence. The "no `UPDATE` path" and "a stored `NULL` is never backfilled" statements must name this exception.
+- `context/sce/claude-raw-hook-capture.md`: the single Claude resolver, its main-agent and subagent precedence, the transcript bounds and their consequences, and the conversation-trace patch part attribution.
+- `context/cli/patch-service.md`: the optional `attribution` object on `ParsedPatch`.
+- `context/cli/agent-trace-sync-command.md`: the `parts` stream carries the enriched patch JSON as opaque text, control-plane compatibility was verified, and warehouse joins against Claude OpenTelemetry metrics must strip the `cc_` prefix from SCE session IDs.
+- `context/glossary.md`: `subagent transcript` and `parent tool use ID`, if the glossary does not already define them.
+
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `cli/src/services/hooks/claude_transcript.rs`, `cli/src/services/hooks/diff_trace.rs`, `cli/src/services/hooks/claude_model_state.rs`, one resolver module under `cli/src/services/hooks/`, `cli/src/services/hooks/claude_mutation_scope/`, `cli/src/services/mutation_trace/store.rs` (one conditional provenance model fill), `cli/src/services/hooks/claude_transforms.rs`, `cli/src/services/hooks/conversation_trace.rs`, `cli/src/services/patch.rs`, their tests, one new decision record, and the context files listed under `Context sync`.
+- **Out of scope:** synchronizing `mutation_trace_scopes`, `mutation_trace_scope_provenance`, or `mutation_trace_events` to the control plane; control-plane, warehouse, and ClickHouse changes; per-subagent token or cost metrics, which Claude Code OpenTelemetry owns; changing the canonical `cc_` session prefix; capturing subagent prompts, `Read` calls, or model turns as conversation messages; changing main-agent precedence or the accepted main-agent post-switch race; changes to the generic mutation-scope ingress or to the Codex, OpenCode, and Pi producers; a provenance fill for non-Claude scopes.
+- **Constraints:** a subagent must never inherit the main-agent `claude_model_state` row. A model observation that is not proven to belong to the event must not attribute it. Every transcript and meta read must be local, bounded, and fail-open, and must never deny a Claude tool or write to stdout. The resolver must be a concrete Claude-specific module with a concrete evidence struct; no new trait, provider interface, injection seam, or cross-harness abstraction. The existing `ClaudeModelStateResolver` closure seam may change its argument to that evidence struct. The bounded reader is generic over `Read + Seek` for fixture tests, which is static dispatch. New code uses typed errors and does not introduce `anyhow`; the store method keeps the store's existing error type. No background job, polling, retry, or new lifecycle phase. Run Cargo only through `nix develop -c ./scripts/run-cli-cargo.sh`. Automated tests must use fixture transcripts, never real `~/.claude` data.
+- **Compatibility (verified):** control-plane commit `d016aeba` was inspected on 2026-11-23. The ingestion API decodes part `text` as `Schema.String` (`apps/api/src/api.ts`). The loader stores it verbatim in `raw.parts.text String` (`apps/agent-trace-dwh-loader/migrations/001_raw_tables.sql`). The event transformer hashes and gzips it as an opaque payload bounded by `MAX_PART_PAYLOAD_BYTES` (64 MiB) (`apps/event-dwh-transformer/src/transform.ts`, `limits.ts`). The API presentation layer and the web app pass `text` through unparsed. No control-plane component decodes the patch JSON shape, so the added `attribution` key and filled `model_id` and `session_id` values are preserved. No control-plane change and no release ordering are required. Querying the new fields in ClickHouse needs JSON extraction from `raw.parts.text`; that is later warehouse work. Mutation-scope provenance stays local, so the completion fill has no control-plane effect.
+- **Non-goal:** a generic cross-editor subagent model, a model-state cache for subagents, a generic provenance reconciliation framework, or a transcript index.
+
+## Assumptions
+
+- The subagent transcript path is `<dirname(transcript_path)>/<session_id>/subagents/agent-<agent_id>.jsonl`, and the meta file has the same stem with `.meta.json`. The layout was observed in Claude Code transcripts on 2026-11-23. When the event `transcript_path` already names `subagents/agent-<agent_id>.jsonl`, the resolver uses it directly. One function owns this derivation.
+- The Claude hook contract provides no authoritative event timestamp or sequence number (decision `2026-09-01-claude-model-attribution-state`). No reliable ordering exists to prove that a non-matching transcript record precedes an event, so the "latest preceding observation" step is omitted for subagents.
+- `claude_model_state` records only local observation time. A transcript-derived model written there would look like a current observation and could overwrite a newer `PostModelSwitch`. The plan therefore seeds no transcript-derived row.
+- Transcript bounds rest on 634 local Claude transcripts measured on 2026-11-23. File size: median 1.1 MB, p99 4.1 MB, maximum 8.9 MB. Record length: median 1.1 KB, p99 47 KB, p99.9 131 KB, maximum 0.99 MB. The record for the event's tool call is appended last or near last before the hook runs, so a 4 MiB tail window covers it with wide margin and covers the whole file for about 99% of transcripts. A 1 MiB record cap covers every measured record. Consequence of exceeding a bound: an assistant record that carries a `Write` input larger than about 1 MiB, or an exact record more than 4 MiB from the end, resolves to `NULL`. For a main-agent event, resolution then continues to the existing state and bridge steps, as it does today when the transcript has no match.
+- The existing reader aborts the whole lookup on the first unreadable line (`line.ok()?`). The bounded reader skips a malformed record instead. This can only add exact matches, never change one.
+- The completion fill is placed in the Claude adapter, after `handle_close` reports a successful close and before the adapter attempt is removed. It calls one store method that runs `UPDATE mutation_trace_scope_provenance SET model_id = ? WHERE scope_id = ? AND model_id IS NULL` and returns a typed outcome (`Filled`, `AlreadySet`, `NoRow`). This keeps the generic ingress, the protocol state, and the CAS batch unchanged. The trade-off: the fill is a Claude-specific store write outside the generic ingress, and it applies to Claude scopes only. A generic `close` provenance field was rejected because it would change the ingress contract and the conformance suite for every harness.
+- The fill runs only when the stored row exists and its `model_id` is `NULL`, so a scope that already has a model costs one indexed read and no transcript scan. The fill applies to main-agent and subagent Claude scopes alike, because both use exact evidence only. Main-agent admission precedence is unchanged.
+- Provenance is read at commit time by `mutation_trace/runtime/mutation_attribution.rs`. A fill at `PostToolUse` precedes any commit of that mutation, so the commit-time read observes it.
+- The `attribution` object uses `#[serde(default)]` and is serialized only when present, following the existing optional `model_id` and `session_id` fields in `cli/src/services/patch.rs`.
+- Patch-part `session_id` uses the canonical `cc_` form, matching `messages.session_id` and `parts.session_id`.
+
+## Task stack
+
+- [ ] T01: `Record the Claude subagent attribution decision` (status:todo)
+  - Task ID: T01
+  - Scope: In — one new decision record under `context/decisions/` covering the subagent precedence, the omitted ordering step and why, the no-seeding rule, the preserved no-inheritance rule, the single-resolver rule, the transcript bounds and their consequences, the Claude-only write-once provenance completion fill and its rejected generic alternative, and the synchronized `attribution` fields, with `Supersedes` lines for the `agent_id` export guardrail of `2026-09-01-claude-model-attribution-state` and the Claude no-backfill provenance rule. Out — code changes, and edits to the historical decision file.
+  - Dependencies: none
+  - Done when: the decision record exists with status Accepted, names this plan, and states each rule that AC2–AC12 rely on.
+  - Verify: inspect the new record; `git diff --stat -- context/decisions/2026-09-01-claude-model-attribution-state.md` is empty.
+  - Context synchronization: pending
+
+- [ ] T02: `Add the shared Claude model resolver with bounded exact-record transcript lookup` (status:todo)
+  - Task ID: T02
+  - Scope: In — the bounded transcript reader in `claude_transcript.rs` (4 MiB tail window, 1 MiB record cap, skip malformed records, typed reader error, generic over `Read + Seek`); one resolver module with a concrete evidence struct (canonical session, optional `agent_id`, `tool_use_id`, `transcript_path`, direct model) and two entry points: the full chain, and an exact-evidence-only chain (direct model, then exact record) for the completion fill; the main-agent branch moved from `diff_trace.rs` without precedence change; the subagent branch; the subagent path derivation; structured diff traces switched to one resolver call per event; fixture tests named `claude_subagent_model` (AC2, AC3, AC4, transcript cases of AC12) and `claude_transcript_bounds` (AC7, AC8). Out — mutation-scope provenance (T03), patch parts (T04), and any `claude_model_state` write for subagents.
+  - Dependencies: T01
+  - Done when: AC2, AC3, AC4, AC6, AC7, and AC8 hold, and structured diff traces obtain their model only through the resolver, with one transcript scan per event.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_subagent_model`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_transcript_bounds`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_attribution`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_model_state`.
+  - Context synchronization: pending
+
+- [ ] T03: `Resolve and fill Claude mutation-scope provenance models through the shared resolver` (status:todo)
+  - Task ID: T03
+  - Scope: In — the production `ClaudeModelStateResolver` in `claude_mutation_scope/lifecycle.rs` builds the evidence struct from the admitted event and calls the T02 full chain; the closure argument changes to that struct; the `PostToolUse` and `PostToolUseFailure` identity carries `transcript_path` when present; one `MutationTraceStore` method for the conditional `NULL`-to-model fill with a typed outcome; the fill call in `handle_close` after a successful close, using the T02 exact-evidence chain, logged and fail-open; tests named `claude_provenance_fill` for AC10 (a)–(e), and a store test under `scope_provenance` for the conditional update. Out — provenance insert-once rules for `session_id`, admission-bounded creation, the generic ingress, protocol state, the CAS batch, non-Claude producers, and new seams.
+  - Dependencies: T02
+  - Done when: AC10 holds, the lifecycle module no longer calls the model-state lookup directly, and a resolver or fill failure still admits and closes the scope.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_provenance_fill`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml scope_provenance`.
+  - Context synchronization: pending
+
+- [ ] T04: `Fill session, model, and subagent attribution on Claude patch parts` (status:todo)
+  - Task ID: T04
+  - Scope: In — an optional `attribution` object (`agent_id`, `agent_type`, `tool_use_id`, `parent_tool_use_id`) on `ParsedPatch`; the Claude `PostToolUse` patch builder taking the resolved model and attribution as inputs while staying free of storage access; the conversation-trace persist path calling the T02 resolver once per event and a bounded meta-file reader (1 MiB cap, typed error, fail-open); tests for main-agent, subagent, missing or malformed meta, and historical-JSON cases. Out — new `parts` columns, per-line or per-hunk agent fields, sync wire changes, and non-Claude producers.
+  - Dependencies: T02
+  - Done when: AC5, AC9, AC11, AC12, and AC13 hold, and the Agent Trace generator tests that consume patch parts pass.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml conversation_trace`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml patch`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync`.
+  - Context synchronization: pending
+
+## Open questions
+
+- Should mutation scopes and provenance sync to the control plane? Only that data can represent contended concurrent writes, such as the `ai_contended` song-3 and song-5 changes in the experiment. Patch-part attribution identifies the writer of each patch, but not contention. This plan leaves it out because it adds a fourth remote stream and a control-plane schema. This question does not block any task.
