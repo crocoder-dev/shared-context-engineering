@@ -1,6 +1,6 @@
 # Codex native telemetry contract
 
-Probe evidence for Codex CLI 0.172.0 native OpenTelemetry export, the `otel.headers_helper` invocation contract, configuration precedence, command-hook trace context, and identifier mapping. This file records the implementation decision for native Codex telemetry and Codex hook spans, and the Claude/Codex parity matrix.
+This contract records the Codex OpenTelemetry probe, the shipped launcher and hook behavior, and live Dash0 verification. The minimum verified Codex CLI version is **0.172.0**.
 
 ## Provenance
 
@@ -58,9 +58,9 @@ A helper header reaches every explicit `otlp-http` exporter in the effective con
 | `codex` interactive, new session | Observed under a pty: `service.name=codex_cli_rs`. The helper got the launch-time argv and ran from `CODEX_HOME`. | Yes, for the first thread. |
 | `codex exec` | Observed: `service.name=codex_exec`. The thread and hook `cwd` equal the launch directory. | Yes. |
 | `codex exec resume <id>` without `-C` | Observed: launched from repository B, the session and every hook ran in repository A (the stored session cwd). | **No.** The launch directory does not identify the working repository. |
-| `codex exec resume <id> -C <dir>` | Observed: the session ran in `<dir>`. | Yes, when the repository is resolved from `-C`. |
+| Non-interactive resume with explicit `-C <dir>` | Observed: the session ran in `<dir>`. | Yes, when the repository is resolved from `-C`. Codex 0.172.0 accepts `codex exec -C <dir> resume <id>`. |
 | `codex exec fork <id>` | Observed: the new session id ran in the launch directory, not in the source session's cwd. | Yes. |
-| `codex resume` / `codex fork` (interactive) | Source: `tui/src/cwd_prompt.rs` asks the user to choose between the session directory and the current one, and defaults to the session directory. | No. The choice is made after launch. |
+| `codex resume` / `codex fork` (interactive) | Source: `tui/src/cwd_prompt.rs` can ask the user to choose between the session directory and the current one. The T01 directory probe used `exec resume`. | Unverified for telemetry. |
 | `-C <dir>` | Observed with resume. The process working directory is irrelevant to the helper. | Resolve the repository from `-C` when present. |
 | In-process directory change or multiple threads | Source and observed: the helper command is fixed per process, while threads (subagents, `/new`, in-TUI resume, app-server) each carry their own cwd. Subagents inherit the parent's cwd (observed). | Not safe for a thread whose cwd leaves the launch repository. This is a residual risk; Codex exposes no per-thread hook into the helper. |
 | `codex app-server` / remote | Not probed. Multi-client and multi-thread by design. | Unproven. |
@@ -120,39 +120,37 @@ Resource attributes on all signals: `service.name` (`codex_exec` | `codex_cli_rs
 | Personal identifiers | `user.email` and `user.account_id` on every Codex log event (observed) | No config control. |
 | Spans and metrics | No prompt, response, tool-argument, or output attributes observed. `cwd` paths appear on a few spans. | — |
 
-Every content-bearing field is on the log signal. Spans and metrics carry identifiers, counts, and durations only.
+The probe found prompt, response, and tool content on the log signal. Spans and metrics carry operational metadata. Some spans include absolute working directories.
 
 ## Implementation decision
 
 1. **Hook spans ship without a launcher.** `sce hooks codex` and `sce hooks codex-mutation-scope` are admitted to managed telemetry as Codex-only hook subcommands. Each exports one `sce.hook` span (`sce.agent=codex`). Verified correlation attributes are `sce.codex.session_id` (the raw stdin `session_id`), `sce.codex.turn_id`, `sce.codex.tool_use_id`, `sce.codex.model`, and, for subagent hook runs, `sce.codex.agent_id`/`sce.codex.agent_type`. Every span is an independent root, with **no `TRACEPARENT` extraction** for Codex. `sce.mutation_scope`, `sce.git_snapshot`, and `sce.persistence` children reuse the existing contract.
 2. **Native export requires a thin `sce codex` launcher.** A user-level `config.toml` install cannot identify the repository: the helper runs from `CODEX_HOME` with no repository context, and a fixed user-level command would attribute every repository to one credential. The launcher resolves the repository and effective access policy first, then `exec`s `codex` with process-local overrides only:
-   - `otel.headers_helper` set to `"<absolute sce path>" auth telemetry-headers --repo '<shell-quoted repository root>'`, under the hidden flag name T02 chooses;
-   - `otel.headers_helper_refresh_interval_ms=300000`, matching the Claude 5-minute debounce;
-   - `otel.trace_exporter` and `otel.metrics_exporter` = `otlp-http` with `endpoint = MANAGED_OTLP_ENDPOINT + "/v1/traces"` / `"/v1/metrics"` and `protocol = "binary"` (`MANAGED_OTLP_PROTOCOL = http/protobuf`);
-   - **`otel.exporter = "none"`**: native log export stays off, because 0.172.0 cannot redact tool arguments or the user email from logs. Tokens, cache, model, tool counts, and durations remain available from metrics and spans.
-   - `otel.log_user_prompt=false`, `otel.log_agent_responses=false`, and `otel.log_guardian_assessments=false`, pinned explicitly;
-   - optionally `otel.span_attributes.sce.repository.id=<id>` for trace-side repository attribution. This is a T02 local choice, traces only.
-   No credential appears in arguments or files, and no global Codex config is written.
-3. **Safe modes.** The launcher enables native telemetry for new interactive sessions, `exec`, `exec fork`, and `resume`/`exec resume` **only with an explicit `-C`** (the repository is resolved from `-C` when present). It launches **without SCE telemetry**, with a one-line notice, for `resume` without `-C`, interactive `fork`, `app-server`, `exec-server`, `remote-control`, `cloud`, `mcp`, and unknown subcommands. In-process thread switching to another repository is a recorded residual risk.
+   - `otel.headers_helper` runs `'<absolute sce path>' auth telemetry-headers --repo '<repository root>'`. The launcher shell-quotes both paths.
+   - `otel.headers_helper_refresh_interval_ms=300000` sets a five-minute timer.
+   - `otel.trace_exporter` and `otel.metrics_exporter` use `otlp-http` with `protocol = "binary"` and the managed endpoint's `/v1/traces` and `/v1/metrics` paths respectively.
+   - `otel.exporter = "none"` disables native log export. Codex 0.172.0 cannot redact tool arguments or user email from logs.
+   - `otel.log_user_prompt`, `otel.log_agent_responses`, and `otel.log_guardian_assessments` are all `false`.
+
+   The helper supplies the credential at runtime. The launcher passes no credential in its arguments and writes no Codex config. It adds no repository span attribute.
+3. **Safe modes.** The launcher enables native telemetry for new interactive sessions, `exec`, `exec fork`, and `exec resume` with an explicit `-C` (or `--cd`) before `resume`. The repository comes from that directory when supplied. Interactive resume, interactive fork, worktree launches, and remote launches run without SCE native export. The [launcher reference](codex-native-telemetry-launcher.md#invocation-modes) lists the modes and skip notices. In-process thread switching can leave native export bound to the original launch repository.
 4. **Conflict detection.** The launcher skips native telemetry and reports the reason, never overwriting anything, when any of the following holds:
    - `$CODEX_HOME/config.toml` or the selected profile file defines `otel.exporter`, `otel.trace_exporter`, `otel.metrics_exporter`, or `otel.headers_helper`, because the user owns an OTEL destination;
    - a readable `/etc/codex/requirements.toml`, `/etc/codex/managed_config.toml`, or `/etc/codex/config.toml` defines any `otel.*` key, because enterprise settings would override the pins or force content logging;
-   - the caller's arguments include an `otel.*` `-c` override or `--profile` in an unreadable form.
+   - the caller's arguments include an `otel` or `otel.*` override, a visible destination environment variable points elsewhere, or the user or selected profile config cannot be read or parsed.
    MDM and cloud requirements cannot be read and are a residual risk. Upstream still prevents a user helper from reaching a managed exporter (`headers_helper_targets`).
-5. **Helper repository context.** The hidden `sce auth telemetry-headers` gains an explicit repository argument. With it, the policy gate, destination tripwire, `auth.db` presence check, repository-binding lookup, and `CREDENTIAL_LOOKUP_DEADLINE` apply to that path instead of `current_dir()`. The no-argument form stays byte-identical for Claude. The tripwire stays meaningful, because Codex passes its environment to the helper.
-6. **Setup and doctor.** No `sce setup` change is needed: no Codex config is written. Doctor changes are optional and out of the minimum T02 scope.
-7. **ADR.** The launcher is a substantive architectural choice, so T02 records one ADR.
-
-The open question "is launcher-only coverage worth its cost" is answered by evidence: plain `codex` launches cannot be attributed safely. T02 ships the launcher together with the hook spans, and a plain `codex` launch keeps only the SCE hook spans.
+5. **Helper repository context.** The hidden `--repo <path>` selects the directory for the policy gate, destination tripwire, `auth.db` presence check, and repository-binding lookup. Repository resolution and credential lookup share `CREDENTIAL_LOOKUP_DEADLINE`. The no-argument form continues to use Claude's launch directory. Codex passes its environment to the helper.
+6. **Setup and doctor.** Setup leaves Codex OTEL configuration to the launcher. Doctor reports existing managed-telemetry health without a Codex-native delivery check.
+7. **Decision record.** [Native Codex telemetry via the `sce codex` launcher](../decisions/2026-11-24-codex-native-telemetry-via-sce-codex-launcher.md).
 
 ## Claude/Codex parity matrix
 
-Claude semantics come from existing SCE context (`telemetry-credential.md`, `claude-hook-trace-propagation.md`) and Claude Code monitoring documentation. They were not re-probed in T01, and T03 confirms them in Dash0.
+The Claude column draws on the [credential contract](telemetry-credential.md) and [Claude hook propagation evidence](claude-hook-trace-propagation.md). The live checks below confirm Claude hook parenting and token and cost delivery. Other Claude cells describe the existing contract.
 
-| Capability | Claude Code (SCE install) | Codex 0.172.0 (decided mechanism) |
+| Capability | Claude Code (SCE install) | Codex 0.172.0 with SCE |
 |---|---|---|
-| Activation | User-level settings; every launch | `sce codex` launches only; plain `codex` exports nothing natively |
-| Repository attribution | Helper uses the launch cwd; `vcs.*` on metrics and logs via `OTEL_METRICS_INCLUDE_REPOSITORY` | Helper gets an explicit repository argument; no native repository attribute; optional `span_attributes` on traces |
+| Activation | User-level settings with authorization from the launch directory | `sce codex` enables native export on supported, authorized launches. SCE hook spans can also export during plain `codex` launches. |
+| Repository attribution | Helper uses the launch cwd; `vcs.*` on metrics and logs via `OTEL_METRICS_INCLUDE_REPOSITORY` | Repository credential binding selects the workspace dataset. Some native spans carry `cwd`. The launcher adds no repository ID to spans or metrics. |
 | Helper refresh | Debounce 300 s; on demand | Fixed timer (300 s via launcher); start-up run; no refresh on 401 |
 | Helper failure | Export unauthenticated or failing | Export suspended and data dropped; one stderr warning |
 | Token usage | `claude_code.token.usage` counter; `input` excludes cache reads; separate `cacheRead`/`cacheCreation` | `codex.turn.token_usage` histogram per turn; `input` **includes** `cached_input`; also `cache_write_input`, `reasoning_output`, `total`. Not summable against Claude `input` without subtracting `cached_input` |
@@ -163,7 +161,7 @@ Claude semantics come from existing SCE context (`telemetry-credential.md`, `cla
 | Prompt and response content | Prompts redacted by default | Prompts redacted; responses off; tool arguments and output excluded by disabling logs |
 | Native log events | Exported | Disabled (privacy) |
 | Native traces | Enhanced beta tracing | Exported; high volume |
-| Subagent attribution | Agent names with tool details | `session_source=subagent_thread_spawn_<parent>_dN`; child `conversation.id`; hook `agent_id` |
+| Subagent attribution | Agent names with tool details | Metrics use `session_source=subagent_thread_spawn_<parent>_dN`. The hook's `sce.codex.agent_id` matches the child's native `conversation.id`. |
 | SCE hook spans | `sce.hook`, `sce.agent=claude`, `sce.claude.*` | `sce.hook`, `sce.agent=codex`, `sce.codex.*` |
 | Hook span parenting | `TRACEPARENT` → `claude_code.interaction` span | Independent root; Codex never propagates current-span context |
 | Hook-to-native join | `tool_use_id` ↔ `claude_code.tool` | `session_id` ↔ `conversation.id`, `turn_id` ↔ `turn.id`, `tool_use_id` ↔ `call_id` |
@@ -178,3 +176,39 @@ Claude semantics come from existing SCE context (`telemetry-credential.md`, `cla
 - There is no trace-volume or target filter configuration.
 - Refresh is timer-only, with no refresh on authentication failure.
 - Requirements-layer OTEL settings override runtime `-c`.
+
+## Live verification
+
+On 2026-11-24, the SCE worktree build (`0.4.0-pre-alpha-v14` with the launcher) ran Codex CLI 0.172.0 against `https://otel.crocoderlab.dev` in the enrolled `codex-otel` repository. Queries used the Dash0 dataset `sce-crocoder` (SCE CroCoder). A receiver response alone is insufficient evidence of delivery.
+
+| AC8 item | Observation |
+|---|---|
+| Native traces and repository attribution | At 14:33 UTC, `sce codex exec` completed session `01a20df9-d0af-7321-a5fb-2798282462f2` with exit 0 and no launcher skip notice. Native trace `ab5a6cad90b461dd3e44f9ddeb4477f5` contains the `codex_exec` `apply_patch` span. Its sampling spans report a `cwd` in `codex-otel`. The workspace dataset and those span attributes establish routing and repository context for this run. Native metrics lack a repository or session identifier. |
+| Hook delivery and correlation | Dash0 returned ten `sce.hook` spans for that session. Trace `e3875fe9c047dd9f25f8d982050aebd8` contains the root `codex-mutation-scope` `PostToolUse(apply_patch)` hook with `sce.agent=codex`, `sce.outcome=success`, and `sce.codex.model=gpt-6.2-sol`. Its descendants are `sce.mutation_scope`, `sce.git_snapshot`, and `sce.persistence`. The root's session, turn, and tool-use IDs match native `conversation.id`, `turn.id`, and `call_id` in the separate native trace. |
+| Token, cache, model, tool, and duration metrics | A Dash0 query at 14:37 UTC found six `codex.turn.token_usage` series for `gpt-6.2-sol`, including `cached_input` and `cache_write_input`. It also found native `codex.tool.call` and `codex.tool.call.duration_ms` series with that model. These are dataset-level series in the run window. Per-session metric attribution is unavailable because the series lack a conversation ID. The token semantics come from the T01 probe. |
+| Cost | A `codex.*cost*` metric query for `codex_exec` at 14:37 UTC returned no series, consistent with the T01 probe. Codex 0.172.0 supplies no native cost signal. |
+| Native logs and content | The `codex_exec` log query returned zero records from 14:29 UTC through the positive runs. The launcher disables native logs, so live native log delivery is unavailable by design. The inspected native `codex.turn_input` and `apply_patch` span attribute keys had no prompt, response, patch, argument, or output content fields. These checks cover the sampled spans and the observed log window. |
+| Subagent attribution | A second `sce codex exec` run at 14:54 UTC completed parent session `01a20e0c-e19e-7082-a863-4e03db041822`. The `SubagentStop` hook in trace `b14670c36c4a176ef79121dc62908b4c` carries the parent session, agent type `default`, and `sce.codex.agent_id=01a20e0d-0712-7f61-8b5b-0b81791f5a5f`. That ID equals `conversation.id` on the child's `run_turn` and `codex.sampling` in native trace `c7cf8d72a47f71dbeb6cdce08e7664f8`. The dataset also has a `codex.turn.token_usage` series with `session_source=subagent_thread_spawn_01a20e0c-e19e-7082-a863-4e03db041822_d1`. |
+| Unchanged Claude telemetry | In the concurrent Claude window, trace `fc4a49e91a65212130c11d07a3ba1523` contains `sce.agent=claude` tool hooks parented to `claude_code.interaction`. Dash0 also returned `claude_code.token.usage` and `claude_code.cost.usage` series. |
+| Failed authorization | An unenrolled scratch repository with consent enabled caused the launcher to report that no credential was authorized. Codex completed session `01a20e0e-a73a-7d92-b662-66eeaf2a86de`. A direct helper check exited nonzero with the fixed diagnostic and empty stdout. |
+| Repository opt-out | A scratch Git repository used the enrolled repository identity. The helper initially authorized it. After setting repository `telemetry.enabled=false`, the helper denied it and Codex completed session `01a20e0e-8dc2-7202-9eb7-b3cc805d522f`. |
+| Global consent withdrawal | A process-local XDG config root supplied a global SCE `telemetry.enabled=false` while the enrolled repository still granted consent. The helper denied it and Codex completed session `01a20e0e-6b9f-7222-8b2e-f50c6ccbfdf4`. The live check covered new launches. A running process keeps its cached headers until the next helper refresh. |
+| Negative-run Dash0 check | The three denial runs started between 14:55:55 and 14:56:10 UTC. A query in `sce-crocoder` found zero spans matching their `conversation.id` or `sce.codex.session_id`. Native metrics have no session ID, so this query cannot establish per-session metric absence. |
+| Credential replacement, expiry, and logout | Live delivery was not verifiable with the existing usable credential. Inducing these cases against the managed collector requires a disposable authenticated session with separately replaceable or expiring credentials. The isolated `telemetry_credential_storage` tests passed for replacement, expiry, and logout. The T01 loopback probe verified suspension and recovery at helper refresh. |
+| Two repositories in different workspaces | Live routing was verified for one enrolled workspace. A second authorized workspace session and its enrolled repository were unavailable for this check. The isolated storage suite passed the cross-workspace rejection test. The unenrolled scratch repository only exercises failed authorization. |
+| Preservation of user-owned and managed config | The real launcher detected a user-owned exporter in scratch `CODEX_HOME`, passed the original arguments to a Codex stub without telemetry overrides, and left both scratch and normal user config hashes unchanged. There was no local `/etc/codex` config or inspectable MDM/cloud fixture. The targeted launcher suite passed the injected managed-system conflict test. |
+
+### Repeat the live smoke check
+
+1. Use Codex 0.172.0, an enrolled repository with trusted SCE hooks, an authorized SCE login, and read access to its Dash0 workspace dataset. Use a synthetic turn and a disposable worktree for an `apply_patch` check.
+2. Run `sce codex -C <repository> exec`. Retain the session ID and UTC window. Run a separate turn with a subagent for the child-identity check.
+3. In Dash0, locate the native trace by `conversation.id` and the SCE hook by `sce.codex.session_id`. For a tracked tool, compare the turn and call IDs and check the independent root and operation children. For a subagent, compare `sce.codex.agent_id` to the child's `conversation.id`.
+4. Query Codex token and tool metrics for the time window. Check that Codex-native logs are absent and inspect attribute keys on the turn and tool spans. Record only identifiers and metadata needed to reproduce the query.
+
+## Control Plane follow-ups
+
+- Map Codex token, cache, model, tool, and duration signals into ingestion and dashboards. Keep Codex's inclusive `input` separate from Claude's uncached input, or subtract `cached_input` before comparing them. Preserve each signal's units and temporality.
+- Derive cost only where model pricing and cache categories are known. Label derived values separately from Claude's native USD cost metric.
+- Join native and SCE traces by the observed session, turn, and tool IDs. Keep workspace routing separate from repository grouping, and avoid implying per-session or per-repository attribution for native metric series that lack those identifiers.
+- Measure trace volume and decide which spans and attributes the collector needs to retain, including whether to retain absolute `cwd` values. Keep native logs disabled until Codex can redact tool content and personal identifiers.
+- Verify replacement, expiry, logout, and routing across two enrolled workspaces with disposable live credentials. Recheck managed-config behavior in an enterprise environment.

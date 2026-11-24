@@ -118,7 +118,7 @@ where
 }
 
 async fn run_telemetry_headers(repository: Option<PathBuf>) -> Result<String, CliError> {
-    let working_dir = repository.or_else(|| std::env::current_dir().ok());
+    let working_dir = telemetry_headers_working_dir(repository);
     let telemetry_enabled = working_dir.as_deref().is_some_and(telemetry_enabled_for);
     telemetry_headers_with(
         working_dir,
@@ -129,6 +129,15 @@ async fn run_telemetry_headers(repository: Option<PathBuf>) -> Result<String, Cl
         telemetry_credential_storage::load_repository_telemetry_credential,
     )
     .await
+}
+
+fn telemetry_headers_working_dir(repository: Option<PathBuf>) -> Option<PathBuf> {
+    match repository {
+        Some(path) => std::fs::canonicalize(path)
+            .ok()
+            .filter(|path| path.is_dir()),
+        None => std::env::current_dir().ok(),
+    }
 }
 
 pub(crate) fn telemetry_enabled_for(working_dir: &Path) -> bool {
@@ -1134,6 +1143,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let enrolled = git_repository_with_remote(dir.path(), "a", "git@github.com:acme/a.git");
         let unenrolled = git_repository_with_remote(dir.path(), "b", "git@github.com:acme/b.git");
+        let enrolled_subdir = enrolled.join("src").join("module");
+        std::fs::create_dir_all(&enrolled_subdir).unwrap();
+        let enrolled_file = enrolled.join("file");
+        std::fs::write(&enrolled_file, "").unwrap();
         let not_git = dir.path().join("plain");
         std::fs::create_dir_all(&not_git).unwrap();
         let enrolled_id = repository_id_for(&enrolled).expect("enrolled repository identity");
@@ -1141,7 +1154,7 @@ mod tests {
         let headers_for = |repository: PathBuf| {
             let enrolled_id = enrolled_id.clone();
             telemetry_headers_with(
-                Some(repository),
+                telemetry_headers_working_dir(Some(repository)),
                 true,
                 false,
                 || true,
@@ -1153,15 +1166,15 @@ mod tests {
         };
 
         assert_eq!(
-            headers_for(enrolled.join("src").join("module"))
-                .await
-                .unwrap(),
+            headers_for(enrolled_subdir).await.unwrap(),
             r#"{"Authorization":"Bearer tok-a"}"#
         );
         for (case, repository) in [
             ("unenrolled", unenrolled),
             ("not git", not_git),
             ("missing", dir.path().join("missing")),
+            ("missing inside enrolled repo", enrolled.join("missing")),
+            ("file inside enrolled repo", enrolled_file),
         ] {
             let error = headers_for(repository).await.expect_err(case);
             assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE, "{case}");

@@ -3,6 +3,7 @@ pub mod command;
 use std::fmt;
 use std::future::Future;
 use std::io;
+use std::iter::Peekable;
 use std::path::{Path, PathBuf};
 
 use crate::services::default_paths::enclosing_repository_root;
@@ -34,15 +35,15 @@ const USER_OWNED_OTEL_KEYS: [&str; 4] = [
 const CONFIG_OPTIONS: [&str; 2] = ["-c", "--config"];
 const PROFILE_OPTIONS: [&str; 2] = ["-p", "--profile"];
 const DIRECTORY_OPTIONS: [&str; 2] = ["-C", "--cd"];
-const OTHER_VALUE_OPTIONS: [&str; 16] = [
+const IMAGE_OPTIONS: [&str; 2] = ["-i", "--image"];
+const UNSUPPORTED_OPTIONS: [&str; 3] = ["--remote", "--remote-auth-token-env", "--worktree"];
+const OTHER_VALUE_OPTIONS: [&str; 14] = [
     "-m",
     "--model",
     "-s",
     "--sandbox",
     "-a",
     "--ask-for-approval",
-    "-i",
-    "--image",
     "--enable",
     "--disable",
     "--local-provider",
@@ -69,7 +70,7 @@ const HELP_OR_VERSION_OPTIONS: [&str; 4] = ["-h", "--help", "-V", "--version"];
 const EXEC_SUBCOMMANDS: [&str; 2] = ["exec", "e"];
 const RESUME_SUBCOMMAND: &str = "resume";
 const FORK_SUBCOMMAND: &str = "fork";
-const SESSIONLESS_SUBCOMMANDS: [&str; 9] = [
+const SESSIONLESS_SUBCOMMANDS: &[&str] = &[
     "login",
     "logout",
     "completion",
@@ -78,16 +79,31 @@ const SESSIONLESS_SUBCOMMANDS: [&str; 9] = [
     "a",
     "sandbox",
     "debug",
-    "help",
+    "update",
+    "doctor",
+    "plugin",
+    "archive",
+    "unarchive",
+    "delete",
+    "migrate-rollouts",
+    "migrate-nfs-db",
+    "git-credential",
+    "execpolicy",
 ];
-const UNSUPPORTED_SUBCOMMANDS: [&str; 7] = [
+const UNSUPPORTED_SUBCOMMANDS: &[&str] = &[
+    "agents",
+    "app",
     "app-server",
     "exec-server",
     "remote-control",
     "cloud",
+    "cloud-tasks",
     "mcp",
     "mcp-server",
     "review",
+    "queue",
+    "responses-api-proxy",
+    "tcp-tunnel",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,8 +116,10 @@ pub(crate) enum LaunchMode {
 pub(crate) enum PlainLaunchReason {
     Sessionless,
     ResumeWithoutDirectory,
+    InteractiveResume,
     InteractiveFork,
     UnsupportedSubcommand(String),
+    UnsupportedOption(&'static str),
     UnrecognizedOption(String),
     NotRepository,
     TelemetryDisabled,
@@ -118,11 +136,17 @@ impl PlainLaunchReason {
                 "resume needs an explicit `-C <dir>` to attribute the session to a repository"
                     .to_string()
             }
+            Self::InteractiveResume => {
+                "interactive resume has no verified repository attribution".to_string()
+            }
             Self::InteractiveFork => {
                 "interactive fork chooses its working directory after launch".to_string()
             }
             Self::UnsupportedSubcommand(subcommand) => {
                 format!("`{subcommand}` is not a supported telemetry launch mode")
+            }
+            Self::UnsupportedOption(option) => {
+                format!("`{option}` is not supported with SCE native telemetry")
             }
             Self::UnrecognizedOption(option) => {
                 format!("unrecognized Codex option `{option}`")
@@ -218,64 +242,72 @@ impl LaunchContext {
 }
 
 pub(crate) fn classify_launch(args: &[String]) -> LaunchMode {
-    let mut tokens = args.iter().map(String::as_str);
+    let mut tokens = args.iter().map(String::as_str).peekable();
     let mut directory = None;
-    let mut in_exec = false;
+    let mut command = LaunchCommand::Interactive;
     while let Some(token) = tokens.next() {
         if token == "--" {
             break;
         }
-        match read_option(token, &mut tokens) {
+        let option_name = token.split_once('=').map_or(token, |(name, _)| name);
+        if let Some(option) = UNSUPPORTED_OPTIONS
+            .iter()
+            .copied()
+            .find(|option| *option == option_name)
+        {
+            return LaunchMode::Plain(PlainLaunchReason::UnsupportedOption(option));
+        }
+        match read_option(token, &mut tokens, command) {
             OptionToken::Directory(value) => directory = Some(PathBuf::from(value)),
             OptionToken::Other => {}
             OptionToken::HelpOrVersion => return LaunchMode::Plain(PlainLaunchReason::Sessionless),
             OptionToken::Unrecognized => {
                 return LaunchMode::Plain(PlainLaunchReason::UnrecognizedOption(token.to_string()))
             }
-            OptionToken::Positional => {
-                let subcommand = if in_exec {
-                    format!("exec {token}")
-                } else {
-                    token.to_string()
-                };
-                match (in_exec, token) {
-                    (false, _) if EXEC_SUBCOMMANDS.contains(&token) => in_exec = true,
-                    (_, RESUME_SUBCOMMAND) => return classify_resume(directory, tokens),
-                    (false, FORK_SUBCOMMAND) => {
-                        return LaunchMode::Plain(PlainLaunchReason::InteractiveFork)
-                    }
-                    (_, "help") => return LaunchMode::Plain(PlainLaunchReason::Sessionless),
-                    (false, _) if SESSIONLESS_SUBCOMMANDS.contains(&token) => {
-                        return LaunchMode::Plain(PlainLaunchReason::Sessionless)
-                    }
-                    (_, _) if UNSUPPORTED_SUBCOMMANDS.contains(&token) => {
-                        return LaunchMode::Plain(PlainLaunchReason::UnsupportedSubcommand(
-                            subcommand,
-                        ))
-                    }
-                    _ => return LaunchMode::Telemetry { directory },
+            OptionToken::Positional => match (command, token) {
+                (LaunchCommand::Interactive, _) if EXEC_SUBCOMMANDS.contains(&token) => {
+                    command = LaunchCommand::Exec;
                 }
-            }
+                (LaunchCommand::Interactive, RESUME_SUBCOMMAND) => {
+                    return LaunchMode::Plain(PlainLaunchReason::InteractiveResume);
+                }
+                (LaunchCommand::Interactive, FORK_SUBCOMMAND) => {
+                    return LaunchMode::Plain(PlainLaunchReason::InteractiveFork)
+                }
+                (LaunchCommand::Exec, RESUME_SUBCOMMAND) => command = LaunchCommand::ExecResume,
+                (LaunchCommand::Exec, FORK_SUBCOMMAND) => command = LaunchCommand::ExecFork,
+                (LaunchCommand::Interactive | LaunchCommand::Exec, "help") => {
+                    return LaunchMode::Plain(PlainLaunchReason::Sessionless)
+                }
+                (LaunchCommand::Interactive, _) if SESSIONLESS_SUBCOMMANDS.contains(&token) => {
+                    return LaunchMode::Plain(PlainLaunchReason::Sessionless);
+                }
+                (LaunchCommand::Interactive, _) if UNSUPPORTED_SUBCOMMANDS.contains(&token) => {
+                    return LaunchMode::Plain(PlainLaunchReason::UnsupportedSubcommand(
+                        token.to_string(),
+                    ));
+                }
+                (LaunchCommand::Exec, "review") => {
+                    return LaunchMode::Plain(PlainLaunchReason::UnsupportedSubcommand(
+                        "exec review".to_string(),
+                    ));
+                }
+                _ => {}
+            },
         }
+    }
+    if command == LaunchCommand::ExecResume && directory.is_none() {
+        return LaunchMode::Plain(PlainLaunchReason::ResumeWithoutDirectory);
     }
     LaunchMode::Telemetry { directory }
 }
 
-fn classify_resume<'a>(
-    mut directory: Option<PathBuf>,
-    mut tokens: impl Iterator<Item = &'a str>,
-) -> LaunchMode {
-    while let Some(token) = tokens.next() {
-        if let OptionToken::Directory(value) = read_option(token, &mut tokens) {
-            directory = Some(PathBuf::from(value));
-        }
-    }
-    match directory {
-        Some(directory) => LaunchMode::Telemetry {
-            directory: Some(directory),
-        },
-        None => LaunchMode::Plain(PlainLaunchReason::ResumeWithoutDirectory),
-    }
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LaunchCommand {
+    Interactive,
+    Exec,
+    ExecFork,
+    ExecResume,
 }
 
 enum OptionToken<'a> {
@@ -286,38 +318,56 @@ enum OptionToken<'a> {
     Positional,
 }
 
-fn read_option<'a>(token: &'a str, rest: &mut impl Iterator<Item = &'a str>) -> OptionToken<'a> {
+fn read_option<'a>(
+    token: &'a str,
+    rest: &mut Peekable<impl Iterator<Item = &'a str>>,
+    command: LaunchCommand,
+) -> OptionToken<'a> {
     if token == "-" || !token.starts_with('-') {
         return OptionToken::Positional;
     }
     if HELP_OR_VERSION_OPTIONS.contains(&token) {
         return OptionToken::HelpOrVersion;
     }
-    if FLAG_OPTIONS.contains(&token) {
+    if FLAG_OPTIONS.contains(&token)
+        || (command == LaunchCommand::ExecResume && matches!(token, "--last" | "--all"))
+    {
         return OptionToken::Other;
     }
-    let Some((name, value)) = split_option(token, rest) else {
+    let Some((name, Some(value))) = split_option(token, rest) else {
         return OptionToken::Unrecognized;
     };
+    let accepts_directory = matches!(command, LaunchCommand::Interactive | LaunchCommand::Exec);
     if DIRECTORY_OPTIONS.contains(&name) {
-        value.map_or(OptionToken::Other, OptionToken::Directory)
-    } else {
-        OptionToken::Other
+        return if accepts_directory && !value.is_empty() {
+            OptionToken::Directory(value)
+        } else {
+            OptionToken::Unrecognized
+        };
     }
+    if IMAGE_OPTIONS.contains(&name) && token == name && accepts_directory {
+        while rest.next_if(|value| is_option_value(value)).is_some() {}
+    }
+    OptionToken::Other
+}
+
+fn is_option_value(token: &str) -> bool {
+    token == "-" || !token.starts_with('-')
 }
 
 fn split_option<'a>(
     token: &'a str,
-    rest: &mut impl Iterator<Item = &'a str>,
+    rest: &mut Peekable<impl Iterator<Item = &'a str>>,
 ) -> Option<(&'a str, Option<&'a str>)> {
     let is_value_option = |name: &str| {
         CONFIG_OPTIONS.contains(&name)
             || PROFILE_OPTIONS.contains(&name)
             || DIRECTORY_OPTIONS.contains(&name)
+            || IMAGE_OPTIONS.contains(&name)
             || OTHER_VALUE_OPTIONS.contains(&name)
     };
     if is_value_option(token) {
-        return Some((token, rest.next()));
+        return Some((token, rest.next_if(|value| is_option_value(value))));
     }
     if !token.starts_with("--") && token.len() > 2 && token.is_char_boundary(2) {
         let (name, value) = token.split_at(2);
@@ -330,7 +380,7 @@ fn split_option<'a>(
 
 fn option_values<'a>(args: &'a [String], names: &[&str]) -> Vec<&'a str> {
     let mut values = Vec::new();
-    let mut tokens = args.iter().map(String::as_str);
+    let mut tokens = args.iter().map(String::as_str).peekable();
     while let Some(token) = tokens.next() {
         if token == "--" {
             break;
@@ -497,6 +547,9 @@ fn shell_quote(value: &str) -> String {
 
 pub(crate) fn repository_root_for(launch_dir: &Path) -> Option<PathBuf> {
     let launch_dir = std::fs::canonicalize(launch_dir).ok()?;
+    if !launch_dir.is_dir() {
+        return None;
+    }
     enclosing_repository_root(&launch_dir).map(Path::to_path_buf)
 }
 

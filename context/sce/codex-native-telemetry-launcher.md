@@ -2,7 +2,7 @@
 
 `sce codex [codex arguments...]` launches Codex CLI with Codex's own OpenTelemetry export pointed at the managed collector. The export uses a repository-scoped telemetry credential. A plain `codex` launch exports no native telemetry. SCE Codex hook spans are independent of the launcher (see [cli-observability-contract.md](cli-observability-contract.md#managed-trace-export)).
 
-Code: `cli/src/services/codex_telemetry/` (`mod.rs` for classification, conflict detection, and overrides; `command.rs` for execution). Decision: [ADR](../decisions/2026-11-24-codex-native-telemetry-via-sce-codex-launcher.md). Probe evidence for Codex 0.172.0: [codex-native-telemetry-contract.md](codex-native-telemetry-contract.md).
+Code: `cli/src/services/codex_telemetry/` (`mod.rs` for classification, conflict detection, and overrides; `command.rs` for execution). Decision: [ADR](../decisions/2026-11-24-codex-native-telemetry-via-sce-codex-launcher.md). The minimum verified Codex CLI version is 0.172.0. [Probe evidence](codex-native-telemetry-contract.md) · [Live verification](codex-native-telemetry-contract.md#live-verification).
 
 ## Launch flow
 
@@ -32,14 +32,16 @@ flowchart TD
 | --- | --- |
 | New interactive session, with or without a prompt | Yes |
 | `exec`, `e`, `exec fork` | Yes |
-| `resume`, `exec resume` with `-C <dir>` (before or after the subcommand) | Yes; the repository comes from `<dir>` |
-| `resume`, `exec resume` without `-C` | No; the session runs in its stored directory |
+| `exec resume` with `-C <dir>` before `resume` | Yes. The repository comes from `<dir>`. |
+| `exec resume` without `-C` | Plain launch. The session runs in its stored directory. |
+| Interactive `resume` | Plain launch. Repository attribution is unverified even with `-C`. |
 | Interactive `fork` | No; the directory is chosen after launch |
-| `app-server`, `exec-server`, `remote-control`, `cloud`, `mcp`, `mcp-server`, `review`, `exec review` | No; unproven |
-| `login`, `logout`, `completion`, `features`, `apply`, `sandbox`, `debug`, `help`, `-h`, `--help`, `-V`, `--version` | No; sessionless, without a notice |
+| Other session modes, including `agents`, `queue`, `app-server`, `cloud`, `review`, and `exec review` | Plain launch. Repository attribution is unverified. |
+| `--worktree`, `--remote`, or `--remote-auth-token-env` | Plain launch. Repository attribution is unverified. |
+| Sessionless commands, including `login`, `logout`, `doctor`, and `help`, and the help and version flags | Plain launch without a notice. |
 | An option the launcher does not recognize | No; the value boundary is unknown |
 
-`-C`/`--cd` sets the launch directory, resolved against the process working directory. The repository root is the nearest ancestor with a `.git` entry.
+The launcher checks options before `--`, including options after a prompt or session ID. `-C`/`--cd` sets the launch directory, resolved against the process working directory. The repository root is the nearest ancestor with a `.git` entry.
 
 ## Conflict detection
 

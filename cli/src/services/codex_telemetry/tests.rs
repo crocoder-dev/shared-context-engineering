@@ -37,6 +37,16 @@ fn codex_telemetry_classifies_new_sessions_exec_and_exec_fork_as_telemetry_modes
         ),
         (vec!["--cd=/work/b"], telemetry(Some("/work/b"))),
         (vec!["-C/work/b", "prompt"], telemetry(Some("/work/b"))),
+        (
+            vec!["exec", "prompt", "--cd=/work/b"],
+            telemetry(Some("/work/b")),
+        ),
+        (
+            vec!["-C", "/work/a", "exec", "-C", "/work/b", "fork", "session"],
+            telemetry(Some("/work/b")),
+        ),
+        (vec!["exec", "-i", "a.png", "resume"], telemetry(None)),
+        (vec!["exec", "fork", "help", "review"], telemetry(None)),
         (vec!["-m", "resume"], telemetry(None)),
         (vec!["-c", "model=fork", "prompt"], telemetry(None)),
         (vec!["--", "--help"], telemetry(None)),
@@ -46,15 +56,15 @@ fn codex_telemetry_classifies_new_sessions_exec_and_exec_fork_as_telemetry_modes
 }
 
 #[test]
-fn codex_telemetry_requires_explicit_directory_for_resume() {
+fn codex_telemetry_requires_explicit_directory_before_exec_resume() {
     for (argv, expected) in [
         (
             vec!["resume", "019a-session"],
-            plain(PlainLaunchReason::ResumeWithoutDirectory),
+            plain(PlainLaunchReason::InteractiveResume),
         ),
         (
             vec!["resume", "--last"],
-            plain(PlainLaunchReason::ResumeWithoutDirectory),
+            plain(PlainLaunchReason::InteractiveResume),
         ),
         (
             vec!["exec", "resume", "019a-session", "prompt"],
@@ -62,15 +72,46 @@ fn codex_telemetry_requires_explicit_directory_for_resume() {
         ),
         (
             vec!["resume", "019a-session", "-C", "/work/a"],
-            telemetry(Some("/work/a")),
+            plain(PlainLaunchReason::InteractiveResume),
         ),
         (
             vec!["-C", "/work/a", "resume", "019a-session"],
+            plain(PlainLaunchReason::InteractiveResume),
+        ),
+        (
+            vec!["exec", "--cd", "/work/a", "resume", "019a-session"],
+            telemetry(Some("/work/a")),
+        ),
+        (
+            vec!["-C", "/work/a", "exec", "resume", "--last"],
             telemetry(Some("/work/a")),
         ),
         (
             vec!["exec", "resume", "--cd", "/work/a", "019a-session"],
+            plain(PlainLaunchReason::UnrecognizedOption("--cd".into())),
+        ),
+        (
+            vec!["exec", "resume", "019a-session", "--", "-C/work/b"],
+            plain(PlainLaunchReason::ResumeWithoutDirectory),
+        ),
+        (
+            vec![
+                "exec",
+                "-C/work/a",
+                "resume",
+                "019a-session",
+                "--",
+                "-C/work/b",
+            ],
             telemetry(Some("/work/a")),
+        ),
+        (
+            vec!["exec", "-ia.png", "resume", "019a-session"],
+            plain(PlainLaunchReason::ResumeWithoutDirectory),
+        ),
+        (
+            vec!["exec", "prompt", "resume", "019a-session"],
+            plain(PlainLaunchReason::ResumeWithoutDirectory),
         ),
     ] {
         assert_eq!(classify_launch(&args(&argv)), expected, "{argv:?}");
@@ -116,9 +157,34 @@ fn codex_telemetry_launches_unproven_and_sessionless_modes_without_telemetry() {
                 "--brand-new=value".into(),
             )),
         ),
+        (
+            vec!["prompt", "--remote", "unix://"],
+            plain(PlainLaunchReason::UnsupportedOption("--remote")),
+        ),
+        (
+            vec!["exec", "fork", "session", "--worktree"],
+            plain(PlainLaunchReason::UnsupportedOption("--worktree")),
+        ),
+        (
+            vec!["exec", "-C/work/a", "resume", "session", "--remote=unix://"],
+            plain(PlainLaunchReason::UnsupportedOption("--remote")),
+        ),
+        (
+            vec!["exec", "-C/work/a", "resume", "session", "--unknown"],
+            plain(PlainLaunchReason::UnrecognizedOption("--unknown".into())),
+        ),
+        (
+            vec!["prompt", "agents"],
+            plain(PlainLaunchReason::UnsupportedSubcommand("agents".into())),
+        ),
         (vec!["login"], plain(PlainLaunchReason::Sessionless)),
+        (vec!["doctor"], plain(PlainLaunchReason::Sessionless)),
         (vec!["--help"], plain(PlainLaunchReason::Sessionless)),
         (vec!["exec", "-h"], plain(PlainLaunchReason::Sessionless)),
+        (
+            vec!["exec", "fork", "--help"],
+            plain(PlainLaunchReason::Sessionless),
+        ),
         (vec!["--version"], plain(PlainLaunchReason::Sessionless)),
     ] {
         assert_eq!(classify_launch(&args(&argv)), expected, "{argv:?}");
@@ -543,7 +609,7 @@ fn codex_telemetry_plan_prepends_overrides_for_the_resolved_repository() {
     );
 
     let resumed = plan(
-        &["resume", "019a-session", "-C", "../second"],
+        &["exec", "-C", "../second", "resume", "019a-session"],
         &repos.root,
         &context_in(&repos.first),
         &files,
@@ -640,6 +706,20 @@ fn codex_telemetry_plan_forwards_arguments_unchanged_when_telemetry_is_skipped()
     assert_eq!(resume.plan.argv, args(&["resume", "--last"]));
     assert!(resume.plan.notice.is_some());
     assert_eq!(resume.policy_checked, None);
+
+    let fork = ["exec", "fork", "session", "--worktree"];
+    let unproven = plan(
+        &fork,
+        &repos.root,
+        &context_in(&repos.first),
+        &clean,
+        true,
+        true,
+    );
+    assert_eq!(unproven.plan.argv, args(&fork));
+    assert!(unproven.plan.notice.is_some());
+    assert_eq!(unproven.policy_checked, None);
+    assert_eq!(unproven.authorized_for, None);
 
     let help = plan(
         &["--help"],

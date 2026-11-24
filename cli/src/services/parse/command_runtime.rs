@@ -36,10 +36,14 @@ where
         Err(error) => return handle_clap_error(&args_vec, &error),
     };
 
-    let Some(command) = cli.command else {
+    let Some(mut command) = cli.command else {
         return Ok(help_command());
     };
 
+    if let cli_schema::Commands::Codex { args } = &mut command {
+        // Clap consumes a leading `--`, which belongs to Codex.
+        *args = args_vec.into_iter().skip(2).collect();
+    }
     convert_clap_command(command)
 }
 
@@ -585,6 +589,23 @@ mod tests {
             command.request.format,
             services::output_format::OutputFormat::Text
         );
+    }
+
+    #[test]
+    fn codex_preserves_argument_terminators() {
+        for args in [
+            &["--", "--help"][..],
+            &["exec", "resume", "--", "-C/work"][..],
+        ] {
+            let argv = ["sce", "codex"]
+                .into_iter()
+                .chain(args.iter().copied())
+                .collect::<Vec<_>>();
+            let RuntimeCommand::Codex(command) = parse(&argv) else {
+                panic!("expected Codex launcher");
+            };
+            assert_eq!(command.args, args);
+        }
     }
 
     #[test]

@@ -209,20 +209,13 @@ are verified against the supported upstream event names.
 
 ## Existing Codex evidence remains separate
 
-The existing `sce hooks codex` behavior is additive and unchanged: it captures
-`UserPromptSubmit`/`Stop` conversation rows, applies the Bash policy, and
-captures `PostToolUse(apply_patch)` diff evidence. The mutation-scope adapter
-writes only through the generic mutation runtime and only to `mutation_trace_*`
-tables. It does not write `diff_traces`, `post_commit_patch_intersections`,
-`agent_traces`, `messages`, or `parts`, and it does not fold the complementary
-apply-patch evidence pipeline into mutation-scope storage.
+The existing `sce hooks codex` behavior is additive and unchanged: it captures `UserPromptSubmit`/`Stop` conversation rows, applies the Bash policy, and captures `PostToolUse(apply_patch)` diff evidence. The mutation-scope adapter writes only through the generic mutation runtime and only to `mutation_trace_*` tables. It does not write `diff_traces`, `post_commit_patch_intersections`, `agent_traces`, `messages`, or `parts`, and it does not fold the complementary apply-patch evidence pipeline into mutation-scope storage.
 
-Codex has no Codex-managed background execution surface in the supported
-`codex exec` path. A foreground Bash command can still spawn a self-detaching
-descendant that writes after `PostToolUse`; the adapter does not supervise
-processes, inspect process groups, poll for staleness, or treat `PostToolUse` as
-proof that every descendant stopped mutating. Such writes are outside the
-closed tracked interval and remain conservatively unscoped.
+Codex has no Codex-managed background execution surface in the supported `codex exec` path. A foreground Bash command can still spawn a self-detaching descendant that writes after `PostToolUse`; the adapter does not supervise processes, inspect process groups, poll for staleness, or treat `PostToolUse` as proof that every descendant stopped mutating. Such writes are outside the closed tracked interval and remain conservatively unscoped.
+
+## Managed trace spans
+
+When repository telemetry is authorized, each `sce hooks codex-mutation-scope` process emits one independent `sce.hook` root. The adapter wraps each coordinate or abandon call in `sce.mutation_scope`. The coordinator emits `sce.git_snapshot` and `sce.persistence` only when it executes those operations. An event that takes no adapter action emits only the hook span. Export failure does not change the adapter's admission or recovery result. The [observability contract](../sce/cli-observability-contract.md#managed-trace-export) defines the span attributes. The [live check](../sce/codex-native-telemetry-contract.md#live-verification) records the hierarchy for a tracked `PostToolUse(apply_patch)` event.
 
 ## Unsupported / coverage boundary
 
@@ -240,13 +233,7 @@ that excluded tools are read-only, harmless, or immediately detectable.
 
 ## Verification evidence
 
-The adapter is exercised through real temporary Git repositories, real
-repository Agent Trace databases, and the production entrypoint. Regressions
-cover write-ahead admission, duplicate and reused identities, tracked
-success/failure, cleanup signals, linked worktrees, MCP pass-through,
-mutate-then-error and parallel MCP, tracked-tool plus MCP overlap, denial
-recovery, crash points, both directions of the boundary-aware attribution rule,
-and scope provenance for both tracked tools.
+The adapter is exercised through real temporary Git repositories, real repository Agent Trace databases, and the production entrypoint. Regressions cover write-ahead admission, duplicate and reused identities, tracked success/failure, cleanup signals, linked worktrees, MCP pass-through, mutate-then-error and parallel MCP, tracked-tool plus MCP overlap, denial recovery, crash points, both directions of the boundary-aware attribution rule, and scope provenance for both tracked tools.
 
 The frozen protocol/Quint/runtime baseline and the Agent Trace SQL/schema
 boundary remain unchanged after the accepted D14 follow-up:
