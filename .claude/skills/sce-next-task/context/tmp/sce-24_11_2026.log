@@ -1,0 +1,1 @@
+timestamp=2026-11-24T13:36:41.484Z log_format=text level=warn event_id=sce.hooks.claude_mutation_scope.pre_tool_use_fail_closed message=Failed to acquire adapter-state lock: Timed out after 10s waiting for the adapter-state lock '/home/davidabram/repos/shared-context-engineering/.git/sce/claude-mutation-scope-state.lock' context=establish_start
