@@ -8,7 +8,7 @@ use crate::services::hooks::claude_model_resolver::{
     resolve_claude_model, resolve_claude_model_from_exact_evidence, ClaudeModelEvidence,
 };
 use crate::services::managed_telemetry::trace_export::{in_child_span, ManagedChildSpan};
-use crate::services::mutation_trace::runtime::resolve_git_dir;
+use crate::services::mutation_trace::runtime::{resolve_git_dir, resolve_worktree_root};
 use crate::services::mutation_trace::store::{MutationTraceStore, ScopeProvenanceModelFill};
 use crate::services::mutation_trace::types::ScopeId;
 
@@ -583,8 +583,14 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
         }
     };
 
-    let repository_root = Path::new(&identity.cwd);
-    let git_dir = match resolve_git_dir(&identity.cwd).await {
+    let repository_root = match resolve_worktree_root(Path::new(&identity.cwd)).await {
+        Ok(repository_root) => repository_root,
+        Err(error) => {
+            log_pre_tool_use_fail_closed(logger, "resolve_worktree_root", &error);
+            return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
+        }
+    };
+    let git_dir = match resolve_checkout_git_dir(&repository_root, resolve_git_dir).await {
         Ok(git_dir) => git_dir,
         Err(error) => {
             log_pre_tool_use_fail_closed(logger, "resolve_git_dir", &error);
@@ -593,14 +599,14 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
     };
 
     if matches!(
-        apply_recovery_barrier(&git_dir, repository_root, logger, seam).await,
+        apply_recovery_barrier(&git_dir, &repository_root, logger, seam).await,
         BarrierOutcome::Deny
     ) {
         return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
     }
 
     let target = RouteTarget {
-        checkout_path: repository_root.to_path_buf(),
+        checkout_path: repository_root.clone(),
         git_dir: git_dir.clone(),
     };
     if let Err(error) = persist_tool_route(&anchor_git_dir, &identity.attempt_key(), &target).await
@@ -611,7 +617,7 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
 
     match establish_start(
         &git_dir,
-        repository_root,
+        &repository_root,
         identity,
         logger,
         model_state_resolver,
@@ -625,6 +631,21 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
             pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON)
         }
     }
+}
+
+/// Resolves the Git directory from the canonical worktree root rather than the tool's working
+/// directory, so the persisted root and Git directory always describe the same checkout.
+async fn resolve_checkout_git_dir(
+    repository_root: &Path,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+) -> Result<PathBuf> {
+    let repository_root_str = repository_root.to_str().ok_or_else(|| {
+        anyhow!(
+            "worktree root '{}' is not valid UTF-8",
+            repository_root.display()
+        )
+    })?;
+    resolve_git_dir(repository_root_str).await
 }
 
 fn is_untracked_background_bash(execution: &ClaudeToolExecution) -> bool {

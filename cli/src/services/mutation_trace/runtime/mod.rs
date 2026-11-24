@@ -23,7 +23,9 @@ pub(crate) use external_mutation_guard::{
     GuardRequest,
 };
 #[allow(unused_imports)]
-pub(crate) use git_snapshot::{resolve_git_dir, resolve_worktree_id, GitSnapshotService};
+pub(crate) use git_snapshot::{
+    resolve_git_dir, resolve_worktree_id, resolve_worktree_root, GitSnapshotService,
+};
 #[allow(unused_imports)]
 pub(crate) use mutation_attribution::{
     resolve_bounded_mutation_attribution, resolve_post_commit_mutation_attribution,

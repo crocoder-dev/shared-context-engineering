@@ -44,7 +44,11 @@ impl Harness {
     fn new() -> Self {
         let root = tempfile::tempdir().expect("temp dir");
         let outside = tempfile::tempdir().expect("outside temp dir");
-        let repo_a = root.path().join("repoA");
+        let repo_a = root
+            .path()
+            .canonicalize()
+            .expect("canonical root")
+            .join("repoA");
         let nested_b = repo_a.join("nestedB");
         for repo in [&repo_a, &nested_b] {
             std::fs::create_dir_all(repo).expect("mkdir");
@@ -53,7 +57,7 @@ impl Harness {
         Harness {
             repo_a,
             nested_b,
-            outside: outside.path().to_path_buf(),
+            outside: outside.path().canonicalize().expect("canonical outside"),
             _root: root,
             _outside: outside,
             calls: Mutex::new(Vec::new()),
@@ -184,6 +188,68 @@ async fn post_tool_use_from_a_nested_repository_closes_the_attempt_in_the_origin
     assert_eq!(h.take_calls(), vec![call(&h.repo_a, "close", &scope)]);
     assert!(h.state_of(&h.repo_a).await.attempts.is_empty());
     assert!(!state::state_path(&h.nested_b.join(".git")).exists());
+    assert_eq!(h.route_count().await, 0);
+}
+
+#[tokio::test]
+async fn pre_tool_use_in_a_removed_subdirectory_closes_through_the_canonical_worktree_root() {
+    let h = Harness::new();
+    let subdirectory = h.repo_a.join("src").join("deep");
+    std::fs::create_dir_all(&subdirectory).expect("mkdir");
+
+    h.send(pre(None, "t1", &subdirectory)).await.unwrap();
+    let calls = h.take_calls();
+    let scope = started_scope(&calls);
+    assert_eq!(calls[0].root, h.repo_a);
+    let route = routes::load_route(
+        &h.anchor(),
+        &AttemptKey {
+            session_id: SESSION.to_string(),
+            agent_id: None,
+            tool_use_id: "t1".to_string(),
+        },
+    )
+    .await
+    .unwrap()
+    .expect("route persisted before start");
+    assert_eq!(route.checkout_path, h.repo_a);
+
+    std::fs::remove_dir_all(h.repo_a.join("src")).expect("remove subdirectory");
+    h.send(post(None, "t1", &subdirectory)).await.unwrap();
+
+    assert_eq!(h.take_calls(), vec![call(&h.repo_a, "close", &scope)]);
+    assert!(h.state_of(&h.repo_a).await.attempts.is_empty());
+    assert_eq!(h.route_count().await, 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unsyncable_route_directory_denies_pre_tool_use_and_the_visible_route_is_retired() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let h = Harness::new();
+    let route_dir = h.anchor().join("sce");
+    std::fs::create_dir_all(&route_dir).expect("mkdir");
+    let set_mode = |mode: u32| {
+        std::fs::set_permissions(&route_dir, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    };
+    set_mode(0o300);
+    if std::fs::File::open(&route_dir).is_ok() {
+        set_mode(0o700);
+        return;
+    }
+
+    let response = h.send(pre(None, "t1", &h.repo_a)).await.unwrap();
+    set_mode(0o700);
+
+    let decision: Value = serde_json::from_str(&response).expect("deny JSON");
+    assert_eq!(decision["hookSpecificOutput"]["permissionDecision"], "deny");
+    assert!(h.take_calls().is_empty());
+    assert!(h.state_of(&h.repo_a).await.attempts.is_empty());
+    assert_eq!(h.route_count().await, 1);
+
+    h.send(session_event("Stop", &h.repo_a)).await.unwrap();
+    assert!(h.take_calls().is_empty());
     assert_eq!(h.route_count().await, 0);
 }
 

@@ -35,9 +35,14 @@ is a versioned `{version, routes[]}`. Each route has the full attempt key
 attribution evidence, and a route never proves that a scope started.
 
 Writes hold `<anchor-git-dir>/sce/claude-mutation-scope-routes.lock` and use the
-adapter-state durability pattern: temp file, `sync_data`, atomic rename, and a
-best-effort directory sync on Unix. A malformed or wrong-version table is
-rejected and never overwritten.
+durability sequence: temp file, `sync_data`, atomic rename, and a directory
+sync on Unix. A failure to open or `sync_all` the directory fails the write with
+the directory path in the error, so `PreToolUse` denies the tool. Such a failure
+happens after the rename, so the new table can stay visible on disk. A retried
+`persist_route` for the same key and target returns `AlreadyRouted` only after
+it syncs the directory again. A route left visible without an attempt is
+retired by the next terminal or cleanup event of that session. A malformed or
+wrong-version table is rejected and never overwritten.
 
 ## Operations
 
@@ -66,8 +71,13 @@ sequenceDiagram
     Post->>Routes: remove route once attempt is gone
 ```
 
-- `PreToolUse` resolves the anchor, then the target from the raw `cwd`, then
-  runs the recovery barrier. It persists the route before attempt allocation
+- `PreToolUse` resolves the anchor, then the canonical worktree root of the
+  `cwd` (`resolve_worktree_root`), then the Git directory of that root, then
+  runs the recovery barrier. Resolving the Git directory from the root keeps
+  both target fields in one checkout, including linked worktrees and nested
+  repositories. The route stores the root, not the `cwd`, so a tool may delete
+  or rename its starting subdirectory. A root that cannot be resolved denies
+  the tool. It persists the route before attempt allocation
   and `Start`. An unresolvable anchor, a persist failure, or a `Conflict` denies
   the tool with the standard fail-closed decision.
 - `PostToolUse`, `PostToolUseFailure`, and `PermissionDenied` load the route and

@@ -142,7 +142,7 @@ T03/AC7 cover both cases with real Git fixtures.
 
     `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` passed. `cargo fmt --check` passed.
   - Assumptions and limits:
-    - The route stores the raw `PreToolUse` `cwd` as the checkout path, matching the repository root the seam received before this change.
+    - The route stored the raw `PreToolUse` `cwd` as the checkout path. T05 replaced this with the canonical worktree root.
     - A same-key race is accepted: a `PreToolUse` for the same `tool_use_id` arriving between a terminal event's attempt check and its route removal could leave that attempt unrouted. Claude does not reuse a live `tool_use_id` concurrently.
     - A route left by a start that failed after persistence is retired by the next terminal or cleanup event for that key.
   - Context impact: important. Claude adapter routing behavior changed: the anchor requirement for `PreToolUse`, route-based terminal and cleanup handling, the legacy `routed` marker, and the new `route_unresolved` log event. The durable update to `context/cli/claude-mutation-scope-integration.md` and `context/cli/claude-mutation-scope-routes.md` is needed.
@@ -175,6 +175,22 @@ T03/AC7 cover both cases with real Git fixtures.
   - Context impact: important. Facts to record in current-state context: live validation of the routing behavior, the measured hook overhead, and the remaining recovery limits.
   - Context synchronization: synced
 
+- [x] **T05: Address PR #359 review findings** (status:done)
+  - Scope: persist the canonical worktree root in routes, propagate route-table directory-sync errors, and remove the tracked temporary log. No change to the Quint spec, mutation protocol, database schema, route-table format, or locking.
+  - Dependencies: T04
+  - Completed: 2026-11-24
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/lifecycle.rs`, `cli/src/services/hooks/claude_mutation_scope/lifecycle_tests.rs`, `cli/src/services/hooks/claude_mutation_scope/routes.rs`, `cli/src/services/mutation_trace/runtime/mod.rs` (re-export only), `.gitignore`, `.claude/skills/sce-next-task/context/tmp/sce-24_11_2026.log` (deleted), `context/cli/claude-mutation-scope-routes.md`, `context/cli/claude-mutation-scope-integration.md`, this plan
+  - Result:
+    - **Canonical worktree root.** `PreToolUse` now resolves the canonical worktree root of `cwd` with the existing `resolve_worktree_root` (`git rev-parse --show-toplevel`, canonicalized). It then resolves the Git directory from that root, so both route fields describe one checkout, including linked worktrees and nested repositories. The root is used for the recovery barrier, the route, and `Start`. Terminal events already use the route's `checkout_path`. A root that cannot be resolved denies the tool. Legacy (`routed: false`) lookups still use the event `cwd`.
+    - **Route sync errors.** On Unix, a failure to open the route directory or to `sync_all` it after the rename now fails the write, with the directory path in the error. `PreToolUse` then denies the tool. The rename has already happened, so the route can stay visible. A same-key, same-target replay (`AlreadyRouted`) syncs the directory again before it reports success. The visible route has no attempt, so the next terminal or cleanup event of the session retires it. Non-Unix builds keep the existing no-directory-sync behavior.
+    - **Temporary artifacts.** The tracked log was removed and `.claude/skills/sce-next-task/context/tmp/` was added to the root `.gitignore`.
+    - Test harness paths are canonicalized, because the seam now receives the canonical root.
+  - Verify:
+    - New tests: `pre_tool_use_in_a_removed_subdirectory_closes_through_the_canonical_worktree_root`, `an_unsyncable_route_directory_denies_pre_tool_use_and_the_visible_route_is_retired`, and `directory_sync_failure_after_rename_surfaces_and_a_retry_confirms_the_route`. The two sync-failure tests are Unix-only. They skip themselves when the process can open a mode-`0300` directory (for example, as root).
+    - Commands and results are in the Validation Report.
+  - Context impact: important. The route target and route durability behavior changed. `context/cli/claude-mutation-scope-routes.md` and `context/cli/claude-mutation-scope-integration.md` were updated.
+  - Context synchronization: synced
+
 ## Non-goals
 
 - General cross-harness repository router, registry service, background sweeper, or repository scan.
@@ -191,39 +207,44 @@ This PR starts as a plan-only draft. Do not claim that the dangling-scope defect
 
 ## Validation Report
 
-**Status:** validated  
+**Status:** validated (revalidated after T05)
 **Date:** 2026-11-24
 
 ### Commands run
 
-- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (880 passed, 0 failed; includes `mutation_trace::mbt` Quint connect tests and all `claude_mutation_scope` tests)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` -> exit 0 (39 passed, 0 failed)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml sync` -> exit 0 (both new directory-sync failure tests ran and passed as uid 1000, not skipped)
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml` -> exit 0 (920 passed, 0 failed; includes `mutation_trace::mbt` Quint connect tests)
 - `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` -> exit 0 (no warnings)
-- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml --check` -> exit 0 (formatted)
-- `nix flake check` -> exit 0 ("all checks passed!")
-- `nix run .#pkl-check-generated` -> exit 0 (157 files)
-- `git diff --stat 6cc73fe3 -- spec cli/src/services/mutation_trace cli/migrations 'cli/src/services/hooks/mutation_scope*'` -> exit 0 (empty diff)
-- `git ls-files --cached | grep -E 'context/tmp|\.log$'` -> exit 0 (only `context/tmp/.gitignore`; stray log removed from the index)
+- `nix develop -c ./scripts/run-cli-cargo.sh fmt --manifest-path cli/Cargo.toml --check` -> exit 0 (after applying `rustfmt` to the new tests)
+- `nix flake check` -> exit 0 ("all checks passed!"; `cli-tests`, `cli-clippy`, `cli-fmt`, package, and setup-schema checks)
+- `git diff --stat 967d27d1 -- spec cli/src/services/mutation_trace cli/migrations 'cli/src/services/hooks/mutation_scope*'` -> only `cli/src/services/mutation_trace/runtime/mod.rs` (+3/-1: re-export of the existing `resolve_worktree_root`)
+- `git ls-files | grep -E '\.log$|context/tmp/'` -> only `context/tmp/.gitignore`
+- `git check-ignore -v .claude/skills/sce-next-task/context/tmp/x.log` -> matched by `.gitignore`
+
+The T04 run of `nix run .#pkl-check-generated` (157 files) was not repeated. T05 changes no Pkl source or generated file.
 
 ### Success-criteria verification
 
 - [x] AC1: Proven anchor -> T01 live probe evidence recorded in **T01 anchor probe findings** (`CLAUDE_PROJECT_DIR` and its Git dir stable across all 19 events); anchor and fallback policy documented.
-- [x] AC2: Original target -> `post_tool_use_from_a_nested_repository_closes_the_attempt_in_the_original_repository` passed on real nested Git repositories.
+- [x] AC2: Original target -> `post_tool_use_from_a_nested_repository_closes_the_attempt_in_the_original_repository` and `pre_tool_use_in_a_removed_subdirectory_closes_through_the_canonical_worktree_root` passed on real Git repositories.
 - [x] AC3: Multiple target repositories -> `concurrent_tools_in_two_repositories_close_only_their_own_attempts_in_reverse_order` and `main_agent_and_subagent_with_the_same_tool_use_id_do_not_share_a_route` passed.
 - [x] AC4: Terminal parity -> `failure_and_permission_denial_terminate_through_the_original_route`, `stop_and_subagent_stop_retire_only_their_own_routed_attempts`, `failed_abandon_keeps_the_route_so_session_end_can_retry`, `worktree_remove_retires_routes_into_the_removed_worktree_only` passed.
-- [x] AC5: Crash safety -> Accepted by user decision (2026-11-24) without lifecycle-level evidence. Route-store failure injection (route write, route removal) and failed abandon are tested; no lifecycle test injects failure after attempt allocation, on seam `Start`, on `Close`, or on route persist during `PreToolUse`.
-- [x] AC6: Idempotency -> Accepted by user decision (2026-11-24) without lifecycle-level evidence. Duplicate persist/removal, reused `tool_use_id`, and concurrent writers are tested at the route-store level only.
+- [x] AC5: Crash safety -> Partially evidenced; the rest was accepted by user decision (2026-11-24). Route write, route removal, post-rename directory-sync failure, and failed abandon are tested. `an_unsyncable_route_directory_denies_pre_tool_use_and_the_visible_route_is_retired` covers a route-persist failure during `PreToolUse` at lifecycle level. No lifecycle test injects failure after attempt allocation, on seam `Start`, or on `Close`.
+- [x] AC6: Idempotency -> Accepted by user decision (2026-11-24) with route-store evidence: duplicate persist/removal, reused `tool_use_id`, concurrent writers, and a same-key retry after a directory-sync failure.
 - [x] AC7: Non-repository `cwd` -> `post_tool_use_outside_every_repository_still_closes_through_the_route` and `a_missing_route_never_closes_a_routed_attempt_but_legacy_attempts_close_by_cwd` passed.
-- [x] AC8: Protocol unchanged -> protected-path diff against merge base `6cc73fe3` is empty; full test suite including Quint MBT tests passed.
-- [x] AC9: Live rerun -> T04 recorded live Claude Code 2.1.309 rerun evidence: both scopes in A `closed`, no `active` scopes in A or B, route table empty, adapter states clean.
+- [x] AC8: Protocol unchanged -> no change in `spec/`, `cli/src/services/mutation_trace/protocol.rs`, generic ingress, or `cli/migrations/`. The only `mutation_trace` change is a one-line re-export of an existing runtime function. The full suite including Quint MBT tests passed.
+- [x] AC9: Live rerun -> T04 recorded live Claude Code 2.1.309 rerun evidence: both scopes in A `closed`, no `active` scopes in A or B, route table empty, adapter states clean. It was not repeated after T05. In that run, every `PreToolUse` `cwd` was already a repository root, so T05 does not change the observed target.
 
 ### Failed checks and follow-ups
 
-- None.
+- None locally. On GitHub, the `Nix CI (macos-latest)` job for the pre-T05 head `54b84501` was cancelled after 15 minutes without a runner (no steps ran). This was not a test failure.
 
 ### Residual risks
 
-- AC5/AC6 lifecycle behavior is accepted by user decision without direct lifecycle test evidence.
-- `.claude/skills/sce-next-task/context/tmp/` is not ignored, so the removed log remains untracked on disk and could be re-added by a broad `git add`.
+- AC5/AC6 lifecycle behavior beyond route persistence is accepted by user decision without direct lifecycle test evidence.
 - A legacy attempt (no `routed` marker) whose `cwd` changed before completion is still orphaned.
 - Accepted same-key race between a terminal event's attempt check and its route removal.
-- A route left by a start that failed after persistence stays as inert bookkeeping if Claude exits without a later terminal or cleanup event.
+- A route left visible by a failed start or a post-rename sync failure stays as inert bookkeeping if Claude exits without a later terminal or cleanup event.
+- Adapter state writes in `state.rs` still treat the directory sync as best-effort. T05 changed only the route store.
+- On non-Unix platforms the route store does not sync the directory, as before.

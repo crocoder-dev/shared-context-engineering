@@ -207,18 +207,32 @@ where
         )
     })?;
 
-    #[cfg(unix)]
-    {
-        if let Ok(dir_handle) = std::fs::File::open(&dir) {
-            let _ = dir_handle.sync_all();
-        }
-    }
+    sync_route_dir_sync(&dir)
+}
 
+#[cfg(unix)]
+fn sync_route_dir_sync(dir: &Path) -> Result<()> {
+    let dir_handle = std::fs::File::open(dir).with_context(|| {
+        format!(
+            "Failed to open route table directory '{}' for sync",
+            dir.display()
+        )
+    })?;
+    dir_handle
+        .sync_all()
+        .with_context(|| format!("Failed to sync route table directory '{}'", dir.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_route_dir_sync(_dir: &Path) -> Result<()> {
     Ok(())
 }
 
 enum RouteTransaction<T> {
     Unchanged(T),
+    /// The table already holds the requested state, but a previous writer may have failed after
+    /// its rename, so the directory entry is synced again before reporting success.
+    ConfirmDurable(T),
     Persist(T),
 }
 
@@ -238,6 +252,10 @@ where
             let mut table = read_routes_sync(&anchor_git_dir)?;
             match operation(&mut table)? {
                 RouteTransaction::Unchanged(result) => Ok(result),
+                RouteTransaction::ConfirmDurable(result) => {
+                    sync_route_dir_sync(&route_dir(&anchor_git_dir))?;
+                    Ok(result)
+                }
                 RouteTransaction::Persist(result) => {
                     write_routes_durably_sync(&anchor_git_dir, &table, before_rename)?;
                     Ok(result)
@@ -270,14 +288,13 @@ where
     let target = target.clone();
     with_locked_routes(anchor_git_dir, before_rename, move |table| {
         if let Some(existing) = table.routes.iter().find(|route| route.matches_key(&key)) {
-            let outcome = if existing.target == target {
-                PersistRouteOutcome::AlreadyRouted
+            return Ok(if existing.target == target {
+                RouteTransaction::ConfirmDurable(PersistRouteOutcome::AlreadyRouted)
             } else {
-                PersistRouteOutcome::Conflict {
+                RouteTransaction::Unchanged(PersistRouteOutcome::Conflict {
                     existing: existing.target.clone(),
-                }
-            };
-            return Ok(RouteTransaction::Unchanged(outcome));
+                })
+            });
         }
 
         table.routes.push(RouteRecord {
@@ -451,6 +468,59 @@ mod tests {
         assert_eq!(
             load_route(anchor.path(), &existing).await.expect("load"),
             Some(repo_a)
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn directory_sync_failure_after_rename_surfaces_and_a_retry_confirms_the_route() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let anchor = tempfile::tempdir().expect("temp dir");
+        let dir = route_table_path(anchor.path())
+            .parent()
+            .expect("route dir")
+            .to_owned();
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let set_mode = |mode: u32| {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        };
+        set_mode(0o300);
+        let privileged = std::fs::File::open(&dir).is_ok();
+        set_mode(0o700);
+        if privileged {
+            return;
+        }
+
+        let tool = key("s1", None, "toolu_1");
+        let repo_a = target(anchor.path(), "repoA");
+        let error = persist_route_inner(anchor.path(), &tool, &repo_a, |_, path| {
+            let dir = path.parent().expect("route dir");
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o300))?;
+            Ok(())
+        })
+        .await
+        .expect_err("an unsyncable route directory must fail persistence");
+        assert!(
+            format!("{error:#}").contains("Failed to open route table directory"),
+            "{error:#}"
+        );
+
+        assert_eq!(
+            load_route(anchor.path(), &tool).await.expect("load"),
+            Some(repo_a.clone()),
+            "the renamed table stays visible after a post-rename sync failure"
+        );
+        persist_route(anchor.path(), &tool, &repo_a)
+            .await
+            .expect_err("a retry must not report success while the directory cannot be synced");
+
+        set_mode(0o700);
+        assert_eq!(
+            persist_route(anchor.path(), &tool, &repo_a)
+                .await
+                .expect("retry after the directory recovers"),
+            PersistRouteOutcome::AlreadyRouted
         );
     }
 
