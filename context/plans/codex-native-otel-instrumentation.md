@@ -1,0 +1,118 @@
+# Plan: codex-native-otel-instrumentation
+
+## Change summary
+
+Codex CLI exports no telemetry to the SCE managed collector today. Claude Code does: `sce setup` installs Claude-native OTLP settings with `otelHeadersHelper = "sce auth telemetry-headers"`, and Claude-invoked SCE hooks export `sce.hook` spans through the managed exporter. This plan brings Codex to the closest parity that Codex 0.172.0 supports. It reuses the existing managed telemetry infrastructure and adds no second telemetry architecture.
+
+The plan extends three existing surfaces:
+
+- The hidden helper `sce auth telemetry-headers` (`cli/src/services/auth_command/mod.rs`). Today `run_telemetry_headers` derives the repository from `std::env::current_dir()`. Codex runs `otel.headers_helper` from `CODEX_HOME`, so the working directory cannot identify the repository. The helper may need explicit repository context. Its no-argument Claude behavior must stay byte-identical.
+- Codex launch configuration. Repository-local Codex config cannot set `otel.*`. Codex accepts process-local `-c` overrides. T01 decides with evidence whether a thin `sce codex` launcher is required, or whether a smaller mechanism is safe.
+- Managed hook telemetry (`cli/src/app.rs::managed_span_kind`, `cli/src/services/managed_telemetry/trace_export.rs`). Today `ManagedSpanKind` is `{ Command, ClaudeHook }`, and every `sce hooks codex` and `sce hooks codex-mutation-scope` process resolves `NoopTelemetry`. This plan admits those two Codex hook commands to the same `sce.hook` / `sce.mutation_scope` / `sce.git_snapshot` / `sce.persistence` span contract. `TRACEPARENT` parenting applies only when T01 proves that Codex passes valid current-span context to command hooks.
+
+Credential provisioning, the encrypted `auth.db`, repository enrollment, the effective access policy, non-interactive lookup, fail-closed helper behavior, Claude telemetry, and Codex hook behavior are preserved.
+
+## Acceptance criteria
+
+How this plan is proven complete. Each criterion is observable and names the check that proves it. `/validate` runs these checks; no task in the stack performs final validation.
+
+- [ ] AC1: Durable context records evidence from real Codex 0.172.0 runs against a local OTLP receiver with dummy credentials. The evidence covers: the header-helper invocation contract (argv form, working directory, environment, stdout format, refresh cadence, failure recovery, header caching); configuration precedence across `-c`, profiles, user `config.toml`, and enterprise requirements; whether a helper-authorized header can reach a non-canonical exporter; attribution behavior for interactive, `exec`, `resume`, `fork`, working-directory changes, and multiple threads; whether command hooks receive `TRACEPARENT`/`TRACESTATE` that names an exported Codex span (distinguished from inherited process environment); the mapping between native session identifiers and SCE `cx_` session identities; the exported token, cost, cache, tool, duration, model, repository, and subagent attributes with their observed semantics; and which config options control prompt, response, and tool-argument content in native logs. The record ends with one implementation decision and a Claude/Codex parity matrix.
+  - Validate: Inspect `context/sce/codex-native-telemetry-contract.md` for the evidence tables, the Codex version, the decision, and the parity matrix. `git ls-files` shows no probe script or receiver fixture. `rg -n 'Bearer [A-Za-z0-9._-]{12,}|hvs\.|s\.[A-Za-z0-9]{20,}' context/sce/codex-native-telemetry-contract.md` returns no match.
+- [ ] AC2: `sce auth telemetry-headers` with no arguments behaves exactly as before for Claude. When the T01 decision requires explicit repository context, the helper accepts it, applies the same access-policy gate, destination tripwire, `auth.db` presence check, repository-binding lookup, and `CREDENTIAL_LOOKUP_DEADLINE` to that repository, and fails closed with the fixed diagnostic `Telemetry credential is unavailable.` and empty stdout for a missing, non-Git, unenrolled, opted-out, or otherwise unauthorized repository. The helper never initializes managed telemetry.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_headers`; the existing no-argument tests in `cli/src/services/auth_command/mod.rs` and `cli/src/services/telemetry_credential_storage.rs` pass unchanged; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_span_kind`.
+- [ ] AC3: Native Codex telemetry is enabled only through the mechanism the T01 decision selects, and only for invocation modes that T01 proved repository-safe. When the decision selects a `sce codex` launcher, it resolves the effective repository and access policy before launch, supplies native OTEL settings only as process-local `-c` overrides that pin `MANAGED_OTLP_ENDPOINT` / `MANAGED_OTLP_PROTOCOL` and the helper with explicit repository context, forwards supported Codex arguments unchanged, preserves the terminal, signal delivery, and the Codex exit code, and refuses or launches without SCE telemetry for unproven modes. No credential is written to any file, and no global Codex config is changed unless T01 proves it necessary.
+  - Validate: Targeted Rust tests for the launch argument builder and mode classification (`nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml codex_telemetry`); `rg -n 'Bearer|OTEL_EXPORTER_OTLP_HEADERS' cli/src/services` shows no credential in launch arguments or written config; inspection of the T02 completion record for the exit-code and signal checks.
+- [ ] AC4: SCE credentials cannot be sent to an exporter that targets an unrelated endpoint through any path T01 identified. User-owned or enterprise-managed Codex OTEL configuration that conflicts with the managed endpoint causes SCE to skip native telemetry and report the reason; it is never overwritten.
+  - Validate: Targeted Rust tests per conflict class identified in T01; inspection of the residual-risk statement in `context/sce/telemetry-credential.md`.
+- [ ] AC5: With a valid stored credential, each `sce hooks codex` and `sce hooks codex-mutation-scope` process exports exactly one `sce.hook` span with `service.name=sce`, `sce.agent=codex`, `sce.hook.command`, `sce.hook.event`, `sce.hook.tool` when present, `sce.outcome`, and only the Codex session, turn, tool-use, and model identifiers that T01 verified. `sce.mutation_scope`, `sce.git_snapshot`, and `sce.persistence` child spans appear only when that operation executed in the process. Claude hook spans keep their current names and `sce.claude.*` attributes.
+  - Validate: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry`, including loopback-receiver tests over Codex `PostToolUse(apply_patch)` and non-tracked fixtures that decode the OTLP payload and assert span name, count, parent links, and attributes; existing Claude loopback tests pass unchanged.
+- [ ] AC6: A Codex hook `sce.hook` span is parented on upstream `TRACEPARENT` only when T01 proved that Codex supplies valid current-span context for that hook execution. Otherwise the span is an independent root with correlation attributes. No trace ID or parent span ID is ever derived from a session, turn, or tool-use identifier.
+  - Validate: Loopback-receiver tests for valid, invalid, all-zero, and missing traceparent when parenting ships; otherwise `rg -n 'extract_parent_context' cli/src/services/managed_telemetry` shows extraction gated to the proven agent only, and `context/sce/codex-native-telemetry-contract.md` states the verdict.
+- [ ] AC7: Telemetry cannot change Codex hook behavior. With credential lookup failure, an expired credential, a refused or stalled receiver, or exporter timeout, hook stdout, stderr, exit code, permission decisions, Agent Trace DB rows, and mutation-trace state match the telemetry-disabled run, and process lifetime stays within `CREDENTIAL_LOOKUP_DEADLINE` + `SHUTDOWN_TIMEOUT`.
+  - Validate: Parity tests running the same Codex hook fixtures with Noop and with failing managed telemetry, comparing outputs and persisted state and asserting elapsed-time bounds.
+- [ ] AC8: Live verification is recorded. A real Codex session in an enrolled repository delivers native traces, metrics, and logs, plus SCE Codex hook spans, to the correct Dash0 dataset with correct session and repository attribution. The record covers token, cache, model, cost, and tool telemetry; hook-span correlation with native Codex telemetry; subagent attribution where upstream provides identity; credential replacement, expiry, logout, and failed authorization; repository opt-out and global consent withdrawal; two repositories in different workspaces; preservation of user-owned and managed Codex config; an unchanged Claude session; and the absence of prompt, response, and tool content. A collector 2xx alone is not recorded as delivery.
+  - Validate: Inspect the live-verification section of `context/sce/codex-native-telemetry-contract.md` and the T03 completion record.
+- [ ] AC9: Current-state context describes the shipped Codex telemetry mechanism, the helper repository-context contract, hook admission and span attributes, the trace-context verdict, privacy controls, the final Claude/Codex parity matrix, remaining upstream limitations, the minimum verified Codex version, and required control-plane follow-ups. The hidden helper and any hidden flags stay absent from the public command reference.
+  - Validate: Inspect the files listed under Context sync against the implemented code; `rg -n 'telemetry-headers' context/cli/cli-command-surface.md` shows no public listing.
+
+### Full validation
+
+Repository-wide checks `/validate` runs after the last task, regardless of which criterion they map to.
+
+- `nix flake check`
+- `nix run .#pkl-check-generated`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml codex`
+- `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml auth`
+
+### Context sync
+
+- `context/sce/codex-native-telemetry-contract.md` (new: T01 evidence, decision, parity matrix, live verification, smoke procedure)
+- `context/sce/telemetry-credential.md` (helper repository context, Codex launch context, endpoint residual risk)
+- `context/sce/cli-observability-contract.md` (Codex hook admission and span attributes)
+- `context/sce/codex-integration-runtime.md` and `context/cli/codex-mutation-scope-integration.md` (span boundaries over the Codex hooks)
+- `context/cli/access-policy.md` (helper and launcher enforcement points)
+- `context/cli/cli-command-surface.md` (only if a public `sce codex` command ships)
+- `context/sce/doctor-human-text-contract.md` (only if a doctor row changes)
+- `context/architecture.md`, `context/overview.md`, `context/glossary.md`, `context/context-map.md`
+- `context/decisions/` (one ADR only if T02 introduces a launcher or another substantive architectural choice)
+
+## Task context synchronization lifecycle
+
+Persist this field in every plan; this is durable plan state, not chat state:
+
+- **Task context synchronization:** every task carries `pending | synced | blocked`.
+  A completed task must be `synced` before another task can start or the plan can
+  finish.
+- For `blocked`, record **Blocker**, **Required action**, and **Retry condition**
+  beside the status. Never infer `synced` from conversation history; write every
+  lifecycle transition to the plan file.
+
+## Constraints and non-goals
+
+- **In scope:** `cli/src/services/auth_command/` (helper repository context); `cli/src/cli_schema.rs` and `cli/src/services/parse/command_runtime.rs` (hidden helper flag, optional `sce codex`); a launcher module under `cli/src/services/` only if T01 requires it; `cli/src/app.rs` (`managed_span_kind` admission, helper bypass); `cli/src/services/managed_telemetry.rs` and `managed_telemetry/trace_export.rs` (hook-agent span kind, Codex attributes, gated parent extraction); span boundaries at existing call sites in `cli/src/services/hooks/codex/` and `cli/src/services/hooks/codex_mutation_scope/`; Codex setup and doctor code only where the T01 decision requires it; focused tests; the context files listed above.
+- **Out of scope:** Control Plane, Collector, Dash0 dataset, or warehouse changes; credential issuance, storage schema, or lifecycle changes; OpenCode and Pi telemetry; Pkl-generated `.codex/hooks.json` contract changes; changes to Claude settings, Claude span names, or Claude attributes; a public telemetry command.
+- **Constraints:** static dispatch and concrete types (`AGENTS.md`); typed errors over `anyhow` where a caller branches on the cause; reuse `MANAGED_OTLP_ENDPOINT`, `MANAGED_OTLP_PROTOCOL`, `authorized_repository_credential_with`, `load_repository_telemetry_credential`, and the existing exporter; no comments that narrate changes; Nix-wrapped Cargo only; automated tests never contact the production collector or use real credentials; probes use dummy credentials and never log real tokens; telemetry stays fail-open for hooks and fail-closed for authentication; repository authorization and consent enforcement are never weakened.
+- **Non-goal:** a telemetry proxy, local collector, sidecar, or daemon; a new database, credential lifecycle, or readiness marker; a generic agent-telemetry plugin framework; a second credential-authorization implementation; JSONL-based reconstruction of native telemetry unless T01 proves essential metrics are unavailable through OTEL.
+
+## Assumptions
+
+- The plan name is `codex-native-otel-instrumentation`, mirroring `claude-native-otel-instrumentation`.
+- The locally installed `codex-cli 0.172.0` is the released binary T01 probes; upstream source at `rust-v0.172.0` is the reference for behavior the probe cannot observe directly.
+- Codex hook spans use a `sce.codex.*` attribute namespace that mirrors `sce.claude.*`. Claude attribute names stay unchanged.
+- `sce hooks codex` and `sce hooks codex-mutation-scope` are Codex-only subcommands, so admission needs no caller environment marker, as with `CLAUDE_ONLY_HOOK_SUBCOMMANDS`. Shared `diff-trace` and `conversation-trace` admission stays Claude-only.
+- `ManagedSpanKind::ClaudeHook` becomes a hook variant carrying a statically dispatched agent enum (`Claude | Codex`) only if that keeps the Claude export byte-identical; otherwise a sibling `CodexHook` variant is used. This is a reversible local choice for T02.
+- The T03 executor has a Dash0 account and an enrolled repository, as the `claude-hook-trace-propagation` T05 executor did.
+- T03 is an evidence-and-context task, not a validation-only task. It produces the live-verification record and the current-state parity documentation that the change itself requires.
+
+## Task stack
+
+- [ ] T01: `Establish the Codex 0.172.0 native telemetry contract by probe` (status:todo)
+  - Task ID: T01
+  - Scope: In — probes with the released Codex 0.172.0 binary, a scratchpad loopback OTLP/HTTP receiver, dummy credentials, and a scratchpad stub header helper; reading `rust-v0.172.0` source for `otel.*` config, header-helper execution, hook spawning, and requirements layering; recording every item listed in AC1; writing `context/sce/codex-native-telemetry-contract.md` with evidence tables, the implementation decision (helper-argument mechanism, launcher or no launcher, safe invocation modes, setup/doctor needs, trace-parenting verdict, identifier mapping, privacy config), and the parity matrix. Out — any change under `cli/`; real credentials; contact with the production collector; probe code left in the repository.
+  - Dependencies: none
+  - Done when: the contract file answers every AC1 question with recorded evidence or an explicit "not observable" verdict and its reason; similarly named Claude and Codex metrics are compared by observed semantics, not by name; the decision names the smallest safe T02 mechanism; `git status` shows only the new context file and this plan's status update.
+  - Verify: inspection of the contract file against the AC1 list; `git ls-files | rg -i 'probe|otlp-receiver'` returns nothing new; `rg -n 'Bearer [A-Za-z0-9._-]{12,}' context/sce/codex-native-telemetry-contract.md` returns no match.
+  - Context synchronization: pending
+
+- [ ] T02: `Ship native Codex telemetry and Codex hook spans on the managed infrastructure` (status:todo)
+  - Task ID: T02
+  - Scope: In — the T01-selected mechanism only: explicit repository context on the hidden helper (no-argument behavior unchanged), a thin `sce codex` launcher if and only if T01 requires it, and conflict detection for user-owned and enterprise Codex OTEL config; hook admission for `sce hooks codex` and `sce hooks codex-mutation-scope` in `managed_span_kind`; the hook-agent span kind and verified `sce.codex.*` attributes; reuse of `sce.mutation_scope`, `sce.git_snapshot`, and `sce.persistence` at existing Codex call sites; `TRACEPARENT` extraction for Codex only if T01 proved current-span propagation; setup and doctor changes only where T01 requires them, keeping configuration availability, credential authorization, and delivery as distinct states; focused unit and loopback-receiver tests; one ADR if a launcher ships. Out — live Dash0 verification; Claude span or settings changes; credential lifecycle changes; Pkl hook contract changes; unproven invocation modes.
+  - Dependencies: T01
+  - Done when: AC2 through AC7 hold in tests; the helper bypass in `managed_span_kind` still returns no span kind for `sce auth telemetry-headers` in all argument forms; every existing Claude telemetry, helper, and Codex hook test passes unchanged; no credential appears in launch arguments, written config, output, or diagnostics.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_telemetry`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml telemetry_headers`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml codex`; `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml managed_span_kind`; `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings`.
+  - Context synchronization: pending
+
+- [ ] T03: `Record live Codex telemetry verification and the Claude/Codex parity contract in durable context` (status:todo)
+  - Task ID: T03
+  - Scope: In — real Codex sessions through the shipped mechanism against `https://otel.crocoderlab.dev` with existing managed credentials; Dash0 observation of every AC8 item; a Claude regression session; the live-verification section, final parity matrix, upstream limitations, minimum verified Codex version, and control-plane follow-up list in `context/sce/codex-native-telemetry-contract.md`; synchronization of every file under Context sync. Out — code changes (a defect found here is recorded with its evidence and fixed in a new task appended to this plan); Control Plane or warehouse changes; recording real tokens, prompts, or tool content.
+  - Dependencies: T02
+  - Done when: every AC8 item is recorded as observed in the correct Dash0 dataset with trace IDs, or recorded as not verifiable with the exact reason; AC9 context matches the shipped code; the minimum verified Codex version is stated.
+  - Verify: inspection of the live-verification section and the Context sync files against the code; `rg -n 'telemetry-headers' context/cli/cli-command-surface.md` shows no public listing; `rg -n 'Bearer [A-Za-z0-9._-]{12,}' context/` returns no match.
+  - Context synchronization: pending
+
+## Open questions
+
+- Is launcher-only coverage worth its cost? If T01 proves that `CODEX_HOME` execution makes a user-level `config.toml` install unable to identify the repository, only `sce codex` launches will export native telemetry, and every plain `codex` launch stays dark. That is weaker than Claude parity, where a user-level install covers every launch. A smaller alternative is to ship only the T02 Codex hook spans, which need no launcher, and defer native export until upstream passes a working directory or repository context to the helper.
+- Will Codex native metrics be usable without control-plane work? Codex metric names and units differ from `claude_code.*`, and this plan excludes warehouse and dashboard changes. Delivered Codex metrics may not appear in existing SCE views until the follow-ups T03 records are done.
