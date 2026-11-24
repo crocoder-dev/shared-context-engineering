@@ -291,6 +291,8 @@ async fn failed_abandon_keeps_the_route_so_session_end_can_retry() {
 #[tokio::test]
 async fn worktree_remove_retires_routes_into_the_removed_worktree_only() {
     let h = Harness::new();
+    git(&h.repo_a, &["config", "user.name", "SCE Test"]);
+    git(&h.repo_a, &["config", "user.email", "t@example.invalid"]);
     git(&h.repo_a, &["commit", "--allow-empty", "-q", "-m", "init"]);
     let worktree = h.outside.join("wt");
     git(

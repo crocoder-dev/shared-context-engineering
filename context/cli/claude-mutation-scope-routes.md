@@ -96,6 +96,34 @@ on legacy attempts. A routed attempt whose route is missing is never closed or
 abandoned through the event `cwd`. A legacy attempt whose `cwd` changed before
 completion keeps the original orphaned-scope limitation.
 
+## Remaining limits
+
+- A scope binds to its `PreToolUse` checkout. A tool that starts in nested
+  repository B and then mutates parent repository A (for example
+  `cd .. && echo x > file`) closes its scope in B. A's change has no scope in
+  A. A's next boundary records it as unscoped.
+- A route left by a start that failed after route persistence is removed only
+  by a later terminal or cleanup event of that session. When Claude exits
+  without such an event, the route stays as inert bookkeeping. It never closes
+  or abandons a scope by itself.
+- A `PreToolUse` for the same key can arrive between a terminal event's attempt
+  check and its route removal. That attempt can then stay unrouted. Claude does
+  not reuse a live `tool_use_id` concurrently.
+
+## Live validation and overhead
+
+A live Claude Code 2.1.309 session used disposable repository A with nested
+repository B. It ran Bash tools whose `cwd` changed from A to B, and from B to
+A, inside one tool. Every scope ended `closed` in the Agent Trace DB of its
+`PreToolUse` repository, with its `close` event in that worktree. No scope
+stayed `active`, the route table ended empty, and neither adapter state had
+`recovery_pending` set.
+
+Routing adds one anchor `git rev-parse` and one locked, fsynced route-table
+write to each tracked `PreToolUse` and terminal event. On a debug build, the
+measured median cost was about 15 ms per `PreToolUse` and 25 ms per
+`PostToolUse`.
+
 ## Related context
 
 - [Claude mutation-scope integration](claude-mutation-scope-integration.md)
