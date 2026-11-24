@@ -2,7 +2,6 @@ mod events;
 pub(crate) mod health;
 mod lifecycle;
 mod payload;
-#[allow(dead_code)]
 mod routes;
 pub(crate) mod state;
 

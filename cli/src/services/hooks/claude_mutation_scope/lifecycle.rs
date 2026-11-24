@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use crate::services::agent_trace_db::repository::RepositoryAgentTraceDb;
 use crate::services::hooks;
@@ -13,15 +13,18 @@ use crate::services::mutation_trace::store::{MutationTraceStore, ScopeProvenance
 use crate::services::mutation_trace::types::ScopeId;
 
 use super::events::BASH_TOOL_NAME;
+use super::routes::{self, PersistRouteOutcome, RouteRecord, RouteTarget};
 use super::state;
 use super::{
     abandon_payload, classify_tool, claude_scope_close_event_id, claude_scope_start_event_id,
     flush_payload, is_explicit_background_shell, parse_claude_hook_event, pre_tool_use_deny_json,
     scope_boundary_payload, scope_start_payload, AttemptKey, ClaudeHookEvent, ClaudeToolExecution,
-    ClaudeToolIdentity, ToolClassification,
+    ClaudeToolIdentity, ClaudeWorktreeRemove, ToolClassification,
 };
 
 pub(super) const ACTOR_KIND_CLAUDE_CODE: &str = "claude_code";
+
+const CLAUDE_PROJECT_DIR_ENV: &str = "CLAUDE_PROJECT_DIR";
 
 pub(super) const FAIL_CLOSED_DENY_REASON: &str =
     "SCE could not establish mutation attribution for this tool execution.";
@@ -34,6 +37,23 @@ pub(super) const MODEL_STATE_UNAVAILABLE_EVENT: &str =
     "sce.hooks.claude_mutation_scope.model_state_unavailable";
 pub(super) const PROVENANCE_MODEL_FILL_FAILED_EVENT: &str =
     "sce.hooks.claude_mutation_scope.provenance_model_fill_failed";
+pub(super) const ROUTE_UNRESOLVED_EVENT: &str = "sce.hooks.claude_mutation_scope.route_unresolved";
+
+fn log_route_unresolved<L: crate::services::observability::traits::Logger>(
+    logger: Option<&L>,
+    context: &str,
+    error: &dyn std::fmt::Display,
+    session_id: &str,
+) {
+    if let Some(log) = logger {
+        log.warn(
+            ROUTE_UNRESOLVED_EVENT,
+            &error.to_string(),
+            &[("context", context)],
+            Some(session_id),
+        );
+    }
+}
 
 pub(super) fn log_pre_tool_use_fail_closed<L: crate::services::observability::traits::Logger>(
     logger: Option<&L>,
@@ -83,9 +103,12 @@ pub(crate) async fn run_claude_mutation_scope_from_payload<
             .await
     };
 
+    let project_dir = std::env::var(CLAUDE_PROJECT_DIR_ENV).ok();
+
     run_claude_mutation_scope_from_payload_with_resolver(
         stdin_payload,
         logger,
+        project_dir.as_deref(),
         &resolve_git_dir_fn,
         &model_state_resolver,
         &seam_fn,
@@ -98,6 +121,7 @@ pub(super) async fn run_claude_mutation_scope_from_payload_with_resolver<
 >(
     stdin_payload: &str,
     logger: Option<&L>,
+    project_dir: Option<&str>,
     resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
@@ -113,6 +137,7 @@ pub(super) async fn run_claude_mutation_scope_from_payload_with_resolver<
     dispatch_claude_hook_event(
         event,
         logger,
+        project_dir,
         resolve_git_dir,
         model_state_resolver,
         &traced_seam,
@@ -125,6 +150,7 @@ pub(super) async fn dispatch_claude_hook_event<
 >(
     event: ClaudeHookEvent,
     logger: Option<&L>,
+    project_dir: Option<&str>,
     resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
@@ -133,78 +159,401 @@ pub(super) async fn dispatch_claude_hook_event<
         ClaudeHookEvent::PreToolUse(execution) => Ok(handle_pre_tool_use(
             &execution,
             logger,
+            project_dir,
             resolve_git_dir,
             model_state_resolver,
             seam,
         )
         .await),
         ClaudeHookEvent::PostToolUse(identity) | ClaudeHookEvent::PostToolUseFailure(identity) => {
-            let git_dir = resolve_git_dir(&identity.cwd).await?;
-            let repository_root = Path::new(&identity.cwd);
-            handle_close(&git_dir, repository_root, &identity, logger, seam).await
-        }
-        ClaudeHookEvent::PermissionDenied(identity) => {
-            let git_dir = resolve_git_dir(&identity.cwd).await?;
-            let repository_root = Path::new(&identity.cwd);
-            handle_permission_denied(
-                &git_dir,
-                repository_root,
-                &identity.attempt_key(),
+            handle_tool_terminal(
+                &identity,
+                ToolTerminal::Completed,
                 logger,
+                project_dir,
+                resolve_git_dir,
                 seam,
             )
             .await
         }
-        ClaudeHookEvent::Stop(session) | ClaudeHookEvent::StopFailure(session) => {
-            let git_dir = resolve_git_dir(&session.cwd).await?;
-            let repository_root = Path::new(&session.cwd);
-            let session_id = session.session_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id && attempt.agent_id.is_none()
-            })
+        ClaudeHookEvent::PermissionDenied(identity) => {
+            handle_tool_terminal(
+                &identity,
+                ToolTerminal::PermissionDenied,
+                logger,
+                project_dir,
+                resolve_git_dir,
+                seam,
+            )
             .await
         }
-        ClaudeHookEvent::UserPromptSubmit(session) => {
-            let git_dir = resolve_git_dir(&session.cwd).await?;
-            let repository_root = Path::new(&session.cwd);
-            let session_id = session.session_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id && attempt.agent_id.is_none()
-            })
+        ClaudeHookEvent::Stop(session)
+        | ClaudeHookEvent::StopFailure(session)
+        | ClaudeHookEvent::UserPromptSubmit(session) => {
+            cleanup_session_attempts(
+                &session.session_id,
+                &session.cwd,
+                logger,
+                project_dir,
+                resolve_git_dir,
+                seam,
+                |agent_id| agent_id.is_none(),
+            )
             .await
         }
         ClaudeHookEvent::SubagentStop(agent) => {
-            let git_dir = resolve_git_dir(&agent.cwd).await?;
-            let repository_root = Path::new(&agent.cwd);
-            let session_id = agent.session_id.clone();
             let agent_id = agent.agent_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id && attempt.agent_id.as_deref() == Some(&agent_id)
-            })
+            cleanup_session_attempts(
+                &agent.session_id,
+                &agent.cwd,
+                logger,
+                project_dir,
+                resolve_git_dir,
+                seam,
+                |attempt_agent_id| attempt_agent_id == Some(agent_id.as_str()),
+            )
             .await
         }
         ClaudeHookEvent::SessionEnd(session) => {
-            let git_dir = resolve_git_dir(&session.cwd).await?;
-            let repository_root = Path::new(&session.cwd);
-            let session_id = session.session_id.clone();
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |attempt| {
-                attempt.session_id == session_id
-            })
+            cleanup_session_attempts(
+                &session.session_id,
+                &session.cwd,
+                logger,
+                project_dir,
+                resolve_git_dir,
+                seam,
+                |_agent_id| true,
+            )
             .await
         }
         ClaudeHookEvent::WorktreeRemove(worktree_remove) => {
-            let git_dir = resolve_git_dir(&worktree_remove.worktree_path).await?;
-            let repository_root = Path::new(&worktree_remove.worktree_path);
-            cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |_attempt| true)
+            handle_worktree_remove(&worktree_remove, logger, project_dir, resolve_git_dir, seam)
                 .await
         }
         ClaudeHookEvent::SessionStart | ClaudeHookEvent::SubagentStart => Ok(String::new()),
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ToolTerminal {
+    Completed,
+    PermissionDenied,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AttemptLookup {
+    ByRoute,
+    LegacyCwd,
+}
+
+impl AttemptLookup {
+    fn admits(self, attempt: &state::AdapterAttempt) -> bool {
+        match self {
+            AttemptLookup::ByRoute => true,
+            AttemptLookup::LegacyCwd => !attempt.routed,
+        }
+    }
+}
+
+enum ToolRoute {
+    Routed {
+        anchor_git_dir: PathBuf,
+        target: RouteTarget,
+    },
+    Unrouted,
+}
+
+async fn resolve_route_anchor_or_log<L: crate::services::observability::traits::Logger>(
+    project_dir: Option<&str>,
+    session_id: &str,
+    logger: Option<&L>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+) -> Option<PathBuf> {
+    match routes::resolve_route_anchor(project_dir, resolve_git_dir).await {
+        Ok(anchor_git_dir) => Some(anchor_git_dir),
+        Err(error) => {
+            log_route_unresolved(logger, "resolve_route_anchor", &error, session_id);
+            None
+        }
+    }
+}
+
+async fn load_tool_route<L: crate::services::observability::traits::Logger>(
+    key: &AttemptKey,
+    logger: Option<&L>,
+    project_dir: Option<&str>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+) -> ToolRoute {
+    let Some(anchor_git_dir) =
+        resolve_route_anchor_or_log(project_dir, &key.session_id, logger, resolve_git_dir).await
+    else {
+        return ToolRoute::Unrouted;
+    };
+
+    match routes::load_route(&anchor_git_dir, key).await {
+        Ok(Some(target)) => ToolRoute::Routed {
+            anchor_git_dir,
+            target,
+        },
+        Ok(None) => ToolRoute::Unrouted,
+        Err(error) => {
+            log_route_unresolved(logger, "load_route", &error, &key.session_id);
+            ToolRoute::Unrouted
+        }
+    }
+}
+
+async fn find_attempt(
+    git_dir: &Path,
+    key: &AttemptKey,
+    lookup: AttemptLookup,
+) -> Result<Option<state::AdapterAttempt>> {
+    let current = state::read_state(git_dir).await?;
+    Ok(current
+        .attempts
+        .into_iter()
+        .find(|attempt| attempt_matches_key(attempt, key) && lookup.admits(attempt)))
+}
+
+async fn handle_tool_terminal<L: crate::services::observability::traits::Logger>(
+    identity: &ClaudeToolIdentity,
+    terminal: ToolTerminal,
+    logger: Option<&L>,
+    project_dir: Option<&str>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+) -> Result<String> {
+    let key = identity.attempt_key();
+    match load_tool_route(&key, logger, project_dir, resolve_git_dir).await {
+        ToolRoute::Routed {
+            anchor_git_dir,
+            target,
+        } => {
+            if let Some(attempt) =
+                find_attempt(&target.git_dir, &key, AttemptLookup::ByRoute).await?
+            {
+                finish_attempt(
+                    identity,
+                    terminal,
+                    &target.git_dir,
+                    &target.checkout_path,
+                    &attempt,
+                    logger,
+                    seam,
+                )
+                .await?;
+            }
+            retire_route_if_terminal(&anchor_git_dir, &key, &target).await?;
+        }
+        ToolRoute::Unrouted => {
+            let Ok(git_dir) = resolve_git_dir(&identity.cwd).await else {
+                return Ok(String::new());
+            };
+            if let Some(attempt) = find_attempt(&git_dir, &key, AttemptLookup::LegacyCwd).await? {
+                finish_attempt(
+                    identity,
+                    terminal,
+                    &git_dir,
+                    Path::new(&identity.cwd),
+                    &attempt,
+                    logger,
+                    seam,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(String::new())
+}
+
+async fn finish_attempt<L: crate::services::observability::traits::Logger>(
+    identity: &ClaudeToolIdentity,
+    terminal: ToolTerminal,
+    git_dir: &Path,
+    repository_root: &Path,
+    attempt: &state::AdapterAttempt,
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+) -> Result<()> {
+    match terminal {
+        ToolTerminal::Completed => {
+            close_attempt(git_dir, repository_root, attempt, identity, logger, seam).await
+        }
+        ToolTerminal::PermissionDenied => {
+            abandon_attempt(git_dir, repository_root, attempt, logger, seam).await
+        }
+    }
+}
+
+async fn retire_route_if_terminal(
+    anchor_git_dir: &Path,
+    key: &AttemptKey,
+    target: &RouteTarget,
+) -> Result<()> {
+    if find_attempt(&target.git_dir, key, AttemptLookup::ByRoute)
+        .await?
+        .is_none()
+    {
+        routes::remove_route(anchor_git_dir, key, target).await?;
+    }
+    Ok(())
+}
+
+fn group_routes_by_target(
+    session_routes: impl IntoIterator<Item = RouteRecord>,
+) -> Vec<(RouteTarget, Vec<AttemptKey>)> {
+    let mut groups: Vec<(RouteTarget, Vec<AttemptKey>)> = Vec::new();
+    for route in session_routes {
+        let key = AttemptKey {
+            session_id: route.session_id,
+            agent_id: route.agent_id,
+            tool_use_id: route.tool_use_id,
+        };
+        match groups
+            .iter_mut()
+            .find(|(target, _)| *target == route.target)
+        {
+            Some((_, keys)) => keys.push(key),
+            None => groups.push((route.target, vec![key])),
+        }
+    }
+    groups
+}
+
+async fn cleanup_routed_target<L: crate::services::observability::traits::Logger>(
+    anchor_git_dir: &Path,
+    target: &RouteTarget,
+    keys: &[AttemptKey],
+    logger: Option<&L>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+) -> Result<()> {
+    cleanup_attempts_matching(
+        &target.git_dir,
+        &target.checkout_path,
+        logger,
+        seam,
+        |attempt| keys.iter().any(|key| attempt_matches_key(attempt, key)),
+    )
+    .await?;
+    for key in keys {
+        retire_route_if_terminal(anchor_git_dir, key, target).await?;
+    }
+    Ok(())
+}
+
+async fn cleanup_session_attempts<L: crate::services::observability::traits::Logger>(
+    session_id: &str,
+    cwd: &str,
+    logger: Option<&L>,
+    project_dir: Option<&str>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+    agent_matches: impl Fn(Option<&str>) -> bool,
+) -> Result<String> {
+    let mut first_error: Option<anyhow::Error> = None;
+
+    if let Some(anchor_git_dir) =
+        resolve_route_anchor_or_log(project_dir, session_id, logger, resolve_git_dir).await
+    {
+        match routes::routes_for_session(&anchor_git_dir, session_id).await {
+            Ok(session_routes) => {
+                let groups = group_routes_by_target(
+                    session_routes
+                        .into_iter()
+                        .filter(|route| agent_matches(route.agent_id.as_deref())),
+                );
+                for (target, keys) in &groups {
+                    if let Err(error) =
+                        cleanup_routed_target(&anchor_git_dir, target, keys, logger, seam).await
+                    {
+                        first_error.get_or_insert(error);
+                    }
+                }
+            }
+            Err(error) => {
+                log_route_unresolved(logger, "routes_for_session", &error, session_id);
+            }
+        }
+    }
+
+    if let Ok(git_dir) = resolve_git_dir(cwd).await {
+        if let Err(error) =
+            cleanup_attempts_matching(&git_dir, Path::new(cwd), logger, seam, |attempt| {
+                AttemptLookup::LegacyCwd.admits(attempt)
+                    && attempt.session_id == session_id
+                    && agent_matches(attempt.agent_id.as_deref())
+            })
+            .await
+        {
+            first_error.get_or_insert(error);
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(String::new()),
+    }
+}
+
+async fn handle_worktree_remove<L: crate::services::observability::traits::Logger>(
+    worktree_remove: &ClaudeWorktreeRemove,
+    logger: Option<&L>,
+    project_dir: Option<&str>,
+    resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
+    seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
+) -> Result<String> {
+    let git_dir = resolve_git_dir(&worktree_remove.worktree_path).await?;
+    let repository_root = Path::new(&worktree_remove.worktree_path);
+    cleanup_attempts_matching(&git_dir, repository_root, logger, seam, |_attempt| true).await?;
+
+    let session_id = &worktree_remove.session_id;
+    let Some(anchor_git_dir) =
+        resolve_route_anchor_or_log(project_dir, session_id, logger, resolve_git_dir).await
+    else {
+        return Ok(String::new());
+    };
+    let session_routes = match routes::routes_for_session(&anchor_git_dir, session_id).await {
+        Ok(session_routes) => session_routes,
+        Err(error) => {
+            log_route_unresolved(logger, "routes_for_session", &error, session_id);
+            return Ok(String::new());
+        }
+    };
+    for route in session_routes {
+        if route.target.git_dir != git_dir
+            && !route.target.checkout_path.starts_with(repository_root)
+        {
+            continue;
+        }
+        let key = AttemptKey {
+            session_id: route.session_id,
+            agent_id: route.agent_id,
+            tool_use_id: route.tool_use_id,
+        };
+        retire_route_if_terminal(&anchor_git_dir, &key, &route.target).await?;
+    }
+    Ok(String::new())
+}
+
+async fn persist_tool_route(
+    anchor_git_dir: &Path,
+    key: &AttemptKey,
+    target: &RouteTarget,
+) -> Result<()> {
+    match routes::persist_route(anchor_git_dir, key, target).await? {
+        PersistRouteOutcome::Inserted | PersistRouteOutcome::AlreadyRouted => Ok(()),
+        PersistRouteOutcome::Conflict { existing } => Err(anyhow!(
+            "Claude tool invocation '{}' is already routed to checkout '{}'",
+            key.tool_use_id,
+            existing.checkout_path.display()
+        )),
+    }
+}
+
 pub(super) async fn handle_pre_tool_use<L: crate::services::observability::traits::Logger>(
     execution: &ClaudeToolExecution,
     logger: Option<&L>,
+    project_dir: Option<&str>,
     resolve_git_dir: &impl std::ops::AsyncFn(&str) -> Result<PathBuf>,
     model_state_resolver: &impl std::ops::AsyncFn(&Path, &ClaudeModelEvidence) -> Result<Option<String>>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
@@ -226,6 +575,14 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
         return pre_tool_use_deny_json(EXPLICIT_BACKGROUND_SHELL_DENY_REASON);
     }
 
+    let anchor_git_dir = match routes::resolve_route_anchor(project_dir, resolve_git_dir).await {
+        Ok(anchor_git_dir) => anchor_git_dir,
+        Err(error) => {
+            log_pre_tool_use_fail_closed(logger, "resolve_route_anchor", &anyhow!(error));
+            return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
+        }
+    };
+
     let repository_root = Path::new(&identity.cwd);
     let git_dir = match resolve_git_dir(&identity.cwd).await {
         Ok(git_dir) => git_dir,
@@ -239,6 +596,16 @@ pub(super) async fn handle_pre_tool_use<L: crate::services::observability::trait
         apply_recovery_barrier(&git_dir, repository_root, logger, seam).await,
         BarrierOutcome::Deny
     ) {
+        return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
+    }
+
+    let target = RouteTarget {
+        checkout_path: repository_root.to_path_buf(),
+        git_dir: git_dir.clone(),
+    };
+    if let Err(error) = persist_tool_route(&anchor_git_dir, &identity.attempt_key(), &target).await
+    {
+        log_pre_tool_use_fail_closed(logger, "persist_route", &error);
         return pre_tool_use_deny_json(FAIL_CLOSED_DENY_REASON);
     }
 
@@ -349,27 +716,16 @@ pub(super) async fn establish_start<L: crate::services::observability::traits::L
     Ok(())
 }
 
-pub(super) async fn handle_close<L: crate::services::observability::traits::Logger>(
+async fn close_attempt<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
+    attempt: &state::AdapterAttempt,
     identity: &ClaudeToolIdentity,
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
-) -> Result<String> {
-    let key = identity.attempt_key();
-    let current = state::read_state(git_dir).await?;
-    let Some(attempt) = current
-        .attempts
-        .iter()
-        .find(|attempt| attempt_matches_key(attempt, &key))
-        .cloned()
-    else {
-        return Ok(String::new());
-    };
-
+) -> Result<()> {
     if attempt.phase == state::AttemptPhase::PendingStart {
-        abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
-        return Ok(String::new());
+        return abandon_attempt(git_dir, repository_root, attempt, logger, seam).await;
     }
 
     let close_payload = scope_boundary_payload(
@@ -381,11 +737,10 @@ pub(super) async fn handle_close<L: crate::services::observability::traits::Logg
     if seam(repository_root, &close_payload, logger).await.is_ok() {
         fill_provenance_model_after_close(repository_root, &attempt.scope_id, identity, logger)
             .await;
-        state::remove_attempt(git_dir, &attempt.scope_id).await?;
+        state::remove_attempt(git_dir, &attempt.scope_id).await
     } else {
-        abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
+        abandon_attempt(git_dir, repository_root, attempt, logger, seam).await
     }
-    Ok(String::new())
 }
 
 async fn fill_provenance_model_after_close<L: crate::services::observability::traits::Logger>(
@@ -439,10 +794,11 @@ pub(super) async fn fill_claude_scope_provenance_model(
         .map(Some)
 }
 
-pub(super) async fn handle_permission_denied<L: crate::services::observability::traits::Logger>(
+#[cfg(test)]
+pub(super) async fn handle_close<L: crate::services::observability::traits::Logger>(
     git_dir: &Path,
     repository_root: &Path,
-    key: &AttemptKey,
+    identity: &ClaudeToolIdentity,
     logger: Option<&L>,
     seam: &impl std::ops::AsyncFn(&Path, &str, Option<&L>) -> Result<String>,
 ) -> Result<String> {
@@ -450,13 +806,13 @@ pub(super) async fn handle_permission_denied<L: crate::services::observability::
     let Some(attempt) = current
         .attempts
         .iter()
-        .find(|attempt| attempt_matches_key(attempt, key))
+        .find(|attempt| attempt_matches_key(attempt, &identity.attempt_key()))
         .cloned()
     else {
         return Ok(String::new());
     };
 
-    abandon_attempt(git_dir, repository_root, &attempt, logger, seam).await?;
+    close_attempt(git_dir, repository_root, &attempt, identity, logger, seam).await?;
     Ok(String::new())
 }
 
@@ -572,3 +928,7 @@ pub(crate) async fn repair_blocked<L: crate::services::observability::traits::Lo
         Ok(RepairOutcome::Repaired)
     }
 }
+
+#[cfg(test)]
+#[path = "lifecycle_tests.rs"]
+mod tests;
