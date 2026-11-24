@@ -110,15 +110,15 @@ can form. The adapter may call `checkout::resolve_git_dir` but not
 
 ## PreToolUse: write-ahead Start, fail-closed
 
-For a mutation-capable tool, `handle_pre_tool_use` runs: background-`Bash` untracked allow (empty success, nothing below runs) -> explicit-background-shell deny (`PowerShell`) -> resolve route anchor -> resolve `git_dir` -> recovery barrier -> persist route ->
+For a mutation-capable tool, `handle_pre_tool_use` runs: background-`Bash` untracked allow (empty success, nothing below runs) -> explicit-background-shell deny (`PowerShell`) -> resolve route anchor -> resolve canonical worktree root of `cwd` -> resolve `git_dir` of that root -> recovery barrier -> persist route ->
 write-ahead `Start` — persist `phase=pending_start`, resolve the model from the event's `ClaudeModelEvidence` through the injectable resolver closure (production: the [Claude model resolver](../sce/claude-model-resolver.md) full chain), call the seam with the optional provenance snapshot, persist `pending_start -> active`, return empty success.
-`transcript_path` and the direct model are parsed leniently, so a malformed value is absent, not a rejected event. A missing model or resolver error becomes a null model and never denies the tool. The route records the raw `cwd` checkout and binds terminal events to it; the route anchor is the Git directory of `CLAUDE_PROJECT_DIR`.
-The seam receives the raw `cwd` as its `repository_root` and SCE derives the `WorktreeId`, so durable generic-ingress `Start` is reached before the hook returns success to Claude.
+`transcript_path` and the direct model are parsed leniently, so a malformed value is absent, not a rejected event. A missing model or resolver error becomes a null model and never denies the tool. The route records the canonical worktree root and its Git directory and binds terminal events to them; the route anchor is the Git directory of `CLAUDE_PROJECT_DIR`.
+The seam receives that worktree root as its `repository_root` and SCE derives the `WorktreeId`, so durable generic-ingress `Start` is reached before the hook returns success to Claude.
 
 **Fail-closed via Claude's deny decision.** Claude treats ordinary non-2 hook failures as non-blocking, so a generic non-zero exit would let the tool run
 without its `Start`. Therefore **any** failure in the mutation-capable
 `PreToolUse` path — state-allocation failure, seam `Start` failure, unresolvable
-`cwd` or route anchor, route persist failure or conflict, or a barrier denial — returns (`Ok`, never `Err`):
+`cwd`, worktree root, or route anchor, route persist or directory-sync failure or conflict, or a barrier denial — returns (`Ok`, never `Err`):
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"SCE could not establish mutation attribution for this tool execution."}}
@@ -201,8 +201,9 @@ surface, and its read-only/observation-semantics boundaries.
 
 ## Repository routing
 
-`PreToolUse` takes the repository root from the raw payload's `cwd`, never
-`$CLAUDE_PROJECT_DIR`, and records it in a route before `Start`. Terminal events
+`PreToolUse` takes the repository root from the canonical worktree root of the
+payload's `cwd`, never `$CLAUDE_PROJECT_DIR`, and records it in a route before
+`Start`. Terminal events
 and the cleanup sweeps above reach that original checkout through the route,
 not through their own `cwd`. `$CLAUDE_PROJECT_DIR` only locates the route table;
 see [Claude mutation-scope route store](claude-mutation-scope-routes.md).

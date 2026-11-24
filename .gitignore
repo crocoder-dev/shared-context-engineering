@@ -16,3 +16,6 @@ config/.pi/
 config/schema/sce-config.schema.json
 
 _apalache-out/
+
+# Session logs written by the sce-next-task skill when run from the skill directory.
+.claude/skills/sce-next-task/context/tmp/
