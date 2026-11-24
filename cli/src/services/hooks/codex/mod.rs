@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use super::read_hook_stdin;
+use crate::services::managed_telemetry::trace_export;
 
 mod apply_patch;
 pub(crate) mod bash_policy;
@@ -91,10 +92,12 @@ pub(super) async fn run_codex_subcommand<L: crate::services::observability::trai
     repository_root: &Path,
     logger: Option<&L>,
 ) -> String {
+    trace_export::record_codex_hook_command(trace_export::CodexHookCommand::Codex);
     let stdin_payload = match read_hook_stdin() {
         Ok(payload) => payload,
         Err(error) => return log_codex_fail_open(&error, logger),
     };
+    trace_export::record_codex_hook_payload(&stdin_payload);
 
     match run_codex_subcommand_from_payload(repository_root, &stdin_payload, logger).await {
         Ok(output) => output,

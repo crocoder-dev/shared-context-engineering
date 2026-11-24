@@ -17,6 +17,7 @@ const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(500);
 const REPEATED_COMMAND_DISPATCH_ERROR: &str =
     "Command lifecycle telemetry attempted to execute command dispatch more than once";
 const CLAUDE_ONLY_HOOK_SUBCOMMANDS: [&str; 2] = ["claude-mutation-scope", "claude-model-state"];
+const CODEX_HOOK_SUBCOMMANDS: [&str; 2] = ["codex", "codex-mutation-scope"];
 const SHARED_CLAUDE_HOOK_SUBCOMMANDS: [&str; 2] = ["diff-trace", "conversation-trace"];
 const CLAUDE_HOOK_CALLER_MARKERS: [&str; 2] = ["CLAUDECODE", "CLAUDE_PROJECT_DIR"];
 
@@ -317,12 +318,18 @@ fn managed_span_kind(args: &[String], claude_hook_caller: bool) -> Option<Manage
         .map(String::as_str)
         .filter(|arg| !arg.starts_with('-'));
     let claude_hook = match (words.next(), words.next()) {
+        (Some(first), Some(subcommand))
+            if first == services::hooks::NAME && CODEX_HOOK_SUBCOMMANDS.contains(&subcommand) =>
+        {
+            return Some(ManagedSpanKind::CodexHook);
+        }
         (Some(first), Some(subcommand)) if first == services::hooks::NAME => {
             CLAUDE_ONLY_HOOK_SUBCOMMANDS.contains(&subcommand)
                 || (claude_hook_caller && SHARED_CLAUDE_HOOK_SUBCOMMANDS.contains(&subcommand))
         }
         (Some(first), _) if first == services::hooks::NAME => false,
         (Some(first), _) if first == services::setup::NAME => false,
+        (Some(first), _) if first == services::codex_telemetry::NAME => false,
         (Some(first), Some("bash")) if first == services::bash_policy::NAME => claude_hook_caller,
         (Some(first), Some("telemetry-headers")) if first == services::auth_command::NAME => false,
         _ => return Some(ManagedSpanKind::Command),
@@ -1129,5 +1136,68 @@ pub(crate) mod tests {
             RuntimeTelemetry::resolve(None, true, &services::observability::traits::NoopLogger)
                 .await;
         assert!(matches!(telemetry, RuntimeTelemetry::Noop(_)));
+    }
+
+    fn span_kind_for(command_line: &[&str], claude_hook_caller: bool) -> Option<ManagedSpanKind> {
+        let args = command_line
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .collect::<Vec<_>>();
+        managed_span_kind(&args, claude_hook_caller)
+    }
+
+    #[test]
+    fn managed_span_kind_admits_codex_hook_subcommands_without_caller_marker() {
+        for caller in [false, true] {
+            for argv in [
+                ["sce", "hooks", "codex"].as_slice(),
+                ["sce", "hooks", "codex-mutation-scope"].as_slice(),
+            ] {
+                assert_eq!(
+                    span_kind_for(argv, caller),
+                    Some(ManagedSpanKind::CodexHook),
+                    "{argv:?} caller={caller}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn managed_span_kind_keeps_claude_and_shared_hook_admission() {
+        assert_eq!(
+            span_kind_for(&["sce", "hooks", "claude-mutation-scope"], false),
+            Some(ManagedSpanKind::ClaudeHook)
+        );
+        assert_eq!(
+            span_kind_for(&["sce", "hooks", "diff-trace"], true),
+            Some(ManagedSpanKind::ClaudeHook)
+        );
+        assert_eq!(span_kind_for(&["sce", "hooks", "diff-trace"], false), None);
+        assert_eq!(span_kind_for(&["sce", "hooks", "pre-commit"], true), None);
+        assert_eq!(
+            span_kind_for(&["sce", "config", "show"], false),
+            Some(ManagedSpanKind::Command)
+        );
+    }
+
+    #[test]
+    fn managed_span_kind_never_instruments_the_header_helper_or_codex_launcher() {
+        for argv in [
+            ["sce", "auth", "telemetry-headers"].as_slice(),
+            ["sce", "auth", "telemetry-headers", "--repo", "/work/repo"].as_slice(),
+            ["sce", "auth", "telemetry-headers", "--repo=/work/repo"].as_slice(),
+            ["sce", "auth", "--repo", "telemetry-headers"].as_slice(),
+            ["sce", "codex"].as_slice(),
+            ["sce", "codex", "exec", "prompt"].as_slice(),
+            ["sce", "codex", "hooks", "codex"].as_slice(),
+        ] {
+            for caller in [false, true] {
+                assert_eq!(
+                    span_kind_for(argv, caller),
+                    None,
+                    "{argv:?} caller={caller}"
+                );
+            }
+        }
     }
 }

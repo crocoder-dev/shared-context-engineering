@@ -9,6 +9,9 @@ use crate::services::hooks::codex::bash_policy::{
 use crate::services::hooks::{
     normalize_codex_model_id, prefixed_diff_trace_session_id, CODEX_TOOL_NAME,
 };
+use crate::services::managed_telemetry::trace_export::{
+    self, in_child_span, CodexHookCommand, ManagedChildSpan,
+};
 use crate::services::mutation_trace::runtime::resolve_git_dir;
 
 use super::events::CODEX_TRACKED_TOOL_BASH;
@@ -63,7 +66,9 @@ pub(crate) async fn run_codex_mutation_scope_subcommand<
 >(
     logger: Option<&L>,
 ) -> Result<String> {
+    trace_export::record_codex_hook_command(CodexHookCommand::CodexMutationScope);
     let stdin_payload = hooks::read_hook_stdin()?;
+    trace_export::record_codex_hook_payload(&stdin_payload);
     run_codex_mutation_scope_from_payload(&stdin_payload, logger).await
 }
 
@@ -102,7 +107,21 @@ pub(super) async fn run_codex_mutation_scope_from_payload_with_seams<
     evaluate_bash_policy: &impl Fn(&Path, &str) -> Result<CodexBashPolicyDecision>,
 ) -> Result<String> {
     let event = parse_codex_hook_event(stdin_payload)?;
-    dispatch_codex_hook_event(event, logger, resolve_git_dir, seam, evaluate_bash_policy).await
+    let traced_seam = async |repository_root: &Path, payload: &str, logger: Option<&L>| {
+        in_child_span(
+            ManagedChildSpan::MutationScope,
+            seam(repository_root, payload, logger),
+        )
+        .await
+    };
+    dispatch_codex_hook_event(
+        event,
+        logger,
+        resolve_git_dir,
+        &traced_seam,
+        evaluate_bash_policy,
+    )
+    .await
 }
 
 pub(super) async fn dispatch_codex_hook_event<L: crate::services::observability::traits::Logger>(

@@ -7,6 +7,6 @@ pub struct AuthCommand {
 
 impl AuthCommand {
     pub async fn execute<C>(&self, _context: &C) -> Result<String, CliError> {
-        auth_command::run_auth_subcommand(self.request).await
+        auth_command::run_auth_subcommand(self.request.clone()).await
     }
 }

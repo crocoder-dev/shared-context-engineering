@@ -60,6 +60,13 @@ const HELP_SECTIONS: &[HelpSection] = &[
         }],
     },
     HelpSection {
+        title: "Codex Usage:",
+        body: &[HelpSectionBodyLine::Command {
+            cmd: "  sce codex",
+            suffix: " [codex arguments...]",
+        }],
+    },
+    HelpSection {
         title: "Version Usage:",
         body: &[HelpSectionBodyLine::Command {
             cmd: "  sce version",

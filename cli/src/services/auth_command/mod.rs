@@ -64,15 +64,16 @@ pub(crate) struct LoginReport {
     pub(crate) telemetry: TelemetryProvisioningResult,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthSubcommand {
     Login { format: AuthFormat },
     Logout { format: AuthFormat },
     Whoami { format: AuthFormat },
     TelemetryHeaders,
+    TelemetryHeadersForRepository { repository: PathBuf },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthRequest {
     pub subcommand: AuthSubcommand,
 }
@@ -96,7 +97,7 @@ async fn run_auth_subcommand_with<L, O, S, H, LF, OF, SF, HF>(
     telemetry_headers: H,
 ) -> Result<String, CliError>
 where
-    H: FnOnce() -> HF,
+    H: FnOnce(Option<PathBuf>) -> HF,
     HF: Future<Output = Result<String, CliError>>,
     L: FnOnce(AuthFormat) -> LF,
     LF: Future<Output = Result<String, CliError>>,
@@ -109,12 +110,15 @@ where
         AuthSubcommand::Login { format } => login(format).await,
         AuthSubcommand::Logout { format } => logout(format).await,
         AuthSubcommand::Whoami { format } => whoami(format).await,
-        AuthSubcommand::TelemetryHeaders => telemetry_headers().await,
+        AuthSubcommand::TelemetryHeaders => telemetry_headers(None).await,
+        AuthSubcommand::TelemetryHeadersForRepository { repository } => {
+            telemetry_headers(Some(repository)).await
+        }
     }
 }
 
-async fn run_telemetry_headers() -> Result<String, CliError> {
-    let working_dir = std::env::current_dir().ok();
+async fn run_telemetry_headers(repository: Option<PathBuf>) -> Result<String, CliError> {
+    let working_dir = repository.or_else(|| std::env::current_dir().ok());
     let telemetry_enabled = working_dir.as_deref().is_some_and(telemetry_enabled_for);
     telemetry_headers_with(
         working_dir,
@@ -127,7 +131,7 @@ async fn run_telemetry_headers() -> Result<String, CliError> {
     .await
 }
 
-fn telemetry_enabled_for(working_dir: &Path) -> bool {
+pub(crate) fn telemetry_enabled_for(working_dir: &Path) -> bool {
     config::resolve_auth_runtime_config(working_dir)
         .is_ok_and(|config| config.access_policy.telemetry_enabled())
 }
@@ -1094,6 +1098,74 @@ mod tests {
         .await
         .expect("authorized repository should render");
         assert_eq!(headers, r#"{"Authorization":"Bearer tok-scoped"}"#);
+    }
+
+    #[tokio::test]
+    async fn telemetry_headers_route_repository_argument_and_keep_no_argument_form() {
+        let unexpected = |_: AuthFormat| async { panic!("unexpected auth subcommand") };
+        let routed = |subcommand: AuthSubcommand| {
+            run_auth_subcommand_with(
+                AuthRequest { subcommand },
+                unexpected,
+                unexpected,
+                unexpected,
+                |repository: Option<PathBuf>| async move { Ok(format!("{repository:?}")) },
+            )
+        };
+
+        assert_eq!(
+            routed(AuthSubcommand::TelemetryHeaders).await.unwrap(),
+            "None"
+        );
+        assert_eq!(
+            routed(AuthSubcommand::TelemetryHeadersForRepository {
+                repository: PathBuf::from("/work/b"),
+            })
+            .await
+            .unwrap(),
+            r#"Some("/work/b")"#
+        );
+    }
+
+    #[tokio::test]
+    async fn telemetry_headers_bind_the_explicit_repository_and_fail_closed_elsewhere() {
+        use crate::services::managed_telemetry::claude_helper::tests::git_repository_with_remote;
+
+        let dir = tempfile::tempdir().unwrap();
+        let enrolled = git_repository_with_remote(dir.path(), "a", "git@github.com:acme/a.git");
+        let unenrolled = git_repository_with_remote(dir.path(), "b", "git@github.com:acme/b.git");
+        let not_git = dir.path().join("plain");
+        std::fs::create_dir_all(&not_git).unwrap();
+        let enrolled_id = repository_id_for(&enrolled).expect("enrolled repository identity");
+
+        let headers_for = |repository: PathBuf| {
+            let enrolled_id = enrolled_id.clone();
+            telemetry_headers_with(
+                Some(repository),
+                true,
+                false,
+                || true,
+                repository_id_for,
+                move |repository_id: String| async move {
+                    Ok((repository_id == enrolled_id).then(|| telemetry_credential("tok-a")))
+                },
+            )
+        };
+
+        assert_eq!(
+            headers_for(enrolled.join("src").join("module"))
+                .await
+                .unwrap(),
+            r#"{"Authorization":"Bearer tok-a"}"#
+        );
+        for (case, repository) in [
+            ("unenrolled", unenrolled),
+            ("not git", not_git),
+            ("missing", dir.path().join("missing")),
+        ] {
+            let error = headers_for(repository).await.expect_err(case);
+            assert_eq!(error.to_string(), TELEMETRY_HEADERS_UNAVAILABLE, "{case}");
+        }
     }
 
     #[test]

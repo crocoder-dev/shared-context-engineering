@@ -321,6 +321,9 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 request: services::sync::SyncRequest { format },
             }))
         }
+        cli_schema::Commands::Codex { args } => Ok(RuntimeCommand::Codex(
+            services::codex_telemetry::command::CodexCommand { args },
+        )),
     }
 }
 
@@ -391,9 +394,12 @@ fn convert_auth_subcommand(
         cli_schema::AuthSubcommand::Whoami { format } => {
             services::auth_command::AuthSubcommand::Whoami { format }
         }
-        cli_schema::AuthSubcommand::TelemetryHeaders => {
+        cli_schema::AuthSubcommand::TelemetryHeaders { repo: None } => {
             services::auth_command::AuthSubcommand::TelemetryHeaders
         }
+        cli_schema::AuthSubcommand::TelemetryHeaders {
+            repo: Some(repository),
+        } => services::auth_command::AuthSubcommand::TelemetryHeadersForRepository { repository },
     };
 
     Ok(RuntimeCommand::Auth(
@@ -854,6 +860,25 @@ mod tests {
 
         assert!(!cli_schema::auth_help_text().contains("telemetry-headers"));
         assert!(!services::help::help_text().contains("telemetry-headers"));
+    }
+
+    #[test]
+    fn telemetry_headers_repo_flag_parses_and_is_hidden_from_help() {
+        let command = parse(&["sce", "auth", "telemetry-headers", "--repo", "/work/repo a"]);
+
+        let RuntimeCommand::Auth(command) = command else {
+            panic!("expected auth command");
+        };
+        assert_eq!(
+            command.request.subcommand,
+            services::auth_command::AuthSubcommand::TelemetryHeadersForRepository {
+                repository: std::path::PathBuf::from("/work/repo a"),
+            }
+        );
+
+        let help = cli_schema::render_help_for_path(&["auth", "telemetry-headers"])
+            .expect("hidden command help renders");
+        assert!(!help.contains("--repo"));
     }
 
     #[test]

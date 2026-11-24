@@ -50,3 +50,6 @@ use payload::{
     abandon_payload, flush_payload, pre_tool_use_deny_json, scope_boundary_payload,
     scope_start_payload,
 };
+
+#[cfg(test)]
+mod telemetry_tests;

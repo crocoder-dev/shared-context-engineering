@@ -201,6 +201,17 @@ mutation-scope `PreToolUse` registration matched by `^(Bash|apply_patch)$` and
 routed to `sce hooks codex-mutation-scope` is a separate concern handled by
 that command.
 
+## Managed trace spans
+
+`sce hooks codex` and `sce hooks codex-mutation-scope` are admitted to managed
+trace export. With a valid stored credential, each process exports one root
+`sce.hook` span with `sce.agent=codex` and the verified `sce.codex.*`
+identifiers. The mutation-scope seam runs inside `sce.mutation_scope`, with
+`sce.git_snapshot` and `sce.persistence` children when the coordinator runs.
+Codex hook spans never adopt `TRACEPARENT`. Telemetry never changes hook output
+or persisted state. Contract:
+[cli-observability-contract.md](cli-observability-contract.md#managed-trace-export).
+
 ## Verification
 
 - `nix develop -c sh -c './scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml hooks::codex'`

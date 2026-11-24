@@ -43,6 +43,7 @@ const HOOK_EXPORTED_SPAN_NAMES: [&str; 4] = [
 ];
 pub const COMMAND_NAME_FIELD: &str = "sce.command.name";
 const AGENT_CLAUDE: &str = "claude";
+const AGENT_CODEX: &str = "codex";
 const HOOK_EVENT_FIELD: &str = "sce.hook.event";
 const HOOK_TOOL_FIELD: &str = "sce.hook.tool";
 const HOOK_COMMAND_FIELD: &str = "sce.hook.command";
@@ -53,6 +54,22 @@ const CLAUDE_PAYLOAD_FIELDS: [(&str, &str); 4] = [
     ("tool_name", HOOK_TOOL_FIELD),
     ("session_id", CLAUDE_SESSION_ID_FIELD),
     ("tool_use_id", CLAUDE_TOOL_USE_ID_FIELD),
+];
+const CODEX_SESSION_ID_FIELD: &str = "sce.codex.session_id";
+const CODEX_TURN_ID_FIELD: &str = "sce.codex.turn_id";
+const CODEX_TOOL_USE_ID_FIELD: &str = "sce.codex.tool_use_id";
+const CODEX_MODEL_FIELD: &str = "sce.codex.model";
+const CODEX_AGENT_ID_FIELD: &str = "sce.codex.agent_id";
+const CODEX_AGENT_TYPE_FIELD: &str = "sce.codex.agent_type";
+const CODEX_PAYLOAD_FIELDS: [(&str, &str); 8] = [
+    ("hook_event_name", HOOK_EVENT_FIELD),
+    ("tool_name", HOOK_TOOL_FIELD),
+    ("session_id", CODEX_SESSION_ID_FIELD),
+    ("turn_id", CODEX_TURN_ID_FIELD),
+    ("tool_use_id", CODEX_TOOL_USE_ID_FIELD),
+    ("model", CODEX_MODEL_FIELD),
+    ("agent_id", CODEX_AGENT_ID_FIELD),
+    ("agent_type", CODEX_AGENT_TYPE_FIELD),
 ];
 const TRACEPARENT_ENV: &str = "TRACEPARENT";
 const TRACESTATE_ENV: &str = "TRACESTATE";
@@ -115,6 +132,7 @@ fn is_hook_span(metadata: &tracing::Metadata<'_>) -> bool {
 pub enum ManagedSpanKind {
     Command,
     ClaudeHook,
+    CodexHook,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +152,21 @@ impl ClaudeHookCommand {
             Self::ClaudeMutationScope => "claude-mutation-scope",
             Self::ClaudeModelState => "claude-model-state",
             Self::PolicyBash => "policy-bash",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodexHookCommand {
+    Codex,
+    CodexMutationScope,
+}
+
+impl CodexHookCommand {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::CodexMutationScope => "codex-mutation-scope",
         }
     }
 }
@@ -166,12 +199,11 @@ impl ManagedTraceTelemetry {
             .timeout(REQUEST_TIMEOUT)
             .build()?;
         let mut telemetry = Self::with_client(bearer, endpoints, runtime, client, span_kind)?;
-        if span_kind == ManagedSpanKind::ClaudeHook {
-            telemetry.parent_context = extract_parent_context(
-                std::env::var(TRACEPARENT_ENV).ok(),
-                std::env::var(TRACESTATE_ENV).ok(),
-            );
-        }
+        telemetry.parent_context = upstream_parent_context(
+            span_kind,
+            std::env::var(TRACEPARENT_ENV).ok(),
+            std::env::var(TRACESTATE_ENV).ok(),
+        );
         Ok(telemetry)
     }
 
@@ -242,7 +274,7 @@ impl ManagedTraceTelemetry {
             .build();
         let span_filter: fn(&tracing::Metadata<'_>) -> bool = match span_kind {
             ManagedSpanKind::Command => is_command_span,
-            ManagedSpanKind::ClaudeHook => is_hook_span,
+            ManagedSpanKind::ClaudeHook | ManagedSpanKind::CodexHook => is_hook_span,
         };
         let span_layer = tracing_opentelemetry::layer()
             .with_tracer(provider.tracer(TRACER_NAME))
@@ -310,6 +342,22 @@ impl ManagedTraceTelemetry {
                 sce.outcome = field::Empty,
                 sce.error.class = field::Empty,
             ),
+            ManagedSpanKind::CodexHook => tracing::info_span!(
+                target: COMMAND_SPAN_TARGET,
+                HOOK_SPAN_NAME,
+                sce.agent = AGENT_CODEX,
+                sce.hook.command = field::Empty,
+                sce.hook.event = field::Empty,
+                sce.hook.tool = field::Empty,
+                sce.codex.session_id = field::Empty,
+                sce.codex.turn_id = field::Empty,
+                sce.codex.tool_use_id = field::Empty,
+                sce.codex.model = field::Empty,
+                sce.codex.agent_id = field::Empty,
+                sce.codex.agent_type = field::Empty,
+                sce.outcome = field::Empty,
+                sce.error.class = field::Empty,
+            ),
         })
     }
 }
@@ -336,6 +384,19 @@ impl Telemetry for ManagedTraceTelemetry {
         }
         drop(span);
         result
+    }
+}
+
+/// Codex command hooks inherit `TRACEPARENT` from the process that launched Codex, never the
+/// current Codex span, so only Claude hook spans adopt an upstream parent.
+fn upstream_parent_context(
+    span_kind: ManagedSpanKind,
+    traceparent: Option<String>,
+    tracestate: Option<String>,
+) -> Option<Context> {
+    match span_kind {
+        ManagedSpanKind::ClaudeHook => extract_parent_context(traceparent, tracestate),
+        ManagedSpanKind::Command | ManagedSpanKind::CodexHook => None,
     }
 }
 
@@ -396,6 +457,18 @@ pub fn record_claude_hook_command(command: ClaudeHookCommand) {
 }
 
 pub fn record_claude_hook_payload(stdin_payload: &str) {
+    record_hook_payload(stdin_payload, &CLAUDE_PAYLOAD_FIELDS);
+}
+
+pub fn record_codex_hook_command(command: CodexHookCommand) {
+    Span::current().record(HOOK_COMMAND_FIELD, command.as_str());
+}
+
+pub fn record_codex_hook_payload(stdin_payload: &str) {
+    record_hook_payload(stdin_payload, &CODEX_PAYLOAD_FIELDS);
+}
+
+fn record_hook_payload(stdin_payload: &str, fields: &[(&str, &str)]) {
     let span = Span::current();
     if span.is_disabled() {
         return;
@@ -403,7 +476,7 @@ pub fn record_claude_hook_payload(stdin_payload: &str) {
     let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(stdin_payload) else {
         return;
     };
-    for (payload_key, span_field) in CLAUDE_PAYLOAD_FIELDS {
+    for &(payload_key, span_field) in fields {
         if let Some(value) = payload
             .get(payload_key)
             .and_then(serde_json::Value::as_str)
@@ -634,7 +707,7 @@ pub(crate) mod tests {
         loopback_telemetry_of_kind(address, token, ManagedSpanKind::Command)
     }
 
-    fn loopback_telemetry_of_kind(
+    pub(crate) fn loopback_telemetry_of_kind(
         address: std::net::SocketAddr,
         token: &str,
         span_kind: ManagedSpanKind,
@@ -1051,5 +1124,131 @@ pub(crate) mod tests {
             assert!(started.elapsed() < SHUTDOWN_TIMEOUT + Duration::from_millis(500));
         });
         crate::app::finish_runtime(runtime);
+    }
+
+    const VALID_TRACEPARENT: &str = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+
+    #[test]
+    fn upstream_parent_context_is_adopted_only_for_claude_hooks() {
+        let parent = |span_kind, traceparent: &str| {
+            upstream_parent_context(
+                span_kind,
+                Some(traceparent.to_string()),
+                Some("vendor=value".to_string()),
+            )
+        };
+        assert!(parent(ManagedSpanKind::ClaudeHook, VALID_TRACEPARENT).is_some());
+        for traceparent in [
+            VALID_TRACEPARENT,
+            "00-00000000000000000000000000000000-0000000000000000-01",
+            "garbage",
+        ] {
+            assert!(parent(ManagedSpanKind::CodexHook, traceparent).is_none());
+            assert!(parent(ManagedSpanKind::Command, traceparent).is_none());
+        }
+        assert!(upstream_parent_context(ManagedSpanKind::CodexHook, None, None).is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn codex_hook_span_exports_codex_attributes_without_claude_fields() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn(capture_requests_until(listener, stopped));
+        let telemetry =
+            loopback_telemetry_of_kind(address, "bao-token-value", ManagedSpanKind::CodexHook);
+        let payload = r#"{"hook_event_name":"PostToolUse","tool_name":"apply_patch","session_id":"019a-s","turn_id":"019a-t","tool_use_id":"call_1","model":"gpt-5","agent_id":"019a-child","agent_type":"worker","cwd":"/home/u/secret-repo","tool_input":{"command":"*** Begin Patch"},"prompt":"private prompt","transcript_path":"/home/u/.codex/sessions/x.jsonl"}"#;
+
+        let result = telemetry
+            .with_default_subscriber(&mut || async {
+                record_codex_hook_command(CodexHookCommand::Codex);
+                record_codex_hook_payload(payload);
+                Ok(String::new())
+            })
+            .await;
+        assert_eq!(result.expect("hook result"), "");
+        telemetry.shutdown().await;
+        stop.send(()).expect("stop receiver");
+
+        let requests = receiver.await.expect("receiver join");
+        let spans = trace_spans(&requests);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].name, "sce.hook");
+        assert!(spans[0].parent_span_id.is_empty());
+        assert_eq!(
+            spans[0].sce_attributes(),
+            [
+                ("sce.agent", "codex"),
+                ("sce.codex.agent_id", "019a-child"),
+                ("sce.codex.agent_type", "worker"),
+                ("sce.codex.model", "gpt-5"),
+                ("sce.codex.session_id", "019a-s"),
+                ("sce.codex.tool_use_id", "call_1"),
+                ("sce.codex.turn_id", "019a-t"),
+                ("sce.hook.command", "codex"),
+                ("sce.hook.event", "PostToolUse"),
+                ("sce.hook.tool", "apply_patch"),
+                ("sce.outcome", "success"),
+            ]
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+        );
+        assert!(spans[0]
+            .resource_attributes
+            .contains(&("service.name".to_string(), "sce".to_string())));
+        for request in requests.iter().filter(|request| {
+            request
+                .head
+                .to_ascii_lowercase()
+                .starts_with("post /v1/traces ")
+        }) {
+            let body = String::from_utf8_lossy(&request.body);
+            for leaked in [
+                "secret-repo",
+                "private prompt",
+                "Begin Patch",
+                "sessions/x.jsonl",
+            ] {
+                assert!(!body.contains(leaked), "leaked {leaked}");
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn claude_hook_span_shape_is_unchanged_by_codex_admission() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let receiver = tokio::spawn(capture_requests_until(listener, stopped));
+        let telemetry =
+            loopback_telemetry_of_kind(address, "bao-token-value", ManagedSpanKind::ClaudeHook);
+        let payload = r#"{"hook_event_name":"PreToolUse","tool_name":"Write","session_id":"sess-1","tool_use_id":"toolu_1","turn_id":"ignored","model":"ignored"}"#;
+
+        telemetry
+            .with_default_subscriber(&mut || async {
+                record_claude_hook_command(ClaudeHookCommand::ClaudeMutationScope);
+                record_claude_hook_payload(payload);
+                Ok(String::new())
+            })
+            .await
+            .expect("hook result");
+        telemetry.shutdown().await;
+        stop.send(()).expect("stop receiver");
+
+        let spans = trace_spans(&receiver.await.expect("receiver join"));
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        assert_eq!(spans[0].name, "sce.hook");
+        assert_eq!(
+            spans[0].sce_attributes(),
+            [
+                ("sce.agent", "claude"),
+                ("sce.claude.session_id", "sess-1"),
+                ("sce.claude.tool_use_id", "toolu_1"),
+                ("sce.hook.command", "claude-mutation-scope"),
+                ("sce.hook.event", "PreToolUse"),
+                ("sce.hook.tool", "Write"),
+                ("sce.outcome", "success"),
+            ]
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+        );
     }
 }

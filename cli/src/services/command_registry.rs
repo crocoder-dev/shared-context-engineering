@@ -17,6 +17,7 @@ pub enum RuntimeCommand {
     Version(services::version::command::VersionCommand),
     Completion(services::completion::command::CompletionCommand),
     Sync(services::sync::command::SyncCommand),
+    Codex(services::codex_telemetry::command::CodexCommand),
 }
 
 impl RuntimeCommand {
@@ -33,6 +34,7 @@ impl RuntimeCommand {
             Self::Version(_) => Cow::Borrowed(services::version::NAME),
             Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
             Self::Sync(_) => Cow::Borrowed(services::sync::NAME),
+            Self::Codex(_) => Cow::Borrowed(services::codex_telemetry::NAME),
         }
     }
 
@@ -57,6 +59,7 @@ impl RuntimeCommand {
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
             Self::Sync(command) => command.execute_with_stderr(context, stderr).await,
+            Self::Codex(command) => command.execute_with_stderr(context, stderr).await,
         }
     }
 }

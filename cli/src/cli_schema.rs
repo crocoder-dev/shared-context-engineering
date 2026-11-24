@@ -53,6 +53,11 @@ pub const SYNC_TOP_LEVEL_PURPOSE: &str =
     "Synchronize the current repository's Agent Trace database";
 pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
+pub const CODEX_CLAP_ABOUT: &str =
+    "Launch Codex with SCE native telemetry for the current repository";
+pub const CODEX_TOP_LEVEL_PURPOSE: &str = "Launch Codex with SCE native telemetry";
+pub const CODEX_SHOW_IN_TOP_LEVEL_HELP: bool = true;
+
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
     TopLevelCommandMetadata {
         name: crate::services::auth_command::NAME,
@@ -98,6 +103,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::sync::NAME,
         purpose: SYNC_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: SYNC_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::codex_telemetry::NAME,
+        purpose: CODEX_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: CODEX_SHOW_IN_TOP_LEVEL_HELP,
     },
 ];
 
@@ -241,6 +251,16 @@ pub enum Commands {
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },
+
+    #[command(
+        about = CODEX_CLAP_ABOUT,
+        hide = !CODEX_SHOW_IN_TOP_LEVEL_HELP,
+        disable_help_flag = true
+    )]
+    Codex {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
@@ -264,7 +284,10 @@ pub enum AuthSubcommand {
     },
 
     #[command(hide = true, about = "Print telemetry authorization headers")]
-    TelemetryHeaders,
+    TelemetryHeaders {
+        #[arg(long, hide = true)]
+        repo: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
