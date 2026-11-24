@@ -22,7 +22,7 @@ ClaudeMutationScope` -> `convert_hooks_subcommand_request` ->
 from help (`#[command(hide = true)]` on the nested clap variant), the dispatch
 arm **unwrapped** like `mutation-scope` (no `Ok(...)` fail-open shim). It takes
 no `repository_root` parameter — every repository root is read from the parsed
-event payload (see [Raw cwd is authoritative](#raw-cwd-is-authoritative)). STDIN
+event payload (see [Repository routing](#repository-routing)). STDIN
 is one raw Claude hook JSON object via `super::read_hook_stdin()`; success emits
 **empty stdout**, except the deliberate `PreToolUse` permission-decision object
 below.
@@ -91,7 +91,7 @@ new `ScopeId`; otherwise-identical tool IDs under main / `agent_id=A` /
 `<git-dir>/sce/claude-mutation-scope-state.json` (`<git-dir>` via
 `checkout::resolve_git_dir(cwd)` — worktree-specific for linked worktrees): a
 versioned `{version, next_attempt_seq, recovery_pending, attempts[]}`, each
-attempt carrying `attempt_seq`, `scope_id`, the identity fields, `tool_name`, and
+attempt carrying `attempt_seq`, `scope_id`, the identity fields, `tool_name`, `routed` (see [legacy attempts](claude-mutation-scope-routes.md#legacy-attempts-and-unresolved-routes)), and
 `phase` (`pending_start | active | pending_abandon`, the last set durably before
 any abandon seam call — see [Abandonment cleanup signals](#abandonment-cleanup-signals)
 below). This is **adapter bookkeeping, never
@@ -110,15 +110,15 @@ can form. The adapter may call `checkout::resolve_git_dir` but not
 
 ## PreToolUse: write-ahead Start, fail-closed
 
-For a mutation-capable tool, `handle_pre_tool_use` runs: background-`Bash` untracked allow (empty success, nothing below runs) -> explicit-background-shell deny (`PowerShell`) -> resolve `git_dir` -> recovery barrier ->
+For a mutation-capable tool, `handle_pre_tool_use` runs: background-`Bash` untracked allow (empty success, nothing below runs) -> explicit-background-shell deny (`PowerShell`) -> resolve route anchor -> resolve `git_dir` -> recovery barrier -> persist route ->
 write-ahead `Start` — persist `phase=pending_start`, resolve the model from the event's `ClaudeModelEvidence` through the injectable resolver closure (production: the [Claude model resolver](../sce/claude-model-resolver.md) full chain), call the seam with the optional provenance snapshot, persist `pending_start -> active`, return empty success.
-`transcript_path` and the direct model are parsed leniently, so a malformed value is absent, not a rejected event. A missing model or resolver error becomes a null model and never denies the tool.
+`transcript_path` and the direct model are parsed leniently, so a malformed value is absent, not a rejected event. A missing model or resolver error becomes a null model and never denies the tool. The route records the raw `cwd` checkout and binds terminal events to it; the route anchor is the Git directory of `CLAUDE_PROJECT_DIR`.
 The seam receives the raw `cwd` as its `repository_root` and SCE derives the `WorktreeId`, so durable generic-ingress `Start` is reached before the hook returns success to Claude.
 
 **Fail-closed via Claude's deny decision.** Claude treats ordinary non-2 hook failures as non-blocking, so a generic non-zero exit would let the tool run
 without its `Start`. Therefore **any** failure in the mutation-capable
 `PreToolUse` path — state-allocation failure, seam `Start` failure, unresolvable
-`cwd`, or a barrier denial — returns (`Ok`, never `Err`):
+`cwd` or route anchor, route persist failure or conflict, or a barrier denial — returns (`Ok`, never `Err`):
 
 ```json
 {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"SCE could not establish mutation attribution for this tool execution."}}
@@ -199,16 +199,16 @@ onto the shared `healthy | recovering | blocked | invalid` vocabulary that
 for the full mapping, the `Blocked` incident this classifier exists to
 surface, and its read-only/observation-semantics boundaries.
 
-## Raw cwd is authoritative
+## Repository routing
 
-The runtime's repository root is the raw payload's `cwd`, never
-`$CLAUDE_PROJECT_DIR` (`WorktreeRemove` cleanup uses the event's
-`worktree_path`). An `isolation: worktree` subagent's tool executions run inside
-the isolated worktree and drive the runtime from that worktree's `cwd`, so a
-hook process launched from checkout A with a payload `cwd = checkout B` drives
-checkout B's state and only that worktree's cursor. The adapter never accepts,
-derives, stores, or constructs a `WorktreeId`, and passes no `worktree_id` key
-to the seam.
+`PreToolUse` takes the repository root from the raw payload's `cwd`, never
+`$CLAUDE_PROJECT_DIR`, and records it in a route before `Start`. Terminal events
+and the cleanup sweeps above reach that original checkout through the route,
+not through their own `cwd`. `$CLAUDE_PROJECT_DIR` only locates the route table;
+see [Claude mutation-scope route store](claude-mutation-scope-routes.md).
+`WorktreeRemove` cleanup uses the event's `worktree_path`. An `isolation:
+worktree` subagent's tool runs from that worktree's `cwd`, so its route targets
+that worktree's state and cursor. The adapter never constructs a `WorktreeId`.
 
 ## Background shell execution
 

@@ -32,6 +32,8 @@ pub(crate) struct AdapterAttempt {
     pub tool_use_id: String,
     pub tool_name: String,
     pub phase: AttemptPhase,
+    #[serde(default)]
+    pub routed: bool,
 }
 
 impl AdapterAttempt {
@@ -246,6 +248,7 @@ pub(crate) async fn allocate_attempt(
             tool_use_id: key.tool_use_id.clone(),
             tool_name,
             phase: AttemptPhase::PendingStart,
+            routed: true,
         };
 
         state.attempts.push(attempt.clone());

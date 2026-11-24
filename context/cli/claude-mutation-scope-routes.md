@@ -6,11 +6,9 @@ checkout where one tracked Claude tool invocation started. Terminal hook events
 can use the route to reach that checkout after the hook `cwd` has changed, for
 example after `cd` into a nested Git repository.
 
-Current state: the store exists and is tested, but `lifecycle.rs` does not call
-it yet. Until the lifecycle uses it, the rule in
-[Raw cwd is authoritative](claude-mutation-scope-integration.md#raw-cwd-is-authoritative)
-still describes runtime behavior. The
-`claude-mutation-scope-stable-repository-routing` plan owns the integration.
+`lifecycle.rs` uses the store for every tracked tool execution. See
+[Lifecycle routing](#lifecycle-routing). The decision record is
+[`2026-11-24-claude-mutation-scope-routes-bind-tools-to-pretooluse-checkout.md`](../decisions/2026-11-24-claude-mutation-scope-routes-bind-tools-to-pretooluse-checkout.md).
 
 ## Route anchor
 
@@ -52,6 +50,51 @@ rejected and never overwritten.
 
 Main-agent and subagent keys with the same `tool_use_id` are distinct routes.
 The route lock and the checkout-state lock are separate files.
+
+## Lifecycle routing
+
+```mermaid
+sequenceDiagram
+    participant Pre as PreToolUse (cwd = A)
+    participant Routes as Route table (anchor)
+    participant A as Checkout A state
+    participant Post as Terminal event (cwd = B or outside)
+    Pre->>Routes: persist route key -> A
+    Pre->>A: allocate attempt (routed), Start
+    Post->>Routes: load route by key
+    Post->>A: close or abandon attempt
+    Post->>Routes: remove route once attempt is gone
+```
+
+- `PreToolUse` resolves the anchor, then the target from the raw `cwd`, then
+  runs the recovery barrier. It persists the route before attempt allocation
+  and `Start`. An unresolvable anchor, a persist failure, or a `Conflict` denies
+  the tool with the standard fail-closed decision.
+- `PostToolUse`, `PostToolUseFailure`, and `PermissionDenied` load the route and
+  finish the attempt in the route's `git_dir`, passing the route's
+  `checkout_path` to the seam. A route without an attempt is removed with no
+  seam call.
+- `Stop`, `StopFailure`, `UserPromptSubmit`, `SubagentStop`, and `SessionEnd`
+  read the session's routes, filter them by the event's agent rule, and run the
+  shared cleanup once per recorded target. A failure on one target does not
+  stop the other targets.
+- `WorktreeRemove` cleans the event's `worktree_path` as before, then retires
+  the session's routes into that worktree.
+- A route is removed only when its attempt no longer exists in the target
+  state. A failed close or abandon keeps the route, so a later event can retry.
+
+## Legacy attempts and unresolved routes
+
+New adapter attempts carry `routed: true`. A state file written before routing
+has no `routed` field, and its attempts load as `routed: false`. Only these
+legacy attempts may be found through the event `cwd` when no route exists. A
+legacy lookup whose `cwd` is outside every repository is a no-op.
+
+When a terminal or cleanup event cannot resolve the anchor or read the route
+table, it logs `sce.hooks.claude_mutation_scope.route_unresolved` and acts only
+on legacy attempts. A routed attempt whose route is missing is never closed or
+abandoned through the event `cwd`. A legacy attempt whose `cwd` changed before
+completion keeps the original orphaned-scope limitation.
 
 ## Related context
 
