@@ -240,6 +240,7 @@ durable-completion classification, and empty-stdout semantics. The adapter also 
 
 ## Related context
 
+- [Claude mutation-scope route store](claude-mutation-scope-routes.md)
 - [Claude mutation-scope health classification](claude-mutation-scope-health.md)
 - [Claude mutation-scope background and detached execution boundaries](claude-mutation-scope-background-execution.md)
 - [Mutation-scope hook ingress: the harness-neutral transport seam](mutation-scope-hook-ingress.md)

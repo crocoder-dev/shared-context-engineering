@@ -89,11 +89,35 @@ T03/AC7 cover both cases with real Git fixtures.
   - Context impact: none. The decision is recorded only in this plan. Durable context changes are deferred to T04 (`context/cli/claude-mutation-scope-integration.md`).
   - Context synchronization: synced
 
-- [ ] **T02: Add minimal durable route storage with atomic/idempotent semantics** (status:todo)
+- [x] **T02: Add minimal durable route storage with atomic/idempotent semantics** (status:done)
   - Scope: one Claude-only routing module; a bounded route record keyed by the exact attempt identity; existing lock/rename conventions; no generic routing framework.
   - Dependencies: T01
   - Done when: route recovery and failure-injection tests cover AC5/AC6.
-  - Context synchronization: pending
+  - Completed: 2026-11-24
+  - Files changed: `cli/src/services/hooks/claude_mutation_scope/routes.rs` (new), `cli/src/services/hooks/claude_mutation_scope/mod.rs`, `context/plans/claude-mutation-scope-stable-repository-routing.md`
+  - Result: Added the Claude-only `routes` module. It stores a versioned route table at `<anchor-git-dir>/sce/claude-mutation-scope-routes.json`, protected by its own `claude-mutation-scope-routes.lock` (`AdapterLockSpec::state`). Writes use the `state.rs` temp-file, `sync_data`, rename, and directory-sync convention. Each `RouteRecord` is keyed by the full `AttemptKey` and stores a `RouteTarget` (`checkout_path`, `git_dir`). The module provides these operations:
+    - `persist_route` returns `Inserted`, `AlreadyRouted`, or `Conflict { existing }`. It never retargets a live route.
+    - `load_route` looks up one route by exact key.
+    - `routes_for_session` lists the routes of one session.
+    - `remove_route` returns `Removed`, `Absent`, or `TargetMismatch`. It removes a route only while the route still points at the expected target.
+    - `resolve_route_anchor` resolves `CLAUDE_PROJECT_DIR` to its Git directory. It returns a typed `RouteAnchorError` (`ProjectDirUnset`, `Unresolvable`) and never falls back to `cwd`.
+
+    A malformed table or an unsupported version fails closed and is never overwritten. The module is not wired into `lifecycle.rs` yet (T03), so `mod routes` carries `#[allow(dead_code)]`. Assumption: I/O errors use `anyhow`, matching the sibling `state.rs`.
+  - Verify: `nix develop -c ./scripts/run-cli-cargo.sh test --manifest-path cli/Cargo.toml claude_mutation_scope` passed (21 tests, including 17 new route tests). The new tests cover:
+    - recovery by a fresh read from disk
+    - an injected failure before rename on persist, which leaves no route, keeps prior routes, and still allows a retry over the leftover `.tmp` file
+    - an injected failure on removal, which keeps the route recoverable
+    - idempotent duplicate persist and duplicate removal
+    - refused retargeting
+    - a reused `tool_use_id` after removal, plus a stale removal reporting `TargetMismatch`
+    - main-agent, subagent, and other-session key isolation
+    - 16 concurrent distinct writers with no lost updates, and 16 concurrent duplicate writers inserting exactly once
+    - a malformed or future-version table failing closed
+    - anchor errors, and a real nested-Git anchor resolving to the project repository, not the nested one
+
+    `nix develop -c ./scripts/run-cli-cargo.sh clippy --manifest-path cli/Cargo.toml --all-targets -- -D warnings` passed. `cargo fmt --check` passed.
+  - Context impact: local. The new module is internal to the Claude adapter and has no runtime behavior yet. The durable context update is deferred to T04 (`context/cli/claude-mutation-scope-integration.md`) after T03 wires the module in.
+  - Context synchronization: synced
 
 - [ ] **T03: Route Claude mutation lifecycle through the original checkout** (status:todo)
   - Scope: integrate PreToolUse, PostToolUse/Failure, PermissionDenied and session/agent/worktree cleanup into the existing lifecycle. Keep the local adapter's `AttemptKey` and existing runtime seam.
