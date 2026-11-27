@@ -321,6 +321,13 @@ fn convert_clap_command(command: cli_schema::Commands) -> Result<RuntimeCommand,
                 request: services::sync::SyncRequest { format },
             }))
         }
+        cli_schema::Commands::Plan {
+            subcommand: cli_schema::PlanSubcommand::Status { path, format },
+        } => Ok(RuntimeCommand::PlanStatus(
+            services::plan::command::PlanStatusCommand {
+                request: services::plan::PlanStatusRequest { path, format },
+            },
+        )),
     }
 }
 

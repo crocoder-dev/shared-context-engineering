@@ -17,6 +17,7 @@ pub enum RuntimeCommand {
     Version(services::version::command::VersionCommand),
     Completion(services::completion::command::CompletionCommand),
     Sync(services::sync::command::SyncCommand),
+    PlanStatus(services::plan::command::PlanStatusCommand),
 }
 
 impl RuntimeCommand {
@@ -33,6 +34,7 @@ impl RuntimeCommand {
             Self::Version(_) => Cow::Borrowed(services::version::NAME),
             Self::Completion(_) => Cow::Borrowed(services::completion::NAME),
             Self::Sync(_) => Cow::Borrowed(services::sync::NAME),
+            Self::PlanStatus(_) => Cow::Borrowed(services::plan::NAME),
         }
     }
 
@@ -57,6 +59,7 @@ impl RuntimeCommand {
             Self::Version(command) => command.execute(context),
             Self::Completion(command) => Ok(command.execute(context)),
             Self::Sync(command) => command.execute_with_stderr(context, stderr).await,
+            Self::PlanStatus(command) => command.execute(context),
         }
     }
 }

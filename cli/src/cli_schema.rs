@@ -53,6 +53,10 @@ pub const SYNC_TOP_LEVEL_PURPOSE: &str =
     "Synchronize the current repository's Agent Trace database";
 pub const SYNC_SHOW_IN_TOP_LEVEL_HELP: bool = true;
 
+pub const PLAN_CLAP_ABOUT: &str = "Inspect persisted SCE plan state";
+pub const PLAN_TOP_LEVEL_PURPOSE: &str = "Inspect persisted SCE plan state";
+pub const PLAN_SHOW_IN_TOP_LEVEL_HELP: bool = false;
+
 pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
     TopLevelCommandMetadata {
         name: crate::services::auth_command::NAME,
@@ -98,6 +102,11 @@ pub const TOP_LEVEL_COMMANDS: &[TopLevelCommandMetadata] = &[
         name: crate::services::sync::NAME,
         purpose: SYNC_TOP_LEVEL_PURPOSE,
         show_in_top_level_help: SYNC_SHOW_IN_TOP_LEVEL_HELP,
+    },
+    TopLevelCommandMetadata {
+        name: crate::services::plan::NAME,
+        purpose: PLAN_TOP_LEVEL_PURPOSE,
+        show_in_top_level_help: PLAN_SHOW_IN_TOP_LEVEL_HELP,
     },
 ];
 
@@ -238,6 +247,24 @@ pub enum Commands {
 
     #[command(about = SYNC_CLAP_ABOUT, hide = !SYNC_SHOW_IN_TOP_LEVEL_HELP)]
     Sync {
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+    },
+
+    #[command(about = PLAN_CLAP_ABOUT, hide = !PLAN_SHOW_IN_TOP_LEVEL_HELP)]
+    Plan {
+        #[command(subcommand)]
+        subcommand: PlanSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum PlanSubcommand {
+    #[command(about = "Print the recorded task and validation state of one plan file")]
+    Status {
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+        path: PathBuf,
+
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
     },

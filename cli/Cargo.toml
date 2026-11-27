@@ -57,6 +57,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 opentelemetry = { version = "=0.33.1", default-features = false, features = ["trace", "logs"] }
 async-trait = "0.1"
 opentelemetry_sdk = { version = "=0.33.1", default-features = false, features = ["trace", "logs"] }
+markdown = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.186"
