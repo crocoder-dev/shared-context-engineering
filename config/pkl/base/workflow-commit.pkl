@@ -146,7 +146,6 @@ local renderCommandBody = (mode: model.WorkflowRenderMode) -> """
     - Reading and analyzing the staged diff.
     - Deciding whether staged changes form one coherent unit or several.
     - Writing every commit message subject and body.
-    - Applying the plan-citation body rule.
 
     Do not duplicate any of it. Do not write commit messages yourself.
 
@@ -291,20 +290,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     Follow \(commitMessageStyle.render.apply(mode)) for the subject pattern, body
     rules, and issue references.
 
-    \(atomicCommitHeadings.stepHeading.apply(mode, 5, "Apply the plan-citation rule"))
-
-    When the unit's staged files include `context/plans/*.md`, cite the affected
-    plan slug and updated task IDs in the body.
-
-    When the staged plan diff does not expose the slug or task ID clearly enough to
-    cite faithfully:
-
-    - In `regular` mode, \(returnLower.render.apply(mode)) `blocked` and ask for the reference to be stated or
-      staged explicitly.
-    - In `bypass` mode, infer the citation when the diff supports it, and otherwise
-      omit it. Never stop, and never invent a slug or task ID.
-
-    \(atomicCommitHeadings.stepHeading.apply(mode, 6, "Propose split guidance"))
+    \(atomicCommitHeadings.stepHeading.apply(mode, 5, "Propose split guidance"))
 
     This step applies in `regular` mode only.
 
@@ -315,13 +301,12 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     When the staged changes form one unit, return one message and no split
     guidance. Do not split coherent work to appear thorough.
 
-    \(atomicCommitHeadings.stepHeading.apply(mode, 7, "Validate the result"))
+    \(atomicCommitHeadings.stepHeading.apply(mode, 6, "Validate the result"))
 
     Confirm before returning that:
 
     - Every message describes its unit faithfully and covers only that unit's files.
     - Every staged file belongs to exactly one returned message.
-    - No plan slug or task ID appears that the staged diff does not support.
     - The mode's own constraints hold.
 
     \(atomicCommitHeadings.section.apply(mode, "Result contract"))
@@ -370,8 +355,7 @@ local renderAtomicCommitSkillBody = (mode: model.WorkflowRenderMode) -> """
     - Analyze unstaged or untracked changes.
     - Return more than one message in `bypass` mode.
     - Return split guidance in `bypass` mode.
-    - Stop for plan-citation ambiguity in `bypass` mode.
-    - Invent plan slugs, task IDs, or issue references.
+    - Invent issue references.
     - Mention `context/` synchronization activity in a commit message.
     - Claim a message was committed.
     - Run plan, task, or validation workflows.
@@ -399,7 +383,7 @@ local structuredAtomicCommitSkill = new model.StructuredWorkflowDocument {
       "description: >"
       "  Internal SCE workflow skill that analyzes the staged diff and returns atomic,"
       "  repository-style commit messages: coherent-unit detection, split guidance,"
-      "  scope and subject wording, and the plan-citation body rule. Returns one \(yaml.render.apply(mode))"
+      "  and scope and subject wording. Returns one \(yaml.render.apply(mode))"
       "  result (proposal, bypass_message, or blocked). Use from /commit. Do not stage"
       "  files, create commits, or ask the user to confirm staging."
     }

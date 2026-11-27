@@ -80,8 +80,7 @@ output. On failure it reports the failure and stops — no retry, amend, additio
 staging, fallback commit, or fabricated hash. Either way, the command deletes the
 temp file after the commit attempt, including on failure, where practical.
 
-Bypass mode relaxes two regular-mode rules: no split proposals, and plan
-citations are best-effort rather than blocking.
+Bypass mode relaxes one regular-mode rule: it returns no split proposals.
 
 ## Ownership boundary
 
@@ -92,7 +91,6 @@ says:
 - Reading and analyzing the staged diff.
 - Deciding whether staged changes form one coherent unit or several.
 - Choosing scope and writing every subject and body.
-- The plan-citation body rule.
 
 Each rule is stated once by its owner. The skill never commits and never asks
 about staging.
@@ -106,16 +104,6 @@ file is the sole exception to that mutation rule: it lives outside the working
 tree, so writing and later deleting it is not a repository or worktree
 modification. Supplied commit context refines wording but never overrides the
 diff and never adds a claim the diff does not support.
-
-## Plan citations
-
-When a commit's staged files include `context/plans/*.md`, its body cites the
-affected plan slug and every updated task ID. Plan slugs and task IDs are never
-invented.
-
-When the staged plan diff does not expose them clearly enough to cite
-faithfully, regular mode blocks and asks for the reference to be stated or
-staged explicitly; bypass mode omits the citation instead of stopping.
 
 ## Result contract
 

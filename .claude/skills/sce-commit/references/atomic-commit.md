@@ -60,20 +60,7 @@ changes.
 Follow `references/commit-message-style.md` for the subject pattern, body
 rules, and issue references.
 
-### 5. Apply the plan-citation rule
-
-When the unit's staged files include `context/plans/*.md`, cite the affected
-plan slug and updated task IDs in the body.
-
-When the staged plan diff does not expose the slug or task ID clearly enough to
-cite faithfully:
-
-- In `regular` mode, return `blocked` and ask for the reference to be stated or
-  staged explicitly.
-- In `bypass` mode, infer the citation when the diff supports it, and otherwise
-  omit it. Never stop, and never invent a slug or task ID.
-
-### 6. Propose split guidance
+### 5. Propose split guidance
 
 This step applies in `regular` mode only.
 
@@ -84,13 +71,12 @@ each.
 When the staged changes form one unit, return one message and no split
 guidance. Do not split coherent work to appear thorough.
 
-### 7. Validate the result
+### 6. Validate the result
 
 Confirm before returning that:
 
 - Every message describes its unit faithfully and covers only that unit's files.
 - Every staged file belongs to exactly one returned message.
-- No plan slug or task ID appears that the staged diff does not support.
 - The mode's own constraints hold.
 
 ## Result contract
@@ -139,8 +125,7 @@ Do not:
 - Analyze unstaged or untracked changes.
 - Return more than one message in `bypass` mode.
 - Return split guidance in `bypass` mode.
-- Stop for plan-citation ambiguity in `bypass` mode.
-- Invent plan slugs, task IDs, or issue references.
+- Invent issue references.
 - Mention `context/` synchronization activity in a commit message.
 - Claim a message was committed.
 - Run plan, task, or validation workflows.
