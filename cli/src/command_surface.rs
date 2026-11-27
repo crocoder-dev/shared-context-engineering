@@ -91,7 +91,8 @@ const HELP_SECTIONS: &[HelpSection] = &[
             HelpSectionBodyLine::Text("  sce setup --claude --non-interactive --workflow brownfield"),
             HelpSectionBodyLine::Text("  sce doctor --format json"),
             HelpSectionBodyLine::Text("  sce doctor --fix"),
-            HelpSectionBodyLine::Text("  sce version --format json"),        ],
+            HelpSectionBodyLine::Text("  sce version --format json"),
+        ],
     },
 ];
 
