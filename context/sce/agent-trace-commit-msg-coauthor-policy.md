@@ -7,16 +7,18 @@
 - Runtime hook wiring: `agent-trace-local-hooks-production-mvp` `T04` (done)
 
 ## Canonical contract
-- Policy entrypoint: `cli/src/services/hooks/mod.rs` -> `apply_commit_msg_coauthor_policy`.
-- Runtime entrypoint: `cli/src/services/hooks/mod.rs` -> `run_commit_msg_subcommand` / `run_commit_msg_subcommand_in_repo`.
-- Canonical trailer string: `Co-authored-by: SCE <sce@crocoder.dev>`.
+- Policy entrypoint: `cli/src/services/hooks/commit_hooks.rs` -> `apply_commit_msg_coauthor_policy(runtime, author_email, ai_contribution_present, commit_message)`.
+- Runtime entrypoint: `cli/src/services/hooks/commit_hooks.rs` -> `run_commit_msg_subcommand_in_repo`.
+- Canonical trailer string: `Co-authored-by: SCE <sce@crocoder.dev>`. `cli/src/services/hooks/mod.rs` defines `CANONICAL_SCE_COAUTHOR_TRAILER` and `SCE_IDENTITY_EMAIL` from one email literal, so the trailer identity and the exempt author cannot diverge.
 - Runtime gating conditions (all must pass for trailer insertion):
   - `attribution_hooks_enabled = true` (opt-out default; resolved from `SCE_ATTRIBUTION_HOOKS_DISABLED` env over `policies.attribution_hooks.enabled` config, default `true`)
   - `sce_disabled = false` (resolved from `SCE_DISABLED` truthy evaluation)
+  - The commit author is not the SCE identity (author exemption)
   - `ai_contribution_present = true` (resolved from staged-diff AI-overlap preflight)
 - Runtime gate source mapping:
   - `attribution_hooks_enabled` resolves from opt-out env `SCE_ATTRIBUTION_HOOKS_DISABLED` over config key `policies.attribution_hooks.enabled`, default `true`; the env value is inverted on read, so truthy disables attribution.
   - `sce_disabled` resolves from `SCE_DISABLED` truthy evaluation.
+  - The author exemption resolves the commit author email with `resolve_commit_author_email` (`cli/src/services/hooks/runtime.rs`), which runs `git var GIT_AUTHOR_IDENT` from the repository root. `git commit` exports `--author` through `GIT_AUTHOR_*` before it runs hooks, so `--author`, `GIT_AUTHOR_EMAIL`, and `user.email` are honored with Git's precedence. The author is exempt when the email equals `sce@crocoder.dev` after trimming and ASCII case-folding. The author name and the committer are ignored.
   - `ai_contribution_present` resolves from `staged_diff_has_ai_overlap(repository_root, logger)`, which returns `StagedDiffAiOverlapResult::Overlap` when the staged diff overlaps with at least one recent AI/editor diff trace, `NoOverlap` when no overlap is found, or `Error` when any preflight error occurs. Both `NoOverlap` and `Error` map to `ai_contribution_present = false`.
 - When all gate conditions pass, output commit message MUST contain exactly one canonical SCE trailer.
 - When any gate condition fails, commit message is returned unchanged.
@@ -28,13 +30,15 @@
 - Existing trailing newline is preserved when present.
 - Commit-msg runtime writes the file only when policy gates pass and transformed content differs from original content.
 - Human author/committer identity is not rewritten; only commit message trailer content is affected.
-- The preflight is invoked only when the policy gate passes (`attribution_hooks_enabled && !sce_disabled`); when the gate does not pass, no DB read or staged-diff capture occurs.
+- The preflight is invoked only when the policy gate passes (`attribution_hooks_enabled && !sce_disabled`) and the author is not the SCE identity; otherwise no DB read or staged-diff capture occurs.
+- Author resolution runs only when the policy gate passes. A resolution failure (`CommitAuthorResolutionError`: `GitUnavailable`, `GitFailed`, or `MalformedIdent`) is logged at debug level via `sce.hooks.commit_msg.author_unresolved` and keeps the policy for a non-exempt author.
+- For the SCE author, the message is returned unchanged, including any canonical trailer it already contains.
 - Errors during the preflight (DB open failure, schema not ready, query error, staged diff read failure, malformed/no rows, zero overlap) are collapsed to `ai_contribution_present = false` and the trailer is never appended. Errors are logged via `sce.hooks.commit_msg.ai_overlap_error` for diagnostics but never escalate to applying the trailer.
 
 ## Staged AI-overlap evidence gate
 
 - `cli/src/services/agent_trace.rs` owns the pure direct-evidence predicate `has_direct_evidence`, which reports whether at least one staged touched line has accepted direct evidence: repository file identity anchored at the repository root, an exact `(kind, line_number, content)` match, and a single claiming session. Historical `(kind, content)`-only similarity, suffix-only path similarity, Claude structured relative paths without a recorded absolute `cwd`, and lines claimed by conflicting sessions are not evidence.
-- `cli/src/services/hooks/mod.rs` owns the staged-diff AI-overlap evidence gate, which is now wired into `run_commit_msg_subcommand_in_repo`:
+- `cli/src/services/hooks/commit_hooks.rs` owns the staged-diff AI-overlap evidence gate, which is wired into `run_commit_msg_subcommand_in_repo`:
   - `StagedDiffAiOverlapResult` enum (`Overlap`/`NoOverlap`/`Error`) is the three-valued result from the injectable `_with` variant, enabling testable branch coverage and caller-side error logging.
   - `staged_diff_has_ai_overlap_with` is the injectable variant that accepts staged-patch, `HEAD` commit time, clock, and recent-trace dependencies and returns `StagedDiffAiOverlapResult`; `hooks/commit_hooks/attribution_tests.rs` covers stale, historical-only, fresh exact, conflicting-session, and repository-file-identity rows.
   - `staged_diff_has_ai_overlap` is the live wrapper that opens Agent Trace DB through the no-migration hook path, delegates to `_with`, and logs `sce.hooks.commit_msg.ai_overlap_error` on `Error` results.

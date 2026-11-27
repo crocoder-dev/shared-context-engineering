@@ -23,11 +23,12 @@ use crate::services::sync::auto_sync;
 use super::commit_patch_id::compute_commit_patch_id;
 use super::runtime::{
     commit_msg_policy_gate_passed, current_unix_time_ms, open_agent_trace_db_for_hook_runtime,
-    post_rewrite_no_op_reason, pre_commit_no_op_reason, read_hook_stdin, resolve_runtime_state,
-    run_git_command_capture_stdout, HookRuntimeState,
+    post_rewrite_no_op_reason, pre_commit_no_op_reason, read_hook_stdin,
+    resolve_commit_author_email, resolve_runtime_state, run_git_command_capture_stdout,
+    HookRuntimeState,
 };
 use super::HookSubcommand;
-use super::CANONICAL_SCE_COAUTHOR_TRAILER;
+use super::{CANONICAL_SCE_COAUTHOR_TRAILER, SCE_IDENTITY_EMAIL};
 
 pub(crate) fn run_pre_commit_subcommand_with_trace(repository_root: &Path) -> Result<String> {
     run_pre_commit_subcommand(repository_root)
@@ -72,7 +73,13 @@ pub(crate) async fn run_commit_msg_subcommand_in_repo<
     })?;
 
     let gate_passed = commit_msg_policy_gate_passed(&runtime);
-    let ai_contribution_present = if gate_passed {
+    let author_email = if gate_passed {
+        resolve_commit_author_email_for_policy(repository_root, logger)
+    } else {
+        None
+    };
+    let ai_contribution_present = if gate_passed && !author_is_sce_identity(author_email.as_deref())
+    {
         match staged_diff_has_ai_overlap(repository_root, logger).await {
             StagedDiffAiOverlapResult::Overlap => true,
             StagedDiffAiOverlapResult::NoOverlap | StagedDiffAiOverlapResult::Error => false,
@@ -80,8 +87,12 @@ pub(crate) async fn run_commit_msg_subcommand_in_repo<
     } else {
         false
     };
-    let transformed =
-        apply_commit_msg_coauthor_policy(&runtime, ai_contribution_present, &original);
+    let transformed = apply_commit_msg_coauthor_policy(
+        &runtime,
+        author_email.as_deref(),
+        ai_contribution_present,
+        &original,
+    );
     let trailer_applied = gate_passed && transformed != original;
 
     if trailer_applied {
@@ -99,6 +110,26 @@ pub(crate) async fn run_commit_msg_subcommand_in_repo<
         gate_passed,
         trailer_applied
     ))
+}
+
+fn resolve_commit_author_email_for_policy<L: crate::services::observability::traits::Logger>(
+    repository_root: &Path,
+    logger: Option<&L>,
+) -> Option<String> {
+    match resolve_commit_author_email(repository_root) {
+        Ok(email) => Some(email),
+        Err(error) => {
+            if let Some(log) = logger {
+                log.debug(
+                    "sce.hooks.commit_msg.author_unresolved",
+                    &format!("Commit author resolution failed: {error}."),
+                    &[],
+                    None,
+                );
+            }
+            None
+        }
+    }
 }
 
 pub(crate) async fn run_commit_msg_subcommand_with_trace<
@@ -715,10 +746,14 @@ pub(crate) fn hook_runtime_invocation_name(subcommand: &HookSubcommand) -> &'sta
 }
 pub fn apply_commit_msg_coauthor_policy(
     runtime: &HookRuntimeState,
+    author_email: Option<&str>,
     ai_contribution_present: bool,
     commit_message: &str,
 ) -> String {
-    if !commit_msg_policy_gate_passed(runtime) || !ai_contribution_present {
+    if !commit_msg_policy_gate_passed(runtime)
+        || author_is_sce_identity(author_email)
+        || !ai_contribution_present
+    {
         return commit_message.to_string();
     }
 
@@ -742,6 +777,10 @@ pub fn apply_commit_msg_coauthor_policy(
     }
 
     normalized
+}
+
+fn author_is_sce_identity(author_email: Option<&str>) -> bool {
+    author_email.is_some_and(|email| email.trim().eq_ignore_ascii_case(SCE_IDENTITY_EMAIL))
 }
 
 /// Returns the index just past the message's trailer block: its last paragraph
@@ -1199,8 +1238,55 @@ mod coauthor_policy_tests {
         attribution_hooks_enabled: true,
     };
 
+    const DEVELOPER_EMAIL: &str = "dev@example.com";
+
     fn apply(message: &str) -> String {
-        apply_commit_msg_coauthor_policy(&ENABLED, true, message)
+        apply_commit_msg_coauthor_policy(&ENABLED, Some(DEVELOPER_EMAIL), true, message)
+    }
+
+    #[test]
+    fn sce_author_leaves_the_message_unchanged() {
+        for author in [
+            "sce@crocoder.dev",
+            "SCE@CroCoder.Dev",
+            " sce@crocoder.dev\n",
+        ] {
+            for message in [
+                "subject\n",
+                "subject\n\nSigned-off-by: A <a@example.com>\n",
+                "",
+            ] {
+                assert_eq!(
+                    apply_commit_msg_coauthor_policy(&ENABLED, Some(author), true, message),
+                    message,
+                    "author {author:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn other_authors_keep_the_current_policy() {
+        for author in [
+            Some("notsce@crocoder.dev"),
+            Some("sce@crocoder.dev.example"),
+            Some("sce+bot@crocoder.dev"),
+            Some("sce@crocoder.de"),
+            Some(""),
+            None,
+        ] {
+            for message in ["subject\n", "subject\n\nSigned-off-by: A <a@example.com>\n"] {
+                assert_eq!(
+                    apply_commit_msg_coauthor_policy(&ENABLED, author, true, message),
+                    apply(message),
+                    "author {author:?}"
+                );
+            }
+        }
+        assert_eq!(
+            apply("subject\n"),
+            format!("subject\n\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
+        );
     }
 
     fn git_trailers(message: &str) -> String {

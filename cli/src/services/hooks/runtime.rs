@@ -1,3 +1,4 @@
+use std::fmt;
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::Command;
@@ -108,6 +109,60 @@ pub(crate) fn run_git_command_capture_stdout(
     }
 
     String::from_utf8(output.stdout).context("git command output contained invalid UTF-8")
+}
+
+#[derive(Debug)]
+pub(crate) enum CommitAuthorResolutionError {
+    GitUnavailable(io::Error),
+    GitFailed { stderr: String },
+    MalformedIdent,
+}
+
+impl fmt::Display for CommitAuthorResolutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GitUnavailable(error) => write!(f, "failed to run git var: {error}"),
+            Self::GitFailed { stderr } if stderr.is_empty() => {
+                f.write_str("git var exited with a non-zero status")
+            }
+            Self::GitFailed { stderr } => write!(f, "git var failed: {stderr}"),
+            Self::MalformedIdent => {
+                f.write_str("git var returned an author ident without an email")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CommitAuthorResolutionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::GitUnavailable(error) => Some(error),
+            Self::GitFailed { .. } | Self::MalformedIdent => None,
+        }
+    }
+}
+
+pub(crate) fn resolve_commit_author_email(
+    repository_root: &Path,
+) -> Result<String, CommitAuthorResolutionError> {
+    let output = Command::new("git")
+        .args(["var", "GIT_AUTHOR_IDENT"])
+        .current_dir(repository_root)
+        .output()
+        .map_err(CommitAuthorResolutionError::GitUnavailable)?;
+
+    if !output.status.success() {
+        return Err(CommitAuthorResolutionError::GitFailed {
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+
+    let ident = String::from_utf8_lossy(&output.stdout);
+    ident
+        .split_once('<')
+        .and_then(|(_, rest)| rest.split_once('>'))
+        .map(|(email, _)| email.to_string())
+        .ok_or(CommitAuthorResolutionError::MalformedIdent)
 }
 
 pub(crate) fn resolve_runtime_state(repository_root: &Path) -> Result<HookRuntimeState> {

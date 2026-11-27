@@ -56,7 +56,15 @@ pub enum HookSubcommand {
 }
 
 pub const NAME: &str = "hooks";
-pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str = "Co-authored-by: SCE <sce@crocoder.dev>";
+macro_rules! sce_identity_email {
+    () => {
+        "sce@crocoder.dev"
+    };
+}
+
+pub const SCE_IDENTITY_EMAIL: &str = sce_identity_email!();
+pub const CANONICAL_SCE_COAUTHOR_TRAILER: &str =
+    concat!("Co-authored-by: SCE <", sce_identity_email!(), ">");
 
 pub async fn run_hooks_subcommand<L: crate::services::observability::traits::Logger>(
     subcommand: &HookSubcommand,
