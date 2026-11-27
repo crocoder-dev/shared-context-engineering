@@ -258,7 +258,7 @@ fn parse_task(item: &ListItem, line: usize) -> Result<Task, PlanParseError> {
         if context_sync.is_some() {
             return Err(PlanParseError::DuplicateContextSync { id, line });
         }
-        context_sync = Some(match leading_word(&value) {
+        context_sync = Some(match value.trim() {
             "pending" => ContextSync::Pending,
             "synced" => ContextSync::Synced,
             "blocked" => ContextSync::Blocked,
@@ -287,6 +287,7 @@ fn parse_validation_status(
     let mut status = None;
     for paragraph in body
         .iter()
+        .take_while(|node| !matches!(node, Node::Heading(_)))
         .filter(|node| matches!(node, Node::Paragraph(_)))
     {
         let text = inline_text(paragraph.children().map_or(&[][..], Vec::as_slice));
@@ -298,7 +299,7 @@ fn parse_validation_status(
             if status.is_some() {
                 return Err(PlanParseError::DuplicateValidationStatus { line });
             }
-            status = Some(match leading_word(value) {
+            status = Some(match value.trim() {
                 "validated" => ValidationStatus::Validated,
                 "failed" => ValidationStatus::Failed,
                 _ => {
@@ -336,15 +337,6 @@ fn inline_text(children: &[Node]) -> String {
             node => node.to_string(),
         })
         .collect()
-}
-
-/// First word of a field value, so trailing notes such as `synced — confirmed` keep the state.
-fn leading_word(value: &str) -> &str {
-    value
-        .split_whitespace()
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(['.', ',', ';'])
 }
 
 fn is_task_id(token: &str) -> bool {
@@ -392,7 +384,7 @@ mod tests {
   - Context synchronization: pending
 
 - [x] T03: `Document it` (status:done)
-  - Context synchronization: blocked — waiting on review
+  - Context synchronization: blocked
 
 ```markdown
 - [ ] T91: `Fenced example` (status:todo)
@@ -603,8 +595,26 @@ mod tests {
             )),
             Err(PlanParseError::DuplicateContextSync { id: "T01".into(), line: 7 })
         );
+        for value in [
+            "synced but verification failed",
+            "pending, previously synced",
+            "blocked — waiting on review",
+            "synced.",
+        ] {
+            assert_eq!(
+                parse(&with_task_stack(&format!(
+                    "- [x] T01: `A` (status:done)\n  - Context synchronization: {value}\n"
+                ))),
+                Err(PlanParseError::UnsupportedContextSync {
+                    id: "T01".into(),
+                    value: value.into(),
+                    line: 6,
+                }),
+                "{value}"
+            );
+        }
 
-        let report_errors = [
+        let mut report_errors = vec![
             (
                 REPORT.replace("validated  ", "passed  "),
                 PlanParseError::UnsupportedValidationStatus {
@@ -627,7 +637,26 @@ mod tests {
                     line: 44,
                 },
             ),
+            (
+                REPORT
+                    .replace("**Status:** validated  \n", "")
+                    .replace("- None.", "**Status:** validated"),
+                PlanParseError::MissingValidationStatus { line: 31 },
+            ),
         ];
+        for value in [
+            "validated — actually failed",
+            "validated (revalidated after T05)",
+            "validated.",
+        ] {
+            report_errors.push((
+                REPORT.replace("validated  ", &format!("{value}  ")),
+                PlanParseError::UnsupportedValidationStatus {
+                    value: value.into(),
+                    line: 33,
+                },
+            ));
+        }
         for (report, expected) in report_errors {
             assert_eq!(parse(&format!("{PLAN}{report}")), Err(expected), "{report}");
         }
@@ -671,7 +700,7 @@ mod tests {
 
 ## Validation Report
 
-**Status:** validated (revalidated after T05)
+**Status:** validated
 **Date:** 2026-11-24
 
 ### Commands run

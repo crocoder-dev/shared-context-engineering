@@ -29,8 +29,8 @@ Code: `cli/src/services/plan/{mod,command,parse}.rs`. `parse::parse(&str)` is pu
 - Tasks come only from list items in top-level lists under the single `## Task stack` heading (until the next heading of depth 2 or less). Fenced code, blockquotes, nested lists, and other sections are ignored.
 - Each task item needs a GFM checkbox and a lead line `T<2+ digits>: <title> (status:todo|done)`. The title is the plain text with inline formatting removed, so `` `Title` `` and `**T01: Title**` forms both work. Checked requires `status:done` and unchecked requires `status:todo`.
 - `Context synchronization:` is read only from the task's own direct sub-list. `Context synchronization blocker:` and all other fields are ignored.
-- The validation status is the `Status:` line (usually `**Status:**`) in a top-level paragraph of the report.
-- For context synchronization and validation status, only the first word of the value counts, so `synced — root pass confirmed` and `validated (revalidated after T05)` keep their state. Task status markers are exact, because values such as `done; reopened in_progress` are ambiguous.
+- The validation status is the `Status:` line (usually `**Status:**`) in a top-level paragraph of the report header: the content between `## Validation Report` and its first subsection heading. A `Status:` line inside a subsection such as `### Failed checks and follow-ups` is ignored, so a report whose header lacks one fails as missing. This does not change `report_sha256`, which still covers the whole section.
+- All lifecycle values are exact. After inline formatting is removed and surrounding whitespace is trimmed, context synchronization must be exactly `pending`, `synced`, or `blocked`, validation status exactly `validated` or `failed`, and task status markers exactly `todo` or `done`. Annotated or ambiguous values such as `synced but verification failed`, `pending, previously synced`, `validated (revalidated after T05)`, or `validated.` are rejected, so a contradictory note can never be read as a successful state.
 
 ## Errors
 
@@ -38,4 +38,4 @@ The first problem fails the command with a line number. Nothing is written to st
 
 ## Legacy plan compatibility
 
-When this command was added, 99 of the 174 plans in `context/plans/` parsed. The rest are older formats that the command rejects on purpose: validation reports without a `**Status:**` field, `(status:complete)` or annotated status markers, `## Tasks` / `## 4) Task stack` headings, and non-task items or repeated sync fields in the task stack.
+With exact lifecycle values, 97 of the 174 plans in `context/plans/` parse. The rest are older formats that the command rejects on purpose: validation reports without a `**Status:**` field in the report header, `(status:complete)` or annotated status markers, annotated context synchronization or validation status values, `## Tasks` / `## 4) Task stack` headings, and non-task items or repeated sync fields in the task stack. Historical plans are not rewritten; only the current canonical plan format is supported.
