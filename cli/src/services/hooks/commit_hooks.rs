@@ -725,10 +725,16 @@ pub fn apply_commit_msg_coauthor_policy(
     let mut lines: Vec<&str> = commit_message.lines().collect();
     lines.retain(|line| *line != CANONICAL_SCE_COAUTHOR_TRAILER);
 
-    if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
-        lines.push("");
+    // Git parses trailers only from the final paragraph, so the canonical
+    // trailer joins an existing trailer block instead of starting a new one.
+    if let Some(block_end) = trailing_trailer_block_end(&lines) {
+        lines.insert(block_end, CANONICAL_SCE_COAUTHOR_TRAILER);
+    } else {
+        if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
+            lines.push("");
+        }
+        lines.push(CANONICAL_SCE_COAUTHOR_TRAILER);
     }
-    lines.push(CANONICAL_SCE_COAUTHOR_TRAILER);
 
     let mut normalized = lines.join("\n");
     if commit_message.ends_with('\n') {
@@ -736,6 +742,32 @@ pub fn apply_commit_msg_coauthor_policy(
     }
 
     normalized
+}
+
+/// Returns the index just past the message's trailer block: its last paragraph
+/// when that paragraph follows the subject and consists only of `Token: value`
+/// lines and their indented continuations. Trailing blank and `#` comment lines
+/// are skipped, matching what `git commit` strips before parsing trailers.
+fn trailing_trailer_block_end(lines: &[&str]) -> Option<usize> {
+    let end = lines
+        .iter()
+        .rposition(|line| !line.trim().is_empty() && !line.starts_with('#'))?
+        + 1;
+    let start = lines[..end]
+        .iter()
+        .rposition(|line| line.trim().is_empty())
+        .map(|blank| blank + 1)?;
+    let block = &lines[start..end];
+    let all_trailers = block.iter().enumerate().all(|(index, line)| {
+        if line.starts_with([' ', '\t']) {
+            return index > 0;
+        }
+        line.split_once(": ").is_some_and(|(token, _)| {
+            !token.is_empty() && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+    });
+    let has_subject = lines[..start].iter().any(|line| !line.trim().is_empty());
+    (all_trailers && has_subject).then_some(end)
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PostCommitPatchData {
@@ -1150,5 +1182,101 @@ mod tests {
         .await
         .expect_err("persistence failure must propagate");
         assert_eq!(persistence_error.to_string(), "persistence rejected");
+    }
+}
+
+#[cfg(test)]
+mod coauthor_policy_tests {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    use super::{
+        apply_commit_msg_coauthor_policy, HookRuntimeState, CANONICAL_SCE_COAUTHOR_TRAILER,
+    };
+
+    const ENABLED: HookRuntimeState = HookRuntimeState {
+        sce_disabled: false,
+        attribution_hooks_enabled: true,
+    };
+
+    fn apply(message: &str) -> String {
+        apply_commit_msg_coauthor_policy(&ENABLED, true, message)
+    }
+
+    fn git_trailers(message: &str) -> String {
+        let mut child = Command::new("git")
+            .args(["interpret-trailers", "--parse"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn git interpret-trailers");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(message.as_bytes())
+            .expect("write message");
+        let output = child.wait_with_output().expect("git interpret-trailers");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).expect("utf-8 trailers")
+    }
+
+    #[test]
+    fn joins_an_existing_trailer_block() {
+        let message = "plan: T01 Add a health endpoint\n\nSCE-Execution: 66d6087096d3f0da\nSCE-Plan: context/plans/x.md\nSCE-Task: T01\n";
+        let applied = apply(message);
+        assert_eq!(
+            applied,
+            format!("{message}{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
+        );
+        assert_eq!(
+            git_trailers(&applied),
+            format!(
+                "SCE-Execution: 66d6087096d3f0da\nSCE-Plan: context/plans/x.md\nSCE-Task: T01\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n"
+            )
+        );
+        assert_eq!(apply(&applied), applied);
+    }
+
+    #[test]
+    fn joins_the_trailer_block_before_comment_lines() {
+        let message = "subject\n\nbody\n\nSigned-off-by: A <a@example.com>\n\n# Please enter the commit message\n";
+        let applied = apply(message);
+        assert_eq!(
+            applied,
+            format!(
+                "subject\n\nbody\n\nSigned-off-by: A <a@example.com>\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n\n# Please enter the commit message\n"
+            )
+        );
+        assert_eq!(apply(&applied), applied);
+    }
+
+    #[test]
+    fn starts_a_trailer_block_after_a_subject_or_body() {
+        for message in [
+            "subject\n",
+            "subject\n\nbody text\n",
+            "Fixes: subject-looking line\n",
+        ] {
+            let applied = apply(message);
+            assert_eq!(
+                applied,
+                format!("{message}\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
+            );
+            assert_eq!(
+                git_trailers(&applied),
+                format!("{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
+            );
+            assert_eq!(apply(&applied), applied);
+        }
+    }
+
+    #[test]
+    fn does_not_treat_a_mixed_paragraph_as_trailers() {
+        let message = "subject\n\nSee: the docs\nand this sentence\n";
+        assert_eq!(
+            apply(message),
+            format!("{message}\n{CANONICAL_SCE_COAUTHOR_TRAILER}\n")
+        );
     }
 }
