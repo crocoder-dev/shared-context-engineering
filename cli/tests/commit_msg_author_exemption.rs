@@ -87,8 +87,16 @@ fn home_is_empty(home: &Path) -> bool {
     std::fs::read_dir(home).unwrap().next().is_none()
 }
 
+fn sce_state_root(home: &Path) -> std::path::PathBuf {
+    if cfg!(target_os = "macos") {
+        home.join("Library").join("Application Support")
+    } else {
+        home.join("state")
+    }
+}
+
 fn sce_logs(home: &Path) -> String {
-    let Ok(entries) = std::fs::read_dir(home.join("state").join("sce").join("logs")) else {
+    let Ok(entries) = std::fs::read_dir(sce_state_root(home).join("sce").join("logs")) else {
         return String::new();
     };
     entries
