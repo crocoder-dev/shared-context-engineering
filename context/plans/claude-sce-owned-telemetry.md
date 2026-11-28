@@ -114,17 +114,17 @@ These rules hold across all tasks. Tasks reference them instead of restating the
 
 ### Native telemetry cutover
 
-- Claude caches native exporter configuration for the life of its process, and caches helper headers between refreshes. Deleting `sce auth telemetry-headers` stops future token retrieval only. It does not revoke tokens Claude already holds.
-- **Native-export guard:**
-  - Claude hooks inherit the Claude process environment. On every hook, before the gate, SCE-owned telemetry stays inactive (no state, no export) when the hook environment shows a native Claude exporter targeting the SCE collector. That means `CLAUDE_CODE_ENABLE_TELEMETRY` is truthy and any recorded `OTEL_EXPORTER_OTLP_*ENDPOINT` key resolves to the SCE collector host, or `otelHeadersHelper` resolves to the SCE helper.
-  - The SCE collector host is the pinned production host. Under the injected test endpoint used by tests and T04, the guard compares against that injected host instead, so native and SCE-owned export to the same destination can be exercised locally without contacting production.
-  - This covers running pre-migration sessions, sessions spanning the migration, settings that setup could not remove (modified, malformed, symlinked, read-only, managed), and settings re-written by an older SCE CLI.
-  - It is a detection, not a configuration mode. It ships and is retired with the legacy migration cleanup.
-  - **Invariant:** native and SCE-owned telemetry are never simultaneously exported to the SCE destination for the same Claude process.
-- Native telemetry pointed at any other destination is user-owned. It is preserved and does not suppress SCE-owned telemetry, because it cannot reach the SCE warehouse.
+- **Evidence (reported by the blocked T04 execution, Claude 2.1.329):** the isolated real-process experiment observed `CLAUDE_CODE_ENABLE_TELEMETRY` from settings in hook subprocesses, but no `OTEL_*` variables from settings or the parent environment. The observed hook environment and parent PID stayed unchanged after editing settings, while native requests continued reaching the local receiver. Removing `otelHeadersHelper` from disk removes the remaining visible SCE ownership anchor, not the live exporter. The experiment used no production collector; its scratchpad is not committed evidence. T04 must reproduce and record these findings and the revised cutover results. Do not infer native destination or exporter state from a hook environment, a current settings file, or absence of the helper.
+- **Supported cutover:** a stopped-process migration, not live migration. Close all Claude processes using the affected user-level settings profiles **before upgrading the CLI or changing settings/hooks**. The exporter is configured at process startup and cached headers may remain valid. Removing the helper does not revoke a token Claude already holds. There is no supported mid-process transfer of telemetry ownership.
+- **Activation:** the regenerated Claude mutation-scope hook commands explicitly opt into the new observation path (an internal invocation-scoped environment marker, e.g. `SCE_CLAUDE_TELEMETRY_HOOK=1`, set on those commands by Pkl). Existing hook invocations without that marker still execute the original mutation-scope behavior and do not collect or export Claude telemetry, even with an upgraded CLI. Older binaries ignore the marker rather than failing to parse a new CLI flag. This is a generated-hook compatibility/activation signal, **not** a process-start signal, a consent mechanism, or a new user config schema. Test injection does not change this contract.
+- **Legacy-settings preflight:** before the authorization gate and transcript reads, reuse the existing user and managed settings path resolution to perform a bounded, read-only check of the legacy installation surfaces. A visible SCE headers helper or a generic/per-signal OTLP endpoint targeting the SCE collector host blocks SCE-owned Claude telemetry, even with a different or absent helper. Under the injected test endpoint, use that host instead. Unavailable paths or unreadable, malformed, or oversized settings whose legacy status cannot be established also block; genuinely absent files are clean. Readable unrelated user-owned settings do not block. Do not change files, log raw values, inspect parent processes, or attempt to implement Claude's full effective-settings resolution. Use the same classifier for setup/doctor reporting, with remediation when blocked. This is a check for visible configuration leftovers, not detection of a running exporter.
+- An unactivated or blocked invocation does not read transcripts, create accounting state, or export reconstructed telemetry; discard any existing session accounting state safely so reactivation starts at the next `UserPromptSubmit` baseline. Existing Agent Trace, mutation-scope decisions and CLI observability remain unchanged.
+- **Supported invariant:** in the documented cutover sequence, native SCE-managed export stops before SCE-owned export begins. No pre-cutover transcript history is re-counted. This does not claim that arbitrary live edits, manually directing a native exporter at the SCE collector through other Claude configuration layers or ambient environment, or running an older CLI concurrently with migration can be detected from hooks. Those are outside the supported cutover; do not present a clean preflight as proof that no running exporter exists. If old setup recreates visible legacy settings, the preflight blocks future SCE-owned observation; perform the stopped-process procedure again before removing them. No PID registry, sticky marker, daemon, process launcher/wrapper, or runtime endpoint inference.
+- Native telemetry to other destinations is user-owned and left unchanged. Under the supported cutover, it may coexist with SCE-owned export; neither a truthy `CLAUDE_CODE_ENABLE_TELEMETRY` nor a non-SCE helper alone suppresses SCE-owned telemetry. SCE consent remains governed by its existing access policy. A user-configured native exporter must not target the SCE collector through another settings layer or the launch environment when SCE-owned telemetry is active.
 - **User cutover procedure** (documented in `context/cli/claude-telemetry.md`; executed by users only after the separately coordinated release):
-  1. Users run `sce setup` or `sce doctor --fix`, which removes SCE-owned native settings and reports manual remediation where it cannot.
-  2. Users restart Claude sessions. Any session still carrying SCE native exporter configuration stays native-only until its process exits. A resumed session in a new process baselines at the transcript end, so usage already exported natively is not re-counted.
+  1. Exit all Claude processes that share the affected user settings (including IDE/headless/background sessions and each applicable `CLAUDE_CONFIG_DIR` profile). Do this before replacing the CLI on PATH: the current generated hook script resolves `sce` at each invocation. Do not resume until the following steps are complete.
+  2. Upgrade SCE and stop using older CLI versions for setup. Run Claude-target `sce setup` (or the equivalent `sce doctor --fix` repair) for each affected profile and repository that should collect telemetry. Remove only exact-value SCE-owned native settings; repair reported leftovers manually at their source. Do not restart Claude until the legacy preflight passes and the new hooks, including `SubagentStart` and the activation marker, are installed. Cleanup failure must be reported as not ready, not as successful activation. Preserve unrelated user telemetry and never modify managed settings.
+  3. Start or resume Claude using the cleaned profile and refreshed repository hooks. The first `UserPromptSubmit` establishes a transcript-end baseline. Existing native history is not counted. Fresh installations with no legacy settings follow the same setup/start sequence without needing a migration cleanup. Repeat the stopped-process sequence after any old-CLI rewrite or manual reintroduction of SCE native configuration.
 
 ## Acceptance criteria
 
@@ -140,7 +140,7 @@ These rules hold across all tasks. Tasks reference them instead of restating the
   - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry::pricing` and `... claude_telemetry::metrics`.
 - [ ] AC5: Spans form the expected GenAI trees: a turn span; `chat` spans that alone carry tokens and have no fabricated duration; `execute_tool` spans with `Error` status on failure, MCP server name, and skill name; and `invoke_agent` subagent spans with correct parents. Metrics are `claude_code.token.usage`, `claude_code.cost.usage`, and `claude_code.active_time.total` (`type=cli` only) with the warehouse contract names, units, dimensions, and delta temporality. No line, commit, edit-decision, or `type=user` metric is emitted.
   - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry::spans` and `... claude_telemetry::metrics`.
-- [ ] AC6: The receiver sees zero requests, and no state file exists afterwards, for each of these gate states: policy disabled, consent withdrawn, missing or expired credential, unenrolled repository, fingerprint change, and active native-export guard. After consent is re-enabled, only usage after the new baseline is exported. Exports go only to the injected test endpoint with a bearer header, redirects disabled, and ambient `OTEL_*` ignored for export. A sentinel scan finds no prompt, response, tool input or output, or path content in any export or state file. State files are `0600` in a `0700` directory.
+- [ ] AC6: The receiver sees zero requests, and no state file exists afterwards, for each of these gate states: policy disabled, consent withdrawn, missing or expired credential, unenrolled repository, fingerprint change, and each inactive activation/preflight state (missing hook marker, visible legacy helper or endpoint, unreadable/invalid settings). After consent is re-enabled, only usage after the new baseline is exported. Exports go only to the injected test endpoint with a bearer header, redirects disabled, and ambient `OTEL_*` ignored for export. A sentinel scan finds no prompt, response, tool input or output, or path content in any export or state file. State files are `0600` in a `0700` directory.
   - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry::gating` and `... claude_telemetry::privacy`.
 - [ ] AC7: Hook stdout, stderr, exit status, permission decisions, and Agent Trace persistence are byte-identical with telemetry enabled, disabled, and failing. Failure modes include a stalled collector, invalid transcripts, missing events, missing credentials, and corrupted or locked state. Each hook's telemetry work stays within fixed time and byte budgets.
   - Validate: `... test --manifest-path cli/Cargo.toml claude_mutation_scope` and `... claude_telemetry::fail_open`.
@@ -148,17 +148,21 @@ These rules hold across all tasks. Tasks reference them instead of restating the
   - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry::parity`; inspection of the parity record.
 - [ ] AC9: Setup and migration behave as follows:
   - `sce setup` installs no native telemetry or `otelHeadersHelper`, and removes SCE-owned native entries regardless of consent.
-  - User-owned, modified, malformed, symlinked, and read-only settings stay byte-identical, with remediation reported.
-  - `sce doctor` reports leftovers, and `sce doctor --fix` removes them.
+  - User-owned, modified, malformed, symlinked, and read-only settings stay byte-identical, with remediation reported when migration is blocked.
+  - Setup/doctor share the legacy-settings preflight and report not ready for blocked profiles. `sce doctor --fix` removes only safely identifiable SCE-owned settings and reports manual remediation for anything it cannot remove. Non-Claude targets and user/managed settings that do not contain removable SCE entries retain their existing non-destructive behavior.
   - `sce auth telemetry-headers` exits non-zero with empty stdout.
   - Generated Claude settings register `SubagentStart` on the existing hook command, and repeated setup is idempotent.
-  - Guard tests cover running native sessions, sessions spanning the migration, unremovable settings, and older-CLI rewrites; each yields zero SCE-owned requests while native exporter configuration is present.
-  - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry_migration`, `... setup`, `... doctor`, `... auth_command`; `nix run .#pkl-check-generated`; `grep -rn "telemetry-headers\|otelHeadersHelper" cli/src` returns only migration-removal and guard matches.
-- [ ] AC10: The native-export guard holds against a real running Claude process whose settings are migrated while it is still running. The guard record in `context/cli/claude-telemetry.md` shows, per scenario, the native and SCE-owned requests received by the local SCE-destination receiver, and proves both of the following:
-  - For every Claude process, the SCE-destination receiver never receives both native and SCE-owned telemetry. While a process started with SCE native exporter configuration lives, including after its settings are migrated, the receiver sees zero SCE-owned requests for its session.
-  - After that process exits and the session resumes in a new process, the receiver sees zero native requests, and SCE-owned usage starts at the transcript-end baseline, so usage already exported natively is not re-counted.
+  - Generated mutation-scope hook commands carry the internal activation marker; an upgraded CLI called by an old generated command still enforces the original mutation-scope behavior and sends no reconstructed Claude telemetry. Readiness tests cover clean/fresh profiles, unremovable or unreadable settings, SCE endpoints with a different or missing helper, and older-CLI rewrites. Visible legacy settings always prevent reconstructed export.
+  - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry_migration`, `... setup`, `... doctor`, `... auth_command`; `nix run .#pkl-check-generated`; `grep -rn 'telemetry-headers\|otelHeadersHelper' cli/src` returns only migration, preflight, and associated test matches.
+
+- [ ] AC10: Real Claude runs demonstrate the supported stopped-process cutover. The cutover record in `context/cli/claude-telemetry.md` lists the native and SCE-owned requests received by local receivers and proves:
+  - With legacy native settings and the old hook invocation, an upgraded CLI sends no reconstructed telemetry. With refreshed hooks but visible legacy settings, the preflight blocks reconstructed telemetry. Native export still reaches the local SCE-destination receiver.
+  - Exit Claude before editing the settings or replacing its generated hooks. Perform legacy cleanup and hook refresh, then resume the same session in a new process. Native requests stop; SCE-owned requests begin only from the new transcript-end baseline and contain no pre-cutover usage.
+  - Native user-owned telemetry to a separate local destination remains intact and does not suppress SCE-owned export with refreshed hooks and a clean legacy preflight. A truthy native enable flag alone is not a veto.
+  - An older CLI recreating visible legacy settings, or a cleanup that leaves them in place, blocks reconstructed export and reports remediation. Repeat the stopped-process procedure before activation.
+  - Reproduce the reported live-edit experiment as negative evidence of why live cutover is unsupported, with reconstructed export disabled during that experiment. Do not assert live migration safety or require inference of hidden native configuration.
   - No run configures or contacts the production collector.
-  - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry::native_guard` (replays the scrubbed real-process captures); inspection of the guard record.
+  - Validate: `... test --manifest-path cli/Cargo.toml claude_telemetry::cutover` (scrubbed real-process captures and configuration/activation replay cases); inspection of the cutover record.
 
 ### Full validation
 
@@ -169,12 +173,13 @@ These rules hold across all tasks. Tasks reference them instead of restating the
 
 ### Context sync
 
-- `context/cli/claude-telemetry.md` (new): module ownership, hook-to-span mapping, accounting rules and failure semantics, cost completeness and price-table policy, consent fingerprint, native-export guard, user cutover procedure, the scope boundary (warehouse migration and release coordination are separate), parity record, guard record, and Dash0 attribution.
+- `context/cli/claude-telemetry.md` (new): module ownership, hook-to-span mapping, accounting rules and failure semantics, cost completeness and price-table policy, consent fingerprint, generated-hook activation, legacy-settings preflight, stopped-process user cutover and its unsupported cases, the scope boundary (warehouse migration and release coordination are separate), parity record, cutover record, and Dash0 attribution.
 - `context/sce/telemetry-credential.md`: remove the helper and native install sections; describe the hook export path.
 - `context/sce/cli-observability-contract.md`: Claude telemetry now uses the metrics and traces endpoints; replace the native-versus-SCE section.
 - `context/cli/access-policy.md`: remove helper references and the Claude-settings `telemetry.note` caveat.
 - `context/sce/setup-repo-local-config-bootstrap.md` and `context/cli/cli-command-surface.md`: setup no longer installs native telemetry; migration removal.
-- `context/sce/agent-trace-hook-doctor.md` and `context/sce/doctor-human-text-contract.md`: the legacy native settings row and fix.
+- `context/sce/agent-trace-hook-doctor.md` and `context/sce/doctor-human-text-contract.md`: the legacy native settings readiness row, fix, and regenerated hook activation.
+- `context/cli/claude-mutation-scope-integration.md` and `context/cli/config-precedence-contract.md`: generated-hook opt-in and unchanged mutation decisions; updated config-show telemetry guidance.
 - `context/overview.md`, `context/architecture.md`, `context/glossary.md`, and `context/context-map.md`.
 - A new decision record superseding `context/decisions/2026-10-21-claude-telemetry-removal-on-global-withdrawal.md`.
 
@@ -196,7 +201,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - `cli/src/services/hooks/{claude_transcript,claude_model_resolver}.rs` (reuse; extract shared bounded readers only where needed).
   - `cli/src/services/hooks/claude_mutation_scope/` (the observation seam).
   - `cli/src/services/managed_telemetry*`: a sender for prebuilt OTLP requests on the pinned client, and removal of the destination-conflict code.
-  - `cli/src/services/auth_command/`, `cli/src/app.rs`, `cli/src/services/setup/`, `cli/src/services/doctor/`, `cli/src/services/config/render.rs`, and `cli/Cargo.toml`.
+  - `cli/src/services/auth_command/`, `cli/src/cli_schema.rs`, `cli/src/services/parse/command_runtime.rs`, `cli/src/app.rs`, `cli/src/services/setup/`, `cli/src/services/doctor/`, `cli/src/services/config/render.rs`, and `cli/Cargo.toml`.
   - `config/pkl/renderers/claude-content.pkl` and regenerated outputs.
   - The `context/` files listed under Context sync.
 - **Out of scope:**
@@ -223,11 +228,11 @@ Persist this field in every plan; this is durable plan state, not chat state:
 
 ## Assumptions
 
-- Telemetry observation runs as a fail-open, post-decision step inside the existing `sce hooks claude-mutation-scope` command. That command already receives `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SubagentStop`, and `SessionEnd`, and its parser already accepts `SubagentStart`. The only new registration is `SubagentStart`.
+- Telemetry observation runs as a fail-open, post-decision step inside the existing `sce hooks claude-mutation-scope` command. That command already receives `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SubagentStop`, and `SessionEnd`, and its parser already accepts `SubagentStart`. The only new registration is `SubagentStart`; existing mutation-scope hook commands gain the invocation-scoped activation marker. Existing `PermissionDenied` and `WorktreeRemove` registrations retain their mutation-scope behavior and do not add new telemetry accounting events.
 - Spans and metrics are built directly as `opentelemetry-proto` messages and posted with the existing pinned bearer client. `opentelemetry-proto` `=0.33.1` is already in `cli/Cargo.lock` and becomes a direct dependency with only the trace and metrics features.
 - Repository identity is exported as `vcs.repository.url.full` from the existing credential-stripped canonical form.
 - Billing mode is reported only from Dash0's environment-presence precedence, otherwise `unknown`. No secret values are read.
-- Claude hook subprocesses inherit Claude's process environment, including the settings `env` block, and that environment does not change for the life of the process when settings are edited. T04 verifies both with real Claude. If either does not hold, AC10 fails, and T05 is marked `blocked` instead of weakening the guard invariant.
+- Do not assume hooks inherit native exporter configuration or that editing a settings file changes a running exporter. T04 records the negative experiment and verifies the stopped-process contract with real Claude. The explicit generated-command marker must reach the hook in direct Claude launches; T04 exercises the equivalent command without requiring a launcher or process tracking.
 - The SCE Factory environment provides a `claude` executable and Claude model access for an isolated `CLAUDE_CONFIG_DIR`, as T04 requires. If it does not, T04 is marked `blocked` with that blocker.
 
 ## Accepted measurement differences
@@ -237,7 +242,7 @@ Persist this field in every plan; this is durable plan state, not chat state:
 - User active time and edit decisions are not emitted.
 - Committed code attribution comes from Agent Trace. No session-specific line count is emitted for SCE-produced sessions.
 - Measurements can be lost on a crash, lock timeout, network failure, state loss, or gate failure. They are never duplicated.
-- Sessions running with SCE native exporter configuration produce no SCE-owned telemetry.
+- Old hook invocations and visible legacy settings block reconstructed telemetry. Missing telemetry until users complete migration is accepted; live migration or native export to the SCE destination through unobservable configuration is not supported.
 
 ## Task stack
 
@@ -289,10 +294,10 @@ Persist this field in every plan; this is durable plan state, not chat state:
   - Task ID: T03
   - Scope:
     - In:
-      - A gate implementing the Consent and authorization rules and the native-export guard, reusing the access-policy resolver, `repository_id_for`, `authorized_repository_credential_with` within `CREDENTIAL_LOOKUP_DEADLINE`, and the authorization fingerprint.
+      - A gate implementing the Consent and authorization rules, generated-hook activation, and bounded legacy-settings preflight, reusing the access-policy resolver, `repository_id_for`, `authorized_repository_credential_with` within `CREDENTIAL_LOOKUP_DEADLINE`, and the authorization fingerprint.
       - A sender for prebuilt requests on the pinned bearer client, with redirects disabled, fixed timeouts, and a total budget.
       - Typed errors, logged at debug level through the existing file logger only.
-      - A fail-open call from `claude-mutation-scope` after its decision and output are fixed. It is active only under an injected test endpoint and state root, so production export stays off.
+      - A fail-open call from `claude-mutation-scope` after its decision and output are fixed. It requires the invocation-scoped marker and is active only under an injected test endpoint and state root, so production export stays off. Existing unmarked commands retain their prior output and behavior.
       - Golden hook-output tests across telemetry enabled, disabled, and failing.
     - Out: Pkl registration, setup, doctor, helper removal, and production activation.
   - Dependencies: T02
@@ -307,22 +312,21 @@ Persist this field in every plan; this is durable plan state, not chat state:
       - Real Claude sessions in an isolated `CLAUDE_CONFIG_DIR`, with SCE telemetry under the injected test endpoint and state root. The production collector is never configured.
       - Parity runs: native telemetry goes to one local OTLP receiver and SCE telemetry to a separate local receiver. Scenarios: a simple prompt, multiple model calls, successful and failed tools, an MCP tool, a skill (tool and slash routes), multiple turns, a resumed session, parallel subagents, a model change, an interrupted turn, cached and uncached usage, and a linked worktree.
       - Comparison of session identity, attribution, token, cache, and model totals, cost semantics, active time, and tool and subagent counts, plus conformance of SCE points to the informational warehouse metric contract (names, units, dimensions, temporality) and identity checks with the ported `point_id` / `record_hash` helper. Transcripts are the independent token reference.
-      - Native-export guard runs against a single local receiver standing in for the SCE destination, with Claude's SCE native exporter configuration (the `env` block and `otelHeadersHelper` as setup writes them) pointed at that receiver:
-        1. Start a real Claude process with that configuration and complete a turn.
-        2. While the process is still running, remove the SCE-owned native settings with the existing exact-value ownership removal path, then complete further turns, a tool call, and a subagent in the same process.
-        3. Exit the process, resume the session in a new process, and complete further turns.
-        - Record, per step, the hook environment observed by the guard and every request at the receiver classified as native or SCE-owned by instrumentation scope.
-        - Assert AC10: no Claude process ever has both native and SCE-owned telemetry received at the SCE destination; steps 1 and 2 yield zero SCE-owned requests; step 3 yields zero native requests and no re-counted pre-resume usage.
-      - Verification that hook subprocesses inherit Claude's settings `env` and that it stays unchanged after the in-process settings edit, which the guard assumes.
-      - Fixes to T01–T03 for reconstructable discrepancies and guard failures that the existing guard design can fix.
-      - Scrubbed captures as `claude_telemetry::parity` and `claude_telemetry::native_guard` replay fixtures.
-      - A parity record that accepts the Accepted measurement differences and requires no parity for unobservable measurements, and a guard record, both in `context/cli/claude-telemetry.md`.
+      - Stopped-process cutover runs against a local receiver standing in for the SCE destination:
+        1. Start real Claude with the legacy SCE native settings and an old, unmarked hook command invoking the new test CLI. Complete a turn; verify native requests and zero reconstructed requests. Separately exercise the marked hook with visible legacy settings and verify it also sends zero reconstructed requests.
+        2. Exit Claude. Remove exact-value SCE-owned settings using the existing removal path, install the equivalent marked test hooks, and resume the same session in a new process. Complete further turns, a tool call, and a subagent. Verify that native export has stopped and SCE-owned usage starts only at the new baseline.
+        3. Exercise fresh setup, unrelated user-native configuration to a distinct local receiver (also used in parity scenarios), and visible leftovers or old-CLI rewrites. Assert AC10. Do not attempt or assert a live ownership transfer.
+      - Reproduce and record the earlier real-process negative experiment: capture the enable flag and absence of native `OTEL_*` variables, edit settings while Claude runs, and observe native requests continuing. Keep SCE-owned observation disabled for this negative experiment. Record version and observations, not secret values.
+      - Fixes to T01–T03 for reconstructable discrepancies and failures of the revised supported cutover contract.
+      - Scrubbed captures as `claude_telemetry::parity` and `claude_telemetry::cutover` replay fixtures.
+      - A parity record that accepts the Accepted measurement differences and requires no parity for unobservable measurements, and a cutover record (including the negative experiment), both in `context/cli/claude-telemetry.md`.
+
     - Out: production export, setup and doctor migration changes, and any warehouse consumer.
   - Dependencies: T03
   - Done when:
     - AC8 and AC10 pass.
-    - The env-inheritance and env-stability results are recorded. If either fails, or AC10 cannot be met by the existing guard design, T05 is marked `blocked` with the failure as the blocker.
-  - Verify: `... test --manifest-path cli/Cargo.toml claude_telemetry::parity`; `... claude_telemetry::native_guard`; inspection of the parity and guard records.
+    - The negative live-edit evidence and successful stopped-process scenarios are recorded. If AC8 or revised AC10 cannot be met, T04 remains incomplete and T05 is marked `blocked` with the evidence, required action, and retry condition. Absence of native `OTEL_*` variables is expected and is not itself a blocker.
+  - Verify: `... test --manifest-path cli/Cargo.toml claude_telemetry::parity`; `... claude_telemetry::cutover`; inspection of the parity and cutover records.
   - Context synchronization: pending
 
 - [ ] T05: `Retire native telemetry and complete cutover` (status:todo)
@@ -333,22 +337,22 @@ Persist this field in every plan; this is durable plan state, not chat state:
         - Delete the native install path.
         - Run the exact-value ownership removal (anchor `otelHeadersHelper == "sce auth telemetry-headers"` plus the recorded entries) on every Claude-target setup regardless of consent.
         - Keep the symlink, modified, malformed, read-only, and managed-settings guardrails and report lines.
-      - A doctor row for leftover SCE-owned native settings, and a `doctor --fix` action using the same removal.
-      - Delete `AuthSubcommand::TelemetryHeaders` and its handler, the `managed_span_kind` branch, the `claude_helper.rs` destination-conflict code (relocating `repository_id_for`), the native merge and conflict code in `config_merge.rs` / `claude_telemetry.rs`, and the `telemetry.note` caveat. Keep only the removal fingerprints that migration and the guard need.
-      - Add the `SubagentStart` registration in `claude-content.pkl` and regenerate.
+      - A doctor readiness row using the same preflight as the runtime gate, and a `doctor --fix` action using the same exact-value removal. Ensure setup/doctor report restart prerequisites and not-ready outcomes; a hook refresh or CLI upgrade alone does not establish a safe migration.
+      - Delete `AuthSubcommand::TelemetryHeaders` from schema, parser conversion and service dispatch, its handler, only the helper-specific `managed_span_kind` bypass (preserve existing `sce.hook` / `sce.command` spans), the `claude_helper.rs` destination-conflict code (relocating `repository_id_for`), the native install/merge code in `config_merge.rs` / `claude_telemetry.rs`, and the legacy `telemetry.note` caveat (preserve general opt-in guidance). Retain the exact-value removal fingerprints and conflict logic required for safe removal, plus the shared read-only preflight.
+      - Add the `SubagentStart` registration and the internal invocation marker on all generated mutation-scope observation commands in `claude-content.pkl`, and regenerate. Keep old unmarked commands valid and the mutation-scope behavior unchanged.
       - Implement production export from the real hook. This is implementation only; release and deployment are coordinated separately after Factory publishes the branch.
-      - Re-run the T04 native-export guard scenario with step 2 performed by `sce setup` and by `sce doctor --fix`, and append the results to the guard record.
+      - Re-run the T04 stopped-process cutover with step 2 performed by `sce setup` and by `sce doctor --fix`, and append the results to the cutover record. Verify upgrade-only old hooks, fresh setup, failed cleanup, and old-CLI rewrite behavior using local receivers. Test actual regenerated hook commands, including the marker reaching direct Claude launches.
       - Write the decision record superseding `2026-10-21-claude-telemetry-removal-on-global-withdrawal.md`, document the user cutover procedure and the scope boundary, and update all Context sync files.
-      - Migration tests named `claude_telemetry_migration`, plus guard tests for running native sessions, spanning sessions, unremovable settings, and older-CLI rewrites.
+      - Migration tests named `claude_telemetry_migration`, plus cutover tests for old unmarked hooks, clean/fresh profiles, preserved user-owned settings, unremovable settings, older-CLI rewrites, and stopped-process resume without re-counting.
     - Out: new commands or executables, `SessionStart` registration, Agent Trace or mutation-scope semantic changes, warehouse changes, and production release or deployment.
   - Dependencies: T04
   - Done when:
     - AC9 passes.
     - AC7 and AC10 still pass with production wiring.
     - Generated assets are in parity.
-  - Verify: `... test --manifest-path cli/Cargo.toml claude_telemetry_migration`; `... setup`; `... doctor`; `... auth_command`; `... claude_mutation_scope`; `... claude_telemetry::native_guard`; `nix run .#pkl-check-generated`; clippy with `-D warnings`.
+  - Verify: `... test --manifest-path cli/Cargo.toml claude_telemetry_migration`; `... setup`; `... doctor`; `... auth_command`; `... claude_mutation_scope`; `... claude_telemetry::cutover`; `nix run .#pkl-check-generated`; clippy with `-D warnings`.
   - Context synchronization: pending
 
 ## Open questions
 
-None. SCE ownership of the price table is decided. The warehouse migration and production release coordination are outside this plan.
+None. SCE ownership of the price table is decided. The supported migration requires stopping Claude before upgrading or changing its configuration; live migration is explicitly out of scope. The warehouse migration and production release coordination are outside this plan.
